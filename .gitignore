@@ -1,0 +1,9 @@
+build/
+build-*/
+html/
+.DS_Store
+__pycache__/
+compile_commands.json
+goblin-core
+goblin_core_tests
+benchmark-results/

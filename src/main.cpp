@@ -1,0 +1,162 @@
+#include "goblin/core/server.hpp"
+#include "goblin/core/simd.hpp"
+#include "goblin/core/store.hpp"
+
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace {
+
+[[nodiscard]] std::optional<std::uint16_t> parse_port(std::string_view text) {
+  int value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end || value <= 0 || value > 65535) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint16_t>(value);
+}
+
+[[nodiscard]] std::optional<std::size_t> parse_mib(std::string_view text) {
+  unsigned long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  constexpr unsigned long long bytes_per_mib = 1024ULL * 1024ULL;
+  if (ec != std::errc{} || ptr != end ||
+      value > std::numeric_limits<std::size_t>::max() / bytes_per_mib) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(value * bytes_per_mib);
+}
+
+[[nodiscard]] std::optional<std::size_t> parse_kib(std::string_view text) {
+  unsigned long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  constexpr unsigned long long bytes_per_kib = 1024ULL;
+  if (ec != std::errc{} || ptr != end ||
+      value > std::numeric_limits<std::size_t>::max() / bytes_per_kib) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(value * bytes_per_kib);
+}
+
+void print_usage(std::string_view program) {
+  std::cerr << "usage: " << program
+            << " [--bind ADDRESS] [--port PORT]\n"
+            << "       [--rank-cache|--no-rank-cache]\n"
+            << "       [--score-string-cache|--no-score-string-cache]\n"
+            << "       [--max-output-buffer-mib MIB]\n"
+            << "       [--initial-output-buffer-kib KIB]\n";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  goblin::core::ServerConfig config;
+  goblin::core::StoreOptions store_options;
+
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg(argv[i]);
+    if (arg == "--help" || arg == "-h") {
+      print_usage(argv[0]);
+      return 0;
+    }
+
+    if (arg == "--bind") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      config.bind_address = argv[++i];
+      continue;
+    }
+
+    if (arg == "--port") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto port = parse_port(argv[++i]);
+      if (!port) {
+        std::cerr << "goblin-core: invalid port\n";
+        return 2;
+      }
+      config.port = *port;
+      continue;
+    }
+
+    if (arg == "--rank-cache") {
+      store_options.rank_location_cache = true;
+      continue;
+    }
+
+    if (arg == "--no-rank-cache") {
+      store_options.rank_location_cache = false;
+      continue;
+    }
+
+    if (arg == "--score-string-cache") {
+      store_options.score_string_cache = true;
+      continue;
+    }
+
+    if (arg == "--no-score-string-cache") {
+      store_options.score_string_cache = false;
+      continue;
+    }
+
+    if (arg == "--max-output-buffer-mib") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_mib(argv[++i]);
+      if (!bytes) {
+        std::cerr << "goblin-core: invalid max output buffer MiB\n";
+        return 2;
+      }
+      config.max_output_buffer_bytes = *bytes;
+      config.resume_output_buffer_bytes = *bytes / 4;
+      continue;
+    }
+
+    if (arg == "--initial-output-buffer-kib") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_kib(argv[++i]);
+      if (!bytes) {
+        std::cerr << "goblin-core: invalid initial output buffer KiB\n";
+        return 2;
+      }
+      config.initial_output_buffer_bytes = *bytes;
+      continue;
+    }
+
+    std::cerr << "goblin-core: unknown option: " << arg << '\n';
+    print_usage(argv[0]);
+    return 2;
+  }
+
+  const auto caps = goblin::core::simd::detect_capabilities();
+  std::cout << "goblin-core SIMD caps:"
+            << " neon=" << caps.neon
+            << " avx2=" << caps.avx2
+            << " avx512bw=" << caps.avx512bw
+            << " avx512vl=" << caps.avx512vl << '\n';
+
+  goblin::core::Store store(store_options);
+  goblin::core::Server server(config, store);
+  return server.run();
+}
