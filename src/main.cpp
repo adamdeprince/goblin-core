@@ -50,10 +50,25 @@ namespace {
   return static_cast<std::size_t>(value * bytes_per_kib);
 }
 
+[[nodiscard]] std::optional<goblin::core::RankCacheMode> parse_rank_cache_mode(
+    std::string_view text) {
+  if (text == "off" || text == "none") {
+    return goblin::core::RankCacheMode::Off;
+  }
+  if (text == "exact" || text == "location") {
+    return goblin::core::RankCacheMode::Exact;
+  }
+  if (text == "block-hint" || text == "block") {
+    return goblin::core::RankCacheMode::BlockHint;
+  }
+  return std::nullopt;
+}
+
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--bind ADDRESS] [--port PORT]\n"
             << "       [--rank-cache|--no-rank-cache]\n"
+            << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n";
@@ -96,12 +111,26 @@ int main(int argc, char** argv) {
     }
 
     if (arg == "--rank-cache") {
-      store_options.rank_location_cache = true;
+      store_options.rank_cache_mode = goblin::core::RankCacheMode::Exact;
       continue;
     }
 
     if (arg == "--no-rank-cache") {
-      store_options.rank_location_cache = false;
+      store_options.rank_cache_mode = goblin::core::RankCacheMode::Off;
+      continue;
+    }
+
+    if (arg == "--rank-cache-mode") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto mode = parse_rank_cache_mode(argv[++i]);
+      if (!mode) {
+        std::cerr << "goblin-core: invalid rank cache mode\n";
+        return 2;
+      }
+      store_options.rank_cache_mode = *mode;
       continue;
     }
 

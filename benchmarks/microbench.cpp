@@ -40,7 +40,7 @@ struct Options {
   std::size_t warmups{1};
   std::uint64_t seed{12'345};
   ScoreShape score_shape{ScoreShape::integer};
-  bool rank_cache{false};
+  goblin::core::RankCacheMode rank_cache_mode{goblin::core::RankCacheMode::Off};
   bool score_string_cache{false};
   std::string format{"markdown"};
   std::string output;
@@ -203,10 +203,38 @@ struct ScoreEntryLess {
   return value;
 }
 
+[[nodiscard]] std::optional<goblin::core::RankCacheMode> parse_rank_cache_mode(
+    std::string_view text) {
+  if (text == "off" || text == "none") {
+    return goblin::core::RankCacheMode::Off;
+  }
+  if (text == "exact" || text == "location") {
+    return goblin::core::RankCacheMode::Exact;
+  }
+  if (text == "block-hint" || text == "block") {
+    return goblin::core::RankCacheMode::BlockHint;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::string_view rank_cache_mode_name(
+    goblin::core::RankCacheMode mode) noexcept {
+  switch (mode) {
+    case goblin::core::RankCacheMode::Off:
+      return "off";
+    case goblin::core::RankCacheMode::Exact:
+      return "exact";
+    case goblin::core::RankCacheMode::BlockHint:
+      return "block-hint";
+  }
+  return "unknown";
+}
+
 void print_usage(std::ostream& out, std::string_view program) {
   out << "usage: " << program
       << " [--members N] [--ops N] [--range-size N] [--warmups N]\n"
       << "       [--seed N] [--rank-cache|--no-rank-cache]\n"
+      << "       [--rank-cache-mode off|exact|block-hint]\n"
       << "       [--score-shape integer|short-decimal|long-decimal|random-double]\n"
       << "       [--score-string-cache|--no-score-string-cache]\n"
       << "       [--format markdown|json|csv] [--output PATH]\n";
@@ -307,11 +335,24 @@ void print_usage(std::ostream& out, std::string_view program) {
       continue;
     }
     if (arg == "--rank-cache") {
-      options.rank_cache = true;
+      options.rank_cache_mode = goblin::core::RankCacheMode::Exact;
       continue;
     }
     if (arg == "--no-rank-cache") {
-      options.rank_cache = false;
+      options.rank_cache_mode = goblin::core::RankCacheMode::Off;
+      continue;
+    }
+    if (arg == "--rank-cache-mode") {
+      const auto text = need_value(arg);
+      if (!text) {
+        return false;
+      }
+      const auto value = parse_rank_cache_mode(*text);
+      if (!value) {
+        std::cerr << "--rank-cache-mode must be off, exact, or block-hint\n";
+        return false;
+      }
+      options.rank_cache_mode = *value;
       continue;
     }
     if (arg == "--score-string-cache") {
@@ -486,12 +527,12 @@ void append_member_score_range_direct(
   Fixture fixture{
       .zset = goblin::core::ZSet(
           goblin::core::ZSetOptions{
-              .rank_location_cache = options.rank_cache,
+              .rank_cache_mode = options.rank_cache_mode,
               .score_string_cache = options.score_string_cache,
           }),
       .store = goblin::core::Store(
           goblin::core::StoreOptions{
-              .rank_location_cache = options.rank_cache,
+              .rank_cache_mode = options.rank_cache_mode,
               .score_string_cache = options.score_string_cache,
           }),
   };
@@ -1200,7 +1241,7 @@ void write_markdown(std::ostream& out,
   out << "- warmups: `" << options.warmups << "`\n";
   out << "- seed: `" << options.seed << "`\n";
   out << "- score shape: `" << score_shape_name(options.score_shape) << "`\n";
-  out << "- rank cache: `" << (options.rank_cache ? "on" : "off") << "`\n";
+  out << "- rank cache: `" << rank_cache_mode_name(options.rank_cache_mode) << "`\n";
   out << "- score string cache: `"
       << (options.score_string_cache ? "on" : "off") << "`\n\n";
   out << "| Category | Metric | Ops | ns/op | ops/sec | Seconds | Checksum |\n";
@@ -1237,8 +1278,13 @@ void write_json(std::ostream& out,
   out << "    \"score_shape\": ";
   write_json_string(out, score_shape_name(options.score_shape));
   out << ",\n";
-  out << "    \"rank_cache\": " << (options.rank_cache ? "true" : "false")
+  out << "    \"rank_cache\": "
+      << (options.rank_cache_mode != goblin::core::RankCacheMode::Off ? "true"
+                                                                      : "false")
       << ",\n";
+  out << "    \"rank_cache_mode\": ";
+  write_json_string(out, rank_cache_mode_name(options.rank_cache_mode));
+  out << ",\n";
   out << "    \"score_string_cache\": "
       << (options.score_string_cache ? "true" : "false") << "\n";
   out << "  },\n  \"results\": [\n";
@@ -1286,7 +1332,7 @@ int main(int argc, char** argv) {
             << " ops=" << options.ops
             << " range_size=" << options.range_size
             << " score_shape=" << score_shape_name(options.score_shape)
-            << " rank_cache=" << (options.rank_cache ? "on" : "off")
+            << " rank_cache=" << rank_cache_mode_name(options.rank_cache_mode)
             << " score_string_cache="
             << (options.score_string_cache ? "on" : "off") << '\n';
   auto fixture = build_fixture(options);

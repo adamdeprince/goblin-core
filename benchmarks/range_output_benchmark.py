@@ -341,11 +341,12 @@ def start_targets(args: argparse.Namespace) -> list[zbench.ServerProcess]:
     if args.target in ("both", "goblin"):
         servers.append(
             zbench.start_goblin(
-                args.goblin_bin,
-                args.goblin_rank_cache,
-                args.goblin_max_output_buffer_mib,
-                args.goblin_score_string_cache,
-                args.goblin_initial_output_buffer_kib,
+                binary=args.goblin_bin,
+                rank_cache=args.goblin_rank_cache,
+                rank_cache_mode=args.goblin_rank_cache_mode,
+                max_output_buffer_mib=args.goblin_max_output_buffer_mib,
+                score_string_cache=args.goblin_score_string_cache,
+                initial_output_buffer_kib=args.goblin_initial_output_buffer_kib,
             )
         )
     if args.target in ("both", "redis"):
@@ -477,6 +478,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default_goblin = ROOT / "build" / "goblin-core"
     parser.add_argument("--goblin-bin", type=Path, default=default_goblin)
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=["off", "exact", "block-hint"])
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int, default=1)
     parser.add_argument("--goblin-initial-output-buffer-kib", type=int, default=0)

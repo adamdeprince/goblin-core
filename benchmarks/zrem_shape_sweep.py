@@ -45,8 +45,8 @@ class ZRemShapeResult:
     rss_after_remove_mib: float
     redis_used_memory_load_mib: float | None
     redis_used_memory_final_mib: float | None
-    goblin_memory_load: dict[str, int] | None
-    goblin_memory_final: dict[str, int] | None
+    goblin_memory_load: dict[str, int | str] | None
+    goblin_memory_final: dict[str, int | str] | None
 
 
 def fmt_int(value: float | int | None) -> str:
@@ -67,16 +67,20 @@ def fmt_ratio(value: float | int | None) -> str:
     return f"{float(value):.2f}x"
 
 
-def mib(stats: dict[str, int] | None, name: str) -> float | None:
+def mib(stats: dict[str, int | str] | None, name: str) -> float | None:
     if stats is None:
         return None
-    return stats.get(name, 0) / (1024.0 * 1024.0)
+    value = stats.get(name, 0)
+    if not isinstance(value, int):
+        return None
+    return value / (1024.0 * 1024.0)
 
 
-def stat(stats: dict[str, int] | None, name: str) -> int | None:
+def stat(stats: dict[str, int | str] | None, name: str) -> int | None:
     if stats is None:
         return None
-    return stats.get(name)
+    value = stats.get(name)
+    return value if isinstance(value, int) else None
 
 
 def result_path(path: Path, report: Path) -> str:
@@ -114,8 +118,9 @@ def start_targets(args: argparse.Namespace) -> list[zbench.ServerProcess]:
     if args.target in ("both", "goblin"):
         servers.append(
             zbench.start_goblin(
-                args.goblin_bin,
-                args.goblin_rank_cache,
+                binary=args.goblin_bin,
+                rank_cache=args.goblin_rank_cache,
+                rank_cache_mode=args.goblin_rank_cache_mode,
                 score_string_cache=args.goblin_score_string_cache,
             )
         )
@@ -239,6 +244,7 @@ def write_json(args: argparse.Namespace, results: Sequence[ZRemShapeResult]) -> 
             "zadd_batch": args.zadd_batch,
             "zrem_batch": args.zrem_batch,
             "goblin_rank_cache": args.goblin_rank_cache,
+            "goblin_rank_cache_mode": args.goblin_rank_cache_mode,
             "goblin_score_string_cache": args.goblin_score_string_cache,
             "seed": args.seed,
         },
@@ -279,6 +285,7 @@ def write_report(args: argparse.Namespace, results: Sequence[ZRemShapeResult]) -
         f"- zadd batch size: `{args.zadd_batch}`",
         f"- zrem batch size: `{args.zrem_batch}`",
         f"- Goblin rank cache: `{args.goblin_rank_cache}`",
+        f"- Goblin rank cache mode: `{args.goblin_rank_cache_mode}`",
         f"- Goblin score string cache: `{args.goblin_score_string_cache}`",
         f"- seed: `{args.seed}`",
         "",
@@ -388,6 +395,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--redis-server", type=Path,
                         default=Path(shutil.which("redis-server") or "redis-server"))
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=["off", "exact", "block-hint"])
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--member-counts", type=int, nargs="+",
                         default=[50_000, 100_000, 200_000])
@@ -425,6 +434,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("use either --remove-order or --remove-orders, not both")
     if args.remove_orders is None:
         args.remove_orders = [args.remove_order or "load-prefix"]
+    if args.goblin_rank_cache_mode is None:
+        args.goblin_rank_cache_mode = "exact" if args.goblin_rank_cache else "off"
     return args
 
 

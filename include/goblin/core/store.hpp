@@ -29,12 +29,13 @@ struct ZSetRangeBounds {
 };
 
 struct ZSetOptions {
-  bool rank_location_cache{false};
+  RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
 };
 
 struct ZSetMemoryStats {
   std::size_t member_count{0};
+  RankCacheMode rank_cache_mode{RankCacheMode::Off};
   std::size_t member_storage_bytes{0};
   std::size_t member_storage_allocated_bytes{0};
   std::size_t member_ref_capacity{0};
@@ -282,7 +283,7 @@ class ZSet {
 };
 
 struct StoreOptions {
-  bool rank_location_cache{false};
+  RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
 };
 

@@ -97,11 +97,25 @@ void test_command_dispatch() {
          ":2\r\n");
 
   const auto memory = execute_fields(store, {"GOBLIN.MEMORY", "leaders"});
-  assert(memory.starts_with("*34\r\n"));
+  assert(memory.starts_with("*36\r\n"));
   assert(memory.find("member_index_allocated_bytes") != std::string::npos);
+  assert(memory.find("rank_cache_mode") != std::string::npos);
+  assert(memory.find("$3\r\noff\r\n") != std::string::npos);
   assert(memory.find("rank_location_cache_allocated_bytes") != std::string::npos);
   assert(memory.find("score_string_cache_allocated_bytes") != std::string::npos);
   assert(memory.find("score_index_allocated_bytes") != std::string::npos);
+
+  goblin::core::Store cache_store(
+      goblin::core::StoreOptions{
+          .rank_cache_mode = goblin::core::RankCacheMode::BlockHint,
+      });
+  assert(execute_fields(cache_store, {"ZADD", "leaders", "42", "alice"}) ==
+         ":1\r\n");
+  const auto cache_memory = execute_fields(
+      cache_store,
+      {"GOBLIN.MEMORY", "leaders"});
+  assert(cache_memory.find("rank_cache_mode") != std::string::npos);
+  assert(cache_memory.find("$10\r\nblock-hint\r\n") != std::string::npos);
 
   assert(execute_fields(store, {"ZCARD", "leaders"}) == ":2\r\n");
 
@@ -625,8 +639,8 @@ void test_store_inline_and_overflow_zsets() {
   assert(stats.overflow_zset_count == 2);
 }
 
-void test_store_rank_location_cache() {
-  goblin::core::Store store(goblin::core::StoreOptions{.rank_location_cache = true});
+void run_store_rank_cache_test(goblin::core::RankCacheMode mode) {
+  goblin::core::Store store(goblin::core::StoreOptions{.rank_cache_mode = mode});
 
   for (int i = 0; i < 2048; ++i) {
     assert(store.zadd("z", static_cast<double>(i), "member-" + std::to_string(i)) == 1);
@@ -644,7 +658,13 @@ void test_store_rank_location_cache() {
 
   const auto stats = store.zset_memory_stats("z");
   assert(stats.has_value());
+  assert(stats->rank_cache_mode == mode);
   assert(stats->rank_location_cache_allocated_bytes > 0);
+}
+
+void test_store_rank_location_cache() {
+  run_store_rank_cache_test(goblin::core::RankCacheMode::Exact);
+  run_store_rank_cache_test(goblin::core::RankCacheMode::BlockHint);
 }
 
 }  // namespace

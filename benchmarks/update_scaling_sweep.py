@@ -91,6 +91,7 @@ def write_combined_json(args: argparse.Namespace,
             "zadd_batch": args.zadd_batch,
             "zrem_batch": args.zrem_batch,
             "goblin_rank_cache": args.goblin_rank_cache,
+            "goblin_rank_cache_mode": args.goblin_rank_cache_mode,
             "goblin_score_string_cache": args.goblin_score_string_cache,
         },
         "run_files": [str(path) for path in run_files],
@@ -126,6 +127,7 @@ def write_report(args: argparse.Namespace,
         f"- zadd batch size: `{args.zadd_batch}`",
         f"- zrem batch size: `{args.zrem_batch}`",
         f"- Goblin rank cache: `{args.goblin_rank_cache}`",
+        f"- Goblin rank cache mode: `{args.goblin_rank_cache_mode}`",
         f"- Goblin score string cache: `{args.goblin_score_string_cache}`",
         "",
         "Combined JSON:",
@@ -226,6 +228,7 @@ def benchmark_command(args: argparse.Namespace,
     ]
     if args.goblin_rank_cache:
         command.append("--goblin-rank-cache")
+    command.extend(["--goblin-rank-cache-mode", args.goblin_rank_cache_mode])
     if args.goblin_score_string_cache:
         command.append("--goblin-score-string-cache")
     return command
@@ -241,6 +244,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--redis-server", type=Path,
                         default=Path(shutil.which("redis-server") or "redis-server"))
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=("off", "exact", "block-hint"))
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--member-counts", type=int, nargs="+",
                         default=[10_000, 100_000, 1_000_000])
@@ -272,6 +277,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("pipeline, zadd-batch, and zrem-batch must be positive")
     if args.run_dir is None:
         args.run_dir = args.output_json.parent / f"{args.output_json.stem}-runs"
+    if args.goblin_rank_cache_mode is None:
+        args.goblin_rank_cache_mode = "exact" if args.goblin_rank_cache else "off"
     return args
 
 

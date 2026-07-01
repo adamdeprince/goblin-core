@@ -50,7 +50,7 @@ void release_unused_heap_pages() noexcept {
 ZSet::ZSet(ZSetOptions options)
     : member_storage_(std::make_unique<ZSetMemberStorage>(options.score_string_cache)),
       members_(member_storage_.get()),
-      entries_(member_storage_.get(), options.rank_location_cache),
+      entries_(member_storage_.get(), options.rank_cache_mode),
       options_(options) {}
 
 ZSet::ZSet(ZSet&& other) noexcept
@@ -319,6 +319,7 @@ bool ZSet::check_invariants() const {
 ZSetMemoryStats ZSet::memory_stats() const noexcept {
   ZSetMemoryStats stats;
   stats.member_count = size();
+  stats.rank_cache_mode = entries_.rank_cache_mode();
   if (member_storage_ != nullptr) {
     stats.member_storage_bytes = member_storage_->byte_size();
     stats.member_storage_allocated_bytes = member_storage_->allocated_bytes();
@@ -378,7 +379,7 @@ void ZSet::compact() {
     new_entries.push_back(ZSetScoreEntry{.score = old_entry.score, .member_id = new_id});
   }
 
-  ZSetScoreIndex new_score_index(new_storage.get(), options_.rank_location_cache);
+  ZSetScoreIndex new_score_index(new_storage.get(), options_.rank_cache_mode);
   new_score_index.assign_sorted(new_entries);
 
   member_storage_ = std::move(new_storage);
@@ -469,7 +470,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
   if (!inline_zset_.has_value() && overflow_zsets_.empty()) {
     inline_key_.assign(key);
     inline_zset_.emplace(ZSetOptions{
-        .rank_location_cache = options_.rank_location_cache,
+        .rank_cache_mode = options_.rank_cache_mode,
         .score_string_cache = options_.score_string_cache,
     });
     return *inline_zset_;
@@ -478,7 +479,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
   auto [zset, inserted] = overflow_zsets_.try_emplace(
       std::string(key),
       ZSetOptions{
-          .rank_location_cache = options_.rank_location_cache,
+          .rank_cache_mode = options_.rank_cache_mode,
           .score_string_cache = options_.score_string_cache,
       });
   (void)inserted;

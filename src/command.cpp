@@ -100,14 +100,19 @@ namespace {
 
 [[nodiscard]] std::string memory_stats_response(const ZSetMemoryStats& stats) {
   std::vector<std::string> fields;
-  fields.reserve(34);
+  fields.reserve(36);
 
   auto add = [&fields](std::string_view name, std::size_t value) {
     fields.emplace_back(name);
     fields.push_back(std::to_string(value));
   };
+  auto add_string = [&fields](std::string_view name, std::string_view value) {
+    fields.emplace_back(name);
+    fields.emplace_back(value);
+  };
 
   add("member_count", stats.member_count);
+  add_string("rank_cache_mode", rank_cache_mode_name(stats.rank_cache_mode));
   add("member_storage_bytes", stats.member_storage_bytes);
   add("member_storage_allocated_bytes", stats.member_storage_allocated_bytes);
   add("member_ref_capacity", stats.member_ref_capacity);

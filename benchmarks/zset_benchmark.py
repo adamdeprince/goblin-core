@@ -205,14 +205,17 @@ def resolve_executable(path: Path, label: str) -> Path:
 
 def start_goblin(binary: Path,
                  rank_cache: bool,
+                 rank_cache_mode: str | None = None,
                  max_output_buffer_mib: int | None = None,
                  score_string_cache: bool = False,
                  initial_output_buffer_kib: int | None = None) -> ServerProcess:
     binary = resolve_executable(binary, "Goblin Core binary")
     port = free_port()
+    if rank_cache_mode is None:
+        rank_cache_mode = "exact" if rank_cache else "off"
     command = [str(binary), "--port", str(port)]
-    if rank_cache:
-        command.append("--rank-cache")
+    if rank_cache_mode != "off":
+        command.extend(["--rank-cache-mode", rank_cache_mode])
     if score_string_cache:
         command.append("--score-string-cache")
     if max_output_buffer_mib is not None:
@@ -284,7 +287,7 @@ def redis_used_memory_mib(client: RespClient) -> float | None:
     return None
 
 
-def goblin_memory_stats(client: RespClient, key: str) -> dict[str, int] | None:
+def goblin_memory_stats(client: RespClient, key: str) -> dict[str, int | str] | None:
     try:
         response = client.command("GOBLIN.MEMORY", key)
     except Exception:
@@ -292,16 +295,17 @@ def goblin_memory_stats(client: RespClient, key: str) -> dict[str, int] | None:
     if not isinstance(response, list) or len(response) % 2 != 0:
         return None
 
-    stats: dict[str, int] = {}
+    stats: dict[str, int | str] = {}
     for i in range(0, len(response), 2):
         name = response[i]
         value = response[i + 1]
         if not isinstance(name, bytes) or not isinstance(value, bytes):
             return None
+        decoded_name = name.decode()
         try:
-            stats[name.decode()] = int(value)
+            stats[decoded_name] = int(value)
         except ValueError:
-            return None
+            stats[decoded_name] = value.decode()
     return stats
 
 
@@ -474,14 +478,17 @@ def make_result(target: str,
                 rss_final: float,
                 redis_used_memory: float | None,
                 redis_final_used_memory: float | None,
-                goblin_memory: dict[str, int] | None = None,
+                goblin_memory: dict[str, int | str] | None = None,
                 latency_stats: dict[str, float] | None = None) -> BenchmarkResult:
     rss_delta = rss_after_load - rss_baseline
 
     def goblin_mib(name: str) -> float | None:
         if goblin_memory is None:
             return None
-        return goblin_memory.get(name, 0) / (1024.0 * 1024.0)
+        value = goblin_memory.get(name, 0)
+        if not isinstance(value, int):
+            return None
+        return value / (1024.0 * 1024.0)
 
     return BenchmarkResult(
         target=target,
@@ -529,7 +536,7 @@ def append_latency_result(results: list[BenchmarkResult],
                           rss_baseline: float,
                           rss_after_load: float,
                           used_memory: float | None,
-                          goblin_memory: dict[str, int] | None) -> None:
+                          goblin_memory: dict[str, int | str] | None) -> None:
     count, seconds, stats = time_latency_samples(
         client,
         commands,
@@ -893,6 +900,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default_goblin = Path("build/goblin-core")
     parser.add_argument("--goblin-bin", type=Path, default=default_goblin)
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=["off", "exact", "block-hint"])
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int)
     parser.add_argument("--redis-server", type=Path, default=Path(shutil.which("redis-server") or "redis-server"))
@@ -936,6 +945,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
+    goblin_rank_cache_mode = (
+        args.goblin_rank_cache_mode
+        if args.goblin_rank_cache_mode is not None
+        else ("exact" if args.goblin_rank_cache else "off")
+    )
 
     starters = []
     if args.target in ("both", "goblin"):
@@ -943,6 +957,7 @@ def main(argv: Sequence[str]) -> int:
             lambda: start_goblin(
                 args.goblin_bin,
                 args.goblin_rank_cache,
+                goblin_rank_cache_mode,
                 args.goblin_max_output_buffer_mib,
                 args.goblin_score_string_cache,
             )

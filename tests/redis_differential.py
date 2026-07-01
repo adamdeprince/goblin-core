@@ -172,12 +172,17 @@ def wait_for_server(port: int, timeout: float) -> None:
     raise RuntimeError(f"server on port {port} did not become ready: {last_error}")
 
 
-def start_goblin(binary: Path, timeout: float, rank_cache: bool) -> ServerProcess:
+def start_goblin(binary: Path,
+                 timeout: float,
+                 rank_cache: bool,
+                 rank_cache_mode: str | None = None) -> ServerProcess:
     binary = resolve_executable(binary, "Goblin Core binary")
     port = free_port()
+    if rank_cache_mode is None:
+        rank_cache_mode = "exact" if rank_cache else "off"
     command = [str(binary), "--port", str(port)]
-    if rank_cache:
-        command.append("--rank-cache")
+    if rank_cache_mode != "off":
+        command.extend(["--rank-cache-mode", rank_cache_mode])
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -468,7 +473,12 @@ def run_differential(args: argparse.Namespace) -> None:
         raise ValueError("--pipeline-depth must be at least 1")
 
     commands = command_stream(args)
-    goblin_server = start_goblin(args.goblin_bin, args.timeout, args.rank_cache)
+    goblin_server = start_goblin(
+        args.goblin_bin,
+        args.timeout,
+        args.rank_cache,
+        args.rank_cache_mode,
+    )
     redis_server = start_redis(args.redis_server, args.timeout)
     try:
         goblin = RespClient(goblin_server.port, args.timeout)
@@ -485,7 +495,7 @@ def run_differential(args: argparse.Namespace) -> None:
     print(
         f"redis differential passed: {count} commands, mode={mode}, "
         f"pipeline_depth={args.pipeline_depth}, seed={args.seed}, "
-        f"rank_cache={args.rank_cache}"
+        f"rank_cache_mode={args.rank_cache_mode or ('exact' if args.rank_cache else 'off')}"
     )
 
 
@@ -506,6 +516,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--rank-cache", action="store_true",
                         help="Run Goblin Core with --rank-cache enabled.")
+    parser.add_argument("--rank-cache-mode", choices=["off", "exact", "block-hint"])
     return parser.parse_args(argv)
 
 

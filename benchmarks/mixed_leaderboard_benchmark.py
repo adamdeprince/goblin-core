@@ -55,9 +55,9 @@ class MixedResult:
     redis_used_memory_load_mib: float | None
     redis_used_memory_mixed_mib: float | None
     redis_used_memory_final_mib: float | None
-    goblin_memory_load: dict[str, int] | None
-    goblin_memory_mixed: dict[str, int] | None
-    goblin_memory_final: dict[str, int] | None
+    goblin_memory_load: dict[str, int | str] | None
+    goblin_memory_mixed: dict[str, int | str] | None
+    goblin_memory_final: dict[str, int | str] | None
     latency_samples: int
     latency_min_us: float | None = None
     latency_p50_us: float | None = None
@@ -90,16 +90,20 @@ def fmt_unit(value: float | int | None, unit: str, digits: int = 2) -> str:
     return f"{float(value):,.{digits}f} {unit}"
 
 
-def mib(stats: dict[str, int] | None, name: str) -> float | None:
+def mib(stats: dict[str, int | str] | None, name: str) -> float | None:
     if stats is None:
         return None
-    return stats.get(name, 0) / (1024.0 * 1024.0)
+    value = stats.get(name, 0)
+    if not isinstance(value, int):
+        return None
+    return value / (1024.0 * 1024.0)
 
 
-def stat(stats: dict[str, int] | None, name: str) -> int | None:
+def stat(stats: dict[str, int | str] | None, name: str) -> int | None:
     if stats is None:
         return None
-    return stats.get(name)
+    value = stats.get(name)
+    return value if isinstance(value, int) else None
 
 
 def result_path(path: Path, report: Path) -> str:
@@ -206,10 +210,11 @@ def start_targets(args: argparse.Namespace) -> list[zbench.ServerProcess]:
     if args.target in ("both", "goblin"):
         servers.append(
             zbench.start_goblin(
-                args.goblin_bin,
-                args.goblin_rank_cache,
-                args.goblin_max_output_buffer_mib,
-                args.goblin_score_string_cache,
+                binary=args.goblin_bin,
+                rank_cache=args.goblin_rank_cache,
+                rank_cache_mode=args.goblin_rank_cache_mode,
+                max_output_buffer_mib=args.goblin_max_output_buffer_mib,
+                score_string_cache=args.goblin_score_string_cache,
             )
         )
     if args.target in ("both", "redis"):
@@ -258,9 +263,9 @@ def make_result(server: zbench.ServerProcess,
                 redis_used_memory_load: float | None,
                 redis_used_memory_mixed: float | None,
                 redis_used_memory_final: float | None,
-                goblin_memory_load: dict[str, int] | None,
-                goblin_memory_mixed: dict[str, int] | None,
-                goblin_memory_final: dict[str, int] | None,
+                goblin_memory_load: dict[str, int | str] | None,
+                goblin_memory_mixed: dict[str, int | str] | None,
+                goblin_memory_final: dict[str, int | str] | None,
                 latency_stats: dict[str, float] | None) -> MixedResult:
     return MixedResult(
         target=server.name,
@@ -408,6 +413,7 @@ def write_json(args: argparse.Namespace, results: Sequence[MixedResult]) -> None
             "latency_samples": args.latency_samples,
             "latency_warmup": args.latency_warmup,
             "goblin_rank_cache": args.goblin_rank_cache,
+            "goblin_rank_cache_mode": args.goblin_rank_cache_mode,
             "goblin_score_string_cache": args.goblin_score_string_cache,
             "seed": args.seed,
             "weights": {name: weight for name, weight in operation_weights(args)},
@@ -551,6 +557,7 @@ def write_report(args: argparse.Namespace, results: Sequence[MixedResult]) -> No
         f"- latency samples: `{args.latency_samples:,}`",
         f"- latency warmup: `{args.latency_warmup:,}`",
         f"- Goblin rank cache: `{args.goblin_rank_cache}`",
+        f"- Goblin rank cache mode: `{args.goblin_rank_cache_mode}`",
         f"- Goblin score-string cache: `{args.goblin_score_string_cache}`",
         f"- seed: `{args.seed}`",
         f"- weights: `{weights}`",
@@ -590,6 +597,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default_goblin = ROOT / "build" / "goblin-core"
     parser.add_argument("--goblin-bin", type=Path, default=default_goblin)
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=["off", "exact", "block-hint"])
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int)
     parser.add_argument("--redis-server", type=Path,
@@ -618,6 +627,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
                         default=ROOT / "benchmark-results" / "mixed-leaderboard.md")
     args = parser.parse_args(argv)
 
+    if args.goblin_rank_cache_mode is None:
+        args.goblin_rank_cache_mode = "exact" if args.goblin_rank_cache else "off"
     if args.members <= 0 or args.ops <= 0:
         parser.error("--members and --ops must be positive")
     if args.latency_samples < 0 or args.latency_warmup < 0:

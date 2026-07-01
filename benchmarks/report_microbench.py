@@ -71,20 +71,34 @@ def result_path(path: Path, report: Path) -> str:
         return str(path)
 
 
-def config_table(default_data: dict[str, Any], cache_data: dict[str, Any]) -> str:
-    default_config = default_data["config"]
-    cache_config = cache_data["config"]
+def mode_name(data: dict[str, Any], fallback: str) -> str:
+    config = data.get("config", {})
+    return str(config.get("rank_cache_mode") or fallback)
+
+
+def config_table(mode_data: dict[str, dict[str, Any]]) -> str:
     keys = ["members", "ops", "range_size", "warmups", "seed", "score_shape"]
-    lines = ["| Setting | Rank cache off | Rank cache on |", "| --- | ---: | ---: |"]
+    modes = list(mode_data)
+    lines = [
+        "| Setting | " + " | ".join(f"`{mode}`" for mode in modes) + " |",
+        "| --- | " + " | ".join("---:" for _ in modes) + " |",
+    ]
     for key in keys:
-        default_value = default_config.get(key, "integer" if key == "score_shape" else None)
-        cache_value = cache_config.get(key, "integer" if key == "score_shape" else None)
-        lines.append(f"| `{key}` | `{default_value}` | `{cache_value}` |")
-    lines.append("| `rank_cache` | `false` | `true` |")
+        values = []
+        for data in mode_data.values():
+            config = data["config"]
+            values.append(config.get(key, "integer" if key == "score_shape" else None))
+        lines.append("| `" + key + "` | " +
+                     " | ".join(f"`{value}`" for value in values) + " |")
+    lines.append("| `rank_cache_mode` | " +
+                 " | ".join(f"`{mode_name(data, mode)}`"
+                             for mode, data in mode_data.items()) + " |")
     lines.append(
-        f"| `score_string_cache` | "
-        f"`{str(default_config.get('score_string_cache', False)).lower()}` | "
-        f"`{str(cache_config.get('score_string_cache', False)).lower()}` |"
+        "| `score_string_cache` | " +
+        " | ".join(
+            f"`{str(data['config'].get('score_string_cache', False)).lower()}`"
+            for data in mode_data.values()
+        ) + " |"
     )
     return "\n".join(lines)
 
@@ -113,8 +127,7 @@ def split_table(results: dict[tuple[str, str], dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def cache_table(default: dict[tuple[str, str], dict[str, Any]],
-                cached: dict[tuple[str, str], dict[str, Any]]) -> str:
+def cache_table(mode_results: dict[str, dict[tuple[str, str], dict[str, Any]]]) -> str:
     rows = [
         ("Raw ZSCORE", "raw_zset", "zscore"),
         ("Raw ZRANK", "raw_zset", "zrank"),
@@ -125,24 +138,28 @@ def cache_table(default: dict[tuple[str, str], dict[str, Any]],
         ("Command-into ZREVRANK", "command_into", "zrevrank"),
         ("Command-into ZRANGE", "command_into", "zrange"),
     ]
+    modes = list(mode_results)
     lines = [
-        "| Metric | Off ns/op | On ns/op | Change | Off ops/sec | On ops/sec |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Metric | " + " | ".join(f"{mode} ns/op" for mode in modes) +
+        " | exact vs off | block-hint vs off |",
+        "| --- | " + " | ".join("---:" for _ in modes) + " | ---: | ---: |",
     ]
     for label, category, metric in rows:
-        off_ns = ns(default, category, metric)
-        on_ns = ns(cached, category, metric)
-        lines.append(
-            f"| `{label}` | {fmt_ns(off_ns)} | {fmt_ns(on_ns)} | "
-            f"{fmt_percent(pct_change(off_ns, on_ns))} | "
-            f"{fmt_rate(rate(default, category, metric))} | "
-            f"{fmt_rate(rate(cached, category, metric))} |"
-        )
+        values = {
+            mode: ns(results, category, metric)
+            for mode, results in mode_results.items()
+        }
+        off_ns = values.get("off")
+        lines.append("| `" + label + "` | " +
+                     " | ".join(fmt_ns(values[mode]) for mode in modes) +
+                     f" | {fmt_percent(pct_change(off_ns, values.get('exact')))} | "
+                     f"{fmt_percent(pct_change(off_ns, values.get('block-hint')))} |")
     return "\n".join(lines)
 
 
-def range_breakdown_table(default: dict[tuple[str, str], dict[str, Any]],
-                          cached: dict[tuple[str, str], dict[str, Any]]) -> str:
+def range_breakdown_table(
+    mode_results: dict[str, dict[tuple[str, str], dict[str, Any]]],
+) -> str:
     rows = [
         ("Score-index traversal", "score_index_traversal"),
         ("Member lookup", "member_lookup"),
@@ -156,18 +173,17 @@ def range_breakdown_table(default: dict[tuple[str, str], dict[str, Any]],
         ("Full command into", "execute_command_into"),
         ("Full command into WITHSCORES", "execute_command_into_withscores"),
     ]
+    modes = list(mode_results)
     lines = [
-        "| Component | Off ns/op | On ns/op | Off ops/sec | On ops/sec |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Component | " + " | ".join(f"{mode} ns/op" for mode in modes) + " |",
+        "| --- | " + " | ".join("---:" for _ in modes) + " |",
     ]
     for label, metric in rows:
-        lines.append(
-            f"| `{label}` | "
-            f"{fmt_ns(ns(default, 'zrange_breakdown', metric))} | "
-            f"{fmt_ns(ns(cached, 'zrange_breakdown', metric))} | "
-            f"{fmt_rate(rate(default, 'zrange_breakdown', metric))} | "
-            f"{fmt_rate(rate(cached, 'zrange_breakdown', metric))} |"
-        )
+        lines.append("| `" + label + "` | " +
+                     " | ".join(
+                         fmt_ns(ns(results, "zrange_breakdown", metric))
+                         for results in mode_results.values()
+                     ) + " |")
     return "\n".join(lines)
 
 
@@ -239,11 +255,19 @@ def bottleneck_summary(results: dict[tuple[str, str], dict[str, Any]]) -> list[s
     return lines
 
 
-def write_report(default_json: Path, cache_json: Path, output: Path) -> None:
-    default_data = load(default_json)
-    cache_data = load(cache_json)
-    default_results = index_results(default_data)
-    cache_results = index_results(cache_data)
+def write_report(off_json: Path,
+                 exact_json: Path,
+                 block_hint_json: Path | None,
+                 output: Path) -> None:
+    mode_paths = {"off": off_json, "exact": exact_json}
+    if block_hint_json is not None:
+        mode_paths["block-hint"] = block_hint_json
+    mode_data = {mode: load(path) for mode, path in mode_paths.items()}
+    mode_results = {
+        mode: index_results(data)
+        for mode, data in mode_data.items()
+    }
+    default_results = mode_results["off"]
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     content = [
@@ -256,34 +280,39 @@ def write_report(default_json: Path, cache_json: Path, output: Path) -> None:
         "",
         "Source data:",
         "",
-        f"- `{result_path(default_json, output)}`",
-        f"- `{result_path(cache_json, output)}`",
+        *[
+            f"- `{mode}`: `{result_path(path, output)}`"
+            for mode, path in mode_paths.items()
+        ],
         "",
         "## Configuration",
         "",
-        config_table(default_data, cache_data),
-        "",
-        "## Rank Cache Off",
-        "",
-        split_table(default_results),
-        "",
-        "## Rank Cache On",
-        "",
-        split_table(cache_results),
+        config_table(mode_data),
+    ]
+
+    for mode, results in mode_results.items():
+        content.extend([
+            "",
+            f"## Rank Cache `{mode}`",
+            "",
+            split_table(results),
+        ])
+
+    content.extend([
         "",
         "## Rank Cache Effect",
         "",
-        cache_table(default_results, cache_results),
+        cache_table(mode_results),
         "",
         "## ZRANGE Serialization Breakdown",
         "",
-        range_breakdown_table(default_results, cache_results),
+        range_breakdown_table(mode_results),
         "",
         "## Read-Path Notes",
         "",
         *bottleneck_summary(default_results),
         "",
-    ]
+    ])
     output.write_text("\n".join(content))
 
 
@@ -292,12 +321,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--default-json",
         type=Path,
-        default=ROOT / "benchmark-results" / "microbench-1m-rank-cache-off.json",
+        default=ROOT / "benchmark-results" / "microbench-1m-rank-cache-off-v2.json",
     )
     parser.add_argument(
         "--rank-cache-json",
         type=Path,
-        default=ROOT / "benchmark-results" / "microbench-1m-rank-cache-on.json",
+        default=ROOT / "benchmark-results" / "microbench-1m-rank-cache-exact-v2.json",
+        help="Exact rank-cache microbenchmark JSON.",
+    )
+    parser.add_argument(
+        "--block-hint-json",
+        type=Path,
+        default=ROOT / "benchmark-results" / "microbench-1m-rank-cache-block-hint-v2.json",
     )
     parser.add_argument("--output", type=Path, default=ROOT / "MICROBENCHMARKS.md")
     return parser.parse_args(argv)
@@ -305,7 +340,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
-    write_report(args.default_json, args.rank_cache_json, args.output)
+    write_report(args.default_json, args.rank_cache_json, args.block_hint_json, args.output)
     print(f"wrote {args.output}")
     return 0
 

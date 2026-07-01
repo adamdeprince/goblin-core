@@ -83,6 +83,7 @@ def write_combined_json(args: argparse.Namespace,
             "goblin_max_output_buffer_mib": args.goblin_max_output_buffer_mib,
             "goblin_initial_output_buffer_kib": args.goblin_initial_output_buffer_kib,
             "goblin_rank_cache": args.goblin_rank_cache,
+            "goblin_rank_cache_mode": args.goblin_rank_cache_mode,
             "goblin_score_string_cache": args.goblin_score_string_cache,
             "variant_order": args.variant_order,
             "zadd_batch": args.zadd_batch,
@@ -124,6 +125,7 @@ def write_report(args: argparse.Namespace,
         f"- Goblin max output buffer: `{args.goblin_max_output_buffer_mib}` MiB",
         f"- Goblin initial output buffer: `{args.goblin_initial_output_buffer_kib}` KiB",
         f"- Goblin rank cache: `{args.goblin_rank_cache}`",
+        f"- Goblin rank cache mode: `{args.goblin_rank_cache_mode}`",
         f"- Goblin score string cache: `{args.goblin_score_string_cache}`",
         f"- variant order: `{', '.join(args.variant_order)}`",
         f"- RSS sample interval: `{args.rss_sample_interval_ms}` ms",
@@ -239,6 +241,7 @@ def benchmark_command(args: argparse.Namespace, range_size: int, output: Path) -
     ]
     if args.goblin_rank_cache:
         command.append("--goblin-rank-cache")
+    command.extend(["--goblin-rank-cache-mode", args.goblin_rank_cache_mode])
     if args.goblin_score_string_cache:
         command.append("--goblin-score-string-cache")
     return command
@@ -254,6 +257,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--redis-server", type=Path,
                         default=Path(shutil.which("redis-server") or "redis-server"))
     parser.add_argument("--goblin-rank-cache", action="store_true")
+    parser.add_argument("--goblin-rank-cache-mode",
+                        choices=("off", "exact", "block-hint"))
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int, default=1)
     parser.add_argument("--goblin-initial-output-buffer-kib", type=int, default=0)
@@ -306,6 +311,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         )
     if args.run_dir is None:
         args.run_dir = args.output_json.parent / f"{args.output_json.stem}-runs"
+    if args.goblin_rank_cache_mode is None:
+        args.goblin_rank_cache_mode = "exact" if args.goblin_rank_cache else "off"
     return args
 
 

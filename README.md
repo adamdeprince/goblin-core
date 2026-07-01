@@ -61,9 +61,12 @@ cmake --install build --prefix /usr/local
 ./build/goblin-core --port 6379
 ```
 
-`--rank-cache` enables an optional member-id-to-score-location cache for faster
+`--rank-cache` enables the exact member-id-to-score-location cache for faster
 `ZRANK` lookups at roughly 4 bytes per member. It is off by default because it
-adds update/remove maintenance work.
+adds update/remove maintenance work. `--rank-cache-mode off|exact|block-hint`
+selects the cache explicitly; `block-hint` stores only member-to-score-block
+hints, trading some `ZRANK` read speed for much lower write maintenance.
+`GOBLIN.MEMORY <key>` reports the active mode as `rank_cache_mode`.
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for
 range output benchmarking. It is off by default because it adds a packed side
@@ -128,6 +131,9 @@ For targeted experiments, the lower-level harness remains available:
 ```sh
 python3 benchmarks/zset_benchmark.py --target goblin --goblin-rank-cache
 ```
+
+Use `--goblin-rank-cache-mode off|exact|block-hint` to benchmark a specific
+rank-cache mode.
 
 Add `--goblin-score-string-cache` to measure the optional cached score-output
 path in either `benchmarks/run_benchmarks.py` or `benchmarks/zset_benchmark.py`.

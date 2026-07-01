@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 ZSET_BENCHMARK = ROOT / "benchmarks" / "zset_benchmark.py"
+RANK_CACHE_MODES = ("off", "exact", "block-hint")
 
 
 def run(command: Sequence[object], cwd: Path = ROOT) -> None:
@@ -171,8 +172,9 @@ def goblin_allocation_table(result: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
-def cache_comparison_table(default_results: dict[tuple[str, str], dict[str, Any]],
-                           cache_results: dict[tuple[str, str], dict[str, Any]]) -> str:
+def rank_cache_mode_comparison_table(
+    mode_results: dict[str, dict[tuple[str, str], dict[str, Any]]],
+) -> str:
     metrics = [
         ("ZADD members", "zadd_members"),
         ("ZSCORE ops", "zscore_ops"),
@@ -184,21 +186,53 @@ def cache_comparison_table(default_results: dict[tuple[str, str], dict[str, Any]
         ("ZREVRANGE WITHSCORES ops", "zrevrange_withscores_ops"),
         ("ZREM members", "zrem_members"),
     ]
+    modes = [mode for mode in RANK_CACHE_MODES if mode in mode_results]
     lines = [
-        "| Metric | Default ops/sec | Rank cache ops/sec | Change |",
-        "| --- | ---: | ---: | ---: |",
+        "| Metric | " + " | ".join(f"{mode} ops/sec" for mode in modes) +
+        " | exact vs off | block-hint vs off |",
+        "| --- | " + " | ".join("---:" for _ in modes) + " | ---: | ---: |",
     ]
     for label, metric in metrics:
-        default = default_results.get(("goblin", metric))
-        cached = cache_results.get(("goblin", metric))
-        default_rate = None if default is None else default["per_second"]
-        cached_rate = None if cached is None else cached["per_second"]
-        change = None
-        if default_rate and cached_rate is not None:
-            change = (cached_rate / default_rate - 1.0) * 100.0
+        rates: dict[str, float | None] = {}
+        for mode in modes:
+            row = mode_results[mode].get(("goblin", metric))
+            rates[mode] = None if row is None else row["per_second"]
+        off_rate = rates.get("off")
+
+        def change(mode: str) -> float | None:
+            rate = rates.get(mode)
+            if off_rate and rate is not None:
+                return (rate / off_rate - 1.0) * 100.0
+            return None
+
+        lines.append("| `" + label + "` | " +
+                     " | ".join(format_int(rates[mode]) for mode in modes) +
+                     f" | {format_percent(change('exact'))} | "
+                     f"{format_percent(change('block-hint'))} |")
+    return "\n".join(lines)
+
+
+def rank_cache_mode_allocation_table(
+    mode_results: dict[str, dict[tuple[str, str], dict[str, Any]]],
+    members: int,
+) -> str:
+    lines = [
+        "| Mode | Rank cache MiB | Rank cache B/member | RSS delta B/member |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for mode in RANK_CACHE_MODES:
+        results = mode_results.get(mode)
+        row = None if results is None else results.get(("goblin", "zadd_members"))
+        cache_mib = None if row is None else row.get(
+            "goblin_rank_location_cache_allocated_mib"
+        )
+        cache_bpm = None
+        if cache_mib is not None and members > 0:
+            cache_bpm = cache_mib * 1024.0 * 1024.0 / members
+        rss_bpm = None if row is None else row.get("rss_delta_bytes_per_member")
         lines.append(
-            f"| `{label}` | {format_int(default_rate)} | {format_int(cached_rate)} | "
-            f"{format_percent(change)} |"
+            f"| `{mode}` | {format_float(cache_mib)} | "
+            f"{format_float(cache_bpm)} | {format_float(rss_bpm)} |"
         )
     return "\n".join(lines)
 
@@ -401,12 +435,20 @@ def range_output_section(json_path: Path,
     return lines
 
 
-def write_report(default_json: Path,
-                 rank_cache_json: Path | None,
+def write_report(mode_jsons: dict[str, Path],
                  report: Path,
                  args: argparse.Namespace) -> None:
+    if "off" not in mode_jsons:
+        raise ValueError("rank-cache mode report requires an off-mode artifact")
+    mode_results = {
+        mode: load_results(path)
+        for mode, path in mode_jsons.items()
+        if path.exists()
+    }
+    if "off" not in mode_results:
+        raise FileNotFoundError(mode_jsons["off"])
+    default_json = mode_jsons["off"]
     default_results = load_results(default_json)
-    rank_cache_results = load_results(rank_cache_json) if rank_cache_json else None
     default_goblin = default_results.get(("goblin", "zadd_members"))
     default_redis = default_results.get(("redis", "zadd_members"))
     rss_ratio = None
@@ -433,7 +475,7 @@ def write_report(default_json: Path,
         "The benchmark starts each server on a temporary localhost port, drives "
         "both over RESP, and records throughput plus process RSS. Redis also "
         "reports `INFO memory used_memory`; Goblin Core reports internal zset "
-        "allocation through `GOBLIN.MEMORY`.",
+        "allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.",
         "",
         "Host:",
         "",
@@ -459,7 +501,7 @@ def write_report(default_json: Path,
         "",
         "## Default Configuration",
         "",
-        "Goblin Core default run: rank-location cache off; "
+        "Goblin Core default run: rank cache mode `off`; "
         f"score-string cache `{args.goblin_score_string_cache}`.",
         "",
         f"Source data: `{result_path(default_json, report)}`",
@@ -481,38 +523,50 @@ def write_report(default_json: Path,
         "allocation.",
     ]
 
-    if rank_cache_results is not None and rank_cache_json is not None:
-        cache_goblin = rank_cache_results.get(("goblin", "zadd_members"))
-        cache_mib = None if cache_goblin is None else cache_goblin.get(
-            "goblin_rank_location_cache_allocated_mib"
-        )
-        cache_bpm = None
-        if cache_mib is not None and args.members > 0:
-            cache_bpm = cache_mib * 1024.0 * 1024.0 / args.members
-
+    if len(mode_results) > 1:
         content.extend([
             "",
-            "## Optional Rank Cache",
+            "## Rank Cache Modes",
             "",
-            "`--rank-cache` enables a packed member-id-to-score-location cache. "
-            "It is off by default because it adds maintenance work to inserts, "
-            "deletes, score updates, and score-block rebalancing.",
+            "`--rank-cache-mode exact` enables the packed member-id-to-score-location "
+            "cache. `--rank-cache-mode block-hint` stores only member-to-score-block "
+            "hints, reducing write maintenance while retaining a smaller `ZRANK` "
+            "read assist.",
             "",
-            "The cache uses one packed `uint32_t` location per member plus a "
-            "small block-id map.",
+            "Source data:",
             "",
-            f"Source data: `{result_path(rank_cache_json, report)}`",
+            *[
+                f"- `{mode}`: `{result_path(mode_jsons[mode], report)}`"
+                for mode in RANK_CACHE_MODES
+                if mode in mode_results
+            ],
             "",
-            metric_table(rank_cache_results),
+            rank_cache_mode_comparison_table(mode_results),
+            "",
+            "Rank-cache allocation by mode:",
+            "",
+            rank_cache_mode_allocation_table(mode_results, args.members),
+            "",
+            "Exact mode is the read-heavy `ZRANK` option; block-hint mode is the "
+            "churn-heavy leaderboard option.",
+        ])
+
+    for mode in ("exact", "block-hint"):
+        results = mode_results.get(mode)
+        path = mode_jsons.get(mode)
+        if results is None or path is None:
+            continue
+        content.extend([
+            "",
+            f"### Rank Cache Mode: `{mode}`",
+            "",
+            f"Source data: `{result_path(path, report)}`",
+            "",
+            metric_table(results),
             "",
             "Latency percentiles:",
             "",
-            latency_table(rank_cache_results) or "Latency mode was disabled.",
-            "",
-            cache_comparison_table(default_results, rank_cache_results),
-            "",
-            f"Measured rank-cache allocation: {format_float(cache_mib)} MiB "
-            f"({format_float(cache_bpm)} B/member).",
+            latency_table(results) or "Latency mode was disabled.",
         ])
 
     if rss_ratio is None:
@@ -567,7 +621,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--report-only", action="store_true",
                         help="Regenerate the Markdown report from existing JSON artifacts.")
-    parser.add_argument("--skip-rank-cache", action="store_true")
+    parser.add_argument(
+        "--skip-rank-cache",
+        action="store_true",
+        help="Compatibility alias for --rank-cache-modes off.",
+    )
+    parser.add_argument(
+        "--rank-cache-modes",
+        choices=RANK_CACHE_MODES,
+        nargs="+",
+        default=list(RANK_CACHE_MODES),
+        help="Goblin rank-cache modes to benchmark and report.",
+    )
     parser.add_argument("--goblin-score-string-cache", action="store_true",
                         help="Start Goblin Core with cached RESP score strings.")
     parser.add_argument("--target", choices=["both", "goblin", "redis"], default="both")
@@ -621,13 +686,21 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=Path,
         default=ROOT / "benchmark-results" / "range-output-geometric-reserve-r4-r16.md",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.skip_rank_cache:
+        args.rank_cache_modes = ["off"]
+    if "off" not in args.rank_cache_modes:
+        args.rank_cache_modes.insert(0, "off")
+    args.rank_cache_modes = [
+        mode for mode in RANK_CACHE_MODES if mode in set(args.rank_cache_modes)
+    ]
+    return args
 
 
 def benchmark_command(args: argparse.Namespace,
                       goblin_bin: Path,
                       output: Path,
-                      rank_cache: bool) -> list[object]:
+                      rank_cache_mode: str) -> list[object]:
     command: list[object] = [
         sys.executable,
         ZSET_BENCHMARK,
@@ -670,11 +743,21 @@ def benchmark_command(args: argparse.Namespace,
         "--format",
         "json",
     ]
-    if rank_cache:
-        command.append("--goblin-rank-cache")
+    command.extend(["--goblin-rank-cache-mode", rank_cache_mode])
     if args.goblin_score_string_cache:
         command.append("--goblin-score-string-cache")
     return command
+
+
+def mode_output_paths(args: argparse.Namespace, output_dir: Path) -> dict[str, Path]:
+    prefix = args.name or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    paths: dict[str, Path] = {}
+    for mode in args.rank_cache_modes:
+        if mode == "off":
+            paths[mode] = output_dir / f"{prefix}-rank-cache-off.json"
+        else:
+            paths[mode] = output_dir / f"{prefix}-rank-cache-{mode}.json"
+    return paths
 
 
 def main(argv: Sequence[str]) -> int:
@@ -684,19 +767,12 @@ def main(argv: Sequence[str]) -> int:
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    prefix = args.name or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    default_json = output_dir / f"{prefix}-default-rank-cache-off.json"
-    rank_cache_json = output_dir / f"{prefix}-rank-cache-on.json"
+    mode_jsons = mode_output_paths(args, output_dir)
 
     if args.report_only:
-      write_report(
-          default_json,
-          None if args.skip_rank_cache else rank_cache_json,
-          args.report,
-          args,
-      )
-      print(f"wrote {args.report}")
-      return 0
+        write_report(mode_jsons, args.report, args)
+        print(f"wrote {args.report}")
+        return 0
 
     if not args.skip_build:
         run([
@@ -711,13 +787,10 @@ def main(argv: Sequence[str]) -> int:
         run(["cmake", "--build", build_dir])
         run(["ctest", "--test-dir", build_dir, "--output-on-failure"])
 
-    run(benchmark_command(args, goblin_bin, default_json, rank_cache=False))
-    if args.skip_rank_cache:
-        rank_cache_json = None
-    else:
-        run(benchmark_command(args, goblin_bin, rank_cache_json, rank_cache=True))
+    for mode, output in mode_jsons.items():
+        run(benchmark_command(args, goblin_bin, output, rank_cache_mode=mode))
 
-    write_report(default_json, rank_cache_json, args.report, args)
+    write_report(mode_jsons, args.report, args)
     print(f"wrote {args.report}")
     return 0
 
