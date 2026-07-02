@@ -60,6 +60,7 @@ if [[ "$BUILD_HTML" == "1" || "$BUILD_HTML" == "true" ]]; then
     "$ROOT/README.md" \
     "$ROOT/BENCHMARKS.md" \
     "$ROOT/MICROBENCHMARKS.md" \
+    "$ROOT/PERFORMANCE_BRIEF.md" \
     "$ROOT/RELEASE.md"
 fi
 

@@ -7,6 +7,19 @@ vector-backed layout and a small RESP command surface.
 Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 `NOTICE`.
 
+## Quick Summary
+
+- Source-only C++23 Redis-like server from Goblin Reactor.
+- Current scope: sorted sets plus `PING`, not full Redis compatibility.
+- Primary design: vector-backed zset indexes and compact hash/member storage
+  instead of pointer-heavy skiplist layouts.
+- Default 1M-member benchmark uses about `67.37` RSS bytes per loaded member
+  versus Redis at `92.65` on the recorded macOS arm64 run.
+- Build locally with CMake; benchmark instructions live in
+  [BENCHMARKS.md](BENCHMARKS.md).
+- A performance-oriented project brief for outside review lives in
+  [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md).
+
 ## Current Commands
 
 - `PING [message]`
@@ -114,173 +127,13 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 
 ## Benchmark
 
-The scripted benchmark workflow configures a release build, runs the tests,
-starts Goblin Core and Redis on temporary localhost ports, drives both over RESP,
-and writes JSON results plus a Markdown report. Redis also reports
-`INFO memory` `used_memory`. Defaults are intentionally large (`1,000,000`
-loaded members and `1,000,000` read/range ops) to reduce the effect of static
-code and runtime baseline RSS.
+The current 1M-member report compares Goblin Core against Redis on the supported
+sorted-set subset. In the default configuration, Goblin Core uses about `67.37`
+RSS bytes per loaded member versus Redis at `92.65`, with faster `ZADD`,
+`ZRANK`, `ZRANGE`, and `ZREM` throughput in that run.
 
-Current Goblin Core-vs-Redis results are summarized in the
-[benchmark report](BENCHMARKS.md).
-
-```sh
-python3 benchmarks/run_benchmarks.py \
-  --redis-server /opt/homebrew/bin/redis-server \
-  --report BENCHMARKS.md \
-  --name redis-goblin-core-1m \
-  --latency-samples 10000
-```
-
-`--latency-samples` enables per-command latency rows for `ZSCORE`, `ZRANK`,
-`ZREVRANK`, `ZRANGE`, and `ZREVRANGE`. Latency sampling defaults to
-single-command round trips with `--latency-pipeline-depth 1` so percentiles are
-not hidden by the throughput pipeline.
-
-Redis is required for comparison mode. To run a quick Goblin Core-only validation:
-
-```sh
-python3 benchmarks/run_benchmarks.py \
-  --target goblin \
-  --members 10000 \
-  --ops 10000 \
-  --remove-members 5000 \
-  --latency-samples 1000 \
-  --skip-rank-cache
-```
-
-For a CI-style smoke run that compares Redis and Goblin Core across all
-rank-cache modes at a small scale:
-
-```sh
-scripts/benchmark_smoke.sh
-```
-
-The smoke script writes `benchmark-results/ci-smoke.md`, regenerates the static
-HTML docs, and accepts environment overrides such as `BENCHMARK_MEMBERS`,
-`BENCHMARK_OPS`, `BENCHMARK_LATENCY_SAMPLES`, `REDIS_SERVER`, and
-`SKIP_BUILD=1`. The benchmark scripts are intended for source checkouts.
-
-For targeted experiments, the lower-level harness remains available:
-
-```sh
-python3 benchmarks/zset_benchmark.py --target goblin --goblin-rank-cache
-```
-
-Use `--goblin-rank-cache-mode off|exact|block-hint` to benchmark a specific
-rank-cache mode.
-
-Add `--goblin-score-string-cache` to measure the optional cached score-output
-path in either `benchmarks/run_benchmarks.py` or `benchmarks/zset_benchmark.py`.
-Add `--score-shape integer|short-decimal|long-decimal|random-double` to run
-server benchmarks with the same score distributions as the microbench.
-
-The in-process microbenchmark separates data-structure cost from RESP and
-socket overhead. It builds a local zset/store fixture, then times raw `ZSet`
-lookups/ranks/ranges, RESP serialization, command execution without socket I/O,
-and parse+execute dispatch:
-
-```sh
-cmake --build build-release --target goblin_core_microbench
-./build-release/goblin_core_microbench \
-  --members 1000000 \
-  --ops 1000000 \
-  --score-shape integer \
-  --format json \
-  --output benchmark-results/microbench.json
-```
-
-Use `--score-shape integer|short-decimal|long-decimal|random-double` to
-separate score-formatting behavior from zset traversal and output costs.
-
-To regenerate the current microbenchmark summary after running both rank-cache
-modes:
-
-```sh
-python3 benchmarks/report_microbench.py --output MICROBENCHMARKS.md
-```
-
-For a server-output stress test that sends large bursts of range commands before
-reading responses and records final plus peak RSS:
-
-```sh
-python3 benchmarks/range_output_benchmark.py \
-  --output-json benchmark-results/range-output.json \
-  --report benchmark-results/range-output.md
-```
-
-To sweep Redis/Goblin range throughput across multiple range sizes:
-
-```sh
-python3 benchmarks/range_size_sweep.py \
-  --score-shape integer \
-  --range-sizes 1 4 16 64 256 1024 \
-  --output-json benchmark-results/range-size-sweep.json \
-  --report benchmark-results/range-size-sweep.md
-```
-
-To sweep server-output throughput across range sizes while the client skips
-RESP payload materialization:
-
-```sh
-python3 benchmarks/range_output_sweep.py \
-  --score-shape integer \
-  --range-sizes 16 64 256 1024 \
-  --warmup-ops 4096 \
-  --output-json benchmark-results/range-output-sweep.json \
-  --report benchmark-results/range-output-sweep.md
-```
-
-Use `--warmup-ops` to exclude first-burst output-buffer growth from steady-state
-range-output comparisons. Use `--variant-order` when checking for metric-order
-effects. Use `--goblin-initial-output-buffer-kib` to test whether pre-reserving
-per-client output capacity helps a cold burst.
-
-To sweep `ZADD` load and `ZREM` removal throughput across set sizes:
-
-```sh
-python3 benchmarks/update_scaling_sweep.py \
-  --member-counts 10000 100000 1000000 \
-  --remove-fraction 0.5 \
-  --output-json benchmark-results/update-scaling-sweep.json \
-  --report benchmark-results/update-scaling-sweep.md
-```
-
-To isolate `ZREM` behavior across set sizes and removal fractions:
-
-```sh
-python3 benchmarks/zrem_shape_sweep.py \
-  --member-counts 50000 100000 200000 \
-  --remove-fractions 0.01 0.1 0.5 0.9 \
-  --remove-orders load-prefix load-suffix reshuffled \
-  --output-json benchmark-results/zrem-shape-sweep.json \
-  --report benchmark-results/zrem-shape-sweep.md
-```
-
-To measure read throughput after deletion churn:
-
-```sh
-python3 benchmarks/post_delete_read_benchmark.py \
-  --members 1000000 \
-  --ops 1000000 \
-  --remove-fraction 0.5 \
-  --latency-samples 10000 \
-  --output-json benchmark-results/post-delete-read.json \
-  --report benchmark-results/post-delete-read.md
-```
-
-To run an interleaved leaderboard workload with reads, top ranges, score
-updates, and remove/add churn:
-
-```sh
-python3 benchmarks/mixed_leaderboard_benchmark.py \
-  --members 1000000 \
-  --ops 1000000 \
-  --range-size 100 \
-  --latency-samples 10000 \
-  --output-json benchmark-results/mixed-leaderboard.json \
-  --report benchmark-results/mixed-leaderboard.md
-```
+See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
+reproducible benchmark commands.
 
 ## Source Releases
 
@@ -333,3 +186,4 @@ is intentionally force-added later, `.gitattributes` routes it through Git LFS.
 - `tests/redis_differential.py`: Redis-backed zset differential test
 - `benchmarks/run_benchmarks.py`: scripted build/test/benchmark/report workflow
 - `benchmarks/zset_benchmark.py`: Goblin Core vs Redis zset benchmark
+- `PERFORMANCE_BRIEF.md`: architecture and benchmark context for performance review
