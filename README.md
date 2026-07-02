@@ -13,8 +13,11 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 - Current scope: sorted sets plus `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
-- Default 1M-member benchmark uses about `67.37` RSS bytes per loaded member
-  versus Redis at `92.65` on the recorded macOS arm64 run.
+- On the Linux AWS `avx10` 1M-member default benchmark, Goblin Core is `1.28x`
+  faster than Redis by geomean across supported sorted-set operations and uses
+  `41.5%` of Redis process RSS.
+- Representative Linux wins: `1.59x` `ZADD`, `1.54x` `ZRANK`, `1.23x`
+  `ZRANGE`, and `1.44x` `ZREM`; `ZSCORE` is `0.95x`.
 - Build locally with CMake; benchmark instructions live in
   [BENCHMARKS.md](BENCHMARKS.md).
 - A performance-oriented project brief for outside review lives in
@@ -128,9 +131,9 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 ## Benchmark
 
 The current 1M-member report compares Goblin Core against Redis on the supported
-sorted-set subset. In the default configuration, Goblin Core uses about `67.37`
-RSS bytes per loaded member versus Redis at `92.65`, with faster `ZADD`,
-`ZRANK`, `ZRANGE`, and `ZREM` throughput in that run.
+sorted-set subset. The Linux AWS default run is the headline deployment result:
+Goblin Core is `1.28x` faster by geomean and uses `55.26` RSS bytes per loaded
+member versus Redis at `133.14`.
 
 See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
 reproducible benchmark commands.

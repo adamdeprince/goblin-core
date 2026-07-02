@@ -66,25 +66,31 @@ node allocation.
 
 ## Current Benchmark Snapshot
 
-Absolute rates and `ns/op` timings are hardware-specific. The snapshot below is
-from the checked-in reports generated on the local macOS arm64 development
-machine:
+Absolute rates and `ns/op` timings are hardware-specific. The primary server
+benchmark snapshot below is from the Linux AWS `avx10` run, which is the most
+deployment-relevant environment currently measured:
 
-- Host recorded by `BENCHMARKS.md`: `macOS-26.5.1-arm64-arm-64bit-Mach-O arm64`.
-- Python: `3.14.5`.
+- Host recorded by the `avx10-1m` report: `Linux-7.0.0-1004-aws-x86_64-with-glibc2.43 x86_64`.
+- CPU: Intel Xeon 6975P-C, 4 vCPU on AWS/KVM.
+- Redis: `8.0.5` with jemalloc `5.3.0`.
+- Python: `3.14.4`.
 - Build: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
-The checked-in 1M-member server benchmark reports the default mode at:
+The Linux 1M-member server benchmark reports the default mode at:
 
-- Goblin Core RSS delta: `67.37` bytes per loaded member.
-- Redis RSS delta: `92.65` bytes per loaded member.
-- `ZADD`: Goblin Core `945,957` members/sec, Redis `547,592`.
-- `ZRANK`: Goblin Core `461,684` ops/sec, Redis `319,609`.
-- `ZRANGE`: Goblin Core `77,416` ops/sec, Redis `66,855`.
-- `ZREM`: Goblin Core `1,068,245` members/sec, Redis `775,862`.
+- Geomean throughput across supported sorted-set operations: `1.28x` Redis.
+- Goblin Core RSS delta: `55.26` bytes per loaded member.
+- Redis RSS delta: `133.14` bytes per loaded member.
+- Goblin Core process RSS: `41.5%` of Redis process RSS.
+- `ZADD`: Goblin Core `634,830` members/sec, Redis `400,361` (`1.59x`).
+- `ZSCORE`: Goblin Core `321,705` ops/sec, Redis `339,410` (`0.95x`).
+- `ZRANK`: Goblin Core `366,421` ops/sec, Redis `238,608` (`1.54x`).
+- `ZRANGE`: Goblin Core `64,477` ops/sec, Redis `52,426` (`1.23x`).
+- `ZREM`: Goblin Core `717,455` members/sec, Redis `499,278` (`1.44x`).
 
-The in-process microbench report was generated on the same local development
-machine. Treat these values as local baselines, not cross-machine targets:
+The in-process microbench report was generated on the local macOS arm64
+development machine. Treat these values as local baselines, not cross-machine
+targets:
 
 - Raw default `ZRANK`: `376.51` ns/op.
 - Exact rank-cache raw `ZRANK`: `200.08` ns/op.

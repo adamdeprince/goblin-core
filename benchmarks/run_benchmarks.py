@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import shutil
 import subprocess
@@ -435,6 +436,113 @@ def range_output_section(json_path: Path,
     return lines
 
 
+def prefixed_rank_cache_paths(prefix: Path) -> dict[str, Path]:
+    return {
+        "off": prefix.parent / f"{prefix.name}-rank-cache-off.json",
+        "exact": prefix.parent / f"{prefix.name}-rank-cache-exact.json",
+        "block-hint": prefix.parent / f"{prefix.name}-rank-cache-block-hint.json",
+    }
+
+
+def geomean_speedup(results: dict[tuple[str, str], dict[str, Any]]) -> float | None:
+    metrics = [
+        "zadd_members",
+        "zscore_ops",
+        "zrank_ops",
+        "zrevrank_ops",
+        "zrange_ops",
+        "zrange_withscores_ops",
+        "zrevrange_ops",
+        "zrevrange_withscores_ops",
+        "zrem_members",
+    ]
+    ratios = []
+    for metric in metrics:
+        goblin = results.get(("goblin", metric))
+        redis = results.get(("redis", metric))
+        if goblin is None or redis is None or not redis.get("per_second"):
+            return None
+        ratios.append(float(goblin["per_second"]) / float(redis["per_second"]))
+    return math.prod(ratios) ** (1.0 / len(ratios))
+
+
+def linux_benchmark_section(prefix: Path,
+                            label: str,
+                            report: Path) -> list[str]:
+    paths = prefixed_rank_cache_paths(prefix)
+    if not paths["off"].exists():
+        return []
+    mode_results = {
+        mode: load_results(path)
+        for mode, path in paths.items()
+        if path.exists()
+    }
+    default_results = mode_results["off"]
+    default_goblin = default_results.get(("goblin", "zadd_members"))
+    default_redis = default_results.get(("redis", "zadd_members"))
+    members = 0 if default_goblin is None else int(default_goblin.get("count", 0))
+
+    rss_ratio = None
+    if default_goblin and default_redis and default_redis["rss_delta_bytes_per_member"]:
+        rss_ratio = (
+            default_goblin["rss_delta_bytes_per_member"] /
+            default_redis["rss_delta_bytes_per_member"]
+        )
+    geomean = geomean_speedup(default_results)
+    summary = []
+    if geomean is not None:
+        summary.append(f"`{format_ratio(geomean)}` geomean throughput vs Redis")
+    if rss_ratio is not None:
+        summary.append(f"`{format_percent(rss_ratio * 100.0)}` of Redis process RSS")
+
+    lines = [
+        "",
+        "## Linux AWS Results",
+        "",
+        f"Deployment-oriented run: `{label}`. This is the primary benchmark "
+        "context for AWS/Linux users; the current-host section below is retained "
+        "as a local development baseline.",
+    ]
+    if summary:
+        lines.extend([
+            "",
+            "Headline: Goblin Core is " + " and ".join(summary) + ".",
+        ])
+    lines.extend([
+        "",
+        "Source data:",
+        "",
+        *[
+            f"- `{mode}`: `{result_path(paths[mode], report)}`"
+            for mode in RANK_CACHE_MODES
+            if mode in mode_results
+        ],
+        "",
+        "Linux default configuration: rank cache mode `off`; score-string cache "
+        "`False`.",
+        "",
+        metric_table(default_results),
+        "",
+        memory_table(default_results),
+        "",
+        "Latency percentiles:",
+        "",
+        latency_table(default_results) or "Latency mode was disabled.",
+    ])
+    if len(mode_results) > 1:
+        lines.extend([
+            "",
+            "Linux rank-cache mode comparison:",
+            "",
+            rank_cache_mode_comparison_table(mode_results),
+            "",
+            "Linux rank-cache allocation by mode:",
+            "",
+            rank_cache_mode_allocation_table(mode_results, members),
+        ])
+    return lines
+
+
 def benchmark_instructions_section() -> list[str]:
     return [
         "",
@@ -631,8 +739,18 @@ def write_report(mode_jsons: dict[str, Path],
         f"- score shape: `{args.score_shape}`",
         f"- Goblin score-string cache: `{args.goblin_score_string_cache}`",
         f"- seed: `{args.seed}`",
+    ]
+
+    if not args.skip_supplemental:
+        content.extend(linux_benchmark_section(
+            args.linux_benchmark_prefix,
+            args.linux_benchmark_label,
+            report,
+        ))
+
+    content.extend([
         "",
-        "## Default Configuration",
+        "## Current Host Default Configuration",
         "",
         "Goblin Core default run: rank cache mode `off`; "
         f"score-string cache `{args.goblin_score_string_cache}`.",
@@ -654,7 +772,7 @@ def write_report(mode_jsons: dict[str, Path],
         "RSS includes allocator retained pages, executable/runtime mappings, "
         "and other process overhead, so it is expected to exceed tracked zset "
         "allocation.",
-    ]
+    ])
 
     if len(mode_results) > 1:
         content.extend([
@@ -762,6 +880,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--skip-supplemental",
         action="store_true",
         help="Omit post-delete, mixed-workload, and range-output sections from the report.",
+    )
+    parser.add_argument(
+        "--linux-benchmark-prefix",
+        type=Path,
+        default=ROOT / "benchmark-results" / "avx10-1m",
+        help="Prefix for optional Linux deployment benchmark artifacts.",
+    )
+    parser.add_argument(
+        "--linux-benchmark-label",
+        default="Linux AWS avx10, Intel Xeon 6975P-C, Redis 8.0.5, GCC 16.1.0",
+        help="Human-readable label for the optional Linux benchmark section.",
     )
     parser.add_argument(
         "--skip-rank-cache",
