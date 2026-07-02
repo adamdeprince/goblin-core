@@ -1,7 +1,8 @@
-# Goblin Core Release Checklist
+# Goblin Core Source Release Checklist
 
-This is the repeatable pre-release path for source and binary archive releases.
-The package format is intentionally simple while Goblin Core is pre-1.0.
+This is the repeatable pre-release path for source-only releases. Do not publish
+compiled binary artifacts at this stage; users should build Goblin Core locally
+from the tagged source.
 
 ## Scope
 
@@ -21,7 +22,6 @@ cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure
 scripts/benchmark_smoke.sh
-cmake --build build-release --target package
 ```
 
 For Redis-backed differential tests:
@@ -32,22 +32,20 @@ cmake --build build-redis-tests
 ctest --test-dir build-redis-tests --output-on-failure
 ```
 
-## Artifacts
+## Publication
 
-The release build produces:
+Publish:
 
-- `build-release/goblin-core-<version>-<system>-<arch>.tar.gz`
-- `build-release/goblin-core-<version>-<system>-<arch>.zip`
+- The signed or annotated git tag.
+- The hosting service's generated source archive for that tag.
 
-Inspect at least one archive before publishing:
+Do not publish:
 
-```sh
-tar -tzf build-release/goblin-core-*.tar.gz
-```
+- Compiled `.tar.gz` or `.zip` archives from `build-release/`.
+- Homebrew, `.deb`, `.rpm`, container, or service-manager packages.
 
-The archive should contain the `goblin-core` executable, public headers, the
-static core library, CMake package files, root Markdown docs, generated HTML
-docs, `LICENSE`, and `NOTICE`.
+The source tree should contain public headers, source files, CMake install
+rules, root Markdown docs, generated-doc inputs, `LICENSE`, and `NOTICE`.
 
 ## Versioning
 
@@ -55,4 +53,4 @@ docs, `LICENSE`, and `NOTICE`.
   release.
 - Use pre-1.0 versions until the Redis-compatible surface and operational
   contract are broader.
-- Tag the exact commit used to produce the published archives.
+- Tag the exact commit used for the source release.
