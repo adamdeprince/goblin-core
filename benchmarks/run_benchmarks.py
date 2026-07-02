@@ -531,7 +531,9 @@ def write_report(mode_jsons: dict[str, Path],
             "`--rank-cache-mode exact` enables the packed member-id-to-score-location "
             "cache. `--rank-cache-mode block-hint` stores only member-to-score-block "
             "hints, reducing write maintenance while retaining a smaller `ZRANK` "
-            "read assist.",
+            "read assist. Block hints start as 16-bit ids and promote to 32-bit "
+            "ids automatically if the block-id space grows beyond the narrow "
+            "encoding.",
             "",
             "Source data:",
             "",

@@ -217,19 +217,6 @@ struct ScoreEntryLess {
   return std::nullopt;
 }
 
-[[nodiscard]] std::string_view rank_cache_mode_name(
-    goblin::core::RankCacheMode mode) noexcept {
-  switch (mode) {
-    case goblin::core::RankCacheMode::Off:
-      return "off";
-    case goblin::core::RankCacheMode::Exact:
-      return "exact";
-    case goblin::core::RankCacheMode::BlockHint:
-      return "block-hint";
-  }
-  return "unknown";
-}
-
 void print_usage(std::ostream& out, std::string_view program) {
   out << "usage: " << program
       << " [--members N] [--ops N] [--range-size N] [--warmups N]\n"

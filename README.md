@@ -66,6 +66,8 @@ cmake --install build --prefix /usr/local
 adds update/remove maintenance work. `--rank-cache-mode off|exact|block-hint`
 selects the cache explicitly; `block-hint` stores only member-to-score-block
 hints, trading some `ZRANK` read speed for much lower write maintenance.
+Block hints start as 16-bit ids for lower memory and promote to 32-bit ids
+automatically if a larger block-id space is needed.
 `GOBLIN.MEMORY <key>` reports the active mode as `rank_cache_mode`.
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for

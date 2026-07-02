@@ -76,6 +76,8 @@ class ZSetScoreIndex {
 
   [[nodiscard]] size_type location_cache_allocated_bytes() const noexcept {
     return locations_.capacity() * sizeof(std::uint32_t) +
+           block_hints16_.capacity() * sizeof(std::uint16_t) +
+           block_hints32_.capacity() * sizeof(std::uint32_t) +
            block_index_by_id_.capacity() * sizeof(std::uint32_t);
   }
 
@@ -102,9 +104,7 @@ class ZSetScoreIndex {
       return;
     }
 
-    locations_ = {};
-    block_index_by_id_ = {};
-    next_block_id_ = 0;
+    clear_location_cache_storage();
   }
 
   void clear() {
@@ -437,6 +437,10 @@ class ZSetScoreIndex {
       (std::uint32_t{1} << kLocationOffsetBits) - 1;
   static constexpr std::uint32_t kMaxLocationBlockId =
       kInvalidLocation >> kLocationOffsetBits;
+  static constexpr std::uint16_t kInvalidBlockHint16 =
+      std::numeric_limits<std::uint16_t>::max();
+  static constexpr std::uint32_t kInvalidBlockHint32 =
+      std::numeric_limits<std::uint32_t>::max();
 
   struct Block {
     [[nodiscard]] bool empty() const noexcept {
@@ -692,16 +696,26 @@ class ZSetScoreIndex {
       return;
     }
 
-    locations_.clear();
-    block_index_by_id_.clear();
+    clear_location_cache_storage();
+  }
+
+  void clear_location_cache_storage() {
+    locations_ = {};
+    block_hints16_ = {};
+    block_hints32_ = {};
+    block_index_by_id_ = {};
     next_block_id_ = 0;
+    block_hints_wide_ = false;
   }
 
   void assign_block_id(Block& block) {
     if (!location_cache_enabled() || block.id_ != kInvalidBlockIndex) {
       return;
     }
-    if (next_block_id_ >= kMaxLocationBlockId) {
+    const auto max_block_id = rank_cache_mode_ == RankCacheMode::Exact
+                                  ? kMaxLocationBlockId
+                                  : kInvalidBlockHint32;
+    if (next_block_id_ >= max_block_id) {
       throw std::length_error("zset rank location cache block id space exhausted");
     }
     block.id_ = next_block_id_++;
@@ -716,9 +730,7 @@ class ZSetScoreIndex {
       return;
     }
 
-    locations_.clear();
-    block_index_by_id_.clear();
-    next_block_id_ = 0;
+    clear_location_cache_storage();
 
     for (size_type block_index = 0; block_index < blocks_.size(); ++block_index) {
       blocks_[block_index].id_ = kInvalidBlockIndex;
@@ -755,6 +767,71 @@ class ZSetScoreIndex {
     }
   }
 
+  void promote_block_hints_to_wide() {
+    if (block_hints_wide_) {
+      return;
+    }
+
+    block_hints32_.assign(block_hints16_.size(), kInvalidBlockHint32);
+    for (size_type i = 0; i < block_hints16_.size(); ++i) {
+      const auto hint = block_hints16_[i];
+      if (hint != kInvalidBlockHint16) {
+        block_hints32_[i] = hint;
+      }
+    }
+    block_hints16_ = {};
+    block_hints_wide_ = true;
+  }
+
+  void ensure_block_hint_capacity(std::uint32_t member_id) {
+    const auto required = static_cast<size_type>(member_id) + 1;
+    if (block_hints_wide_) {
+      if (required > block_hints32_.size()) {
+        block_hints32_.resize(required, kInvalidBlockHint32);
+      }
+      return;
+    }
+
+    if (required > block_hints16_.size()) {
+      block_hints16_.resize(required, kInvalidBlockHint16);
+    }
+  }
+
+  void set_block_hint(std::uint32_t member_id, std::uint32_t block_id) {
+    if (block_id >= kInvalidBlockHint16) {
+      promote_block_hints_to_wide();
+    }
+    ensure_block_hint_capacity(member_id);
+    if (block_hints_wide_) {
+      block_hints32_[member_id] = block_id;
+      return;
+    }
+    block_hints16_[member_id] = static_cast<std::uint16_t>(block_id);
+  }
+
+  [[nodiscard]] std::optional<std::uint32_t> block_hint(
+      std::uint32_t member_id) const {
+    if (block_hints_wide_) {
+      if (member_id >= block_hints32_.size()) {
+        return std::nullopt;
+      }
+      const auto hint = block_hints32_[member_id];
+      if (hint == kInvalidBlockHint32) {
+        return std::nullopt;
+      }
+      return hint;
+    }
+
+    if (member_id >= block_hints16_.size()) {
+      return std::nullopt;
+    }
+    const auto hint = block_hints16_[member_id];
+    if (hint == kInvalidBlockHint16) {
+      return std::nullopt;
+    }
+    return hint;
+  }
+
   void set_location(std::uint32_t member_id,
                     size_type block_index,
                     size_type offset) {
@@ -765,18 +842,34 @@ class ZSetScoreIndex {
     assert(block_index < blocks_.size());
     assign_block_id(blocks_[block_index]);
     assert(offset <= kLocationOffsetMask);
-    ensure_location_capacity(member_id);
-    locations_[member_id] =
-        rank_cache_mode_ == RankCacheMode::Exact
-            ? pack_location(blocks_[block_index].id_, offset)
-            : blocks_[block_index].id_;
+    if (rank_cache_mode_ == RankCacheMode::Exact) {
+      ensure_location_capacity(member_id);
+      locations_[member_id] = pack_location(blocks_[block_index].id_, offset);
+      return;
+    }
+
+    set_block_hint(member_id, blocks_[block_index].id_);
   }
 
   void clear_location(std::uint32_t member_id) noexcept {
-    if (!location_cache_enabled() || member_id >= locations_.size()) {
+    if (!location_cache_enabled()) {
       return;
     }
-    locations_[member_id] = kInvalidLocation;
+    if (rank_cache_mode_ == RankCacheMode::Exact) {
+      if (member_id < locations_.size()) {
+        locations_[member_id] = kInvalidLocation;
+      }
+      return;
+    }
+    if (block_hints_wide_) {
+      if (member_id < block_hints32_.size()) {
+        block_hints32_[member_id] = kInvalidBlockHint32;
+      }
+      return;
+    }
+    if (member_id < block_hints16_.size()) {
+      block_hints16_[member_id] = kInvalidBlockHint16;
+    }
   }
 
   void refresh_block_locations(size_type block_index) {
@@ -794,26 +887,39 @@ class ZSetScoreIndex {
     assert(block.size() <= kLocationOffsetMask);
     for (size_type offset = first_offset; offset < block.size(); ++offset) {
       const auto member_id = block.member_id_at(offset);
-      ensure_location_capacity(member_id);
-      locations_[member_id] =
-          rank_cache_mode_ == RankCacheMode::Exact ? pack_location(block_id, offset)
-                                                   : block_id;
+      if (rank_cache_mode_ == RankCacheMode::Exact) {
+        ensure_location_capacity(member_id);
+        locations_[member_id] = pack_location(block_id, offset);
+      } else {
+        set_block_hint(member_id, block_id);
+      }
     }
   }
 
   [[nodiscard]] std::optional<size_type> cached_rank(ZSetScoreEntry value) const {
-    if (!location_cache_enabled() || value.member_id >= locations_.size()) {
+    if (!location_cache_enabled()) {
       return std::nullopt;
     }
 
-    const auto location = locations_[value.member_id];
-    if (location == kInvalidLocation) {
-      return std::nullopt;
+    std::uint32_t block_id = 0;
+    size_type exact_offset = 0;
+    if (rank_cache_mode_ == RankCacheMode::Exact) {
+      if (value.member_id >= locations_.size()) {
+        return std::nullopt;
+      }
+      const auto location = locations_[value.member_id];
+      if (location == kInvalidLocation) {
+        return std::nullopt;
+      }
+      block_id = location_block_id(location);
+      exact_offset = location_offset(location);
+    } else {
+      const auto hint = block_hint(value.member_id);
+      if (!hint) {
+        return std::nullopt;
+      }
+      block_id = *hint;
     }
-
-    const auto block_id = rank_cache_mode_ == RankCacheMode::Exact
-                              ? location_block_id(location)
-                              : location;
     if (block_id >= block_index_by_id_.size()) {
       return std::nullopt;
     }
@@ -825,14 +931,13 @@ class ZSetScoreIndex {
 
     const auto& block = blocks_[block_index];
     if (rank_cache_mode_ == RankCacheMode::Exact) {
-      const auto offset = location_offset(location);
-      if (offset >= block.size() ||
-          block.member_id_at(offset) != value.member_id ||
-          block.score_at(offset) != value.score) {
+      if (exact_offset >= block.size() ||
+          block.member_id_at(exact_offset) != value.member_id ||
+          block.score_at(exact_offset) != value.score) {
         return std::nullopt;
       }
 
-      return prefix_size(block_index) + offset;
+      return prefix_size(block_index) + exact_offset;
     }
 
     const auto offset = block.lower_bound(*this, value);
@@ -1076,10 +1181,13 @@ class ZSetScoreIndex {
   std::vector<ZSetScoreEntry> maxes_;
   mutable std::vector<size_type> index_;
   std::vector<std::uint32_t> locations_;
+  std::vector<std::uint16_t> block_hints16_;
+  std::vector<std::uint32_t> block_hints32_;
   std::vector<std::uint32_t> block_index_by_id_;
   mutable size_type index_offset_{0};
   size_type size_{0};
   std::uint32_t next_block_id_{0};
+  bool block_hints_wide_{false};
   RankCacheMode rank_cache_mode_{RankCacheMode::Off};
 };
 

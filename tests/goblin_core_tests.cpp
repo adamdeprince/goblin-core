@@ -667,6 +667,26 @@ void test_store_rank_location_cache() {
   run_store_rank_cache_test(goblin::core::RankCacheMode::BlockHint);
 }
 
+std::size_t rank_cache_allocation_for(goblin::core::RankCacheMode mode) {
+  goblin::core::Store store(goblin::core::StoreOptions{.rank_cache_mode = mode});
+  for (int i = 0; i < 4096; ++i) {
+    assert(store.zadd("z", static_cast<double>(i), "member-" + std::to_string(i)) == 1);
+  }
+  const auto stats = store.zset_memory_stats("z");
+  assert(stats.has_value());
+  assert(stats->rank_cache_mode == mode);
+  return stats->rank_location_cache_allocated_bytes;
+}
+
+void test_block_hint_rank_cache_uses_narrow_storage() {
+  const auto exact_bytes =
+      rank_cache_allocation_for(goblin::core::RankCacheMode::Exact);
+  const auto block_hint_bytes =
+      rank_cache_allocation_for(goblin::core::RankCacheMode::BlockHint);
+  assert(block_hint_bytes > 0);
+  assert(block_hint_bytes < exact_bytes);
+}
+
 }  // namespace
 
 int main() {
@@ -689,6 +709,7 @@ int main() {
   test_store_zset_methods();
   test_store_inline_and_overflow_zsets();
   test_store_rank_location_cache();
+  test_block_hint_rank_cache_uses_narrow_storage();
   test_resp_parser_incremental();
   test_inline_parser();
   test_protocol_error();

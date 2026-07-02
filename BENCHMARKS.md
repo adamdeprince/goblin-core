@@ -1,6 +1,6 @@
 # Goblin Core Benchmarks
 
-Generated: 2026-07-01 22:19:07 UTC.
+Generated: 2026-07-02 01:14:53 UTC.
 
 These results compare Goblin Core against Redis for the current sorted-set-focused implementation. Goblin Core's optional rank-location cache and score-string cache are off by default.
 
@@ -38,20 +38,20 @@ Source data: `benchmark-results/redis-goblin-core-1m-modes-rank-cache-off.json`
 
 | Metric | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
 | --- | ---: | ---: | ---: |
-| `ZADD members` | 980,358 | 624,890 | 1.57x |
-| `ZSCORE ops` | 449,978 | 401,897 | 1.12x |
-| `ZRANK ops` | 477,493 | 346,988 | 1.38x |
-| `ZREVRANK ops` | 477,707 | 343,066 | 1.39x |
-| `ZRANGE ops` | 80,239 | 69,811 | 1.15x |
-| `ZRANGE WITHSCORES ops` | 42,291 | 40,544 | 1.04x |
-| `ZREVRANGE ops` | 78,952 | 71,325 | 1.11x |
-| `ZREVRANGE WITHSCORES ops` | 41,788 | 40,903 | 1.02x |
-| `ZREM members` | 1,275,173 | 866,436 | 1.47x |
+| `ZADD members` | 945,957 | 547,592 | 1.73x |
+| `ZSCORE ops` | 434,185 | 393,774 | 1.10x |
+| `ZRANK ops` | 461,684 | 319,609 | 1.44x |
+| `ZREVRANK ops` | 450,633 | 319,731 | 1.41x |
+| `ZRANGE ops` | 77,416 | 66,855 | 1.16x |
+| `ZRANGE WITHSCORES ops` | 41,310 | 39,089 | 1.06x |
+| `ZREVRANGE ops` | 77,599 | 69,103 | 1.12x |
+| `ZREVRANGE WITHSCORES ops` | 40,826 | 39,474 | 1.03x |
+| `ZREM members` | 1,068,245 | 775,862 | 1.38x |
 
 | Memory metric | Goblin Core | Redis |
 | --- | ---: | ---: |
-| RSS delta | 64.30 MiB | 88.31 MiB |
-| RSS delta per loaded member | 67.42 B | 92.60 B |
+| RSS delta | 64.25 MiB | 88.36 MiB |
+| RSS delta per loaded member | 67.37 B | 92.65 B |
 | Redis `used_memory` | n/a | 80.46 MiB |
 | Redis `used_memory` per member | n/a | 84.37 B |
 
@@ -59,16 +59,16 @@ Latency percentiles:
 
 | Metric | Target | p50 | p95 | p99 | max |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `ZSCORE` | goblin | 21.42 us | 28.58 us | 55.54 us | 124.42 us |
-| `ZSCORE` | redis | 21.58 us | 28.62 us | 56.21 us | 138.00 us |
-| `ZRANK` | goblin | 20.67 us | 25.87 us | 28.33 us | 92.83 us |
-| `ZRANK` | redis | 21.92 us | 26.58 us | 29.83 us | 50.17 us |
-| `ZREVRANK` | goblin | 20.38 us | 25.92 us | 28.25 us | 43.79 us |
-| `ZREVRANK` | redis | 21.92 us | 26.50 us | 29.83 us | 117.08 us |
-| `ZRANGE` | goblin | 36.83 us | 41.21 us | 49.04 us | 144.17 us |
-| `ZRANGE` | redis | 37.29 us | 42.58 us | 46.83 us | 142.29 us |
-| `ZREVRANGE` | goblin | 36.88 us | 40.58 us | 45.04 us | 87.88 us |
-| `ZREVRANGE` | redis | 37.08 us | 42.00 us | 45.75 us | 66.96 us |
+| `ZSCORE` | goblin | 21.96 us | 41.96 us | 53.83 us | 308.75 us |
+| `ZSCORE` | redis | 21.75 us | 45.37 us | 52.54 us | 128.62 us |
+| `ZRANK` | goblin | 20.63 us | 26.12 us | 30.00 us | 99.92 us |
+| `ZRANK` | redis | 22.17 us | 28.71 us | 38.29 us | 151.83 us |
+| `ZREVRANK` | goblin | 20.83 us | 26.25 us | 30.71 us | 114.42 us |
+| `ZREVRANK` | redis | 22.13 us | 27.75 us | 33.08 us | 146.33 us |
+| `ZRANGE` | goblin | 36.50 us | 40.04 us | 44.12 us | 68.17 us |
+| `ZRANGE` | redis | 38.50 us | 45.00 us | 52.71 us | 133.96 us |
+| `ZREVRANGE` | goblin | 36.71 us | 40.83 us | 46.29 us | 98.96 us |
+| `ZREVRANGE` | redis | 37.54 us | 43.79 us | 51.75 us | 170.58 us |
 
 Goblin Core tracked zset allocation:
 
@@ -85,7 +85,7 @@ RSS includes allocator retained pages, executable/runtime mappings, and other pr
 
 ## Rank Cache Modes
 
-`--rank-cache-mode exact` enables the packed member-id-to-score-location cache. `--rank-cache-mode block-hint` stores only member-to-score-block hints, reducing write maintenance while retaining a smaller `ZRANK` read assist.
+`--rank-cache-mode exact` enables the packed member-id-to-score-location cache. `--rank-cache-mode block-hint` stores only member-to-score-block hints, reducing write maintenance while retaining a smaller `ZRANK` read assist. Block hints start as 16-bit ids and promote to 32-bit ids automatically if the block-id space grows beyond the narrow encoding.
 
 Source data:
 
@@ -95,23 +95,23 @@ Source data:
 
 | Metric | off ops/sec | exact ops/sec | block-hint ops/sec | exact vs off | block-hint vs off |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `ZADD members` | 980,358 | 817,082 | 909,724 | -16.7% | -7.2% |
-| `ZSCORE ops` | 449,978 | 433,161 | 418,916 | -3.7% | -6.9% |
-| `ZRANK ops` | 477,493 | 481,859 | 458,668 | 0.9% | -3.9% |
-| `ZREVRANK ops` | 477,707 | 487,545 | 462,598 | 2.1% | -3.2% |
-| `ZRANGE ops` | 80,239 | 77,985 | 78,310 | -2.8% | -2.4% |
-| `ZRANGE WITHSCORES ops` | 42,291 | 41,710 | 41,642 | -1.4% | -1.5% |
-| `ZREVRANGE ops` | 78,952 | 77,827 | 78,011 | -1.4% | -1.2% |
-| `ZREVRANGE WITHSCORES ops` | 41,788 | 41,711 | 41,660 | -0.2% | -0.3% |
-| `ZREM members` | 1,275,173 | 1,072,117 | 1,242,840 | -15.9% | -2.5% |
+| `ZADD members` | 945,957 | 773,415 | 899,025 | -18.2% | -5.0% |
+| `ZSCORE ops` | 434,185 | 407,329 | 410,526 | -6.2% | -5.4% |
+| `ZRANK ops` | 461,684 | 452,984 | 441,761 | -1.9% | -4.3% |
+| `ZREVRANK ops` | 450,633 | 451,006 | 445,880 | 0.1% | -1.1% |
+| `ZRANGE ops` | 77,416 | 74,476 | 76,213 | -3.8% | -1.6% |
+| `ZRANGE WITHSCORES ops` | 41,310 | 40,078 | 40,769 | -3.0% | -1.3% |
+| `ZREVRANGE ops` | 77,599 | 76,017 | 76,422 | -2.0% | -1.5% |
+| `ZREVRANGE WITHSCORES ops` | 40,826 | 40,086 | 40,665 | -1.8% | -0.4% |
+| `ZREM members` | 1,068,245 | 916,526 | 1,121,514 | -14.2% | 5.0% |
 
 Rank-cache allocation by mode:
 
 | Mode | Rank cache MiB | Rank cache B/member | RSS delta B/member |
 | --- | ---: | ---: | ---: |
-| `off` | 0.00 | 0.00 | 67.42 |
-| `exact` | 4.02 | 4.21 | 71.32 |
-| `block-hint` | 4.02 | 4.21 | 71.30 |
+| `off` | 0.00 | 0.00 | 67.37 |
+| `exact` | 4.02 | 4.21 | 71.27 |
+| `block-hint` | 2.02 | 2.11 | 69.75 |
 
 Exact mode is the read-heavy `ZRANK` option; block-hint mode is the churn-heavy leaderboard option.
 
@@ -121,30 +121,30 @@ Source data: `benchmark-results/redis-goblin-core-1m-modes-rank-cache-exact.json
 
 | Metric | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
 | --- | ---: | ---: | ---: |
-| `ZADD members` | 817,082 | 623,041 | 1.31x |
-| `ZSCORE ops` | 433,161 | 403,386 | 1.07x |
-| `ZRANK ops` | 481,859 | 347,213 | 1.39x |
-| `ZREVRANK ops` | 487,545 | 345,659 | 1.41x |
-| `ZRANGE ops` | 77,985 | 69,179 | 1.13x |
-| `ZRANGE WITHSCORES ops` | 41,710 | 40,116 | 1.04x |
-| `ZREVRANGE ops` | 77,827 | 70,745 | 1.10x |
-| `ZREVRANGE WITHSCORES ops` | 41,711 | 40,610 | 1.03x |
-| `ZREM members` | 1,072,117 | 871,626 | 1.23x |
+| `ZADD members` | 773,415 | 554,779 | 1.39x |
+| `ZSCORE ops` | 407,329 | 381,214 | 1.07x |
+| `ZRANK ops` | 452,984 | 308,260 | 1.47x |
+| `ZREVRANK ops` | 451,006 | 306,567 | 1.47x |
+| `ZRANGE ops` | 74,476 | 65,954 | 1.13x |
+| `ZRANGE WITHSCORES ops` | 40,078 | 38,307 | 1.05x |
+| `ZREVRANGE ops` | 76,017 | 67,762 | 1.12x |
+| `ZREVRANGE WITHSCORES ops` | 40,086 | 39,324 | 1.02x |
+| `ZREM members` | 916,526 | 722,142 | 1.27x |
 
 Latency percentiles:
 
 | Metric | Target | p50 | p95 | p99 | max |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `ZSCORE` | goblin | 21.21 us | 28.42 us | 59.00 us | 78.79 us |
-| `ZSCORE` | redis | 21.21 us | 28.50 us | 56.46 us | 136.58 us |
-| `ZRANK` | goblin | 19.42 us | 24.75 us | 27.37 us | 72.79 us |
-| `ZRANK` | redis | 21.83 us | 26.33 us | 29.50 us | 81.92 us |
-| `ZREVRANK` | goblin | 19.29 us | 24.67 us | 27.08 us | 89.33 us |
-| `ZREVRANK` | redis | 21.92 us | 26.46 us | 30.13 us | 110.08 us |
-| `ZRANGE` | goblin | 36.54 us | 40.00 us | 43.87 us | 99.83 us |
-| `ZRANGE` | redis | 37.79 us | 42.83 us | 47.37 us | 145.17 us |
-| `ZREVRANGE` | goblin | 36.58 us | 40.42 us | 44.79 us | 128.17 us |
-| `ZREVRANGE` | redis | 37.21 us | 42.08 us | 46.42 us | 97.33 us |
+| `ZSCORE` | goblin | 21.96 us | 33.08 us | 51.92 us | 135.29 us |
+| `ZSCORE` | redis | 22.38 us | 35.54 us | 51.75 us | 139.21 us |
+| `ZRANK` | goblin | 19.67 us | 25.12 us | 28.33 us | 152.96 us |
+| `ZRANK` | redis | 22.13 us | 26.63 us | 30.08 us | 47.83 us |
+| `ZREVRANK` | goblin | 19.63 us | 25.08 us | 29.04 us | 1,631.46 us |
+| `ZREVRANK` | redis | 22.63 us | 28.50 us | 34.92 us | 122.92 us |
+| `ZRANGE` | goblin | 36.75 us | 42.04 us | 50.46 us | 1,209.63 us |
+| `ZRANGE` | redis | 38.37 us | 44.29 us | 49.63 us | 83.13 us |
+| `ZREVRANGE` | goblin | 37.00 us | 41.58 us | 46.63 us | 99.92 us |
+| `ZREVRANGE` | redis | 37.75 us | 42.83 us | 47.96 us | 183.75 us |
 
 ### Rank Cache Mode: `block-hint`
 
@@ -152,30 +152,30 @@ Source data: `benchmark-results/redis-goblin-core-1m-modes-rank-cache-block-hint
 
 | Metric | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
 | --- | ---: | ---: | ---: |
-| `ZADD members` | 909,724 | 622,179 | 1.46x |
-| `ZSCORE ops` | 418,916 | 402,942 | 1.04x |
-| `ZRANK ops` | 458,668 | 347,759 | 1.32x |
-| `ZREVRANK ops` | 462,598 | 344,315 | 1.34x |
-| `ZRANGE ops` | 78,310 | 69,622 | 1.12x |
-| `ZRANGE WITHSCORES ops` | 41,642 | 40,260 | 1.03x |
-| `ZREVRANGE ops` | 78,011 | 71,066 | 1.10x |
-| `ZREVRANGE WITHSCORES ops` | 41,660 | 40,653 | 1.02x |
-| `ZREM members` | 1,242,840 | 862,317 | 1.44x |
+| `ZADD members` | 899,025 | 555,691 | 1.62x |
+| `ZSCORE ops` | 410,526 | 388,168 | 1.06x |
+| `ZRANK ops` | 441,761 | 316,754 | 1.39x |
+| `ZREVRANK ops` | 445,880 | 321,261 | 1.39x |
+| `ZRANGE ops` | 76,213 | 66,101 | 1.15x |
+| `ZRANGE WITHSCORES ops` | 40,769 | 38,289 | 1.06x |
+| `ZREVRANGE ops` | 76,422 | 67,376 | 1.13x |
+| `ZREVRANGE WITHSCORES ops` | 40,665 | 39,251 | 1.04x |
+| `ZREM members` | 1,121,514 | 791,968 | 1.42x |
 
 Latency percentiles:
 
 | Metric | Target | p50 | p95 | p99 | max |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `ZSCORE` | goblin | 21.54 us | 29.21 us | 53.75 us | 85.83 us |
-| `ZSCORE` | redis | 21.25 us | 28.67 us | 55.92 us | 120.46 us |
-| `ZRANK` | goblin | 20.42 us | 25.92 us | 28.54 us | 88.21 us |
-| `ZRANK` | redis | 21.92 us | 26.54 us | 30.17 us | 88.17 us |
-| `ZREVRANK` | goblin | 20.00 us | 25.79 us | 28.21 us | 92.00 us |
-| `ZREVRANK` | redis | 22.00 us | 26.67 us | 30.54 us | 83.62 us |
-| `ZRANGE` | goblin | 36.79 us | 40.25 us | 44.46 us | 91.04 us |
-| `ZRANGE` | redis | 37.62 us | 42.46 us | 45.96 us | 129.58 us |
-| `ZREVRANGE` | goblin | 37.04 us | 41.08 us | 44.79 us | 113.42 us |
-| `ZREVRANGE` | redis | 36.96 us | 41.67 us | 44.96 us | 166.67 us |
+| `ZSCORE` | goblin | 21.79 us | 32.33 us | 52.92 us | 97.67 us |
+| `ZSCORE` | redis | 21.71 us | 30.54 us | 54.00 us | 165.88 us |
+| `ZRANK` | goblin | 19.92 us | 26.04 us | 29.33 us | 74.58 us |
+| `ZRANK` | redis | 22.50 us | 27.92 us | 32.79 us | 125.25 us |
+| `ZREVRANK` | goblin | 20.63 us | 26.33 us | 30.33 us | 95.58 us |
+| `ZREVRANK` | redis | 22.58 us | 28.25 us | 34.33 us | 136.46 us |
+| `ZRANGE` | goblin | 36.83 us | 41.62 us | 47.58 us | 248.00 us |
+| `ZRANGE` | redis | 38.25 us | 43.83 us | 49.58 us | 106.67 us |
+| `ZREVRANGE` | goblin | 36.63 us | 41.62 us | 47.71 us | 146.50 us |
+| `ZREVRANGE` | redis | 37.75 us | 43.29 us | 48.83 us | 169.96 us |
 
 ## Post-Delete Reads
 
@@ -257,6 +257,6 @@ Detailed report: `benchmark-results/range-output-geometric-reserve-r4-r16.md`
 
 ## Interpretation
 
-For the default configuration, Goblin Core uses about 72.8% of Redis process RSS on this workload.
+For the default configuration, Goblin Core uses about 72.7% of Redis process RSS on this workload.
 
 The rank cache is intentionally a command-line choice, not the default policy. Enable it only after measuring a workload where `ZRANK` latency dominates write throughput.

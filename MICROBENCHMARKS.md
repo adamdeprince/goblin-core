@@ -1,6 +1,6 @@
 # Goblin Core Microbenchmarks
 
-Generated: 2026-07-01 22:09:54 UTC.
+Generated: 2026-07-02 01:05:30 UTC.
 
 These measurements isolate in-process read-path costs. They do not include sockets, polling, Redis comparison, or process RSS accounting.
 
@@ -47,40 +47,40 @@ Source data:
 
 | Metric | Raw ZSet ns/op | RESP ns/op | Command into ns/op | Command string ns/op | Parse into ns/op |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `ZSCORE` | 76.59 | 29.46 | 159.72 | 158.90 | 200.89 |
-| `ZRANK` | 340.88 | 25.38 | 399.41 | 400.19 | 404.27 |
-| `ZREVRANK` | 344.41 | 25.38 | 400.29 | 403.49 | 402.06 |
-| `ZRANGE` | 238.07 | 279.51 | 480.84 | 507.60 | 485.55 |
-| `ZRANGE WITHSCORES` | 238.07 | 574.95 | 937.35 | 947.99 | 931.02 |
+| `ZSCORE` | 103.44 | 34.95 | 177.94 | 184.77 | 238.92 |
+| `ZRANK` | 338.34 | 24.67 | 385.36 | 470.87 | 451.27 |
+| `ZREVRANK` | 465.05 | 24.67 | 404.34 | 455.06 | 490.36 |
+| `ZRANGE` | 287.70 | 410.07 | 541.31 | 714.15 | 624.93 |
+| `ZRANGE WITHSCORES` | 287.70 | 684.42 | 1,189.78 | 1,462.15 | 1,402.94 |
 
 ## Rank Cache Effect
 
 | Metric | off ns/op | exact ns/op | block-hint ns/op | exact vs off | block-hint vs off |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `Raw ZSCORE` | 75.60 | 75.39 | 76.59 | -0.3% | 1.3% |
-| `Raw ZRANK` | 376.51 | 200.08 | 340.88 | -46.9% | -9.5% |
-| `Raw ZREVRANK` | 372.07 | 205.53 | 344.41 | -44.8% | -7.4% |
-| `Raw ZRANGE iter` | 242.44 | 244.69 | 238.07 | 0.9% | -1.8% |
-| `Command-into ZSCORE` | 155.23 | 159.57 | 159.72 | 2.8% | 2.9% |
-| `Command-into ZRANK` | 435.44 | 274.23 | 399.41 | -37.0% | -8.3% |
-| `Command-into ZREVRANK` | 439.19 | 275.93 | 400.29 | -37.2% | -8.9% |
-| `Command-into ZRANGE` | 468.14 | 486.58 | 480.84 | 3.9% | 2.7% |
+| `Raw ZSCORE` | 75.60 | 75.39 | 103.44 | -0.3% | 36.8% |
+| `Raw ZRANK` | 376.51 | 200.08 | 338.34 | -46.9% | -10.1% |
+| `Raw ZREVRANK` | 372.07 | 205.53 | 465.05 | -44.8% | 25.0% |
+| `Raw ZRANGE iter` | 242.44 | 244.69 | 287.70 | 0.9% | 18.7% |
+| `Command-into ZSCORE` | 155.23 | 159.57 | 177.94 | 2.8% | 14.6% |
+| `Command-into ZRANK` | 435.44 | 274.23 | 385.36 | -37.0% | -11.5% |
+| `Command-into ZREVRANK` | 439.19 | 275.93 | 404.34 | -37.2% | -7.9% |
+| `Command-into ZRANGE` | 468.14 | 486.58 | 541.31 | 3.9% | 15.6% |
 
 ## ZRANGE Serialization Breakdown
 
 | Component | off ns/op | exact ns/op | block-hint ns/op |
 | --- | ---: | ---: | ---: |
-| `Score-index traversal` | 49.48 | 49.07 | 51.31 |
-| `Member lookup` | 134.46 | 137.62 | 138.56 |
-| `Score formatting only` | 71.24 | 68.84 | 65.67 |
-| `Member RESP append only` | 429.65 | 436.63 | 434.49 |
-| `Score RESP append preformatted` | 297.64 | 298.65 | 300.83 |
-| `Score RESP append formatting` | 181.14 | 181.76 | 177.96 |
-| `Direct RESP append WITHSCORES` | 737.93 | 767.69 | 755.57 |
-| `RESP append` | 247.54 | 245.71 | 249.33 |
-| `RESP append WITHSCORES` | 501.92 | 532.76 | 517.82 |
-| `Full command into` | 466.92 | 478.95 | 472.19 |
-| `Full command into WITHSCORES` | 917.07 | 930.34 | 915.52 |
+| `Score-index traversal` | 49.48 | 49.07 | 48.57 |
+| `Member lookup` | 134.46 | 137.62 | 145.54 |
+| `Score formatting only` | 71.24 | 68.84 | 67.01 |
+| `Member RESP append only` | 429.65 | 436.63 | 520.21 |
+| `Score RESP append preformatted` | 297.64 | 298.65 | 341.42 |
+| `Score RESP append formatting` | 181.14 | 181.76 | 177.52 |
+| `Direct RESP append WITHSCORES` | 737.93 | 767.69 | 878.89 |
+| `RESP append` | 247.54 | 245.71 | 252.58 |
+| `RESP append WITHSCORES` | 501.92 | 532.76 | 546.46 |
+| `Full command into` | 466.92 | 478.95 | 546.05 |
+| `Full command into WITHSCORES` | 917.07 | 930.34 | 1,351.33 |
 
 ## Read-Path Notes
 
