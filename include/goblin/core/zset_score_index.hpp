@@ -46,12 +46,18 @@ class ZSetScoreIndex {
   using size_type = std::size_t;
 
   static constexpr size_type kLoad = 256;
+  static constexpr std::uint32_t kDefaultBlockHintNarrowLimit =
+      std::numeric_limits<std::uint16_t>::max();
 
   ZSetScoreIndex() = default;
 
   explicit ZSetScoreIndex(const ZSetMemberStorage* members,
-                          RankCacheMode rank_cache_mode = RankCacheMode::Off)
+                          RankCacheMode rank_cache_mode = RankCacheMode::Off,
+                          std::uint32_t block_hint_narrow_limit =
+                              kDefaultBlockHintNarrowLimit)
       : members_(members),
+        block_hint_narrow_limit_(
+            std::min(block_hint_narrow_limit, kDefaultBlockHintNarrowLimit)),
         rank_cache_mode_(rank_cache_mode) {}
 
   void set_members(const ZSetMemberStorage* members) noexcept {
@@ -798,7 +804,7 @@ class ZSetScoreIndex {
   }
 
   void set_block_hint(std::uint32_t member_id, std::uint32_t block_id) {
-    if (block_id >= kInvalidBlockHint16) {
+    if (block_id >= block_hint_narrow_limit_) {
       promote_block_hints_to_wide();
     }
     ensure_block_hint_capacity(member_id);
@@ -1187,6 +1193,7 @@ class ZSetScoreIndex {
   mutable size_type index_offset_{0};
   size_type size_{0};
   std::uint32_t next_block_id_{0};
+  std::uint32_t block_hint_narrow_limit_{kDefaultBlockHintNarrowLimit};
   bool block_hints_wide_{false};
   RankCacheMode rank_cache_mode_{RankCacheMode::Off};
 };

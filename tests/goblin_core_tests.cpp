@@ -687,6 +687,59 @@ void test_block_hint_rank_cache_uses_narrow_storage() {
   assert(block_hint_bytes < exact_bytes);
 }
 
+std::uint32_t add_score_index_member(goblin::core::ZSetMemberStorage& storage,
+                                     goblin::core::ZSetScoreIndex& index,
+                                     std::uint32_t member_number) {
+  const auto member =
+      "member-" + std::to_string(static_cast<unsigned long long>(member_number));
+  const auto score = static_cast<double>(member_number);
+  const auto member_id = storage.push_back(member, score);
+  assert(member_id == member_number);
+  index.insert(goblin::core::ZSetScoreEntry{.score = score, .member_id = member_id});
+  return member_id;
+}
+
+void test_block_hint_rank_cache_promotes_to_wide_storage() {
+  goblin::core::ZSetMemberStorage forced_storage;
+  goblin::core::ZSetScoreIndex forced_index(
+      &forced_storage,
+      goblin::core::RankCacheMode::BlockHint,
+      2);
+
+  for (std::uint32_t i = 0; i < 600; ++i) {
+    add_score_index_member(forced_storage, forced_index, i);
+  }
+  assert(forced_index.block_count() <= 2);
+  assert(forced_index.rank(goblin::core::ZSetScoreEntry{.score = 0.0,
+                                                        .member_id = 0}) == 0U);
+  assert(forced_index.rank(goblin::core::ZSetScoreEntry{.score = 599.0,
+                                                        .member_id = 599}) == 599U);
+  const auto before_promotion_bytes = forced_index.location_cache_allocated_bytes();
+
+  for (std::uint32_t i = 600; i < 1200; ++i) {
+    add_score_index_member(forced_storage, forced_index, i);
+  }
+  assert(forced_index.block_count() > 2);
+  assert(forced_index.rank(goblin::core::ZSetScoreEntry{.score = 0.0,
+                                                        .member_id = 0}) == 0U);
+  assert(forced_index.rank(goblin::core::ZSetScoreEntry{.score = 599.0,
+                                                        .member_id = 599}) == 599U);
+  assert(forced_index.rank(goblin::core::ZSetScoreEntry{.score = 1199.0,
+                                                        .member_id = 1199}) == 1199U);
+
+  goblin::core::ZSetMemberStorage narrow_storage;
+  goblin::core::ZSetScoreIndex narrow_index(
+      &narrow_storage,
+      goblin::core::RankCacheMode::BlockHint);
+  for (std::uint32_t i = 0; i < 1200; ++i) {
+    add_score_index_member(narrow_storage, narrow_index, i);
+  }
+
+  assert(forced_index.location_cache_allocated_bytes() > before_promotion_bytes);
+  assert(forced_index.location_cache_allocated_bytes() >
+         narrow_index.location_cache_allocated_bytes());
+}
+
 }  // namespace
 
 int main() {
@@ -710,6 +763,7 @@ int main() {
   test_store_inline_and_overflow_zsets();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
+  test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();
   test_inline_parser();
   test_protocol_error();
