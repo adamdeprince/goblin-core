@@ -1,6 +1,6 @@
 # Goblin Core
 
-Goblin Core is a Redis-like server aimed at lower memory overhead and high
+Goblin Core is a C++23 Redis-like server aimed at lower memory overhead and high
 throughput. The initial implementation focuses on sorted sets with a
 vector-backed layout and a small RESP command surface.
 
@@ -21,6 +21,17 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 
 The protocol handler accepts RESP array commands and a basic inline command
 format for local testing.
+
+## Compatibility Scope
+
+Goblin Core is not a full Redis replacement yet. This release is scoped to the
+sorted-set command surface above plus `PING` for liveness checks. It does not
+implement persistence, replication, cluster mode, pub/sub, Lua, transactions,
+ACLs, Redis modules, eviction policies, or general Redis key types.
+
+Use the Redis differential tests and benchmark scripts when changing command
+behavior. The goal is to keep the supported subset boringly compatible while
+leaving room to optimize internal layouts aggressively.
 
 ## Build
 
@@ -127,6 +138,19 @@ python3 benchmarks/run_benchmarks.py \
   --latency-samples 1000 \
   --skip-rank-cache
 ```
+
+For a CI-style smoke run that compares Redis and Goblin Core across all
+rank-cache modes at a small scale:
+
+```sh
+scripts/benchmark_smoke.sh
+```
+
+The smoke script writes `benchmark-results/ci-smoke.md`, regenerates the static
+HTML docs, and accepts environment overrides such as `BENCHMARK_MEMBERS`,
+`BENCHMARK_OPS`, `BENCHMARK_LATENCY_SAMPLES`, `REDIS_SERVER`, and
+`SKIP_BUILD=1`. The benchmark scripts are intended for source checkouts; binary
+packages ship the server, headers, CMake package files, and generated docs.
 
 For targeted experiments, the lower-level harness remains available:
 
@@ -266,6 +290,8 @@ scriptable, works for CI release uploads, and does not force an ABI or service
 manager contract too early. Once releases stabilize, add a Homebrew formula for
 macOS and distro-native `.deb`/`.rpm` packages for Linux deployments.
 
+Use the [release checklist](RELEASE.md) before publishing an archive.
+
 ## HTML Docs
 
 The build converts root Markdown docs into static HTML under `html/`.
@@ -292,6 +318,7 @@ it through Git LFS.
 - `include/goblin/core/zset_score_index.hpp`: packed score/member-id index for zsets
 - `include/goblin/core/server.hpp`: nonblocking TCP server
 - `include/goblin/core/simd.hpp`: SIMD capability scaffolding
+- `scripts/benchmark_smoke.sh`: CI-style benchmark smoke runner
 - `scripts/build_html_docs.py`: Markdown to HTML documentation generator
 - `tests/redis_differential.py`: Redis-backed zset differential test
 - `benchmarks/run_benchmarks.py`: scripted build/test/benchmark/report workflow

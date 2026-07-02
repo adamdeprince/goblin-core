@@ -582,21 +582,22 @@ def write_report(mode_jsons: dict[str, Path],
             f"about {format_percent(rss_ratio * 100.0)} of Redis process RSS "
             "on this workload."
         )
-    content.extend(post_delete_section(
-        args.post_delete_json,
-        args.post_delete_report,
-        report,
-    ))
-    content.extend(mixed_leaderboard_section(
-        args.mixed_json,
-        args.mixed_report,
-        report,
-    ))
-    content.extend(range_output_section(
-        args.range_output_json,
-        args.range_output_report,
-        report,
-    ))
+    if not args.skip_supplemental:
+        content.extend(post_delete_section(
+            args.post_delete_json,
+            args.post_delete_report,
+            report,
+        ))
+        content.extend(mixed_leaderboard_section(
+            args.mixed_json,
+            args.mixed_report,
+            report,
+        ))
+        content.extend(range_output_section(
+            args.range_output_json,
+            args.range_output_report,
+            report,
+        ))
     content.extend([
         "",
         "## Interpretation",
@@ -623,6 +624,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--report-only", action="store_true",
                         help="Regenerate the Markdown report from existing JSON artifacts.")
+    parser.add_argument(
+        "--skip-supplemental",
+        action="store_true",
+        help="Omit post-delete, mixed-workload, and range-output sections from the report.",
+    )
     parser.add_argument(
         "--skip-rank-cache",
         action="store_true",
