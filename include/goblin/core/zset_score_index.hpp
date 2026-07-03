@@ -547,6 +547,15 @@ class ZSetScoreIndex {
       reallocate(capacity);
     }
 
+    // Shrink the backing arrays to the smallest capacity that still holds the
+    // current size. Used after a split, where the left half keeps the (large)
+    // pre-split capacity it no longer needs.
+    void trim() {
+      if (allocation_capacity(size_) < capacity_) {
+        reallocate(size_);
+      }
+    }
+
     void insert(size_type offset, ZSetScoreEntry value) {
       reserve(size_ + 1);
       const auto move_count = size_ - offset;
@@ -656,10 +665,15 @@ class ZSetScoreIndex {
       if (required <= kLoad) {
         return kLoad;
       }
-      if (required <= kLoad * 2) {
-        return kLoad * 2;
+      if (required >= kLoad * 2) {
+        return kLoad * 2 + 1;
       }
-      return kLoad * 2 + 1;
+      // A block spends its life oscillating in (kLoad, 2*kLoad] before it
+      // splits. Rounding to a coarse step here (instead of jumping straight to
+      // 2*kLoad) keeps most of that range's capacity slack out of the score
+      // index while bounding the number of growth reallocations.
+      constexpr size_type kStep = 64;
+      return ((required + kStep - 1) / kStep) * kStep;
     }
 
     void reallocate(size_type required) {
@@ -1064,6 +1078,7 @@ class ZSetScoreIndex {
     auto& block = blocks_[block_index];
     const auto split_at = block.size() / 2;
     auto right = block.split_off(split_at);
+    block.trim();
     assign_block_id(right);
 
     blocks_.insert(blocks_.begin() + static_cast<long>(block_index + 1),

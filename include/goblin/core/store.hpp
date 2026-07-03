@@ -556,6 +556,10 @@ class Store {
   [[nodiscard]] std::optional<ZSetMemoryStats> zset_memory_stats(
       std::string_view key) const;
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
+  // Compact a zset in place to reclaim insertion slack (block capacity, vector
+  // over-allocation). Returns the number of allocated bytes reclaimed, or
+  // nullopt if the key does not exist.
+  [[nodiscard]] std::optional<std::size_t> optimize(std::string_view key);
 
  private:
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;

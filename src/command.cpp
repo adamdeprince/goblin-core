@@ -320,6 +320,14 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     return {.command = std::move(command)};
   }
 
+  if (equals_ci(command.name, "GOBLIN.OPTIMIZE")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("goblin.optimize"));
+    }
+    command.type = CommandType::goblin_optimize;
+    return {.command = std::move(command)};
+  }
+
   command.type = CommandType::unknown;
   return {.command = std::move(command)};
 }
@@ -406,6 +414,16 @@ void execute_command_into(Store& store,
         resp::append_null_bulk_string(out);
       } else {
         out.append(memory_stats_response(*stats));
+      }
+      return;
+    }
+
+    case CommandType::goblin_optimize: {
+      const auto reclaimed = store.optimize(command.args[0]);
+      if (!reclaimed) {
+        resp::append_null_bulk_string(out);
+      } else {
+        resp::append_integer(out, static_cast<long long>(*reclaimed));
       }
       return;
     }

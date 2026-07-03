@@ -775,6 +775,42 @@ void test_block_hint_rank_cache_promotes_to_wide_storage() {
          narrow_index.location_cache_allocated_bytes());
 }
 
+void test_goblin_optimize_reclaims_slack() {
+  goblin::core::Store store;
+  constexpr int kMembers = 6000;
+  // Mid-block inserts (shuffled scores) build score-index blocks with capacity
+  // slack, and the ref vector over-allocates geometrically.
+  for (int i = 0; i < kMembers; ++i) {
+    const long long score =
+        static_cast<long long>((static_cast<std::uint64_t>(i) * 2654435761ULL) % 100000ULL);
+    execute_fields(store, {"ZADD", "k", std::to_string(score), "m" + std::to_string(i)});
+  }
+
+  const auto before = store.zset_memory_stats("k");
+  assert(before.has_value());
+  // The score index carries block slack before optimizing.
+  assert(before->score_block_capacity_sum > before->score_entry_count);
+
+  const auto reply = execute_fields(store, {"GOBLIN.OPTIMIZE", "k"});
+  assert(reply.starts_with(":"));
+  assert(reply != ":0\r\n");  // reclaimed a positive number of bytes
+
+  const auto after = store.zset_memory_stats("k");
+  assert(after.has_value());
+  assert(after->total_allocated_bytes < before->total_allocated_bytes);
+  // Compaction packs blocks: no more than the final partial block is slack.
+  assert(after->score_block_capacity_sum - after->score_entry_count <
+         goblin::core::ZSetScoreIndex::kLoad);
+
+  // Data is intact after compaction.
+  assert(execute_fields(store, {"ZCARD", "k"}) == ":6000\r\n");
+  assert(execute_fields(store, {"ZSCORE", "k", "m0"}) == "$1\r\n0\r\n");
+  assert(store.zrank("k", "m0").has_value());
+
+  // Unknown key optimizes to nil.
+  assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "missing"}) == "$-1\r\n");
+}
+
 }  // namespace
 
 int main() {
@@ -806,6 +842,7 @@ int main() {
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
   test_command_dispatch();
+  test_goblin_optimize_reclaims_slack();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
   test_score_string_cache_updates_with_scores();

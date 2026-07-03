@@ -30,6 +30,12 @@ possible.
 - `ZREM key member [member ...]`
 - `ZSCORE key member`
 
+Plus two Goblin-specific maintenance commands:
+
+- `GOBLIN.MEMORY key`: reports per-zset allocation and the active rank-cache mode.
+- `GOBLIN.OPTIMIZE key`: compacts a zset in place to reclaim insertion slack,
+  returning the bytes reclaimed.
+
 The server accepts RESP array commands and a basic inline command format used by
 tests.
 
@@ -66,8 +72,8 @@ node allocation.
 
 ## Current Benchmark Snapshot
 
-**Memory is the story.** Goblin Core holds a sorted set in roughly `55` bytes
-per member versus Redis at roughly `130`, i.e. about `42%` of Redis's resident
+**Memory is the story.** Goblin Core holds a sorted set in roughly `53` bytes
+per member versus Redis at roughly `130`, i.e. about `40%` of Redis's resident
 memory for the same data — and that ratio is flat from 250K to 4M members.
 Throughput is a secondary, nice-to-have benefit; Goblin Core also happens to be
 faster than Redis on the supported operations.
@@ -84,14 +90,21 @@ Resident-set (RSS) delta over baseline, with exact loaded member counts:
 
 | Members | Goblin Core B/member | Redis B/member | Goblin Core / Redis |
 | ---: | ---: | ---: | ---: |
-| 250K | `55.6` | `129.4` | `42.9%` |
-| 1M | `55.2` | `133.2` | `41.5%` |
-| 4M | `55.3` | `128.8` | `42.9%` |
+| 250K | `53.2` | `132.0` | `40.3%` |
+| 1M | `52.6` | `133.2` | `39.5%` |
+| 4M | `52.5` | `128.8` | `40.7%` |
 
-Goblin Core's internally tracked zset allocation (`~56` B/member via
+Goblin Core's internally tracked zset allocation (`~53` B/member via
 `GOBLIN.MEMORY`) is within ~2% of its RSS delta — almost no allocator slack. At
-4M members Goblin Core's resident set is about `281` MiB smaller than Redis's,
+4M members Goblin Core's resident set is about `291` MiB smaller than Redis's,
 and the gap grows linearly with member count.
+
+`GOBLIN.OPTIMIZE <key>` compacts a zset in place to reclaim insertion slack
+(score-index block capacity and geometric vector over-allocation), returning the
+bytes reclaimed. It takes a favorable-sized 1M set from `~53` to `~50`
+B/member and, more importantly, rescues sets that land just past a power-of-two
+boundary (where the ref vector alone can double); run it on read-mostly sets
+after loading.
 
 ### Throughput (secondary)
 

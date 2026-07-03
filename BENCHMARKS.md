@@ -6,15 +6,15 @@ These results compare Goblin Core against Redis for the current sorted-set-focus
 
 ## Headline: Memory Footprint
 
-Goblin Core's reason to exist is memory. It stores a sorted set in about `55` RSS bytes per member versus Redis at about `130` — roughly `42%` of Redis's resident memory — and the ratio holds flat as the set grows (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
+Goblin Core's reason to exist is memory. It stores a sorted set in about `53` RSS bytes per member versus Redis at about `130` — roughly `40%` of Redis's resident memory — and the ratio holds flat as the set grows (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
 
 | Members | Goblin Core RSS B/member | Redis RSS B/member | Goblin Core / Redis | Goblin Core RSS saved |
 | ---: | ---: | ---: | ---: | ---: |
-| 250K | `55.6` | `129.4` | `42.9%` | `18` MiB |
-| 1M | `55.2` | `133.2` | `41.5%` | `74` MiB |
-| 4M | `55.3` | `128.8` | `42.9%` | `281` MiB |
+| 250K | `53.2` | `132.0` | `40.3%` | `19` MiB |
+| 1M | `52.6` | `133.2` | `39.5%` | `77` MiB |
+| 4M | `52.5` | `128.8` | `40.7%` | `291` MiB |
 
-Goblin Core's tracked zset allocation (`~56` B/member via `GOBLIN.MEMORY`) is within ~2% of its RSS delta, so almost none of the footprint is allocator slack. The saved RSS grows linearly with member count.
+Goblin Core's tracked zset allocation (`~53` B/member via `GOBLIN.MEMORY`) is within ~2% of its RSS delta, so almost none of the footprint is allocator slack. The saved RSS grows linearly with member count. `GOBLIN.OPTIMIZE <key>` compacts a set in place to reclaim residual insertion slack — a favorable-sized 1M set drops to `~50` B/member, and sets that land just past a power-of-two boundary (where the ref vector can double) are rescued back to the flat curve.
 
 ## Headline: Throughput (secondary)
 

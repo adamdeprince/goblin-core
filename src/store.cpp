@@ -613,6 +613,18 @@ std::optional<ZSetMemoryStats> Store::zset_memory_stats(std::string_view key) co
   return zset->memory_stats();
 }
 
+std::optional<std::size_t> Store::optimize(std::string_view key) {
+  auto* zset = find_zset(key);
+  if (zset == nullptr) {
+    return std::nullopt;
+  }
+
+  const auto before = zset->memory_stats().total_allocated_bytes;
+  zset->compact();
+  const auto after = zset->memory_stats().total_allocated_bytes;
+  return before > after ? before - after : 0;
+}
+
 StoreMemoryStats Store::memory_stats() const noexcept {
   StoreMemoryStats stats;
   stats.inline_zset_count = inline_zset_.has_value() ? 1 : 0;
