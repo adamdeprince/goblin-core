@@ -729,6 +729,13 @@ def write_report(mode_jsons: dict[str, Path],
         "reports `INFO memory used_memory`; Goblin Core reports internal zset "
         "allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.",
         "",
+        "Both servers are measured after a load-then-serve sequence: Goblin Core "
+        "runs `GOBLIN.OPTIMIZE` at a high packing density (default `0.97`) after "
+        "loading, before memory and reads are measured, reflecting how a "
+        "read-mostly deployment would compact before serving. Redis has no "
+        "equivalent step. Pass `--goblin-optimize-density none` to measure the "
+        "un-optimized (as-loaded) state instead.",
+        "",
         "Memory is the primary comparison; throughput is secondary. Single-member "
         "read throughput (`ZSCORE`, `ZRANK`, `ZREVRANK`) is driven by "
         "`redis-benchmark`, a C load generator, because one Python pipelined "
@@ -929,6 +936,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         default=list(RANK_CACHE_MODES),
         help="Goblin rank-cache modes to benchmark and report.",
     )
+    parser.add_argument("--goblin-optimize-density", type=str, default="0.97",
+                        help="GOBLIN.OPTIMIZE member-index packing density applied "
+                             "after loading, before measuring. 'none' skips it.")
     parser.add_argument("--goblin-score-string-cache", action="store_true",
                         help="Start Goblin Core with cached RESP score strings.")
     parser.add_argument("--target", choices=["both", "goblin", "redis"], default="both")
@@ -1042,6 +1052,7 @@ def benchmark_command(args: argparse.Namespace,
         "json",
     ]
     command.extend(["--goblin-rank-cache-mode", rank_cache_mode])
+    command.extend(["--goblin-optimize-density", str(args.goblin_optimize_density)])
     if args.goblin_score_string_cache:
         command.append("--goblin-score-string-cache")
     return command

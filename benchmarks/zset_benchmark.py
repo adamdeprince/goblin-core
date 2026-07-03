@@ -610,6 +610,10 @@ def run_target(server: ServerProcess, args: argparse.Namespace) -> list[Benchmar
             zadd_commands(load_ids, key, args.zadd_batch, args.score_shape, args.seed),
             args.pipeline,
         )
+        # Load, then compact/repack before serving (the deployment path). Goblin
+        # Core exposes this as GOBLIN.OPTIMIZE; memory below is captured after it.
+        if server.name == "goblin" and args.goblin_optimize_density is not None:
+            client.command("GOBLIN.OPTIMIZE", key, str(args.goblin_optimize_density))
         time.sleep(args.settle_seconds)
         rss_after_load = process_rss_mib(server.process.pid)
         used_memory = redis_used_memory_mib(client) if server.name == "redis" else None
@@ -629,6 +633,9 @@ def run_target(server: ServerProcess, args: argparse.Namespace) -> list[Benchmar
             try:
                 redis_benchmark_populate_probe(
                     rb_bin, server.port, rb_key, args.members, args.timeout)
+                if server.name == "goblin" and args.goblin_optimize_density is not None:
+                    client.command("GOBLIN.OPTIMIZE", rb_key,
+                                   str(args.goblin_optimize_density))
             except Exception as exc:  # noqa: BLE001 - fall back to Python client.
                 print(f"warning: redis-benchmark unusable ({exc}); using the "
                       f"Python client for read ops", file=sys.stderr)
@@ -947,6 +954,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--goblin-rank-cache-mode",
                         choices=["off", "exact", "block-hint"])
     parser.add_argument("--goblin-score-string-cache", action="store_true")
+    parser.add_argument("--goblin-optimize-density", type=str, default="0.97",
+                        help="Run GOBLIN.OPTIMIZE at this member-index packing "
+                             "density after loading, before measuring memory and "
+                             "reads (load-then-serve deployment). 'none' skips.")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int)
     parser.add_argument("--redis-server", type=Path, default=Path(shutil.which("redis-server") or "redis-server"))
     parser.add_argument(
@@ -1000,6 +1011,14 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         if resolved is None:
             parser.error(f"--redis-benchmark not found: {rb}")
         args.redis_benchmark_bin = Path(resolved)
+
+    if args.goblin_optimize_density in (None, "", "none", "None"):
+        args.goblin_optimize_density = None
+    else:
+        density = float(args.goblin_optimize_density)
+        if not (0.0 < density <= 1.0):
+            parser.error("--goblin-optimize-density must be in (0, 1] or 'none'")
+        args.goblin_optimize_density = density
     return args
 
 

@@ -6,15 +6,16 @@ These results compare Goblin Core against Redis for the current sorted-set-focus
 
 ## Headline: Memory Footprint
 
-Goblin Core's reason to exist is memory. It stores a sorted set in about `51` RSS bytes per member versus Redis at about `130` — roughly `38%` of Redis's resident memory — and the ratio holds flat as the set grows (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
+Goblin Core's reason to exist is memory. After a load-then-`GOBLIN.OPTIMIZE` sequence (the deployment path), it stores a sorted set in about `49` RSS bytes per member versus Redis at about `130` — roughly `37%` of Redis's resident memory — and the ratio holds flat as the set grows, and even at member counts just past a power of two (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
 
 | Members | Goblin Core RSS B/member | Redis RSS B/member | Goblin Core / Redis | Goblin Core RSS saved |
 | ---: | ---: | ---: | ---: | ---: |
-| 250K | `51.3` | `131.2` | `39.2%` | `19` MiB |
-| 1M | `50.6` | `133.2` | `38.0%` | `79` MiB |
-| 4M | `50.5` | `128.8` | `39.2%` | `299` MiB |
+| 250K | `49.5` | `131.0` | `37.8%` | `19` MiB |
+| 1M | `49.1` | `133.2` | `36.9%` | `80` MiB |
+| 1.08M (just past 2^20) | `49.1` | `147.8` | `33.2%` | `102` MiB |
+| 4M | `48.8` | `128.8` | `37.9%` | `305` MiB |
 
-Goblin Core's tracked zset allocation (`~51` B/member via `GOBLIN.MEMORY`) is within ~2% of its RSS delta, so almost none of the footprint is allocator slack. The saved RSS grows linearly with member count. `GOBLIN.OPTIMIZE <key>` compacts a set in place to reclaim residual insertion slack — a favorable-sized 1M set drops to `~48` B/member, and sets that land just past a power-of-two boundary (where the ref vector can double) are rescued back to the flat curve.
+Goblin Core's tracked zset allocation (`~49` B/member via `GOBLIN.MEMORY`) is within ~2% of its RSS delta, so almost none of the footprint is allocator slack. The member index holds `5.2` B/member at every size, including the 1.08M count just past `2^20` — a power-of-two-sized table would have been ~9.7 there. The benchmark runs `GOBLIN.OPTIMIZE` at density `0.97` after loading; Redis has no equivalent compaction step.
 
 ## Headline: Throughput (secondary)
 

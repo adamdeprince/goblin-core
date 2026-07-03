@@ -33,7 +33,8 @@ possible.
 Plus two Goblin-specific maintenance commands:
 
 - `GOBLIN.MEMORY key`: reports per-zset allocation and the active rank-cache mode.
-- `GOBLIN.OPTIMIZE key`: compacts a zset in place to reclaim insertion slack,
+- `GOBLIN.OPTIMIZE key [density]`: compacts a zset in place and repacks the
+  member index to `density` (target load factor in `(0, 1]`, default `0.97`),
   returning the bytes reclaimed.
 
 The server accepts RESP array commands and a basic inline command format used by
@@ -67,16 +68,32 @@ node allocation.
   It starts with 16-bit block ids and promotes to 32-bit ids if needed.
 - `--score-string-cache`: optional RESP-ready score text cache. It is off by
   default; current default workloads prefer direct stack-buffer score formatting.
+- `--member-index-growth`: member-index rehash growth factor. Default
+  `2^0.25 ≈ 1.19`, which keeps the never-compacted load factor `≥ ~84%` at any
+  size (the index never balloons to ~2x just past a power of two) at the cost of
+  more frequent rehashes during load. `2.0` is the classic doubling that favors
+  write throughput over always-on memory.
 - `--max-output-buffer-mib`: per-client queued output limit.
 - `--initial-output-buffer-kib`: optional per-client output-buffer reserve.
 
+The member index is a Swiss table sized to a whole number of 16-byte groups
+(not the next power of two) and bucketed with a multiply-shift reduction, so its
+load factor stays near `31/32` at any member count rather than dropping to ~50%
+just past a power of two. `GOBLIN.OPTIMIZE key [density]` repacks it (and the
+score index) to a target load factor; the default `0.97` is tight while leaving
+empty slots so absent-member lookups terminate quickly. Density `1.0` minimizes
+memory but, with no empty slot, makes a lookup of a missing member scan the
+whole table — reserve it for read-only sets queried only for present members.
+
 ## Current Benchmark Snapshot
 
-**Memory is the story.** Goblin Core holds a sorted set in roughly `51` bytes
-per member versus Redis at roughly `130`, i.e. about `38%` of Redis's resident
-memory for the same data — and that ratio is flat from 250K to 4M members.
-Throughput is a secondary, nice-to-have benefit; Goblin Core also happens to be
-faster than Redis on the supported operations.
+**Memory is the story.** After a load-then-`GOBLIN.OPTIMIZE` sequence (the
+deployment path), Goblin Core holds a sorted set in roughly `49` bytes per
+member versus Redis at roughly `130`, i.e. about `37%` of Redis's resident
+memory for the same data — flat from 250K to 4M members, and flat even at counts
+just past a power of two (the non-pow2 member index removes the boundary
+blowup). Throughput is a secondary, nice-to-have benefit; Goblin Core also
+happens to be faster than Redis on the supported operations.
 
 Snapshot host (the deployment-relevant environment):
 
@@ -90,24 +107,25 @@ Resident-set (RSS) delta over baseline, with exact loaded member counts:
 
 | Members | Goblin Core B/member | Redis B/member | Goblin Core / Redis |
 | ---: | ---: | ---: | ---: |
-| 250K | `51.3` | `131.2` | `39.2%` |
-| 1M | `50.6` | `133.2` | `38.0%` |
-| 4M | `50.5` | `128.8` | `39.2%` |
+| 250K | `49.5` | `131.0` | `37.8%` |
+| 1M | `49.1` | `133.2` | `36.9%` |
+| 1.08M (just past 2^20) | `49.1` | `147.8` | `33.2%` |
+| 4M | `48.8` | `128.8` | `37.9%` |
 
-Goblin Core's internally tracked zset allocation (`~51` B/member via
+Goblin Core's internally tracked zset allocation (`~49` B/member via
 `GOBLIN.MEMORY`) is within ~2% of its RSS delta — almost no allocator slack. At
-4M members Goblin Core's resident set is about `299` MiB smaller than Redis's,
+4M members Goblin Core's resident set is about `305` MiB smaller than Redis's,
 and the gap grows linearly with member count. Members are stored in a packed
 arena referenced by a 14-byte struct-of-arrays entry (`u32` offset + `u16`
 length + `f64` score), which caps a single member at 64 KiB — far above any
 realistic sorted-set member.
 
-`GOBLIN.OPTIMIZE <key>` compacts a zset in place to reclaim insertion slack
-(score-index block capacity and geometric vector over-allocation), returning the
-bytes reclaimed. It takes a favorable-sized 1M set from `~51` to `~48`
-B/member and, more importantly, rescues sets that land just past a power-of-two
-boundary (where the ref vector alone can double); run it on read-mostly sets
-after loading.
+These figures are post-`GOBLIN.OPTIMIZE` (the benchmark repacks at density
+`0.97` before measuring, matching load-then-serve). The member index is `5.2`
+B/member at every size measured here, including the 1.08M count just past `2^20`
+(a power-of-two-sized table would have been ~9.7 there) — the win compaction
+alone could not deliver before the non-pow2 index, since it rebuilt at the same
+power of two.
 
 ### Throughput (secondary)
 

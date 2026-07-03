@@ -1,7 +1,7 @@
 # Goblin Core
 
 Goblin Core is a C++23 Redis-like server built to hold sorted sets in far less
-memory than Redis — about `38%` of Redis's resident set for the same data —
+memory than Redis — about `37%` of Redis's resident set for the same data —
 while still matching or beating its throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
@@ -15,11 +15,11 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 - Current scope: sorted sets plus `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
-- Memory is the point: Goblin Core holds a sorted set in about `51` bytes per
-  member versus Redis at about `130` — roughly `38%` of Redis's resident memory
-  — and that ratio is flat from 250K to 4M members (avx10 Intel Linux, Redis
-  `8.0.5`). At 4M members it saves about `299` MiB of RSS; `GOBLIN.OPTIMIZE`
-  reclaims insertion slack on read-mostly sets.
+- Memory is the point: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin Core
+  holds a sorted set in about `49` bytes per member versus Redis at about `130`
+  — roughly `37%` of Redis's resident memory — flat from 250K to 4M members and
+  even at counts just past a power of two (avx10 Intel Linux, Redis `8.0.5`). At
+  4M members it saves about `305` MiB of RSS.
 - Throughput is a secondary, nice-to-have win: measured with `redis-benchmark`,
   Goblin Core is `1.31x` `ZSCORE`, `2.27x` `ZRANK`, `2.52x` `ZADD`, and `1.36x`
   `ZRANGE` versus Redis.
@@ -115,10 +115,18 @@ Block hints start as 16-bit ids for lower memory and promote to 32-bit ids
 automatically if a larger block-id space is needed.
 `GOBLIN.MEMORY <key>` reports the active mode as `rank_cache_mode`.
 
-`GOBLIN.OPTIMIZE <key>` compacts a zset in place to reclaim insertion slack
-(score-index block capacity and geometric vector over-allocation), returning the
-number of bytes reclaimed. It is worth running on read-mostly sets after a bulk
-load, especially when the member count lands just past a power-of-two boundary.
+`GOBLIN.OPTIMIZE <key> [density]` compacts a zset in place to reclaim insertion
+slack (score-index block capacity, geometric vector over-allocation) and repacks
+the member index, returning the number of bytes reclaimed. Run it on read-mostly
+sets after a bulk load. The optional `density` is the target member-index load
+factor in `(0, 1]`; it defaults to `0.97`. Use `1.0` only for a set that is
+truly read-only and never queried for absent members — a fully packed index has
+no empty slot, so a lookup of a missing member scans the whole table.
+
+`--member-index-growth <factor>` sets how much the member index grows on each
+rehash (default `2^0.25 ≈ 1.19`). A smaller factor keeps the never-compacted
+load factor high (memory) at the cost of more frequent rehashes during writes;
+`2.0` is the classic doubling that favors write throughput.
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for
 range output benchmarking. It is off by default because it adds a packed side
@@ -143,10 +151,10 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 
 ## Benchmark
 
-Memory is the headline: Goblin Core stores a sorted set in about `51` RSS bytes
-per member versus Redis at about `130` — roughly `38%` of Redis's resident
-memory — consistently from 250K to 4M members, and `GOBLIN.OPTIMIZE` reclaims
-insertion slack on read-mostly sets. Throughput is a secondary benefit; measured
+Memory is the headline: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin
+Core stores a sorted set in about `49` RSS bytes per member versus Redis at about
+`130` — roughly `37%` of Redis's resident memory — consistently from 250K to 4M
+members and even just past a power of two. Throughput is a secondary benefit; measured
 with `redis-benchmark` (a single Python client is client-bound and understates
 both servers), Goblin Core is faster than Redis on every supported operation,
 for example `1.36x` `ZSCORE` and `~2x` `ZRANK`/`ZADD`.

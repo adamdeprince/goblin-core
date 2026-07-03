@@ -37,7 +37,11 @@ class ZSetMemberIndex {
   // and cache-line-split loads. 16 also matches an SSE2/NEON register.
   static constexpr size_type kGroupWidth = 16;
 
-  static constexpr double kDefaultGrowth = 2.0;
+  // 2^0.25. A tight growth factor keeps the always-on (never-compacted) load
+  // factor >= 1/growth ~= 84% at any size -- so the member index never balloons
+  // to ~2x just past a power of two -- at the cost of more frequent rehashes
+  // during load (memory-first; OPTIMIZE repacks read-mostly sets regardless).
+  static constexpr double kDefaultGrowth = 1.1892071150027210;
 
   ZSetMemberIndex() = default;
 

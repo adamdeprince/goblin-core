@@ -18,8 +18,10 @@
 namespace goblin::core {
 
 // Target member-index load factor used by compaction when no density is
-// requested. Matches the table's steady-state max load (31/32).
-inline constexpr double kDefaultMemberIndexDensity = 31.0 / 32.0;
+// requested. 0.97 is essentially the table's steady-state max load (31/32),
+// packing tight while still leaving empty slots so lookups of absent members
+// terminate quickly (a fully packed 1.0 index makes misses scan O(n)).
+inline constexpr double kDefaultMemberIndexDensity = 0.97;
 
 struct ZSetEntry {
   std::string_view member;
@@ -35,7 +37,7 @@ struct ZSetRangeBounds {
 struct ZSetOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
-  double member_index_growth{2.0};
+  double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
 };
 
 struct ZSetMemoryStats {
@@ -306,7 +308,7 @@ class ZSet {
 struct StoreOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
-  double member_index_growth{2.0};
+  double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
 };
 
 struct StoreMemoryStats {

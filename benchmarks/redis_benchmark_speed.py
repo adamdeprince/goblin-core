@@ -119,6 +119,12 @@ def measure_target(name: str,
         client = RespClient("127.0.0.1", port, timeout=args.timeout)
         try:
             card = int(client.command("ZCARD", key))
+            # Reflect the deployment path: load, then compact/repack before
+            # serving. Goblin Core exposes this as GOBLIN.OPTIMIZE; Redis has no
+            # equivalent step. Measured after this so RSS and read throughput
+            # reflect the optimized set.
+            if name == "goblin" and args.optimize_density is not None:
+                client.command("GOBLIN.OPTIMIZE", key, str(args.optimize_density))
             used_memory = (
                 redis_used_memory_mib(client) if name == "redis" else None)
         finally:
@@ -234,6 +240,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--pipeline", type=int, default=256)
     parser.add_argument("--range-size", type=int, default=16)
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--optimize-density", type=str, default="0.97",
+                        help="Run GOBLIN.OPTIMIZE at this member-index packing "
+                             "density after loading (reflects load-then-serve "
+                             "deployment). 'none' skips it. Avoid 1.0 unless the "
+                             "set is read-only with no absent-member lookups.")
     parser.add_argument("--server-cpu", type=int, default=None,
                         help="Pin the server to this CPU (Linux taskset). Omit to not pin.")
     parser.add_argument("--client-cpu", type=int, default=None,
@@ -246,6 +257,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
            args.rounds, args.load_factor) <= 0:
         parser.error("--members/--requests/--pipeline/--range-size/--rounds/"
                      "--load-factor must be positive")
+    if args.optimize_density in (None, "", "none", "None"):
+        args.optimize_density = None
+    else:
+        density = float(args.optimize_density)
+        if not (0.0 < density <= 1.0):
+            parser.error("--optimize-density must be in (0, 1] or 'none'")
+        args.optimize_density = density
     return args
 
 
