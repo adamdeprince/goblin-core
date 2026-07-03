@@ -19,12 +19,14 @@ class ZSetMemberStorage {
  public:
   using size_type = std::size_t;
 
+  // Value view of a member's location and score. Storage is kept
+  // struct-of-arrays internally (see offsets_/lengths_/scores_); Ref is only a
+  // transient carrier for snapshot/restore and the *_ref helpers.
   struct Ref {
     std::uint32_t offset{0};
     std::uint32_t length{0};
     double score{0.0};
   };
-  static_assert(sizeof(Ref) == 16);
 
   struct ScoreTextRef {
     std::uint32_t offset{0};
@@ -43,11 +45,11 @@ class ZSetMemberStorage {
       : score_string_cache_enabled_(score_string_cache) {}
 
   [[nodiscard]] bool empty() const noexcept {
-    return refs_.empty();
+    return offsets_.empty();
   }
 
   [[nodiscard]] size_type size() const noexcept {
-    return refs_.size();
+    return offsets_.size();
   }
 
   [[nodiscard]] size_type byte_size() const noexcept {
@@ -59,12 +61,14 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] size_type ref_capacity() const noexcept {
-    return refs_.capacity();
+    return offsets_.capacity();
   }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
     return byte_capacity() +
-           refs_.capacity() * sizeof(Ref) +
+           offsets_.capacity() * sizeof(std::uint32_t) +
+           lengths_.capacity() * sizeof(std::uint16_t) +
+           scores_.capacity() * sizeof(double) +
            chunks_.capacity() * sizeof(std::unique_ptr<char[]>) +
            score_text_allocated_bytes();
   }
@@ -92,7 +96,9 @@ class ZSetMemberStorage {
   }
 
   void reserve(size_type member_count) {
-    refs_.reserve(member_count);
+    offsets_.reserve(member_count);
+    lengths_.reserve(member_count);
+    scores_.reserve(member_count);
     if (score_string_cache_enabled_) {
       score_text_refs_.reserve(member_count);
     }
@@ -109,14 +115,11 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] std::uint32_t push_back(std::string_view member, double score) {
-    if (refs_.size() >= std::numeric_limits<std::uint32_t>::max()) {
+    if (offsets_.size() >= std::numeric_limits<std::uint32_t>::max()) {
       throw std::length_error("zset member id space exhausted");
     }
-    if (member.size() > std::numeric_limits<std::uint32_t>::max()) {
+    if (member.size() > kMaxMemberBytes) {
       throw std::length_error("zset member too large");
-    }
-    if (member.size() > kChunkBytes) {
-      throw std::length_error("zset member too large for arena chunk");
     }
     if (next_offset_ >
         static_cast<size_type>(std::numeric_limits<std::uint32_t>::max()) -
@@ -124,11 +127,11 @@ class ZSetMemberStorage {
       throw std::length_error("zset member arena exhausted");
     }
 
-    const auto id = static_cast<std::uint32_t>(refs_.size());
+    const auto id = static_cast<std::uint32_t>(offsets_.size());
     const auto offset = append_bytes(member);
-    refs_.push_back(Ref{.offset = offset,
-                        .length = static_cast<std::uint32_t>(member.size()),
-                        .score = score});
+    offsets_.push_back(offset);
+    lengths_.push_back(static_cast<std::uint16_t>(member.size()));
+    scores_.push_back(score);
     if (score_string_cache_enabled_) {
       score_text_refs_.push_back(append_score_text(score));
     }
@@ -136,12 +139,9 @@ class ZSetMemberStorage {
   }
 
   void replace(std::uint32_t member_id, std::string_view member, double score) {
-    assert(member_id < refs_.size());
-    if (member.size() > std::numeric_limits<std::uint32_t>::max()) {
+    assert(member_id < offsets_.size());
+    if (member.size() > kMaxMemberBytes) {
       throw std::length_error("zset member too large");
-    }
-    if (member.size() > kChunkBytes) {
-      throw std::length_error("zset member too large for arena chunk");
     }
     if (next_offset_ >
         static_cast<size_type>(std::numeric_limits<std::uint32_t>::max()) -
@@ -150,29 +150,33 @@ class ZSetMemberStorage {
     }
 
     const auto offset = append_bytes(member);
-    refs_[member_id] = Ref{.offset = offset,
-                           .length = static_cast<std::uint32_t>(member.size()),
-                           .score = score};
+    offsets_[member_id] = offset;
+    lengths_[member_id] = static_cast<std::uint16_t>(member.size());
+    scores_[member_id] = score;
     set_score_text(member_id, score);
   }
 
   [[nodiscard]] Ref ref(std::uint32_t member_id) const noexcept {
-    assert(member_id < refs_.size());
-    return refs_[member_id];
+    assert(member_id < offsets_.size());
+    return Ref{.offset = offsets_[member_id],
+               .length = lengths_[member_id],
+               .score = scores_[member_id]};
   }
 
   [[nodiscard]] Snapshot snapshot(std::uint32_t member_id) const noexcept {
-    assert(member_id < refs_.size());
+    assert(member_id < offsets_.size());
     return Snapshot{
-        .ref = refs_[member_id],
+        .ref = ref(member_id),
         .score_text = score_string_cache_enabled_ ? score_text_refs_[member_id]
                                                   : ScoreTextRef{},
     };
   }
 
   void restore_snapshot(std::uint32_t member_id, Snapshot snapshot) noexcept {
-    assert(member_id < refs_.size());
-    refs_[member_id] = snapshot.ref;
+    assert(member_id < offsets_.size());
+    offsets_[member_id] = snapshot.ref.offset;
+    lengths_[member_id] = static_cast<std::uint16_t>(snapshot.ref.length);
+    scores_[member_id] = snapshot.ref.score;
     if (score_string_cache_enabled_) {
       assert(member_id < score_text_refs_.size());
       score_text_refs_[member_id] = snapshot.score_text;
@@ -180,15 +184,19 @@ class ZSetMemberStorage {
   }
 
   void set_ref(std::uint32_t member_id, Ref ref) {
-    assert(member_id < refs_.size());
-    refs_[member_id] = ref;
+    assert(member_id < offsets_.size());
+    offsets_[member_id] = ref.offset;
+    lengths_[member_id] = static_cast<std::uint16_t>(ref.length);
+    scores_[member_id] = ref.score;
     set_score_text(member_id, ref.score);
   }
 
   void copy_ref(std::uint32_t dst_member_id, std::uint32_t src_member_id) noexcept {
-    assert(dst_member_id < refs_.size());
-    assert(src_member_id < refs_.size());
-    refs_[dst_member_id] = refs_[src_member_id];
+    assert(dst_member_id < offsets_.size());
+    assert(src_member_id < offsets_.size());
+    offsets_[dst_member_id] = offsets_[src_member_id];
+    lengths_[dst_member_id] = lengths_[src_member_id];
+    scores_[dst_member_id] = scores_[src_member_id];
     if (score_string_cache_enabled_) {
       assert(dst_member_id < score_text_refs_.size());
       assert(src_member_id < score_text_refs_.size());
@@ -197,19 +205,21 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] double score(std::uint32_t member_id) const noexcept {
-    assert(member_id < refs_.size());
-    return refs_[member_id].score;
+    assert(member_id < scores_.size());
+    return scores_[member_id];
   }
 
   void set_score(std::uint32_t member_id, double score) {
-    assert(member_id < refs_.size());
-    refs_[member_id].score = score;
+    assert(member_id < scores_.size());
+    scores_[member_id] = score;
     set_score_text(member_id, score);
   }
 
   void pop_back() noexcept {
-    assert(!refs_.empty());
-    refs_.pop_back();
+    assert(!offsets_.empty());
+    offsets_.pop_back();
+    lengths_.pop_back();
+    scores_.pop_back();
     if (score_string_cache_enabled_) {
       assert(!score_text_refs_.empty());
       score_text_refs_.pop_back();
@@ -217,13 +227,14 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] std::string_view view(std::uint32_t member_id) const noexcept {
-    assert(member_id < refs_.size());
-    const auto ref = refs_[member_id];
+    assert(member_id < offsets_.size());
+    const auto length = lengths_[member_id];
     const char* data = "";
-    if (ref.length != 0) {
-      data = chunks_[ref.offset >> kChunkShift].get() + (ref.offset & kChunkMask);
+    if (length != 0) {
+      const auto offset = offsets_[member_id];
+      data = chunks_[offset >> kChunkShift].get() + (offset & kChunkMask);
     }
-    return std::string_view(data, ref.length);
+    return std::string_view(data, length);
   }
 
   [[nodiscard]] std::string_view score_text(std::uint32_t member_id) const noexcept {
@@ -244,6 +255,12 @@ class ZSetMemberStorage {
   static constexpr size_type kChunkShift = 20;
   static constexpr size_type kChunkBytes = size_type{1} << kChunkShift;
   static constexpr size_type kChunkMask = kChunkBytes - 1;
+  // Members are addressed by a 16-bit length, so a single member is capped at
+  // 64 KiB - 1. This keeps the per-member reference at 14 bytes (u32 offset +
+  // u16 length + f64 score, struct-of-arrays) instead of 16, and is far above
+  // any realistic sorted-set member.
+  static constexpr size_type kMaxMemberBytes =
+      std::numeric_limits<std::uint16_t>::max();
 
   [[nodiscard]] std::uint32_t append_bytes(std::string_view member) {
     if (member.empty()) {
@@ -315,7 +332,9 @@ class ZSetMemberStorage {
   }
 
   std::vector<std::unique_ptr<char[]>> chunks_;
-  std::vector<Ref> refs_;
+  std::vector<std::uint32_t> offsets_;
+  std::vector<std::uint16_t> lengths_;
+  std::vector<double> scores_;
   std::vector<std::unique_ptr<char[]>> score_text_chunks_;
   std::vector<ScoreTextRef> score_text_refs_;
   size_type next_offset_{0};

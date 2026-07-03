@@ -1,7 +1,7 @@
 # Goblin Core
 
 Goblin Core is a C++23 Redis-like server built to hold sorted sets in far less
-memory than Redis — about `40%` of Redis's resident set for the same data —
+memory than Redis — about `38%` of Redis's resident set for the same data —
 while still matching or beating its throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
@@ -15,10 +15,10 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 - Current scope: sorted sets plus `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
-- Memory is the point: Goblin Core holds a sorted set in about `53` bytes per
-  member versus Redis at about `130` — roughly `40%` of Redis's resident memory
+- Memory is the point: Goblin Core holds a sorted set in about `51` bytes per
+  member versus Redis at about `130` — roughly `38%` of Redis's resident memory
   — and that ratio is flat from 250K to 4M members (avx10 Intel Linux, Redis
-  `8.0.5`). At 4M members it saves about `291` MiB of RSS; `GOBLIN.OPTIMIZE`
+  `8.0.5`). At 4M members it saves about `299` MiB of RSS; `GOBLIN.OPTIMIZE`
   reclaims insertion slack on read-mostly sets.
 - Throughput is a secondary, nice-to-have win: measured with `redis-benchmark`,
   Goblin Core is `1.31x` `ZSCORE`, `2.27x` `ZRANK`, `2.52x` `ZADD`, and `1.36x`
@@ -52,7 +52,10 @@ ACLs, Redis modules, eviction policies, or general Redis key types.
 
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
-leaving room to optimize internal layouts aggressively.
+leaving room to optimize internal layouts aggressively. One deliberate
+divergence: a single sorted-set member is capped at 64 KiB (Redis allows more),
+which keeps the per-member reference two bytes smaller — well above any
+realistic member.
 
 ## Build From Source
 
@@ -140,8 +143,8 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 
 ## Benchmark
 
-Memory is the headline: Goblin Core stores a sorted set in about `53` RSS bytes
-per member versus Redis at about `130` — roughly `40%` of Redis's resident
+Memory is the headline: Goblin Core stores a sorted set in about `51` RSS bytes
+per member versus Redis at about `130` — roughly `38%` of Redis's resident
 memory — consistently from 250K to 4M members, and `GOBLIN.OPTIMIZE` reclaims
 insertion slack on read-mostly sets. Throughput is a secondary benefit; measured
 with `redis-benchmark` (a single Python client is client-bound and understates

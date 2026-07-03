@@ -72,8 +72,8 @@ node allocation.
 
 ## Current Benchmark Snapshot
 
-**Memory is the story.** Goblin Core holds a sorted set in roughly `53` bytes
-per member versus Redis at roughly `130`, i.e. about `40%` of Redis's resident
+**Memory is the story.** Goblin Core holds a sorted set in roughly `51` bytes
+per member versus Redis at roughly `130`, i.e. about `38%` of Redis's resident
 memory for the same data — and that ratio is flat from 250K to 4M members.
 Throughput is a secondary, nice-to-have benefit; Goblin Core also happens to be
 faster than Redis on the supported operations.
@@ -90,18 +90,21 @@ Resident-set (RSS) delta over baseline, with exact loaded member counts:
 
 | Members | Goblin Core B/member | Redis B/member | Goblin Core / Redis |
 | ---: | ---: | ---: | ---: |
-| 250K | `53.2` | `132.0` | `40.3%` |
-| 1M | `52.6` | `133.2` | `39.5%` |
-| 4M | `52.5` | `128.8` | `40.7%` |
+| 250K | `51.3` | `131.2` | `39.2%` |
+| 1M | `50.6` | `133.2` | `38.0%` |
+| 4M | `50.5` | `128.8` | `39.2%` |
 
-Goblin Core's internally tracked zset allocation (`~53` B/member via
+Goblin Core's internally tracked zset allocation (`~51` B/member via
 `GOBLIN.MEMORY`) is within ~2% of its RSS delta — almost no allocator slack. At
-4M members Goblin Core's resident set is about `291` MiB smaller than Redis's,
-and the gap grows linearly with member count.
+4M members Goblin Core's resident set is about `299` MiB smaller than Redis's,
+and the gap grows linearly with member count. Members are stored in a packed
+arena referenced by a 14-byte struct-of-arrays entry (`u32` offset + `u16`
+length + `f64` score), which caps a single member at 64 KiB — far above any
+realistic sorted-set member.
 
 `GOBLIN.OPTIMIZE <key>` compacts a zset in place to reclaim insertion slack
 (score-index block capacity and geometric vector over-allocation), returning the
-bytes reclaimed. It takes a favorable-sized 1M set from `~53` to `~50`
+bytes reclaimed. It takes a favorable-sized 1M set from `~51` to `~48`
 B/member and, more importantly, rescues sets that land just past a power-of-two
 boundary (where the ref vector alone can double); run it on read-mostly sets
 after loading.
