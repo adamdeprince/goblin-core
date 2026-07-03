@@ -195,4 +195,6 @@ is intentionally force-added later, `.gitattributes` routes it through Git LFS.
 - `tests/redis_differential.py`: Redis-backed zset differential test
 - `benchmarks/run_benchmarks.py`: scripted build/test/benchmark/report workflow
 - `benchmarks/zset_benchmark.py`: Goblin Core vs Redis zset benchmark
+- `benchmarks/redis_benchmark_speed.py`: pinned `redis-benchmark` throughput and
+  RSS-per-member comparison (C client; avoids the Python client-bound ceiling)
 - `PERFORMANCE_BRIEF.md`: architecture and benchmark context for performance review

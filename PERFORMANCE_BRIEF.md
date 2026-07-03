@@ -172,6 +172,18 @@ python3 benchmarks/run_benchmarks.py \
   --latency-samples 10000
 ```
 
+Reproduce the memory and `redis-benchmark` throughput snapshot above (uses a C
+load generator, pins the server and client to separate cores, and prints RSS
+bytes per member plus per-op ratios):
+
+```sh
+python3 benchmarks/redis_benchmark_speed.py \
+  --goblin-bin build-release/goblin-core \
+  --redis-server "$(command -v redis-server)" \
+  --members 1000000 --requests 2000000 --rounds 3 \
+  --server-cpu 0 --client-cpu 1
+```
+
 Fast CI-style smoke:
 
 ```sh
