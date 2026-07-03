@@ -198,26 +198,7 @@ rewritten to HTML links with human-visible labels that do not end in `.md`.
 python3 scripts/build_html_docs.py --output html
 ```
 
-The `html/` directory is generated and ignored. If a binary asset under `html/`
-is intentionally force-added later, `.gitattributes` routes it through Git LFS.
-
-## Layout
-
-- `include/goblin/core/resp_parser.hpp`: incremental RESP and inline parser
-- `include/goblin/core/resp_writer.hpp`: RESP response serialization
-- `include/goblin/core/command.hpp`: command parsing and dispatch
-- `include/goblin/core/store.hpp`: vector-backed sorted set store
-- `include/goblin/core/chunked_sorted_list.hpp`: block-based sorted-list index for zsets
-- `include/goblin/core/swiss_table.hpp`: portable Swiss-table hash map
-- `include/goblin/core/zset_member_index.hpp`: packed member lookup index for zsets
-- `include/goblin/core/zset_score_index.hpp`: packed score/member-id index for zsets
-- `include/goblin/core/server.hpp`: nonblocking TCP server
-- `include/goblin/core/simd.hpp`: SIMD capability scaffolding
-- `scripts/benchmark_smoke.sh`: CI-style benchmark smoke runner
-- `scripts/build_html_docs.py`: Markdown to HTML documentation generator
-- `tests/redis_differential.py`: Redis-backed zset differential test
-- `benchmarks/run_benchmarks.py`: scripted build/test/benchmark/report workflow
-- `benchmarks/zset_benchmark.py`: Goblin Core vs Redis zset benchmark
-- `benchmarks/redis_benchmark_speed.py`: pinned `redis-benchmark` throughput and
-  RSS-per-member comparison (C client; avoids the Python client-bound ceiling)
-- `PERFORMANCE_BRIEF.md`: architecture and benchmark context for performance review
+The build also copies `llms.txt` and `llms-full.txt` (an operator-focused
+overview for LLMs) to the site root. Generated files under `html/` (`.html`,
+`.css`, and the copied `.txt` files) are ignored; committed binary assets there,
+such as images, are tracked via Git LFS.

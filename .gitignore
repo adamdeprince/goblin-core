@@ -4,6 +4,7 @@ build-*/
 # assets under html/ (images, tracked via Git LFS) stay in the repo.
 html/*.html
 html/*.css
+html/*.txt
 *~
 .DS_Store
 __pycache__/

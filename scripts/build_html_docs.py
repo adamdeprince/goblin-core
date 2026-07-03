@@ -438,6 +438,14 @@ def write_pages(sources: Sequence[Path], output_dir: Path) -> None:
         page.output.write_text(render_page(page, pages))
     (output_dir / "styles.css").write_text(STYLE)
 
+    # Copy the LLM-oriented docs (the llms.txt convention) verbatim to the site
+    # root so they are served at /llms.txt and /llms-full.txt. They are rebuilt
+    # here on each run, not committed under html/.
+    for name in ("llms.txt", "llms-full.txt"):
+        source_file = ROOT / name
+        if source_file.exists():
+            (output_dir / name).write_text(source_file.read_text())
+
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)

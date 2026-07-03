@@ -1,0 +1,286 @@
+# Goblin Core — Operator Guide
+
+> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly 37% of Redis's memory (about 49 bytes per member) and serves it faster. This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
+
+This guide assumes you already run Redis-style sorted sets and want to serve the
+same data on less RAM. Read it top to bottom to stand up a node; jump to
+"Production checklist" when you are ready to deploy.
+
+## What Goblin Core is and is not
+
+Goblin Core is an in-memory, single-node service that speaks the Redis wire
+protocol (RESP2) over TCP. Any Redis client library and `redis-cli` talk to it
+without changes.
+
+It implements only:
+
+- `PING`
+- Sorted-set commands: `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`,
+  `ZRANK`, `ZREVRANK`, `ZREM`
+- Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`
+
+It does NOT implement, and you must not plan around:
+
+- Persistence (no RDB/AOF). Data is RAM-only and lost on restart.
+- Replication, clustering, or failover.
+- Pub/sub, Lua scripting, transactions (`MULTI`/`EXEC`), pipelining semantics
+  beyond normal RESP, keyspace notifications.
+- Authentication, ACLs, or TLS.
+- Eviction/expiry (`EXPIRE`, `maxmemory` policies) — keys live until removed.
+- Any non-sorted-set type (no strings, hashes, lists, sets, streams).
+
+Because there is no persistence or replication, treat a Goblin Core node as a
+rebuildable cache/index: your application or a loader repopulates it from a
+system of record at startup.
+
+Status: alpha, pre-1.0. Interfaces and defaults may change between releases.
+Validate against your own workload before relying on it.
+
+## Requirements
+
+- A C++23 compiler: GCC 14 or newer, or Clang 18 or newer. (Benchmarks are run
+  with GCC 16 on Ubuntu 26.04, Intel Xeon.)
+- CMake 3.25 or newer.
+- A 64-bit Linux host is the supported target. Development also builds on macOS
+  (arm64), but Linux is what to deploy.
+- Redis is only needed if you run the differential tests or comparison
+  benchmarks; it is not a runtime dependency.
+
+## Install
+
+Goblin Core is distributed as source. Build it on (or for) the host you will run
+it on.
+
+    git clone https://github.com/adamdeprince/goblin-core.git
+    cd goblin-core
+    git checkout v0.2.0      # pin a release tag
+    cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+    cmake --build build-release
+    ctest --test-dir build-release --output-on-failure   # optional: verify
+
+The server binary is `build-release/goblin-core`. Install it into a prefix if
+you want it on PATH:
+
+    cmake --install build-release --prefix /usr/local
+    # installs goblin-core to /usr/local/bin
+
+Building with `-DCMAKE_BUILD_TYPE=Release` matters: it enables the optimizer.
+Goblin Core relies on the compiler to vectorize hot loops for the host, so build
+on hardware similar to where you deploy.
+
+## Run
+
+    goblin-core --bind 0.0.0.0 --port 6379
+
+Defaults when a flag is omitted:
+
+- `--bind 127.0.0.1` — listens on localhost only. Set `--bind 0.0.0.0` (or a
+  specific address) to accept remote connections.
+- `--port 6379` — the standard Redis port, so existing clients need no change.
+
+The process runs in the foreground and logs to stdout/stderr. It prints the SIMD
+features it detected at startup. Run it under a supervisor (systemd, container
+orchestrator) in production; see "Running under systemd" below.
+
+## Connect
+
+Any Redis client works. With `redis-cli`:
+
+    redis-cli -p 6379 ZADD leaders 42 alice 17 bob
+    redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
+    redis-cli -p 6379 ZSCORE leaders alice
+
+Application clients (redis-py, node-redis, go-redis, Jedis/Lettuce, etc.) connect
+the same way; point them at the host and port. Only the commands listed above are
+implemented — other commands return an error.
+
+## Commands
+
+Scores are IEEE-754 doubles, exactly as in Redis. Members are arbitrary byte
+strings up to 64 KiB each (see "Limits").
+
+- `PING [message]` — liveness check. Returns `PONG`, or echoes `message`.
+- `ZADD key score member [score member ...]` — add or update members. Returns
+  the number of newly added members. Updating an existing member's score does
+  not count.
+- `ZCARD key` — number of members in the set.
+- `ZSCORE key member` — the member's score, or nil if absent.
+- `ZRANGE key start stop [WITHSCORES]` — members by ascending score, by rank
+  index. `start`/`stop` are 0-based and may be negative (from the end); `0 -1`
+  is the whole set. `WITHSCORES` interleaves scores.
+- `ZREVRANGE key start stop [WITHSCORES]` — same, descending.
+- `ZRANK key member` — 0-based rank of the member by ascending score, or nil.
+- `ZREVRANK key member` — rank by descending score, or nil.
+- `ZREM key member [member ...]` — remove members. Returns the number removed.
+
+Admin commands (Goblin Core extensions, not part of Redis):
+
+- `GOBLIN.MEMORY key` — reports per-key allocation, member count, and internal
+  index sizing. Use it to measure real bytes-per-member for capacity planning
+  and to confirm the effect of `GOBLIN.OPTIMIZE`.
+- `GOBLIN.OPTIMIZE key [density]` — compacts the set in place and repacks its
+  member index, returning the number of bytes reclaimed. Run it once after a
+  bulk load, before serving reads. `density` is the target member-index load
+  factor in `(0, 1]` and defaults to `0.97`. See "Tuning: OPTIMIZE density".
+
+## Configuration flags
+
+Set these on the command line at startup.
+
+- `--bind ADDRESS` — interface to listen on. Default `127.0.0.1`. Use
+  `0.0.0.0` to accept remote connections (only behind trusted network controls).
+- `--port PORT` — TCP port. Default `6379`.
+- `--member-index-growth FACTOR` — how much the member hash index grows on each
+  rehash. Default `2^0.25` (about `1.19`). A smaller factor keeps the index
+  fuller (less RAM) between rehashes at the cost of more frequent rehashes
+  during heavy writes; `2.0` is classic doubling that favors write throughput
+  over steady-state memory. The default is memory-first; leave it unless you are
+  write-bound and profiling says otherwise.
+- `--rank-cache-mode off|exact|block-hint` — optional structure to speed up
+  `ZRANK`/`ZREVRANK`. Default `off`. `exact` adds about 4 bytes per member and
+  makes rank lookups fast but adds work to every write. `block-hint` is a
+  smaller cache that trades some rank speed for lower write cost. Turn this on
+  only if `ZRANK` is hot in your workload; it costs memory and write time.
+  (`--rank-cache` is a shorthand for `--rank-cache-mode exact`; `--no-rank-cache`
+  for `off`.)
+- `--score-string-cache` / `--no-score-string-cache` — optional cache of
+  RESP-formatted score text for range output. Off by default; it adds per-member
+  memory and rarely helps. Leave it off unless a range-heavy benchmark shows a
+  win.
+- `--max-output-buffer-mib MIB` — per-client cap on queued response bytes before
+  the server pauses reading from that socket (backpressure). Default `1`. `0`
+  disables the cap (use only for controlled benchmarks). Reads resume after the
+  queued output drains below a quarter of the cap.
+- `--initial-output-buffer-kib KIB` — per-connection response buffer reserved at
+  accept time. Default `0`. Leave it off unless a cold first-burst workload
+  justifies the per-connection memory.
+
+## Production checklist
+
+Capacity (RAM):
+
+- Budget about 49 bytes per member after `GOBLIN.OPTIMIZE`. Example: 100M
+  members is roughly 4.6 GiB of sorted-set data, plus a small fixed overhead.
+- This is about 2.7x less than Redis for the same data, so a fixed-RAM box holds
+  roughly 2.7x more.
+- Measure your real workload with `GOBLIN.MEMORY key` (its reported allocation
+  tracks resident memory within a few percent). Member length and set count both
+  affect the total.
+- Provision headroom: writes temporarily hold extra memory during a rehash or an
+  `OPTIMIZE`. Do not run at 100% of RAM.
+
+Load-then-serve pattern (recommended):
+
+1. Start the node.
+2. Bulk-load each set with `ZADD` (pipelining is fine and fast).
+3. Run `GOBLIN.OPTIMIZE key` on each read-mostly set once loading is done. This
+   compacts insertion slack and packs the member index to `0.97` load, giving
+   the flat ~49 bytes/member figure and a contiguous, cache-friendly layout for
+   reads.
+4. Serve reads. Re-run `OPTIMIZE` after a large batch of new writes if you want
+   to reclaim slack again.
+
+Durability and restarts:
+
+- There is no persistence. A restart starts empty. Have a loader that
+  repopulates from your system of record, and gate traffic until it finishes.
+- There is no replication or failover. If you need HA, run independent nodes
+  each loaded from the source of truth and handle failover in your client/proxy.
+
+Security:
+
+- No authentication, ACLs, or TLS. Anyone who can reach the port has full access
+  to the data and can run `ZADD`/`ZREM`.
+- Bind to a private interface (`--bind` a specific address), restrict with
+  firewall/security groups, and terminate TLS and authenticate in a proxy in
+  front if you expose it beyond a trusted network.
+
+Running under systemd (example unit):
+
+    [Unit]
+    Description=Goblin Core
+    After=network-online.target
+
+    [Service]
+    ExecStart=/usr/local/bin/goblin-core --bind 0.0.0.0 --port 6379
+    Restart=on-failure
+    # Goblin Core keeps everything in RAM; size the host and set a limit.
+    MemoryMax=8G
+    User=goblin
+    NoNewPrivileges=true
+
+    [Install]
+    WantedBy=multi-user.target
+
+Because a restart loses data, pair `Restart=on-failure` with a loader (an
+`ExecStartPost` script or an application step) that repopulates the node.
+
+Monitoring:
+
+- Health: `PING`.
+- Memory per key: `GOBLIN.MEMORY key` (member count, allocated bytes,
+  bytes/member, index sizing).
+- Process RSS via your normal host metrics; it should track the sum of
+  `GOBLIN.MEMORY` allocations within a few percent.
+
+## Tuning: OPTIMIZE density
+
+`GOBLIN.OPTIMIZE key [density]` packs the member index to the given load factor:
+
+- `0.97` (default) — tight, but leaves empty slots so lookups of absent members
+  stay fast. Use this for normal read-mostly sets.
+- Lower (e.g. `0.90`) — slightly more RAM, marginally faster lookups.
+- `1.0` — packs with no empty slots, minimizing RAM. WARNING: with no empty
+  slot, a lookup for a member that is NOT present must scan the whole index
+  (O(n)). Only use `1.0` for a set that is truly read-only and only ever queried
+  for members you know are present. Any miss traffic makes `1.0` far slower.
+
+If in doubt, use the default. Re-running `OPTIMIZE` after writes is safe and
+idempotent.
+
+## Tuning: member-index growth
+
+`--member-index-growth` controls steady-state memory for sets that receive
+ongoing writes and are never compacted. The default (`2^0.25`) keeps the index
+at least ~84% full at any size. If you always load-then-`OPTIMIZE` and serve
+read-mostly, the growth factor barely matters because `OPTIMIZE` repacks anyway.
+Raise it toward `2.0` only if write throughput during bulk load is the
+bottleneck and you can spend the extra memory.
+
+## Limits
+
+- A single member is capped at 64 KiB. This is a deliberate divergence from
+  Redis (which allows larger) that keeps per-member overhead small. If your
+  members are larger than this, you are using a sorted set as a blob store;
+  store the blob elsewhere and keep a key in the set.
+- Scores are doubles, matching Redis precision.
+- Single node, single logical keyspace; no database select semantics beyond the
+  default.
+
+## Verifying a build
+
+    ctest --test-dir build-release --output-on-failure
+
+For behavior parity against a real Redis on the supported command subset (needs
+a local `redis-server`):
+
+    cmake -S . -B build-redis-tests -DGOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS=ON
+    cmake --build build-redis-tests
+    ctest --test-dir build-redis-tests --output-on-failure
+
+## Source layout (reference)
+
+You do not need this to operate Goblin Core; it is here for tools that index the
+repository. The server is header-oriented under `include/goblin/core/` with entry
+point `src/main.cpp`.
+
+- `include/goblin/core/server.hpp` — nonblocking TCP server and RESP I/O loop.
+- `include/goblin/core/command.hpp` — command parsing and dispatch.
+- `include/goblin/core/store.hpp` — the sorted-set store and `GOBLIN.OPTIMIZE`.
+- `include/goblin/core/zset_member_index.hpp` — member-to-id hash index.
+- `include/goblin/core/zset_score_index.hpp` — score-ordered index.
+- `include/goblin/core/resp_parser.hpp`, `resp_writer.hpp` — RESP protocol.
+- `benchmarks/` — Goblin Core vs Redis memory and throughput drivers.
+- `tests/redis_differential.py` — Redis-backed behavior parity test.
+- `RELEASE.md` — source-release checklist. `BENCHMARKS.md`, `PERFORMANCE_BRIEF.md`
+  — measured results and architecture.
