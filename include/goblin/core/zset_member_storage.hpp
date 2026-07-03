@@ -237,6 +237,32 @@ class ZSetMemberStorage {
     return std::string_view(data, length);
   }
 
+  // Warm the struct-of-arrays reference (offset + length) for a member id.
+  // Range iteration visits ids in score order, which is scattered relative to
+  // id order, so these are cache misses worth prefetching ahead.
+  void prefetch_location(std::uint32_t member_id) const noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(offsets_.data() + member_id);
+    __builtin_prefetch(lengths_.data() + member_id);
+#else
+    (void)member_id;
+#endif
+  }
+
+  // Warm the packed member bytes. The offset read here is expected to already
+  // be resident from an earlier prefetch_location() at a longer distance.
+  void prefetch_bytes(std::uint32_t member_id) const noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    if (lengths_[member_id] == 0) {
+      return;
+    }
+    const auto offset = offsets_[member_id];
+    __builtin_prefetch(chunks_[offset >> kChunkShift].get() + (offset & kChunkMask));
+#else
+    (void)member_id;
+#endif
+  }
+
   [[nodiscard]] std::string_view score_text(std::uint32_t member_id) const noexcept {
     if (!score_string_cache_enabled_) {
       return {};

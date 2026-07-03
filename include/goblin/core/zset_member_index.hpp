@@ -11,6 +11,12 @@
 #include <utility>
 #include <vector>
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 #include "goblin/core/zset_member_storage.hpp"
 
 namespace goblin::core {
@@ -25,6 +31,10 @@ class ZSetMemberIndex {
   using size_type = std::size_t;
   using hash_type = std::uint32_t;
 
+  // Control bytes are probed a full 16-byte SIMD group at a time. Wider groups
+  // (AVX2/AVX-512) measured slower: at a ~90% load factor a lookup resolves in
+  // the first group, so a wider scan only adds false-positive member compares
+  // and cache-line-split loads. 16 also matches an SSE2/NEON register.
   static constexpr size_type kGroupWidth = 16;
 
   ZSetMemberIndex() = default;
@@ -200,13 +210,42 @@ class ZSetMemberIndex {
     return static_cast<size_type>(std::countr_zero(mask));
   }
 
+  // Return a bitmask with bit i set for each of the kGroupWidth control bytes
+  // equal to `needle`. This is the Swiss-table group probe; `pmovmskb` is the
+  // canonical implementation and is not auto-generated from portable C++, so a
+  // byte-compare intrinsic is used with a scalar fallback. Each variant is
+  // baseline for its ISA (no runtime CPU dispatch): SSE2 on x86-64, NEON on
+  // AArch64, and a scalar loop everywhere else.
   [[nodiscard]] static std::uint64_t match_byte(const std::uint8_t* group,
                                                 std::uint8_t needle) noexcept {
+#if defined(__SSE2__)
+    static_assert(kGroupWidth == 16, "SSE2 group probe expects a 16-byte group");
+    const __m128i control =
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(group));
+    const __m128i equal =
+        _mm_cmpeq_epi8(control, _mm_set1_epi8(static_cast<char>(needle)));
+    return static_cast<std::uint64_t>(
+        static_cast<unsigned>(_mm_movemask_epi8(equal)) & 0xFFFFU);
+#elif defined(__aarch64__)
+    static_assert(kGroupWidth == 16, "NEON group probe expects a 16-byte group");
+    // AArch64 NEON has no pmovmskb; AND each 0x00/0xFF compare lane with its
+    // slot bit and horizontally add per 8-byte half to build a 16-bit, one-bit-
+    // per-slot mask matching the SSE2 result.
+    static constexpr std::uint8_t kSlotBits[16] = {
+        1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+    const uint8x16_t control = vld1q_u8(group);
+    const uint8x16_t equal = vceqq_u8(control, vdupq_n_u8(needle));
+    const uint8x16_t masked = vandq_u8(equal, vld1q_u8(kSlotBits));
+    const std::uint32_t low = vaddv_u8(vget_low_u8(masked));
+    const std::uint32_t high = vaddv_u8(vget_high_u8(masked));
+    return static_cast<std::uint64_t>(low | (high << 8));
+#else
     std::uint64_t mask = 0;
     for (size_type i = 0; i < kGroupWidth; ++i) {
       mask |= static_cast<std::uint64_t>(group[i] == needle) << i;
     }
     return mask;
+#endif
   }
 
   [[nodiscard]] static size_type max_usable(size_type capacity) noexcept {

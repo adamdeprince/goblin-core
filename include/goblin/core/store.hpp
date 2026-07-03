@@ -81,10 +81,26 @@ class ZSet {
       long long stop) const noexcept;
   template <class Fn>
   std::size_t for_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
-    auto callback = [this, &fn](std::uint32_t member_id) {
-      fn(member_view(member_id));
+    // Range iteration walks member ids in score order, which is scattered
+    // relative to member storage id order. Software-prefetch the pointer chase
+    // id -> location -> bytes two stages deep (location further ahead than the
+    // packed bytes, so the byte prefetch reads a resident offset). Neutral for
+    // small ranges, ~4% for large ones.
+    const auto* storage = member_storage_.get();
+    auto span = [storage, &fn](const std::uint32_t* ids, std::size_t count) {
+      constexpr std::size_t kLocationAhead = 10;
+      constexpr std::size_t kBytesAhead = 5;
+      for (std::size_t i = 0; i < count; ++i) {
+        if (i + kLocationAhead < count) {
+          storage->prefetch_location(ids[i + kLocationAhead]);
+        }
+        if (i + kBytesAhead < count) {
+          storage->prefetch_bytes(ids[i + kBytesAhead]);
+        }
+        fn(storage->view(ids[i]));
+      }
     };
-    entries_.for_member_ids(bounds.first, bounds.count, callback);
+    entries_.for_member_id_spans(bounds.first, bounds.count, span);
     return bounds.count;
   }
   template <class Fn>

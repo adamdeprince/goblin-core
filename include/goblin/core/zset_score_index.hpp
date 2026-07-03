@@ -358,6 +358,28 @@ class ZSetScoreIndex {
     }
   }
 
+  // Hand each block's contiguous run of member ids to `fn(const uint32_t*,
+  // count)`. Member ids are laid out sequentially within a block, so a caller
+  // can walk the span and prefetch the (scattered) member storage ahead.
+  template <class Fn>
+  void for_member_id_spans(size_type start, size_type count, Fn& fn) const {
+    if (count == 0 || start >= size_) {
+      return;
+    }
+
+    count = std::min(count, size_ - start);
+
+    auto [block_index, offset] = position_at(start);
+    while (count > 0 && block_index < blocks_.size()) {
+      const auto& block = blocks_[block_index];
+      const auto take = std::min(count, block.size() - offset);
+      fn(block.member_ids_ptr(offset), take);
+      count -= take;
+      ++block_index;
+      offset = 0;
+    }
+  }
+
   template <class Fn>
   void for_reverse_range(size_type start, size_type count, Fn& fn) const {
     if (count == 0 || start >= size_) {
@@ -526,6 +548,10 @@ class ZSetScoreIndex {
 
     [[nodiscard]] std::uint32_t member_id_at(size_type index) const noexcept {
       return member_ids_[index];
+    }
+
+    [[nodiscard]] const std::uint32_t* member_ids_ptr(size_type offset) const noexcept {
+      return member_ids_.get() + offset;
     }
 
     void set_member_id(size_type index, std::uint32_t member_id) noexcept {
