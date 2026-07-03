@@ -1,6 +1,9 @@
 build/
 build-*/
-html/
+# Generated HTML docs are rebuilt on the target machine; only committed binary
+# assets under html/ (images, tracked via Git LFS) stay in the repo.
+html/*.html
+html/*.css
 *~
 .DS_Store
 __pycache__/

@@ -1,8 +1,8 @@
 # Goblin Core Performance Brief
 
-This document is written for reviewers, including LLMs, who want to look for
-performance wins in Goblin Core without first reconstructing the project
-history.
+This document is an overview of Goblin Core's architecture and performance
+characteristics: how sorted sets are stored, where the memory and throughput
+wins over Redis come from, and how the benchmarks are run.
 
 ## Project Goal
 
@@ -92,12 +92,12 @@ deployment path), Goblin Core holds a sorted set in roughly `49` bytes per
 member versus Redis at roughly `130`, i.e. about `37%` of Redis's resident
 memory for the same data — flat from 250K to 4M members, and flat even at counts
 just past a power of two (the non-pow2 member index removes the boundary
-blowup). Throughput is a secondary, nice-to-have benefit; Goblin Core also
+blowup). Throughput is a secondary benefit; Goblin Core also
 happens to be faster than Redis on the supported operations.
 
 Snapshot host (the deployment-relevant environment):
 
-- Host: `Linux-7.0.0-1004-aws-x86_64`, Intel Xeon 6975P-C, 4 vCPU on AWS/KVM.
+- Host: Ubuntu 26.04 LTS, kernel `7.0.0-1004-aws`, Intel Xeon 6975P-C, 4 vCPU (AWS).
 - Redis: `8.0.5` with jemalloc `5.3.0`. Python: `3.14.4`.
 - Build: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
@@ -185,8 +185,8 @@ Read the generated reports for the full tables:
 - Member lookup is visible inside `ZRANGE`; changes to member storage/index
   locality may matter more than score traversal.
 - GCC 16 currently emits missing-field-initializer warnings for designated
-  aggregate returns. That is not a performance bug, but it is noise for Linux
-  reviewers.
+  aggregate returns. That is not a performance bug, but it is build-log noise
+  on Linux.
 
 ## Reproduction Commands
 
@@ -238,11 +238,10 @@ cmake --build build-release --target goblin_core_microbench
   --output benchmark-results/microbench.json
 ```
 
-## Review Guidance
+## Design Principles
 
-Prefer changes that keep the supported Redis subset correct and measurable.
-Before proposing a data-structure rewrite, identify which benchmark metric
-should improve, which memory metric might regress, and which test or benchmark
-would validate the change. Avoid adding architecture-specific intrinsics unless
-the same idea cannot be represented in portable C++ that compilers can
-auto-vectorize.
+Changes keep the supported Redis subset correct and measurable. A data-structure
+change identifies which benchmark metric it should improve, which memory metric
+might regress, and which test or benchmark validates it. Architecture-specific
+intrinsics are avoided unless the same idea cannot be expressed in portable C++
+that compilers can auto-vectorize.

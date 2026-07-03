@@ -142,7 +142,28 @@ blockquote {
   border-left: 4px solid var(--border);
   color: var(--muted);
 }
+
+h1 .hero-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1 .hero-link:hover {
+  text-decoration: underline;
+}
+
+footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.92rem;
+}
 """
+
+
+REPO_URL = "https://github.com/adamdeprince/goblin-core"
+HERO_IMAGE = "goblin-core.png"
 
 
 @dataclass(frozen=True)
@@ -274,12 +295,13 @@ def flush_list(out: list[str], list_items: list[str]) -> None:
         list_items.clear()
 
 
-def render_markdown(markdown: str) -> str:
+def render_markdown(markdown: str, hero_href: str | None = None) -> str:
     lines = markdown.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
     list_items: list[str] = []
     index = 0
+    hero_used = False
 
     while index < len(lines):
         line = lines[index]
@@ -329,7 +351,13 @@ def render_markdown(markdown: str) -> str:
             level = len(heading.group(1))
             text = heading.group(2).strip()
             anchor = slugify(strip_inline_markdown(text))
-            out.append(f'<h{level} id="{anchor}">{render_inline(text)}</h{level}>')
+            inner = render_inline(text)
+            if level == 1 and hero_href and not hero_used:
+                # Easter egg: the page's main title links to the mascot image.
+                inner = (f'<a class="hero-link" '
+                         f'href="{html.escape(hero_href, quote=True)}">{inner}</a>')
+                hero_used = True
+            out.append(f'<h{level} id="{anchor}">{inner}</h{level}>')
             index += 1
             continue
 
@@ -368,7 +396,8 @@ def render_nav(pages: Sequence[Page], current: Page) -> str:
 
 
 def render_page(page: Page, pages: Sequence[Page]) -> str:
-    body = render_markdown(page.source.read_text())
+    hero_href = HERO_IMAGE if page.output.name == "index.html" else None
+    body = render_markdown(page.source.read_text(), hero_href=hero_href)
     title = html.escape(page.title)
     return "\n".join([
         "<!doctype html>",
@@ -383,6 +412,7 @@ def render_page(page: Page, pages: Sequence[Page]) -> str:
         "<main>",
         render_nav(pages, page),
         body,
+        f'<footer>Source and issues on <a href="{REPO_URL}">GitHub</a>.</footer>',
         "</main>",
         "</body>",
         "</html>",

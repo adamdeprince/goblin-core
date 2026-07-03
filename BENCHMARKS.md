@@ -6,7 +6,7 @@ These results compare Goblin Core against Redis for the current sorted-set-focus
 
 ## Headline: Memory Footprint
 
-Goblin Core's reason to exist is memory. After a load-then-`GOBLIN.OPTIMIZE` sequence (the deployment path), it stores a sorted set in about `49` RSS bytes per member versus Redis at about `130` — roughly `37%` of Redis's resident memory — and the ratio holds flat as the set grows, and even at member counts just past a power of two (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
+Goblin Core's reason to exist is memory. After a load-then-`GOBLIN.OPTIMIZE` sequence (the deployment path), it stores a sorted set in about `49` RSS bytes per member versus Redis at about `130` — roughly `37%` of Redis's resident memory — and the ratio holds flat as the set grows, and even at member counts just past a power of two (Intel Xeon 6975P-C, Ubuntu 26.04, Redis `8.0.5`):
 
 | Members | Goblin Core RSS B/member | Redis RSS B/member | Goblin Core / Redis | Goblin Core RSS saved |
 | ---: | ---: | ---: | ---: | ---: |
@@ -19,7 +19,7 @@ Goblin Core's tracked zset allocation (`~49` B/member via `GOBLIN.MEMORY`) is wi
 
 ## Headline: Throughput (secondary)
 
-Throughput is a nice-to-have, not the pitch. Single-member read throughput must be measured with a C load generator: one Python pipelined connection is client-bound near `~350K` ops/sec, so the Python-driven tables further down understate both servers and previously reported `ZSCORE` at a misleading `0.95x` (the client, not the server). Measured with `redis-benchmark` against a loaded 1M-member set after `GOBLIN.OPTIMIZE` (the deployment path), pinned server/client, `-c 1 -P 256`, median of 3 rounds (absolute throughput is host-dependent; the ratio is the stable takeaway):
+Throughput is secondary to the memory story. Single-member read throughput must be measured with a C load generator: one Python pipelined connection is client-bound near `~350K` ops/sec, so the Python-driven tables further down understate both servers and previously reported `ZSCORE` at a misleading `0.95x` (the client, not the server). Measured with `redis-benchmark` against a loaded 1M-member set after `GOBLIN.OPTIMIZE` (the deployment path), pinned server/client, `-c 1 -P 256`, median of 3 rounds (absolute throughput is host-dependent; the ratio is the stable takeaway):
 
 | Operation | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
 | --- | ---: | ---: | ---: |
@@ -58,17 +58,17 @@ Workload:
 - Goblin score-string cache: `False`
 - seed: `12345`
 
-## Linux AWS Results
+## Linux Results
 
-Deployment-oriented run: `Linux AWS avx10, Intel Xeon 6975P-C, Redis 8.0.5, GCC 16.1.0`. This is the primary benchmark context for AWS/Linux users; the current-host section below is retained as a local development baseline.
+Deployment-oriented run: `Ubuntu 26.04, Intel Xeon 6975P-C, Redis 8.0.5, GCC 16.1.0` — the primary benchmark context for Linux users. The current-host section below is a local development baseline.
 
 Headline: Goblin Core is `1.28x` geomean throughput vs Redis and `41.5%` of Redis process RSS.
 
 Source data:
 
-- `off`: `benchmark-results/avx10-1m-rank-cache-off.json`
-- `exact`: `benchmark-results/avx10-1m-rank-cache-exact.json`
-- `block-hint`: `benchmark-results/avx10-1m-rank-cache-block-hint.json`
+- `off`: `benchmark-results/linux-1m-rank-cache-off.json`
+- `exact`: `benchmark-results/linux-1m-rank-cache-exact.json`
+- `block-hint`: `benchmark-results/linux-1m-rank-cache-block-hint.json`
 
 Linux default configuration: rank cache mode `off`; score-string cache `False`.
 

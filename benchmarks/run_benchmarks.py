@@ -497,11 +497,11 @@ def linux_benchmark_section(prefix: Path,
 
     lines = [
         "",
-        "## Linux AWS Results",
+        "## Linux Results",
         "",
-        f"Deployment-oriented run: `{label}`. This is the primary benchmark "
-        "context for AWS/Linux users; the current-host section below is retained "
-        "as a local development baseline.",
+        f"Deployment-oriented run: `{label}` — the primary benchmark context "
+        "for Linux users. The current-host section below is a local development "
+        "baseline.",
     ]
     if summary:
         lines.extend([
@@ -916,12 +916,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--linux-benchmark-prefix",
         type=Path,
-        default=ROOT / "benchmark-results" / "avx10-1m",
+        default=ROOT / "benchmark-results" / "linux-1m",
         help="Prefix for optional Linux deployment benchmark artifacts.",
     )
     parser.add_argument(
         "--linux-benchmark-label",
-        default="Linux AWS avx10, Intel Xeon 6975P-C, Redis 8.0.5, GCC 16.1.0",
+        default="Ubuntu 26.04, Intel Xeon 6975P-C, Redis 8.0.5, GCC 16.1.0",
         help="Human-readable label for the optional Linux benchmark section.",
     )
     parser.add_argument(

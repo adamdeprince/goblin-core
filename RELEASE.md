@@ -1,8 +1,8 @@
 # Goblin Core Source Release Checklist
 
-This is the repeatable pre-release path for source-only releases. Do not publish
-compiled binary artifacts at this stage; users should build Goblin Core locally
-from the tagged source.
+The repeatable path for a source-only release. A release is a git tag and the
+hosting service's source archive; users build Goblin Core from the tagged
+source.
 
 ## Scope
 
@@ -54,6 +54,5 @@ rules, root Markdown docs, generated-doc inputs, `LICENSE`, and `NOTICE`.
 
 - Update `project(... VERSION ...)` in `CMakeLists.txt` before a numbered
   release.
-- Use pre-1.0 versions until the Redis-compatible surface and operational
-  contract are broader.
+- Use pre-1.0 versions while the supported surface is a subset of Redis.
 - Tag the exact commit used for the source release.
