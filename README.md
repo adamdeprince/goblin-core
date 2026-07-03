@@ -6,9 +6,6 @@ while beating its throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
 
-> **Alpha.** Goblin Core is alpha-stage, pre-1.0 software under active
-> development. Expect breaking changes, and validate it against your workload
-> before relying on it.
 
 Goblin Core is licensed under the Apache License, Version 2.0. See
 [LICENSE](https://github.com/adamdeprince/goblin-core/blob/main/LICENSE) and
@@ -197,8 +194,3 @@ rewritten to HTML links with human-visible labels that do not end in `.md`.
 ```sh
 python3 scripts/build_html_docs.py --output html
 ```
-
-The build also copies `llms.txt` and `llms-full.txt` (an operator-focused
-overview for LLMs) to the site root. Generated files under `html/` (`.html`,
-`.css`, and the copied `.txt` files) are ignored; committed binary assets there,
-such as images, are tracked via Git LFS.
