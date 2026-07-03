@@ -21,7 +21,7 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
   even at counts just past a power of two (avx10 Intel Linux, Redis `8.0.5`). At
   4M members it saves about `305` MiB of RSS.
 - Throughput is a secondary, nice-to-have win: measured with `redis-benchmark`,
-  Goblin Core is `1.31x` `ZSCORE`, `2.27x` `ZRANK`, `2.52x` `ZADD`, and `1.36x`
+  Goblin Core is `1.30x` `ZSCORE`, `2.03x` `ZRANK`, `2.23x` `ZADD`, and `1.46x`
   `ZRANGE` versus Redis.
 - Build locally with CMake; benchmark instructions live in
   [BENCHMARKS.md](BENCHMARKS.md).
@@ -157,7 +157,7 @@ Core stores a sorted set in about `49` RSS bytes per member versus Redis at abou
 members and even just past a power of two. Throughput is a secondary benefit; measured
 with `redis-benchmark` (a single Python client is client-bound and understates
 both servers), Goblin Core is faster than Redis on every supported operation,
-for example `1.36x` `ZSCORE` and `~2x` `ZRANK`/`ZADD`.
+for example `1.30x` `ZSCORE` and `~2x` `ZRANK`/`ZADD`.
 
 See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
 reproducible benchmark commands.

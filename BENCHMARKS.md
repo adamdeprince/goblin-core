@@ -19,16 +19,16 @@ Goblin Core's tracked zset allocation (`~49` B/member via `GOBLIN.MEMORY`) is wi
 
 ## Headline: Throughput (secondary)
 
-Throughput is a nice-to-have, not the pitch. Single-member read throughput must be measured with a C load generator: one Python pipelined connection is client-bound near `~350K` ops/sec, so the Python-driven tables further down understate both servers and previously reported `ZSCORE` at a misleading `0.95x` (the client, not the server). Measured with `redis-benchmark` against a loaded 1M-member set (pinned server/client, `-c 1 -P 256`):
+Throughput is a nice-to-have, not the pitch. Single-member read throughput must be measured with a C load generator: one Python pipelined connection is client-bound near `~350K` ops/sec, so the Python-driven tables further down understate both servers and previously reported `ZSCORE` at a misleading `0.95x` (the client, not the server). Measured with `redis-benchmark` against a loaded 1M-member set after `GOBLIN.OPTIMIZE` (the deployment path), pinned server/client, `-c 1 -P 256`, median of 3 rounds (absolute throughput is host-dependent; the ratio is the stable takeaway):
 
 | Operation | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
 | --- | ---: | ---: | ---: |
-| `ZSCORE` | `1,347,795` | `1,032,120` | `1.31x` |
-| `ZRANK` | `900,958` | `396,256` | `2.27x` |
-| `ZREVRANK` | `893,712` | `405,900` | `2.20x` |
-| `ZADD` (score update) | `554,512` | `220,180` | `2.52x` |
-| `ZRANGE` (16) | `961,600` | `709,392` | `1.36x` |
-| `ZRANGE WITHSCORES` (16) | `601,361` | `414,898` | `1.45x` |
+| `ZSCORE` | `2,083,467` | `1,602,667` | `1.30x` |
+| `ZRANK` | `1,362,485` | `671,635` | `2.03x` |
+| `ZREVRANK` | `1,354,183` | `675,035` | `2.01x` |
+| `ZADD` (score update) | `840,743` | `376,388` | `2.23x` |
+| `ZRANGE` (16) | `1,004,080` | `686,621` | `1.46x` |
+| `ZRANGE WITHSCORES` (16) | `607,757` | `455,506` | `1.33x` |
 
 The RESP throughput tables in the sections below come from the Python harness. `benchmarks/zset_benchmark.py` now drives `ZSCORE`/`ZRANK`/`ZREVRANK` through `redis-benchmark`, but the batched/range throughput rows remain client-bound; treat the sections below primarily as memory/RSS sources and cross-check throughput against the table above.
 
