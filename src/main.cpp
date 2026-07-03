@@ -50,6 +50,17 @@ namespace {
   return static_cast<std::size_t>(value * bytes_per_kib);
 }
 
+[[nodiscard]] std::optional<double> parse_growth(std::string_view text) {
+  double value = 0.0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end || !(value > 1.0)) {
+    return std::nullopt;
+  }
+  return value;
+}
+
 [[nodiscard]] std::optional<goblin::core::RankCacheMode> parse_rank_cache_mode(
     std::string_view text) {
   if (text == "off" || text == "none") {
@@ -70,6 +81,7 @@ void print_usage(std::string_view program) {
             << "       [--rank-cache|--no-rank-cache]\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
+            << "       [--member-index-growth FACTOR]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n";
 }
@@ -131,6 +143,20 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.rank_cache_mode = *mode;
+      continue;
+    }
+
+    if (arg == "--member-index-growth") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto growth = parse_growth(argv[++i]);
+      if (!growth) {
+        std::cerr << "goblin-core: --member-index-growth must be > 1\n";
+        return 2;
+      }
+      store_options.member_index_growth = *growth;
       continue;
     }
 

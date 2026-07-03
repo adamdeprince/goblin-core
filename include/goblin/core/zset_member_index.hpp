@@ -37,9 +37,13 @@ class ZSetMemberIndex {
   // and cache-line-split loads. 16 also matches an SSE2/NEON register.
   static constexpr size_type kGroupWidth = 16;
 
+  static constexpr double kDefaultGrowth = 2.0;
+
   ZSetMemberIndex() = default;
 
-  explicit ZSetMemberIndex(const ZSetMemberStorage* members) : members_(members) {}
+  explicit ZSetMemberIndex(const ZSetMemberStorage* members,
+                           double growth = kDefaultGrowth)
+      : members_(members), growth_(growth > 1.0 ? growth : kDefaultGrowth) {}
 
   void set_members(const ZSetMemberStorage* members) noexcept {
     members_ = members;
@@ -110,6 +114,33 @@ class ZSetMemberIndex {
       return;
     }
     rehash(capacity_for_size(expected_size));
+  }
+
+  // Allocate for exactly `expected_size` members at a target load factor
+  // (`density` in (0, 1]). density 1.0 packs the table with no spare slots,
+  // which minimizes memory for a set that will not receive further inserts;
+  // combine with insert_packed(), which does not grow. Larger-than-max_usable
+  // densities are honored here (unlike reserve()).
+  void reserve_for_density(size_type expected_size, double density) {
+    if (expected_size == 0) {
+      return;
+    }
+    if (!(density > 0.0) || density > 1.0) {
+      density = static_cast<double>(31) / 32;
+    }
+    const auto needed =
+        static_cast<size_type>(static_cast<double>(expected_size) / density);
+    rehash(round_up_to_group(std::max(needed, expected_size)));
+  }
+
+  // Insert a known-unique member without a duplicate check or a capacity grow.
+  // The caller must have reserved enough capacity (see reserve_for_density).
+  void insert_packed(std::string_view member, ZSetMemberMeta meta) {
+    const auto hash = hash_member(member);
+    const auto index = find_insert_index(hash);
+    slots_[index].meta = meta;
+    set_control(index, fingerprint(hash));
+    ++size_;
   }
 
   [[nodiscard]] ZSetMemberMeta* find(std::string_view member) {
@@ -201,9 +232,19 @@ class ZSetMemberIndex {
     return is_full_control(control_[index]);
   }
 
+  // Low 7 bits. The bucket() reduction below consumes the high bits, so keeping
+  // the fingerprint in the low bits keeps the two independent.
   [[nodiscard]] static std::uint8_t fingerprint(hash_type hash) noexcept {
-    constexpr auto bits = std::numeric_limits<hash_type>::digits;
-    return static_cast<std::uint8_t>((hash >> (bits - 7U)) & 0x7FU);
+    return static_cast<std::uint8_t>(hash & 0x7FU);
+  }
+
+  // Map a hash to a slot in [0, capacity_) without requiring a power-of-two
+  // capacity: Lemire's multiply-shift reduction (one multiply) in place of a
+  // bit mask. This lets the table size to ~31/32 load at any member count
+  // instead of rounding capacity up to the next power of two.
+  [[nodiscard]] size_type bucket(hash_type hash) const noexcept {
+    return static_cast<size_type>(
+        (static_cast<std::uint64_t>(hash) * capacity_) >> 32);
   }
 
   [[nodiscard]] static size_type first_set_bit(std::uint64_t mask) noexcept {
@@ -252,16 +293,32 @@ class ZSetMemberIndex {
     return capacity - (capacity / 32);
   }
 
+  [[nodiscard]] static size_type round_up_to_group(size_type value) noexcept {
+    if (value < kGroupWidth) {
+      return kGroupWidth;
+    }
+    return (value + kGroupWidth - 1) / kGroupWidth * kGroupWidth;
+  }
+
+  // Grow capacity by the configured factor (rounded to a whole group), always
+  // by at least one group. A smaller factor keeps the load factor higher (less
+  // memory) between rehashes at the cost of more frequent rehashes.
+  [[nodiscard]] size_type grow_capacity(size_type capacity) const noexcept {
+    const auto scaled =
+        static_cast<size_type>(static_cast<double>(capacity) * growth_);
+    const auto next = round_up_to_group(scaled);
+    return next > capacity ? next : capacity + kGroupWidth;
+  }
+
   [[nodiscard]] static size_type capacity_for_size(size_type expected_size) {
     if (expected_size == 0) {
       return 0;
     }
 
-    auto required = (expected_size * 32 + 30) / 31;
-    if (required < kGroupWidth) {
-      required = kGroupWidth;
-    }
-    return std::bit_ceil(required);
+    // ~31/32 target load. Round to a whole number of groups rather than the
+    // next power of two, so a reserve()/compact() holds the load high at any
+    // size instead of dropping to ~50% just past a power of two.
+    return round_up_to_group((expected_size * 32 + 30) / 31);
   }
 
   [[nodiscard]] std::string_view member_view(std::uint32_t member_id) const noexcept {
@@ -294,14 +351,13 @@ class ZSetMemberIndex {
       if (size_ + 1 <= max_usable(capacity_)) {
         rehash(capacity_);
       } else {
-        rehash(capacity_ * 2);
+        rehash(grow_capacity(capacity_));
       }
     }
   }
 
   void allocate_capacity(size_type requested_capacity) {
-    capacity_ = std::bit_ceil(requested_capacity < kGroupWidth ? kGroupWidth
-                                                               : requested_capacity);
+    capacity_ = round_up_to_group(requested_capacity);
     if (capacity_ > std::numeric_limits<std::uint32_t>::max()) {
       throw std::length_error("zset member index capacity exhausted");
     }
@@ -329,8 +385,7 @@ class ZSetMemberIndex {
   [[nodiscard]] size_type find_index_with_hash(std::string_view member,
                                                hash_type hash) const {
     const auto needle = fingerprint(hash);
-    const auto mask = capacity_ - 1;
-    auto group_start = static_cast<size_type>(hash) & mask;
+    auto group_start = bucket(hash);
 
     for (size_type probed = 0; probed < capacity_; probed += kGroupWidth) {
       const auto* group = control_.data() + group_start;
@@ -352,15 +407,17 @@ class ZSetMemberIndex {
         return npos;
       }
 
-      group_start = (group_start + kGroupWidth) & mask;
+      group_start += kGroupWidth;
+      if (group_start >= capacity_) {
+        group_start -= capacity_;
+      }
     }
 
     return npos;
   }
 
   [[nodiscard]] size_type find_insert_index(hash_type hash) const {
-    const auto mask = capacity_ - 1;
-    auto group_start = static_cast<size_type>(hash) & mask;
+    auto group_start = bucket(hash);
     auto first_deleted = npos;
 
     for (size_type probed = 0; probed < capacity_; probed += kGroupWidth) {
@@ -383,7 +440,10 @@ class ZSetMemberIndex {
         return first_deleted == npos ? index : first_deleted;
       }
 
-      group_start = (group_start + kGroupWidth) & mask;
+      group_start += kGroupWidth;
+      if (group_start >= capacity_) {
+        group_start -= capacity_;
+      }
     }
 
     return first_deleted;
@@ -398,7 +458,7 @@ class ZSetMemberIndex {
   }
 
   void rehash(size_type requested_capacity) {
-    ZSetMemberIndex replacement(members_);
+    ZSetMemberIndex replacement(members_, growth_);
     replacement.allocate_capacity(requested_capacity);
 
     for (size_type i = 0; i < capacity_; ++i) {
@@ -420,6 +480,7 @@ class ZSetMemberIndex {
   size_type size_{0};
   size_type tombstones_{0};
   size_type capacity_{0};
+  double growth_{kDefaultGrowth};
   [[no_unique_address]] std::hash<std::string_view> hasher_{};
 };
 

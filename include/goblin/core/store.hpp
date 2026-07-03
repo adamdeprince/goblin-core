@@ -17,6 +17,10 @@
 
 namespace goblin::core {
 
+// Target member-index load factor used by compaction when no density is
+// requested. Matches the table's steady-state max load (31/32).
+inline constexpr double kDefaultMemberIndexDensity = 31.0 / 32.0;
+
 struct ZSetEntry {
   std::string_view member;
   double score{0.0};
@@ -31,6 +35,7 @@ struct ZSetRangeBounds {
 struct ZSetOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
+  double member_index_growth{2.0};
 };
 
 struct ZSetMemoryStats {
@@ -273,7 +278,7 @@ class ZSet {
   }
   [[nodiscard]] bool check_invariants() const;
   [[nodiscard]] ZSetMemoryStats memory_stats() const noexcept;
-  void compact();
+  void compact(double member_index_density = kDefaultMemberIndexDensity);
 
   [[nodiscard]] std::size_t allocated_member_slots() const noexcept;
   [[nodiscard]] std::size_t free_member_slots() const noexcept;
@@ -301,6 +306,7 @@ class ZSet {
 struct StoreOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
+  double member_index_growth{2.0};
 };
 
 struct StoreMemoryStats {
@@ -573,9 +579,12 @@ class Store {
       std::string_view key) const;
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
   // Compact a zset in place to reclaim insertion slack (block capacity, vector
-  // over-allocation). Returns the number of allocated bytes reclaimed, or
-  // nullopt if the key does not exist.
-  [[nodiscard]] std::optional<std::size_t> optimize(std::string_view key);
+  // over-allocation) and repack the member index to `member_index_density`.
+  // Returns the number of allocated bytes reclaimed, or nullopt if the key does
+  // not exist.
+  [[nodiscard]] std::optional<std::size_t> optimize(
+      std::string_view key,
+      double member_index_density = kDefaultMemberIndexDensity);
 
  private:
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;

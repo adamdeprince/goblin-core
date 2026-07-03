@@ -49,7 +49,7 @@ void release_unused_heap_pages() noexcept {
 
 ZSet::ZSet(ZSetOptions options)
     : member_storage_(std::make_unique<ZSetMemberStorage>(options.score_string_cache)),
-      members_(member_storage_.get()),
+      members_(member_storage_.get(), options.member_index_growth),
       entries_(member_storage_.get(), options.rank_cache_mode),
       options_(options) {}
 
@@ -346,7 +346,7 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
   return stats;
 }
 
-void ZSet::compact() {
+void ZSet::compact(double member_index_density) {
   const auto old_entries = entries_.range(0, entries_.size());
 
   std::size_t member_bytes = 0;
@@ -366,8 +366,8 @@ void ZSet::compact() {
     new_storage->reserve_score_text_bytes(score_text_bytes);
   }
 
-  ZSetMemberIndex new_members(new_storage.get());
-  new_members.reserve(old_entries.size());
+  ZSetMemberIndex new_members(new_storage.get(), options_.member_index_growth);
+  new_members.reserve_for_density(old_entries.size(), member_index_density);
 
   std::vector<ZSetScoreEntry> new_entries;
   new_entries.reserve(old_entries.size());
@@ -375,7 +375,7 @@ void ZSet::compact() {
   for (const auto& old_entry : old_entries) {
     const auto view = member_view(old_entry.member_id);
     const auto new_id = new_storage->push_back(view, old_entry.score);
-    new_members.insert(view, ZSetMemberMeta{.member_id = new_id});
+    new_members.insert_packed(view, ZSetMemberMeta{.member_id = new_id});
     new_entries.push_back(ZSetScoreEntry{.score = old_entry.score, .member_id = new_id});
   }
 
@@ -472,6 +472,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
     inline_zset_.emplace(ZSetOptions{
         .rank_cache_mode = options_.rank_cache_mode,
         .score_string_cache = options_.score_string_cache,
+        .member_index_growth = options_.member_index_growth,
     });
     return *inline_zset_;
   }
@@ -481,6 +482,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
       ZSetOptions{
           .rank_cache_mode = options_.rank_cache_mode,
           .score_string_cache = options_.score_string_cache,
+          .member_index_growth = options_.member_index_growth,
       });
   (void)inserted;
   return *zset;
@@ -613,14 +615,15 @@ std::optional<ZSetMemoryStats> Store::zset_memory_stats(std::string_view key) co
   return zset->memory_stats();
 }
 
-std::optional<std::size_t> Store::optimize(std::string_view key) {
+std::optional<std::size_t> Store::optimize(std::string_view key,
+                                           double member_index_density) {
   auto* zset = find_zset(key);
   if (zset == nullptr) {
     return std::nullopt;
   }
 
   const auto before = zset->memory_stats().total_allocated_bytes;
-  zset->compact();
+  zset->compact(member_index_density);
   const auto after = zset->memory_stats().total_allocated_bytes;
   return before > after ? before - after : 0;
 }

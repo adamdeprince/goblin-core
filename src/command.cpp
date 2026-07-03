@@ -321,7 +321,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   }
 
   if (equals_ci(command.name, "GOBLIN.OPTIMIZE")) {
-    if (command.args.size() != 1) {
+    if (command.args.size() != 1 && command.args.size() != 2) {
       return parse_error(wrong_arity("goblin.optimize"));
     }
     command.type = CommandType::goblin_optimize;
@@ -419,7 +419,16 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::goblin_optimize: {
-      const auto reclaimed = store.optimize(command.args[0]);
+      double density = kDefaultMemberIndexDensity;
+      if (command.args.size() == 2) {
+        const auto parsed = parse_score(command.args[1]);
+        if (!parsed || *parsed <= 0.0 || *parsed > 1.0) {
+          resp::append_error(out, "ERR packing density must be in (0, 1]");
+          return;
+        }
+        density = *parsed;
+      }
+      const auto reclaimed = store.optimize(command.args[0], density);
       if (!reclaimed) {
         resp::append_null_bulk_string(out);
       } else {

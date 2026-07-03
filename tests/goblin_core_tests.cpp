@@ -811,6 +811,47 @@ void test_goblin_optimize_reclaims_slack() {
   assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "missing"}) == "$-1\r\n");
 }
 
+void test_goblin_optimize_density_and_growth() {
+  goblin::core::Store store;
+  constexpr int kMembers = 4000;  // a multiple of the group width
+  for (int i = 0; i < kMembers; ++i) {
+    execute_fields(store, {"ZADD", "k", std::to_string(i), "m" + std::to_string(i)});
+  }
+  auto capacity = [&store] {
+    return store.zset_memory_stats("k")->member_index_capacity;
+  };
+
+  // density 1.0 packs the member index to ~100% load (capacity ~ member count).
+  execute_fields(store, {"GOBLIN.OPTIMIZE", "k", "1.0"});
+  assert(capacity() >= static_cast<std::size_t>(kMembers) &&
+         capacity() < static_cast<std::size_t>(kMembers) + 16);
+  assert(execute_fields(store, {"ZSCORE", "k", "m0"}) == "$1\r\n0\r\n");
+  assert(execute_fields(store, {"ZCARD", "k"}) == ":4000\r\n");
+
+  // density 0.5 leaves capacity ~ 2x member count.
+  execute_fields(store, {"GOBLIN.OPTIMIZE", "k", "0.5"});
+  assert(capacity() >= static_cast<std::size_t>(2 * kMembers) &&
+         capacity() < static_cast<std::size_t>(2 * kMembers) + 16);
+  assert(store.zrank("k", "m0").has_value());
+
+  // Out-of-range densities are rejected.
+  assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "k", "0"}).starts_with("-ERR"));
+  assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "k", "1.5"}).starts_with("-ERR"));
+
+  // A tight growth factor keeps the incremental (never-optimized) load factor
+  // well above the ~50% power-of-two worst case.
+  goblin::core::Store tight(
+      goblin::core::StoreOptions{.member_index_growth = 1.25});
+  for (int i = 0; i < 5000; ++i) {
+    (void)tight.zadd("g", static_cast<double>(i), "m" + std::to_string(i));
+  }
+  const auto stats = tight.zset_memory_stats("g");
+  assert(stats.has_value() && stats->member_count == 5000);
+  assert(static_cast<double>(stats->member_count) /
+             static_cast<double>(stats->member_index_capacity) >
+         0.6);
+}
+
 }  // namespace
 
 int main() {
@@ -843,6 +884,7 @@ int main() {
   test_resp_array_writer_small_header_table();
   test_command_dispatch();
   test_goblin_optimize_reclaims_slack();
+  test_goblin_optimize_density_and_growth();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
   test_score_string_cache_updates_with_scores();
