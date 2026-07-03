@@ -66,27 +66,55 @@ node allocation.
 
 ## Current Benchmark Snapshot
 
-Absolute rates and `ns/op` timings are hardware-specific. The primary server
-benchmark snapshot below is from the Linux AWS `avx10` run, which is the most
-deployment-relevant environment currently measured:
+**Memory is the story.** Goblin Core holds a sorted set in roughly `55` bytes
+per member versus Redis at roughly `130`, i.e. about `42%` of Redis's resident
+memory for the same data — and that ratio is flat from 250K to 4M members.
+Throughput is a secondary, nice-to-have benefit; Goblin Core also happens to be
+faster than Redis on the supported operations.
 
-- Host recorded by the `avx10-1m` report: `Linux-7.0.0-1004-aws-x86_64-with-glibc2.43 x86_64`.
-- CPU: Intel Xeon 6975P-C, 4 vCPU on AWS/KVM.
-- Redis: `8.0.5` with jemalloc `5.3.0`.
-- Python: `3.14.4`.
+Snapshot host (the deployment-relevant environment):
+
+- Host: `Linux-7.0.0-1004-aws-x86_64`, Intel Xeon 6975P-C, 4 vCPU on AWS/KVM.
+- Redis: `8.0.5` with jemalloc `5.3.0`. Python: `3.14.4`.
 - Build: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
-The Linux 1M-member server benchmark reports the default mode at:
+### Memory (the headline)
 
-- Geomean throughput across supported sorted-set operations: `1.28x` Redis.
-- Goblin Core RSS delta: `55.26` bytes per loaded member.
-- Redis RSS delta: `133.14` bytes per loaded member.
-- Goblin Core process RSS: `41.5%` of Redis process RSS.
-- `ZADD`: Goblin Core `634,830` members/sec, Redis `400,361` (`1.59x`).
-- `ZSCORE`: Goblin Core `321,705` ops/sec, Redis `339,410` (`0.95x`).
-- `ZRANK`: Goblin Core `366,421` ops/sec, Redis `238,608` (`1.54x`).
-- `ZRANGE`: Goblin Core `64,477` ops/sec, Redis `52,426` (`1.23x`).
-- `ZREM`: Goblin Core `717,455` members/sec, Redis `499,278` (`1.44x`).
+Resident-set (RSS) delta over baseline, with exact loaded member counts:
+
+| Members | Goblin Core B/member | Redis B/member | Goblin Core / Redis |
+| ---: | ---: | ---: | ---: |
+| 250K | `55.6` | `129.4` | `42.9%` |
+| 1M | `55.2` | `133.2` | `41.5%` |
+| 4M | `55.3` | `128.8` | `42.9%` |
+
+Goblin Core's internally tracked zset allocation (`~56` B/member via
+`GOBLIN.MEMORY`) is within ~2% of its RSS delta — almost no allocator slack. At
+4M members Goblin Core's resident set is about `281` MiB smaller than Redis's,
+and the gap grows linearly with member count.
+
+### Throughput (secondary)
+
+Measured with `redis-benchmark` (a C load generator; see the methodology note)
+against a loaded 1M-member set, pinned server/client, `-c 1 -P 256`:
+
+| Operation | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
+| --- | ---: | ---: | ---: |
+| `ZSCORE` | `1,347,795` | `1,032,120` | `1.31x` |
+| `ZRANK` | `900,958` | `396,256` | `2.27x` |
+| `ZREVRANK` | `893,712` | `405,900` | `2.20x` |
+| `ZADD` (score update) | `554,512` | `220,180` | `2.52x` |
+| `ZRANGE` (16) | `961,600` | `709,392` | `1.36x` |
+| `ZRANGE WITHSCORES` (16) | `601,361` | `414,898` | `1.45x` |
+
+Methodology note on read throughput: single-member read throughput must be
+driven by a C load generator. A single Python pipelined connection is
+client-bound near `~350K` ops/sec, so the Python harness measures the client,
+not the server, and reports both systems as roughly equal. That is why an
+earlier snapshot showed `ZSCORE` at `0.95x` — a client-bound artifact, not a
+server result. `benchmarks/zset_benchmark.py` now drives `ZSCORE`/`ZRANK`/
+`ZREVRANK` through `redis-benchmark`; memory is measured from process RSS and
+was never affected.
 
 The in-process microbench report was generated on the local macOS arm64
 development machine. Treat these values as local baselines, not cross-machine
@@ -110,9 +138,12 @@ Read the generated reports for the full tables:
   Avoid optimizing traversal without checking RESP append and score formatting.
 - `ZRANK` raw data-structure cost is still meaningful with rank cache off. The
   exact cache helps raw rank but can hurt write-heavy workloads.
-- `ZSCORE` has command/dispatch overhead over raw lookup. Look for avoidable
-  allocations, string copies, or redundant parsing work before changing data
-  structures.
+- `ZSCORE` per-command overhead: the RESP parse→dispatch path reuses a
+  per-client field-view buffer and an arena-backed field pool, removing the two
+  heap allocations that previously occurred per command (~`+3-6%` `ZSCORE`
+  measured via `redis-benchmark`). The earlier `0.95x` reading was a
+  client-bound Python-harness artifact, not a server deficit. Remaining cost is
+  dominated by the random member lookup (a cache miss), not compute.
 - Block-hint rank cache needs workload-sensitive validation. It is smaller than
   exact cache but not always faster in end-to-end runs.
 - Member lookup is visible inside `ZRANGE`; changes to member storage/index

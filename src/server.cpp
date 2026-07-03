@@ -12,6 +12,7 @@
 #include <optional>
 #include <poll.h>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
@@ -30,6 +31,7 @@ struct Client {
   int fd{-1};
   RespParser parser;
   std::string output;
+  std::vector<std::string_view> fields;
   std::size_t output_offset{0};
   bool read_backpressured{false};
   bool close_after_write{false};
@@ -206,14 +208,13 @@ void accept_clients(int listener,
   update_read_backpressure(client, config);
 
   while (!client.read_backpressured) {
-    auto frame = client.parser.pop();
-    if (!frame) {
+    if (!client.parser.pop_into(client.fields)) {
       break;
     }
 
     handle_command_into(
         store,
-        frame->fields,
+        client.fields,
         client.output,
         CommandExecutionOptions{.output_reserve_limit = config.max_output_buffer_bytes});
     compact_output_if_needed(client);

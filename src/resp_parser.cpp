@@ -75,16 +75,35 @@ std::optional<CommandFrame> RespParser::pop() {
     return std::nullopt;
   }
 
-  auto queued = std::move(frames_.front());
+  const auto queued = frames_.front();
   frames_.pop_front();
 
   CommandFrame frame;
-  frame.fields.reserve(queued.fields.size());
-  for (const auto field : queued.fields) {
+  frame.fields.reserve(queued.field_count);
+  for (std::size_t i = 0; i < queued.field_count; ++i) {
+    const auto field = field_pool_[queued.field_begin + i];
     frame.fields.emplace_back(buffer_.data() + field.offset, field.length);
   }
   popped_until_ = std::max(popped_until_, queued.consumed);
   return frame;
+}
+
+bool RespParser::pop_into(std::vector<std::string_view>& out) {
+  if (frames_.empty()) {
+    compact_consumed_prefix();
+    return false;
+  }
+
+  const auto queued = frames_.front();
+  frames_.pop_front();
+
+  out.clear();
+  for (std::size_t i = 0; i < queued.field_count; ++i) {
+    const auto field = field_pool_[queued.field_begin + i];
+    out.emplace_back(buffer_.data() + field.offset, field.length);
+  }
+  popped_until_ = std::max(popped_until_, queued.consumed);
+  return true;
 }
 
 bool RespParser::has_queued_frames() const noexcept {
@@ -102,24 +121,29 @@ const std::string& RespParser::error() const noexcept {
 void RespParser::clear() {
   buffer_.clear();
   frames_.clear();
+  field_pool_.clear();
   error_.clear();
   parse_offset_ = 0;
   popped_until_ = 0;
 }
 
-RespParser::ParseResult RespParser::parse_one(std::size_t offset) const {
+RespParser::ParseResult RespParser::parse_one(
+    std::size_t offset,
+    std::vector<FieldRange>& out_fields) const {
   if (offset >= buffer_.size()) {
     return incomplete();
   }
 
   if (buffer_[offset] == '*') {
-    return parse_resp_array(offset);
+    return parse_resp_array(offset, out_fields);
   }
 
-  return parse_inline(offset);
+  return parse_inline(offset, out_fields);
 }
 
-RespParser::ParseResult RespParser::parse_resp_array(std::size_t offset) const {
+RespParser::ParseResult RespParser::parse_resp_array(
+    std::size_t offset,
+    std::vector<FieldRange>& out_fields) const {
   const std::string_view buffer(buffer_);
   const auto line_end = find_crlf(buffer, offset + 1);
   if (!line_end) {
@@ -136,8 +160,7 @@ RespParser::ParseResult RespParser::parse_resp_array(std::size_t offset) const {
   }
 
   std::size_t cursor = *line_end + 2;
-  QueuedFrame frame;
-  frame.fields.reserve(static_cast<std::size_t>(*element_count));
+  out_fields.reserve(out_fields.size() + static_cast<std::size_t>(*element_count));
 
   for (long long i = 0; i < *element_count; ++i) {
     if (cursor >= buffer.size()) {
@@ -169,18 +192,19 @@ RespParser::ParseResult RespParser::parse_resp_array(std::size_t offset) const {
       return parse_error("ERR Protocol error: invalid bulk terminator");
     }
 
-    frame.fields.push_back(FieldRange{.offset = cursor, .length = len});
+    out_fields.push_back(FieldRange{.offset = cursor, .length = len});
     cursor += len + 2;
   }
 
   return {
       .state = ParseState::complete,
       .consumed = cursor,
-      .frame = std::move(frame),
   };
 }
 
-RespParser::ParseResult RespParser::parse_inline(std::size_t offset) const {
+RespParser::ParseResult RespParser::parse_inline(
+    std::size_t offset,
+    std::vector<FieldRange>& out_fields) const {
   const auto line_end = buffer_.find("\r\n", offset);
   if (line_end == std::string::npos) {
     if (buffer_.size() - offset > kMaxInlineBytes) {
@@ -190,7 +214,6 @@ RespParser::ParseResult RespParser::parse_inline(std::size_t offset) const {
   }
 
   std::string_view line(buffer_.data() + offset, line_end - offset);
-  QueuedFrame frame;
 
   std::size_t cursor = 0;
   while (cursor < line.size()) {
@@ -205,32 +228,39 @@ RespParser::ParseResult RespParser::parse_inline(std::size_t offset) const {
     while (cursor < line.size() && !is_inline_separator(line[cursor])) {
       ++cursor;
     }
-    frame.fields.push_back(FieldRange{.offset = offset + token_start,
-                                      .length = cursor - token_start});
+    out_fields.push_back(FieldRange{.offset = offset + token_start,
+                                    .length = cursor - token_start});
   }
 
   return {
       .state = ParseState::complete,
       .consumed = line_end + 2,
-      .frame = std::move(frame),
   };
 }
 
 void RespParser::parse_available() {
   while (parse_offset_ < buffer_.size() && error_.empty()) {
-    auto result = parse_one(parse_offset_);
+    const auto field_begin = field_pool_.size();
+    auto result = parse_one(parse_offset_, field_pool_);
     switch (result.state) {
       case ParseState::complete:
         parse_offset_ = result.consumed;
-        result.frame.consumed = result.consumed;
-        frames_.push_back(std::move(result.frame));
+        frames_.push_back(QueuedFrame{
+            .field_begin = field_begin,
+            .field_count = field_pool_.size() - field_begin,
+            .consumed = result.consumed,
+        });
         break;
       case ParseState::incomplete:
+        // Discard any field ranges the partial parse appended; they will be
+        // re-parsed once the rest of the command arrives.
+        field_pool_.resize(field_begin);
         return;
       case ParseState::error:
         error_ = std::move(result.error);
         buffer_.clear();
         frames_.clear();
+        field_pool_.clear();
         parse_offset_ = 0;
         popped_until_ = 0;
         return;
@@ -246,6 +276,10 @@ void RespParser::compact_consumed_prefix() {
   buffer_.erase(0, popped_until_);
   parse_offset_ -= std::min(parse_offset_, popped_until_);
   popped_until_ = 0;
+  // No queued frame references the pool once it has fully drained, so the
+  // accumulated field ranges (whose offsets are about to be invalidated by the
+  // buffer erase) can be reset while retaining capacity for reuse.
+  field_pool_.clear();
 }
 
 }  // namespace goblin::core

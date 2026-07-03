@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -551,6 +552,48 @@ def append_latency_result(results: list[BenchmarkResult],
     )
 
 
+def redis_benchmark_rps(rb_bin: Path,
+                        port: int,
+                        command: Sequence[object],
+                        requests: int,
+                        pipeline: int,
+                        keyspace: int,
+                        timeout: float) -> float:
+    """Drive `command` with redis-benchmark and return requests/sec.
+
+    A C load generator is used for single-member read throughput because a
+    single Python pipelined connection is client-bound near ~350K ops/sec and
+    would measure the client rather than the server.
+    """
+    cmd = [
+        str(rb_bin), "-h", "127.0.0.1", "-p", str(port),
+        "-n", str(requests), "-P", str(pipeline), "-c", "1", "-q",
+        "-r", str(max(1, keyspace)),
+    ] + [str(part) for part in command]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    match = re.search(r"([0-9]+\.?[0-9]*)\s+requests per second", proc.stdout)
+    if match is None:
+        raise RuntimeError(
+            f"redis-benchmark produced no throughput line "
+            f"(stdout={proc.stdout!r}, stderr={proc.stderr!r})"
+        )
+    return float(match.group(1))
+
+
+def redis_benchmark_populate_probe(rb_bin: Path,
+                                   port: int,
+                                   key: str,
+                                   members: int,
+                                   timeout: float) -> None:
+    """Populate a probe key whose members use redis-benchmark's `__rand_int__`
+    token, so the read commands below hit existing members. Random scores give
+    ZRANK a realistic score distribution."""
+    redis_benchmark_rps(
+        rb_bin, port,
+        ["zadd", key, "__rand_int__", "member:__rand_int__"],
+        requests=members * 3, pipeline=128, keyspace=members, timeout=timeout)
+
+
 def run_target(server: ServerProcess, args: argparse.Namespace) -> list[BenchmarkResult]:
     client = RespClient("127.0.0.1", server.port, timeout=args.timeout)
     try:
@@ -573,6 +616,39 @@ def run_target(server: ServerProcess, args: argparse.Namespace) -> list[Benchmar
         goblin_memory = (
             goblin_memory_stats(client, key) if server.name == "goblin" else None
         )
+
+        # Single-member read throughput is measured with redis-benchmark (a C
+        # load generator) because one Python pipelined connection is
+        # client-bound near ~350K ops/sec and would measure the client, not the
+        # server. Reads run against a probe key populated so `__rand_int__`
+        # lookups hit. Memory stats above are captured before this extra key.
+        rb_bin = getattr(args, "redis_benchmark_bin", None)
+        use_rb = rb_bin is not None
+        rb_key = f"{key}:rb"
+        if use_rb:
+            try:
+                redis_benchmark_populate_probe(
+                    rb_bin, server.port, rb_key, args.members, args.timeout)
+            except Exception as exc:  # noqa: BLE001 - fall back to Python client.
+                print(f"warning: redis-benchmark unusable ({exc}); using the "
+                      f"Python client for read ops", file=sys.stderr)
+                use_rb = False
+
+        def read_result(metric: str, verb: str) -> BenchmarkResult:
+            if use_rb:
+                rps = redis_benchmark_rps(
+                    rb_bin, server.port, [verb, rb_key, "member:__rand_int__"],
+                    args.ops, args.pipeline, args.members, args.timeout)
+                seconds = (args.ops / rps) if rps > 0 else 0.0
+            else:
+                _, seconds = time_pipeline(
+                    client,
+                    one_member_commands(verb.upper(), lookup_ids, key),
+                    args.pipeline)
+            return make_result(server.name, metric, args.ops, seconds,
+                               args.members, rss_baseline, rss_after_load,
+                               rss_after_load, used_memory, used_memory,
+                               goblin_memory)
 
         results: list[BenchmarkResult] = [
             make_result(
@@ -603,41 +679,9 @@ def run_target(server: ServerProcess, args: argparse.Namespace) -> list[Benchmar
             ),
         ]
 
-        _, zscore_seconds = time_pipeline(
-            client,
-            one_member_commands("ZSCORE", lookup_ids, key),
-            args.pipeline,
-        )
-        results.append(
-            make_result(server.name, "zscore_ops", args.ops, zscore_seconds,
-                        args.members,
-                        rss_baseline, rss_after_load, rss_after_load, used_memory,
-                        used_memory, goblin_memory)
-        )
-
-        _, zrank_seconds = time_pipeline(
-            client,
-            one_member_commands("ZRANK", lookup_ids, key),
-            args.pipeline,
-        )
-        results.append(
-            make_result(server.name, "zrank_ops", args.ops, zrank_seconds,
-                        args.members,
-                        rss_baseline, rss_after_load, rss_after_load, used_memory,
-                        used_memory, goblin_memory)
-        )
-
-        _, zrevrank_seconds = time_pipeline(
-            client,
-            one_member_commands("ZREVRANK", lookup_ids, key),
-            args.pipeline,
-        )
-        results.append(
-            make_result(server.name, "zrevrank_ops", args.ops, zrevrank_seconds,
-                        args.members,
-                        rss_baseline, rss_after_load, rss_after_load, used_memory,
-                        used_memory, goblin_memory)
-        )
+        results.append(read_result("zscore_ops", "zscore"))
+        results.append(read_result("zrank_ops", "zrank"))
+        results.append(read_result("zrevrank_ops", "zrevrank"))
 
         _, zrange_seconds = time_pipeline(
             client,
@@ -905,6 +949,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--goblin-score-string-cache", action="store_true")
     parser.add_argument("--goblin-max-output-buffer-mib", type=int)
     parser.add_argument("--redis-server", type=Path, default=Path(shutil.which("redis-server") or "redis-server"))
+    parser.add_argument(
+        "--redis-benchmark",
+        type=str,
+        default=shutil.which("redis-benchmark"),
+        help="Path to redis-benchmark, used as a C load generator for "
+             "single-member read throughput (ZSCORE/ZRANK/ZREVRANK). Defaults "
+             "to the one on PATH. Pass 'none' to force the Python client.")
     parser.add_argument("--members", type=int, default=1_000_000)
     parser.add_argument("--ops", type=int, default=1_000_000)
     parser.add_argument("--remove-members", type=int, default=500_000)
@@ -940,6 +991,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "--zadd-batch, --zrem-batch, --range-size, --pipeline, "
             "and --latency-pipeline-depth must be positive"
         )
+
+    rb = args.redis_benchmark
+    if rb in (None, "", "none", "None"):
+        args.redis_benchmark_bin = None
+    else:
+        resolved = rb if Path(rb).exists() else shutil.which(rb)
+        if resolved is None:
+            parser.error(f"--redis-benchmark not found: {rb}")
+        args.redis_benchmark_bin = Path(resolved)
     return args
 
 

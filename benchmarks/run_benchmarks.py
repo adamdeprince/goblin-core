@@ -718,6 +718,15 @@ def write_report(mode_jsons: dict[str, Path],
         "reports `INFO memory used_memory`; Goblin Core reports internal zset "
         "allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.",
         "",
+        "Memory is the primary comparison; throughput is secondary. Single-member "
+        "read throughput (`ZSCORE`, `ZRANK`, `ZREVRANK`) is driven by "
+        "`redis-benchmark`, a C load generator, because one Python pipelined "
+        "connection is client-bound near ~350K ops/sec and would measure the "
+        "client, not the server. Batched/range throughput rows remain "
+        "Python-driven and are similarly client-bound; process RSS and "
+        "`used_memory` are unaffected by client speed. Pass `--redis-benchmark "
+        "none` to force the client-bound Python read path.",
+        "",
         "Host:",
         "",
         f"- {platform.platform()} {platform.machine()}",
@@ -873,6 +882,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
                         default=ROOT / "benchmark-results" / "benchmark-report.md")
     parser.add_argument("--redis-server", type=Path,
                         default=Path(shutil.which("redis-server") or "redis-server"))
+    parser.add_argument("--redis-benchmark", type=str,
+                        default=shutil.which("redis-benchmark") or "none",
+                        help="Path to redis-benchmark (C load generator) used for "
+                             "single-member read throughput. 'none' forces the "
+                             "client-bound Python read path.")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--report-only", action="store_true",
                         help="Regenerate the Markdown report from existing JSON artifacts.")
@@ -981,6 +995,8 @@ def benchmark_command(args: argparse.Namespace,
         goblin_bin,
         "--redis-server",
         args.redis_server,
+        "--redis-benchmark",
+        args.redis_benchmark,
         "--members",
         args.members,
         "--ops",

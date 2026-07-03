@@ -4,6 +4,33 @@ Generated: 2026-07-02 15:42:47 UTC.
 
 These results compare Goblin Core against Redis for the current sorted-set-focused implementation. Goblin Core's optional rank-location cache and score-string cache are off by default.
 
+## Headline: Memory Footprint
+
+Goblin Core's reason to exist is memory. It stores a sorted set in about `55` RSS bytes per member versus Redis at about `130` — roughly `42%` of Redis's resident memory — and the ratio holds flat as the set grows (avx10, Intel Xeon 6975P-C, Redis `8.0.5`):
+
+| Members | Goblin Core RSS B/member | Redis RSS B/member | Goblin Core / Redis | Goblin Core RSS saved |
+| ---: | ---: | ---: | ---: | ---: |
+| 250K | `55.6` | `129.4` | `42.9%` | `18` MiB |
+| 1M | `55.2` | `133.2` | `41.5%` | `74` MiB |
+| 4M | `55.3` | `128.8` | `42.9%` | `281` MiB |
+
+Goblin Core's tracked zset allocation (`~56` B/member via `GOBLIN.MEMORY`) is within ~2% of its RSS delta, so almost none of the footprint is allocator slack. The saved RSS grows linearly with member count.
+
+## Headline: Throughput (secondary)
+
+Throughput is a nice-to-have, not the pitch. Single-member read throughput must be measured with a C load generator: one Python pipelined connection is client-bound near `~350K` ops/sec, so the Python-driven tables further down understate both servers and previously reported `ZSCORE` at a misleading `0.95x` (the client, not the server). Measured with `redis-benchmark` against a loaded 1M-member set (pinned server/client, `-c 1 -P 256`):
+
+| Operation | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
+| --- | ---: | ---: | ---: |
+| `ZSCORE` | `1,347,795` | `1,032,120` | `1.31x` |
+| `ZRANK` | `900,958` | `396,256` | `2.27x` |
+| `ZREVRANK` | `893,712` | `405,900` | `2.20x` |
+| `ZADD` (score update) | `554,512` | `220,180` | `2.52x` |
+| `ZRANGE` (16) | `961,600` | `709,392` | `1.36x` |
+| `ZRANGE WITHSCORES` (16) | `601,361` | `414,898` | `1.45x` |
+
+The RESP throughput tables in the sections below come from the Python harness. `benchmarks/zset_benchmark.py` now drives `ZSCORE`/`ZRANK`/`ZREVRANK` through `redis-benchmark`, but the batched/range throughput rows remain client-bound; treat the sections below primarily as memory/RSS sources and cross-check throughput against the table above.
+
 ## Methodology
 
 The benchmark starts each server on a temporary localhost port, drives both over RESP, and records throughput plus process RSS. Redis also reports `INFO memory used_memory`; Goblin Core reports internal zset allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.

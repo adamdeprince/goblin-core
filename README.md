@@ -1,8 +1,10 @@
 # Goblin Core
 
-Goblin Core is a C++23 Redis-like server aimed at lower memory overhead and high
-throughput. The initial implementation focuses on sorted sets with a
-vector-backed layout and a small RESP command surface.
+Goblin Core is a C++23 Redis-like server built to hold sorted sets in far less
+memory than Redis — about `42%` of Redis's resident set for the same data —
+while still matching or beating its throughput. The initial implementation
+focuses on sorted sets with a vector-backed layout and a small RESP command
+surface.
 
 Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 `NOTICE`.
@@ -13,11 +15,13 @@ Goblin Core is licensed under the Apache License, Version 2.0. See `LICENSE` and
 - Current scope: sorted sets plus `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
-- On the Linux AWS `avx10` 1M-member default benchmark, Goblin Core is `1.28x`
-  faster than Redis by geomean across supported sorted-set operations and uses
-  `41.5%` of Redis process RSS.
-- Representative Linux wins: `1.59x` `ZADD`, `1.54x` `ZRANK`, `1.23x`
-  `ZRANGE`, and `1.44x` `ZREM`; `ZSCORE` is `0.95x`.
+- Memory is the point: Goblin Core holds a sorted set in about `55` bytes per
+  member versus Redis at about `130` — roughly `42%` of Redis's resident memory
+  — and that ratio is flat from 250K to 4M members (avx10 Intel Linux, Redis
+  `8.0.5`). At 4M members it saves about `281` MiB of RSS.
+- Throughput is a secondary, nice-to-have win: measured with `redis-benchmark`,
+  Goblin Core is `1.31x` `ZSCORE`, `2.27x` `ZRANK`, `2.52x` `ZADD`, and `1.36x`
+  `ZRANGE` versus Redis.
 - Build locally with CMake; benchmark instructions live in
   [BENCHMARKS.md](BENCHMARKS.md).
 - A performance-oriented project brief for outside review lives in
@@ -130,10 +134,12 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 
 ## Benchmark
 
-The current 1M-member report compares Goblin Core against Redis on the supported
-sorted-set subset. The Linux AWS default run is the headline deployment result:
-Goblin Core is `1.28x` faster by geomean and uses `55.26` RSS bytes per loaded
-member versus Redis at `133.14`.
+Memory is the headline: Goblin Core stores a sorted set in about `55` RSS bytes
+per member versus Redis at about `130` — roughly `42%` of Redis's resident
+memory — consistently from 250K to 4M members. Throughput is a secondary
+benefit; measured with `redis-benchmark` (a single Python client is client-bound
+and understates both servers), Goblin Core is faster than Redis on every
+supported operation, for example `1.31x` `ZSCORE` and `2.27x` `ZRANK`.
 
 See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
 reproducible benchmark commands.

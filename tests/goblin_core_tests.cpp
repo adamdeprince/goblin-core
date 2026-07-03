@@ -64,6 +64,41 @@ void test_protocol_error() {
   assert(parser.has_error());
 }
 
+void test_resp_parser_pipeline_and_pop_into() {
+  goblin::core::RespParser parser;
+  // Two pipelined commands in a single append share the field pool.
+  parser.append(
+      "*3\r\n$6\r\nZSCORE\r\n$1\r\nk\r\n$3\r\nfoo\r\n"
+      "*2\r\n$5\r\nZRANK\r\n$3\r\nbar\r\n");
+
+  std::vector<std::string_view> fields;
+  assert(parser.pop_into(fields));
+  assert((fields == std::vector<std::string_view>{"ZSCORE", "k", "foo"}));
+  assert(parser.pop_into(fields));
+  assert((fields == std::vector<std::string_view>{"ZRANK", "bar"}));
+  assert(!parser.pop_into(fields));
+
+  // After a full drain the pool and buffer compact; a fresh batch must still
+  // resolve field views correctly against the shifted buffer.
+  parser.append("*2\r\n$5\r\nZCARD\r\n$4\r\nzkey\r\n");
+  assert(parser.pop_into(fields));
+  assert((fields == std::vector<std::string_view>{"ZCARD", "zkey"}));
+  assert(!parser.pop_into(fields));
+
+  // pop() and pop_into() read the same wire; interleave them and include an
+  // empty bulk field.
+  parser.append(
+      "*1\r\n$4\r\nPING\r\n"
+      "*2\r\n$6\r\nZSCORE\r\n$0\r\n\r\n");
+  auto frame = parser.pop();
+  assert(frame.has_value());
+  assert((frame->fields == std::vector<std::string_view>{"PING"}));
+  assert(parser.pop_into(fields));
+  assert((fields == std::vector<std::string_view>{"ZSCORE", ""}));
+  assert(!parser.pop_into(fields));
+  assert(!parser.has_error());
+}
+
 void test_resp_bulk_writer_small_header_table() {
   assert(goblin::core::resp::bulk_string("") == "$0\r\n\r\n");
 
@@ -767,6 +802,7 @@ int main() {
   test_resp_parser_incremental();
   test_inline_parser();
   test_protocol_error();
+  test_resp_parser_pipeline_and_pop_into();
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
   test_command_dispatch();
