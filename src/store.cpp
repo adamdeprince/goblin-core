@@ -7,9 +7,11 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <istream>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <span>
 #include <sstream>
 #include <stdexcept>
@@ -626,6 +628,191 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
   zset->compact(member_index_density);
   const auto after = zset->memory_stats().total_allocated_bytes;
   return before > after ? before - after : 0;
+}
+
+void ZSet::save(snapshot::Writer& writer) const {
+  writer.u8(static_cast<std::uint8_t>(options_.rank_cache_mode));
+  writer.u8(options_.score_string_cache ? 1 : 0);
+  writer.f64(options_.member_index_growth);
+
+  const auto member_count = static_cast<std::uint32_t>(member_storage_->size());
+  writer.u64(member_count);
+
+  // Canonical layer: (score, member bytes) in member-id order. This alone is
+  // enough to reconstruct the zset.
+  for (std::uint32_t id = 0; id < member_count; ++id) {
+    writer.f64(member_storage_->score(id));
+    writer.str(member_storage_->view(id));
+  }
+
+  // Accelerator layer: the member index dumped verbatim, then member ids in
+  // ascending score order (so the score index can be rebuilt without sorting).
+  members_.write_accelerator(writer);
+  const auto ordered = entries_.range(0, entries_.size());
+  for (const auto& entry : ordered) {
+    writer.u32(entry.member_id);
+  }
+}
+
+ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
+  ZSetOptions options;
+  options.rank_cache_mode = static_cast<RankCacheMode>(reader.u8());
+  options.score_string_cache = reader.u8() != 0;
+  options.member_index_growth = reader.f64();
+
+  ZSet zset(options);
+  const auto member_count = static_cast<std::uint32_t>(reader.u64());
+  zset.member_storage_->reserve(member_count);
+
+  // Canonical rebuild: push_back assigns member ids 0..N-1 in the same order
+  // they were written, so accelerator member ids stay valid. Dead arena bytes
+  // are naturally dropped.
+  for (std::uint32_t id = 0; id < member_count; ++id) {
+    const double score = reader.f64();
+    const auto member = reader.str();
+    (void)zset.member_storage_->push_back(member, score);
+  }
+
+  if (use_accelerator) {
+    zset.members_.read_accelerator(reader, zset.member_storage_.get());
+    if (zset.members_.size() != member_count) {
+      throw snapshot::snapshot_error("snapshot member index size mismatch");
+    }
+    std::vector<ZSetScoreEntry> ordered;
+    ordered.reserve(member_count);
+    for (std::uint32_t i = 0; i < member_count; ++i) {
+      const auto id = reader.u32();
+      if (id >= member_count) {
+        throw snapshot::snapshot_error("snapshot score order id out of range");
+      }
+      ordered.push_back(
+          ZSetScoreEntry{.score = zset.member_storage_->score(id), .member_id = id});
+    }
+    zset.entries_.assign_sorted(ordered);
+  } else {
+    // Slow path: rebuild both indexes from the canonical members. The score
+    // index is built with insert() so that equal scores order by member bytes
+    // exactly as the live structure does -- matching the order the accelerator
+    // would have restored.
+    zset.members_.reserve_for_density(member_count, kDefaultMemberIndexDensity);
+    for (std::uint32_t id = 0; id < member_count; ++id) {
+      zset.members_.insert_packed(zset.member_storage_->view(id),
+                                  ZSetMemberMeta{.member_id = id});
+      zset.entries_.insert(
+          ZSetScoreEntry{.score = zset.member_storage_->score(id), .member_id = id});
+    }
+  }
+
+  zset.rebind_indexes();
+  return zset;
+}
+
+void Store::save(std::ostream& out) const {
+  const std::size_t key_count =
+      (inline_zset_.has_value() ? 1 : 0) + overflow_zsets_.size();
+
+  std::string header;
+  snapshot::Writer header_writer(header);
+  header_writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
+  header_writer.u32(snapshot::kFormatVersion);
+  header_writer.u32(snapshot::kAcceleratorVersion);
+  header_writer.u32(snapshot::kFlagAccelerator);
+  header_writer.u64(key_count);
+  out.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+  std::string payload;
+  auto emit = [&out, &payload](std::string_view key, const ZSet& zset) {
+    payload.clear();
+    snapshot::Writer writer(payload);
+    writer.str(key);
+    zset.save(writer);
+
+    std::string frame;
+    snapshot::Writer frame_writer(frame);
+    frame_writer.u64(payload.size());
+    frame_writer.u64(snapshot::checksum(payload));
+    out.write(frame.data(), static_cast<std::streamsize>(frame.size()));
+    out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+  };
+
+  if (inline_zset_.has_value()) {
+    emit(inline_key_, *inline_zset_);
+  }
+  overflow_zsets_.for_each([&emit](const std::pair<std::string, ZSet>& entry) {
+    emit(entry.first, entry.second);
+  });
+
+  if (!out) {
+    throw snapshot::snapshot_error("snapshot write failed");
+  }
+}
+
+SnapshotLoadStats Store::load(std::istream& in) {
+  inline_zset_.reset();
+  inline_key_.clear();
+  overflow_zsets_.clear();
+
+  auto read_exact = [&in](std::size_t size) {
+    std::string buffer(size, '\0');
+    in.read(buffer.data(), static_cast<std::streamsize>(size));
+    if (static_cast<std::size_t>(in.gcount()) != size) {
+      throw snapshot::snapshot_error("snapshot truncated");
+    }
+    return buffer;
+  };
+
+  try {
+    const auto header = read_exact(sizeof(snapshot::kMagic) + 4 + 4 + 4 + 8);
+    snapshot::Reader header_reader(header);
+    if (header_reader.bytes(sizeof(snapshot::kMagic)) !=
+        std::string_view(snapshot::kMagic, sizeof(snapshot::kMagic))) {
+      throw snapshot::snapshot_error("not a Goblin Core snapshot");
+    }
+    if (header_reader.u32() != snapshot::kFormatVersion) {
+      throw snapshot::snapshot_error("unsupported snapshot canonical version");
+    }
+    const auto accelerator_version = header_reader.u32();
+    const auto flags = header_reader.u32();
+    const auto key_count = header_reader.u64();
+
+    const bool use_accelerator =
+        (flags & snapshot::kFlagAccelerator) != 0 &&
+        accelerator_version == snapshot::kAcceleratorVersion;
+
+    SnapshotLoadStats stats;
+    stats.used_accelerator = use_accelerator;
+    for (std::uint64_t k = 0; k < key_count; ++k) {
+      const auto frame = read_exact(16);
+      snapshot::Reader frame_reader(frame);
+      const auto payload_size = frame_reader.u64();
+      const auto expected_checksum = frame_reader.u64();
+      const auto payload = read_exact(payload_size);
+      if (snapshot::checksum(payload) != expected_checksum) {
+        throw snapshot::snapshot_error("snapshot checksum mismatch");
+      }
+      snapshot::Reader reader(payload);
+      auto key = std::string(reader.str());
+      ZSet zset = ZSet::load(reader, use_accelerator);
+      stats.members += zset.size();
+      place_loaded_zset(std::move(key), std::move(zset));
+      ++stats.keys;
+    }
+    return stats;
+  } catch (...) {
+    inline_zset_.reset();
+    inline_key_.clear();
+    overflow_zsets_.clear();
+    throw;
+  }
+}
+
+void Store::place_loaded_zset(std::string key, ZSet&& zset) {
+  if (!inline_zset_.has_value() && overflow_zsets_.empty()) {
+    inline_key_ = std::move(key);
+    inline_zset_.emplace(std::move(zset));
+  } else {
+    overflow_zsets_.try_emplace(std::move(key), std::move(zset));
+  }
 }
 
 StoreMemoryStats Store::memory_stats() const noexcept {

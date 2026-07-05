@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iosfwd>
 #include <memory>
 #include <optional>
 #include <span>
@@ -10,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "goblin/core/snapshot.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
 #include "goblin/core/zset_member_storage.hpp"
@@ -22,6 +24,13 @@ namespace goblin::core {
 // packing tight while still leaving empty slots so lookups of absent members
 // terminate quickly (a fully packed 1.0 index makes misses scan O(n)).
 inline constexpr double kDefaultMemberIndexDensity = 0.97;
+
+// Result of Store::load.
+struct SnapshotLoadStats {
+  std::size_t keys{0};
+  std::size_t members{0};
+  bool used_accelerator{false};  // false if the canonical (slow) path was taken
+};
 
 struct ZSetEntry {
   std::string_view member;
@@ -281,6 +290,11 @@ class ZSet {
   [[nodiscard]] bool check_invariants() const;
   [[nodiscard]] ZSetMemoryStats memory_stats() const noexcept;
   void compact(double member_index_density = kDefaultMemberIndexDensity);
+
+  // Snapshot serialization of a single zset (options + canonical members +
+  // accelerator). See snapshot.hpp for the format contract.
+  void save(snapshot::Writer& writer) const;
+  [[nodiscard]] static ZSet load(snapshot::Reader& reader, bool use_accelerator);
 
   [[nodiscard]] std::size_t allocated_member_slots() const noexcept;
   [[nodiscard]] std::size_t free_member_slots() const noexcept;
@@ -588,7 +602,17 @@ class Store {
       std::string_view key,
       double member_index_density = kDefaultMemberIndexDensity);
 
+  // Write every zset to `out` as a snapshot (see snapshot.hpp). Throws
+  // std::ios_base::failure / snapshot_error on I/O trouble.
+  void save(std::ostream& out) const;
+
+  // Replace all current data with the snapshot read from `in`. On any error
+  // (bad magic, unsupported canonical version, checksum mismatch, truncation)
+  // throws snapshot::snapshot_error and leaves the store empty.
+  SnapshotLoadStats load(std::istream& in);
+
  private:
+  void place_loaded_zset(std::string key, ZSet&& zset);
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;
   [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept;
   [[nodiscard]] ZSet& get_or_create_zset(std::string_view key);

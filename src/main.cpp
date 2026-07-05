@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -82,6 +83,7 @@ void print_usage(std::string_view program) {
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--member-index-growth FACTOR]\n"
+            << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n";
 }
@@ -91,6 +93,7 @@ void print_usage(std::string_view program) {
 int main(int argc, char** argv) {
   goblin::core::ServerConfig config;
   goblin::core::StoreOptions store_options;
+  std::optional<std::string> load_path;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -160,6 +163,15 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--load") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      load_path = argv[++i];
+      continue;
+    }
+
     if (arg == "--score-string-cache") {
       store_options.score_string_cache = true;
       continue;
@@ -212,6 +224,25 @@ int main(int argc, char** argv) {
             << " avx512vl=" << caps.avx512vl << '\n';
 
   goblin::core::Store store(store_options);
+
+  if (load_path) {
+    std::ifstream snapshot(*load_path, std::ios::binary);
+    if (!snapshot) {
+      std::cerr << "goblin-core: cannot open snapshot: " << *load_path << '\n';
+      return 1;
+    }
+    try {
+      const auto stats = store.load(snapshot);
+      std::cout << "goblin-core: loaded " << stats.members << " members across "
+                << stats.keys << " keys from " << *load_path
+                << (stats.used_accelerator ? " (accelerated)" : " (rebuilt)")
+                << '\n';
+    } catch (const std::exception& error) {
+      std::cerr << "goblin-core: failed to load snapshot: " << error.what() << '\n';
+      return 1;
+    }
+  }
+
   goblin::core::Server server(config, store);
   return server.run();
 }

@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <limits>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -852,6 +853,123 @@ void test_goblin_optimize_density_and_growth() {
          0.6);
 }
 
+void test_snapshot_round_trip() {
+  using goblin::core::Store;
+
+  // Build a store with several keys, duplicate/negative scores, and some
+  // removals (to exercise dense-id maintenance and swiss tombstones).
+  Store store;
+  for (int i = 0; i < 600; ++i) {
+    // Many members share a score, so tie-ordering by member bytes is exercised.
+    (void)store.zadd("scores", static_cast<double>((i * 13) % 40) - 15.0,
+                     "m" + std::to_string(i));
+  }
+  for (int i = 0; i < 600; i += 7) {
+    execute_fields(store, {"ZREM", "scores", "m" + std::to_string(i)});
+  }
+  (void)store.zadd("pair", 3.5, "pi");
+  (void)store.zadd("pair", 3.5, "e");   // equal score, different bytes
+  (void)store.zadd("solo", -0.0, "only");
+
+  std::ostringstream out(std::ios::binary);
+  store.save(out);
+  const std::string bytes = out.str();
+  assert(!bytes.empty());
+
+  auto verify = [&store](Store& loaded) {
+    for (std::string_view key : {"scores", "pair", "solo"}) {
+      assert(loaded.zcard(key) == store.zcard(key));
+    }
+    for (int i = 1; i < 600; i += 3) {
+      const auto member = "m" + std::to_string(i);
+      assert(loaded.zscore("scores", member) == store.zscore("scores", member));
+      assert(loaded.zrank("scores", member) == store.zrank("scores", member));
+    }
+    // Tie order (equal scores) must match.
+    assert(loaded.zrank("pair", "e") == store.zrank("pair", "e"));
+    assert(loaded.zrank("pair", "pi") == store.zrank("pair", "pi"));
+    assert(loaded.zscore("solo", "only") == store.zscore("solo", "only"));
+  };
+
+  // Fast path: accelerator version matches, so indexes are memcpy-restored.
+  {
+    Store loaded;
+    std::istringstream in(bytes, std::ios::binary);
+    const auto stats = loaded.load(in);
+    assert(stats.used_accelerator);
+    assert(stats.keys == 3);
+    verify(loaded);
+  }
+
+  // Slow path: bump the accelerator version byte in the header so the
+  // accelerator is discarded and indexes rebuild from the canonical layer.
+  // The result must be identical (including tie order).
+  {
+    std::string slow = bytes;
+    slow[8] = static_cast<char>(slow[8] + 1);  // accel_version low byte
+    Store loaded;
+    std::istringstream in(slow, std::ios::binary);
+    const auto stats = loaded.load(in);
+    assert(!stats.used_accelerator);
+    assert(stats.keys == 3);
+    verify(loaded);
+  }
+
+  // Corruption: flipping a payload byte must fail the checksum and leave the
+  // store empty (not partially loaded).
+  {
+    std::string corrupt = bytes;
+    corrupt[corrupt.size() - 4] = static_cast<char>(corrupt[corrupt.size() - 4] ^ 0xFF);
+    Store loaded;
+    (void)loaded.zadd("stale", 1.0, "x");
+    std::istringstream in(corrupt, std::ios::binary);
+    bool threw = false;
+    try {
+      (void)loaded.load(in);
+    } catch (const goblin::core::snapshot::snapshot_error&) {
+      threw = true;
+    }
+    assert(threw);
+    assert(loaded.zcard("stale") == 0);
+    assert(loaded.zcard("scores") == 0);
+  }
+
+  // A non-snapshot stream is rejected.
+  {
+    Store loaded;
+    std::istringstream in(std::string("not a snapshot at all, really"),
+                          std::ios::binary);
+    bool threw = false;
+    try {
+      (void)loaded.load(in);
+    } catch (const goblin::core::snapshot::snapshot_error&) {
+      threw = true;
+    }
+    assert(threw);
+  }
+
+  // Rank-cache modes are saved per-zset and their location maps are rebuilt on
+  // load (via assign_sorted / insert), so ZRANK still works.
+  for (auto mode : {goblin::core::RankCacheMode::Exact,
+                    goblin::core::RankCacheMode::BlockHint}) {
+    Store source(goblin::core::StoreOptions{.rank_cache_mode = mode});
+    for (int i = 0; i < 300; ++i) {
+      (void)source.zadd("z", static_cast<double>(i % 20), "k" + std::to_string(i));
+    }
+    std::ostringstream saved(std::ios::binary);
+    source.save(saved);
+
+    Store loaded;
+    std::istringstream in(saved.str(), std::ios::binary);
+    (void)loaded.load(in);
+    for (int i = 0; i < 300; i += 5) {
+      const auto member = "k" + std::to_string(i);
+      assert(loaded.zrank("z", member) == source.zrank("z", member));
+      assert(loaded.zscore("z", member) == source.zscore("z", member));
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -885,6 +1003,7 @@ int main() {
   test_command_dispatch();
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();
+  test_snapshot_round_trip();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
   test_score_string_cache_updates_with_scores();

@@ -22,6 +22,8 @@ enum class CommandType {
   zscore,
   goblin_memory,
   goblin_optimize,
+  goblin_save,
+  goblin_load,
   unknown,
 };
 

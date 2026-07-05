@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <exception>
+#include <fstream>
 #include <span>
 #include <string>
 #include <string_view>
@@ -328,6 +330,22 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     return {.command = std::move(command)};
   }
 
+  if (equals_ci(command.name, "GOBLIN.SAVE")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("goblin.save"));
+    }
+    command.type = CommandType::goblin_save;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "GOBLIN.LOAD")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("goblin.load"));
+    }
+    command.type = CommandType::goblin_load;
+    return {.command = std::move(command)};
+  }
+
   command.type = CommandType::unknown;
   return {.command = std::move(command)};
 }
@@ -433,6 +451,43 @@ void execute_command_into(Store& store,
         resp::append_null_bulk_string(out);
       } else {
         resp::append_integer(out, static_cast<long long>(*reclaimed));
+      }
+      return;
+    }
+
+    case CommandType::goblin_save: {
+      std::ofstream file(std::string(command.args[0]),
+                         std::ios::binary | std::ios::trunc);
+      if (!file) {
+        resp::append_error(out, "ERR cannot open snapshot file for writing");
+        return;
+      }
+      try {
+        store.save(file);
+      } catch (const std::exception& error) {
+        resp::append_error(out, "ERR snapshot save failed: " + std::string(error.what()));
+        return;
+      }
+      file.flush();
+      if (!file) {
+        resp::append_error(out, "ERR snapshot write failed");
+        return;
+      }
+      resp::append_simple_string(out, "OK");
+      return;
+    }
+
+    case CommandType::goblin_load: {
+      std::ifstream file(std::string(command.args[0]), std::ios::binary);
+      if (!file) {
+        resp::append_error(out, "ERR cannot open snapshot file for reading");
+        return;
+      }
+      try {
+        const auto stats = store.load(file);
+        resp::append_integer(out, static_cast<long long>(stats.keys));
+      } catch (const std::exception& error) {
+        resp::append_error(out, "ERR snapshot load failed: " + std::string(error.what()));
       }
       return;
     }

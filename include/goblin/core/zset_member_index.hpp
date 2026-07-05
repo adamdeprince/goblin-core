@@ -17,6 +17,7 @@
 #include <arm_neon.h>
 #endif
 
+#include "goblin/core/snapshot.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 
 namespace goblin::core {
@@ -215,6 +216,37 @@ class ZSetMemberIndex {
       if (is_full(i)) {
         fn(member_view(slots_[i].meta.member_id), slots_[i].meta);
       }
+    }
+  }
+
+  // Dump the raw table state (control bytes + per-slot member ids) so a restore
+  // can skip re-hashing. Tied to the current bucketing/fingerprint/layout; see
+  // snapshot::kAcceleratorVersion. The member bytes themselves live in the
+  // canonical layer, not here.
+  void write_accelerator(snapshot::Writer& writer) const {
+    writer.u64(capacity_);
+    writer.u64(size_);
+    writer.u64(tombstones_);
+    writer.bytes(reinterpret_cast<const char*>(control_.data()), control_.size());
+    for (size_type i = 0; i < capacity_; ++i) {
+      writer.u32(slots_[i].meta.member_id);
+    }
+  }
+
+  // Restore a table dumped by write_accelerator(). growth_ is left as
+  // constructed (it comes from options, not the dump). The caller must only
+  // invoke this when the accelerator version matches the running binary.
+  void read_accelerator(snapshot::Reader& reader, const ZSetMemberStorage* members) {
+    members_ = members;
+    capacity_ = static_cast<size_type>(reader.u64());
+    size_ = static_cast<size_type>(reader.u64());
+    tombstones_ = static_cast<size_type>(reader.u64());
+    const auto control = reader.bytes(capacity_ + kGroupWidth);
+    const auto* control_begin = reinterpret_cast<const std::uint8_t*>(control.data());
+    control_.assign(control_begin, control_begin + control.size());
+    slots_.resize(capacity_);
+    for (size_type i = 0; i < capacity_; ++i) {
+      slots_[i].meta.member_id = reader.u32();
     }
   }
 
