@@ -6,7 +6,7 @@ while beating its throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
 
-**Because your salary and your cloud bill are both cost centers.**
+**Because no CTO ever wants to say: "We're letting you go — the cloud bill got too high."**
 
 
 Goblin Core is licensed under the Apache License, Version 2.0. See
@@ -86,7 +86,7 @@ grows by "stop the world and reindex" — an occasional synchronous rehash (and
 `GOBLIN.OPTIMIZE` is a deliberate repack) — where Redis rehashes incrementally
 and holds a better P99.9. That is a genuine advantage for Redis, and we are
 rejecting it on purpose: a bad P99.9 means one web page, once, loaded a little
-slowly. Redis optimizes for a real-time guarantee your web app doesn't cash.
+slowly. Don't optimize for a real-time guarantee your web app doesn't cash.
 You're paying RAM rent and CPU for determinism your users never notice.
 
 And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
