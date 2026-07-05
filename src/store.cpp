@@ -721,9 +721,12 @@ void Store::save(std::ostream& out) const {
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
   writer.u32(1);  // section count
-  // ZSET section header: family + accelerator version.
+  // ZSET section header: family, accelerator version, and the hash identity the
+  // accelerator's swiss dump was built with (a loader with a different std::hash
+  // must rebuild from canonical rather than trust the dump).
   writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Zset));
   writer.u32(snapshot::kZsetAcceleratorVersion);
+  writer.u64(ZSetMemberIndex::hash_identity());
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
 
   // ZSET section body: a stream of OP_ZSET instructions, then OP_END.
@@ -738,7 +741,7 @@ void Store::save(std::ostream& out) const {
     snapshot::Writer instruction_writer(instruction);
     instruction_writer.u8(static_cast<std::uint8_t>(snapshot::ZsetOpcode::Zset));
     instruction_writer.u64(operands.size());
-    instruction_writer.u64(snapshot::checksum(operands));
+    instruction_writer.u32(snapshot::checksum(operands));
     out.write(instruction.data(), static_cast<std::streamsize>(instruction.size()));
     out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
   };
@@ -812,15 +815,17 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
 
     SnapshotLoadStats stats;
     for (std::uint32_t s = 0; s < section_count; ++s) {
-      const auto section_header = read_exact(4 + 4);
+      const auto section_header = read_exact(4 + 4 + 8);
       snapshot::Reader section_reader(section_header);
       const auto section_type = section_reader.u32();
       const auto section_version = section_reader.u32();
+      const auto hash_identity = section_reader.u64();
 
       const bool is_zset =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Zset);
       const bool use_accelerator =
-          is_zset && section_version == snapshot::kZsetAcceleratorVersion;
+          is_zset && section_version == snapshot::kZsetAcceleratorVersion &&
+          hash_identity == ZSetMemberIndex::hash_identity();
       if (is_zset) {
         stats.used_accelerator = use_accelerator;
       }
@@ -831,10 +836,10 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
         if (opcode == snapshot::kOpEnd) {
           break;
         }
-        const auto frame = read_exact(16);
+        const auto frame = read_exact(8 + 4);  // operand length (u64) + CRC32C (u32)
         snapshot::Reader frame_reader(frame);
         const auto operand_size = frame_reader.u64();
-        const auto expected_checksum = frame_reader.u64();
+        const auto expected_checksum = frame_reader.u32();
         const auto operands = read_exact(operand_size);
         if (snapshot::checksum(operands) != expected_checksum) {
           throw snapshot::snapshot_error("snapshot checksum mismatch");

@@ -857,6 +857,10 @@ void test_goblin_optimize_density_and_growth() {
 void test_snapshot_round_trip() {
   using goblin::core::Store;
 
+  // Standard CRC32C (CRC-32/ISCSI) check value, so the hardware and software
+  // paths and every architecture agree on the format's checksum.
+  assert(goblin::core::snapshot::checksum("123456789") == 0xE3069283u);
+
   // Build a store with several keys, duplicate/negative scores, and some
   // removals (to exercise dense-id maintenance and swiss tombstones).
   Store store;
@@ -911,6 +915,20 @@ void test_snapshot_round_trip() {
     slow[20] = static_cast<char>(slow[20] + 1);
     Store loaded;
     std::istringstream in(slow, std::ios::binary);
+    const auto stats = loaded.load(in);
+    assert(!stats.used_accelerator);
+    assert(stats.keys == 3);
+    verify(loaded);
+  }
+
+  // Hash-identity mismatch (a snapshot written by a different std::hash, i.e.
+  // the cross-standard-library / cross-architecture case) also falls back to a
+  // canonical rebuild instead of trusting the swiss dump.
+  {
+    std::string other = bytes;
+    other[24] = static_cast<char>(other[24] + 1);  // hash_identity low byte
+    Store loaded;
+    std::istringstream in(other, std::ios::binary);
     const auto stats = loaded.load(in);
     assert(!stats.used_accelerator);
     assert(stats.keys == 3);

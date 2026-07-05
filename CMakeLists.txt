@@ -79,6 +79,19 @@ target_include_directories(goblin_core
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
+# Enable the CRC32C hardware instruction used by the snapshot checksum on x86
+# (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
+# on Apple; -march=native on Linux ARM), and LoongArch uses crcc unconditionally;
+# elsewhere the software table runs. PUBLIC so the header's inline checksum takes
+# the same path in the library, server, and tests.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-msse4.2" GOBLIN_HAS_SSE42)
+  if(GOBLIN_HAS_SSE42)
+    target_compile_options(goblin_core PUBLIC -msse4.2)
+  endif()
+endif()
+
 if(MSVC)
   target_compile_options(goblin_core PRIVATE /W4)
 else()

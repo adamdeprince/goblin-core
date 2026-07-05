@@ -44,6 +44,16 @@ class ZSetMemberIndex {
   // during load (memory-first; OPTIMIZE repacks read-mostly sets regardless).
   static constexpr double kDefaultGrowth = 1.1892071150027210;
 
+  // A dumped control/slot table only means anything to code whose hash puts
+  // members in the same buckets with the same fingerprints. std::hash differs
+  // across standard libraries (libc++ vs libstdc++), so a snapshot carries this
+  // probe; a loader whose hash_identity() differs must rebuild from canonical
+  // rather than trust the dump.
+  [[nodiscard]] static std::uint64_t hash_identity() noexcept {
+    return static_cast<std::uint64_t>(
+        std::hash<std::string_view>{}("goblin-core member index hash probe"));
+  }
+
   ZSetMemberIndex() = default;
 
   explicit ZSetMemberIndex(const ZSetMemberStorage* members,
