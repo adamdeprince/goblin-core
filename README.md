@@ -6,6 +6,8 @@ while beating its throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
 
+**Because your salary and your cloud bill are both cost centers.**
+
 
 Goblin Core is licensed under the Apache License, Version 2.0. See
 [LICENSE](https://github.com/adamdeprince/goblin-core/blob/main/LICENSE) and
