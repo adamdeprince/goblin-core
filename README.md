@@ -27,6 +27,15 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Throughput is a secondary win: measured with `redis-benchmark`,
   Goblin Core is `1.30x` `ZSCORE`, `2.03x` `ZRANK`, `2.23x` `ZADD`, and `1.46x`
   `ZRANGE` versus Redis.
+- Persistence is fast too: `GOBLIN.SAVE`/`--load` snapshots dump and restore the
+  packed indexes, so at 9.5M members they save about `5x` and load about `5.7x`
+  faster than a Redis RDB (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
+- Hardware intrinsics, selected at compile time (no runtime CPU dispatch): the
+  swiss-table member-index probe is a SIMD group scan (SSE2 on x86, NEON on
+  AArch64); snapshot checksums use the CRC32C instruction (SSE4.2 on x86 —
+  enabled automatically — the AArch64 CRC extension, or LoongArch); and range
+  output uses two-stage software prefetch. Portable scalar fallbacks cover
+  everything else, so it builds and runs anywhere.
 - Build locally with CMake; benchmark instructions live in
   [BENCHMARKS.md](BENCHMARKS.md).
 - A performance and architecture overview lives in
@@ -149,19 +158,18 @@ automatic or background saving yet: a crash loses writes made since the last
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
 "Migrating from Redis" below.
 
-`GOBLIN.SAVE <path> NOACCEL` writes a smaller, canonical-only snapshot without
-the packed-index accelerator. It saves fastest and produces a file near Redis's
-RDB size; loading it rebuilds the indexes (slower than the default, still faster
-than Redis). Use the default (`GOBLIN.SAVE <path>`) when restarts are frequent
-and it is the same build — the accelerator makes load ~5.6× faster than Redis by
-copying the indexes back instead of rebuilding them; use `NOACCEL` for smaller,
-portable files, or when moving snapshots between machines with different C++
-standard libraries (where the accelerator would be rebuilt on load anyway). See
-BENCHMARKS.md for the numbers.
+The default (`GOBLIN.SAVE <path>`) is the everyday restart path: it dumps the
+packed indexes so a same-build restart loads about `5.7×` faster than Redis by
+copying them back instead of rebuilding. `GOBLIN.SAVE <path> NOACCEL` is the
+upgrade/migration path — a smaller, canonical-only snapshot without the
+accelerator, for moving a snapshot across Goblin versions, architectures, or C++
+standard libraries, where the accelerator would be discarded and rebuilt on load
+anyway. Its load rebuilds every index (slower than the default, still faster than
+Redis). See BENCHMARKS.md for the numbers.
 
 ```sh
 redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn          # default (fast load)
-redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn NOACCEL  # smaller, portable
+redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn NOACCEL  # upgrade/migration path
 ```
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for

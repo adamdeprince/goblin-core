@@ -34,15 +34,27 @@ The RESP throughput tables in the sections below come from the Python harness. `
 
 ## Persistence
 
-Snapshot save and load are faster than Redis, and `GOBLIN.SAVE ... NOACCEL` trades file size for load speed. Identical data (~950K members) loaded into Redis 7.2.4, `SAVE`d, then imported into Goblin Core so the datasets match exactly; avx10, pinned server, min of 3 runs. "load" is startup-to-ready minus the empty-start baseline.
+Snapshot save and load are several times faster than Redis, and `GOBLIN.SAVE ... NOACCEL` trades file size for load speed. Identical data loaded into Redis 7.2.4, `SAVE`d, then imported into Goblin Core so the datasets match exactly; avx10, pinned server, min of 3 runs. "load" is startup-to-ready minus the empty-start baseline.
 
-| | save | file | bytes/member | load |
+9.5M members:
+
+| | save | load | file | bytes/member |
 | --- | ---: | ---: | ---: | ---: |
-| Redis 7.2.4 (RDB) | `0.167s` | `26.6` MB | `28` | `0.282s` |
-| Goblin Core, full (default) | `0.060s` | `39.1` MB | `41` | `0.050s` |
-| Goblin Core, `NOACCEL` | `0.030s` | `29.5` MB | `31` | `0.148s` |
+| Redis 7.2.4 (RDB) | `3.89s` | `3.98s` | `266` MB | `28` |
+| Goblin Core, full (default) | `0.78s` | `0.69s` | `388` MB | `41` |
+| Goblin Core, `NOACCEL` | `0.55s` | `3.01s` | `294` MB | `31` |
 
-Goblin Core beats Redis on both save and load in either mode. The default snapshot dumps the packed indexes (the "accelerator"): a larger file that loads about `5.6x` faster than Redis by memcpy-ing the indexes back instead of rebuilding them. `GOBLIN.SAVE <path> NOACCEL` drops the accelerator for a file near Redis's size and the fastest save; its load rebuilds every index yet is still about `1.9x` faster than Redis (Goblin's canonical parse plus index build is cheaper than Redis's RDB parse plus skiplist/dict construction). Use the default when restarts are frequent on the same build; use `NOACCEL` for smaller, portable files — it also loses nothing across a machine with a different `std::hash`, where the accelerator would be rebuilt on load anyway.
+At 9.5M, Goblin Core's default snapshot saves `5.0x` faster and loads `5.7x` faster than Redis; `NOACCEL` saves `7.1x` faster and loads `1.3x` faster. In steady-state throughput, Redis moves about `67` MB/s on both save and load (CPU-bound on RDB encode/decode plus skiplist/dict construction), while Goblin Core's default runs at roughly `500` MB/s save and `560` MB/s load — it dumps and `memcpy`s the packed structures with a hardware CRC32C rather than re-encoding and rebuilding. `NOACCEL` saves at about `530` MB/s but its load (`98` MB/s) rebuilds every index.
+
+The default snapshot dumps the packed indexes (the "accelerator") for a larger file that loads fastest, and it is the everyday restart path. `GOBLIN.SAVE <path> NOACCEL` is the upgrade/migration path, not a routine-restart option: it drops the accelerator for a smaller, portable, canonical-only file whose load rebuilds every index (slower, though still faster than Redis). Reach for it when moving snapshots across Goblin versions, architectures, or C++ standard libraries — cases where a loader would discard the accelerator and rebuild the indexes anyway, so the smaller file costs nothing extra.
+
+Scaling note: a smaller ~950K-member run measured much faster per item (default save `0.06s`, load `0.05s`) only because its ~30 MB files were cache-resident. At ~300 MB the 9.5M numbers above reflect real disk and cache behavior, so they are the representative rates. Extrapolating linearly from 9.5M (both already past cache), 100M members would be roughly:
+
+| | save | load | file |
+| --- | ---: | ---: | ---: |
+| Redis 7.2.4 (RDB) | `~41s` | `~42s` | `~2.8` GB |
+| Goblin Core, full | `~8s` | `~7s` | `~4.1` GB |
+| Goblin Core, `NOACCEL` | `~6s` | `~32s` | `~3.1` GB |
 
 ## Methodology
 

@@ -270,15 +270,21 @@ accelerator cannot be trusted — a newer index format, or a different `std::has
 build) — the loader ignores it and rebuilds the indexes from canonical: a slower
 load, identical data. Checksums are CRC32C.
 
-Accelerator vs canonical-only (`GOBLIN.SAVE path NOACCEL`): the default snapshot
-includes the accelerator; `NOACCEL` omits it. Both save and load faster than
-Redis RDB. At ~950K members (avx10): default saves in 0.06s to a 39 MB file and
-loads in 0.05s (about 5.6x faster than Redis, by memcpy-ing the indexes back);
-`NOACCEL` saves in 0.03s to a 30 MB file (near Redis's 27 MB) and loads in 0.15s,
-rebuilding every index yet still about 1.9x faster than Redis. Use the default
-when restarts are frequent on the same build; use `NOACCEL` for smaller, portable
-files, or when snapshots move between machines with different C++ standard
-libraries (the accelerator would be rebuilt on load there anyway).
+Accelerator (default) vs canonical-only (`GOBLIN.SAVE path NOACCEL`): the default
+accelerated snapshot is the common path. A normal restart memcpy's the packed
+indexes back rather than rebuilding them, so at 9.5M members (avx10) it saves in
+0.78s (about 5x faster than Redis) and loads in 0.69s (about 5.7x faster than
+Redis's 3.98s) -- Goblin runs ~500 MB/s save and ~560 MB/s load versus Redis's
+~67 MB/s on both (RDB encode/decode plus skiplist/dict build).
+
+`NOACCEL` is the upgrade/migration path, not a routine-restart option. It drops
+the accelerator for a smaller, portable, canonical-only file (294 MB near Redis's
+266 MB at 9.5M) whose load rebuilds every index (3.0s -- still faster than Redis,
+but well behind the accelerated 0.69s). Reach for it when moving snapshots across
+Goblin versions (a changed index format), architectures, or C++ standard
+libraries -- cases where a loader would discard the accelerator and rebuild the
+indexes anyway, so the smaller file costs nothing extra. For everyday restarts on
+the same build, use the default.
 
 Operationally: `GOBLIN.SAVE` before planned shutdowns and on a cron-like
 schedule; `--load` the latest snapshot on startup. A snapshot is smaller than
