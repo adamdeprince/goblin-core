@@ -1064,6 +1064,43 @@ void test_snapshot_save_clear_reload() {
   }
 }
 
+// Erasing from the score index rebalances underflowing blocks by merging with a
+// neighbor (merge_with_next). Scattered scores make blocks vary in fullness, so
+// a block that underflows (< kLoad/2) next to a near-full one merges into more
+// than a single block's maximum (2*kLoad+1) before splitting back -- that append
+// used to overflow. Bulk-add with scattered scores, then bulk-remove.
+void test_score_index_merge_after_erase() {
+  using goblin::core::Store;
+  Store store;
+  std::uint64_t rng = 88172645463325252ULL;
+  auto next = [&] {
+    rng ^= rng << 13;
+    rng ^= rng >> 7;
+    rng ^= rng << 17;
+    return rng;
+  };
+  const int n = 40000;
+  std::vector<std::string> names;
+  names.reserve(n);
+  for (int i = 0; i < n; ++i) {
+    char m[16];
+    std::snprintf(m, sizeof(m), "m%06d", i);
+    names.emplace_back(m);
+    (void)store.zadd("s", static_cast<double>(next() % 60000),
+                     std::string_view(names.back()));
+  }
+  const auto card0 = store.zcard("s");
+  std::vector<std::string_view> to_remove;
+  to_remove.reserve(30000);
+  for (int i = 0; i < 30000; ++i) to_remove.push_back(names[i]);
+  const auto removed = store.zrem("s", to_remove);
+  assert(removed == 30000);
+  assert(store.zcard("s") == card0 - removed);
+  for (int i : {30000, 35000, 39999}) {
+    assert(store.zscore("s", std::string_view(names[i])).has_value());
+  }
+}
+
 // The member-bytes arena is built from 1 MiB chunks. Filling one exactly
 // (8-byte members: 2^20 / 8 = 131072 of them) once left next_offset_ on a fresh
 // chunk boundary whose chunk was not yet allocated, so the next append indexed
@@ -1242,6 +1279,7 @@ int main() {
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
   test_snapshot_save_clear_reload();
+  test_score_index_merge_after_erase();
   test_member_arena_chunk_boundary();
   test_background_save();
   test_rdb_import();

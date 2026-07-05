@@ -691,6 +691,13 @@ class ZSetScoreIndex {
       if (required <= kLoad) {
         return kLoad;
       }
+      if (required > kLoad * 2 + 1) {
+        // A block's steady-state maximum is 2*kLoad+1, but merge_with_next
+        // transiently appends two adjacent blocks into one before splitting it
+        // back. Allocate the exact size so that append does not overflow; the
+        // split_block + trim that immediately follow restore the normal bound.
+        return required;
+      }
       if (required >= kLoad * 2) {
         return kLoad * 2 + 1;
       }
