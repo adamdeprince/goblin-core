@@ -150,9 +150,21 @@ current data with a snapshot, replying with the number of keys loaded. Snapshots
 are a portable canonical layer (members and scores) plus a version-gated
 accelerator (the packed indexes); a snapshot always loads on any build or
 machine, rebuilding the indexes from the canonical layer when the accelerator
-cannot be trusted (a different `std::hash`, a changed index format). There is no
-automatic or background saving yet: a crash loses writes made since the last
+cannot be trusted (a different `std::hash`, a changed index format). Persistence
+is explicit and client-driven: a crash loses writes made since the last
 `GOBLIN.SAVE`, so drive saves from your operations and `--load` on startup.
+
+By design, Goblin Core does not — and will not — offer automated (timing-based)
+snapshots or an append-only write log (AOF). This is the same principle as the
+64 KiB member cap: do the core sorted-set operations better than Redis rather
+than reimplement its peripheral features. Background saving and write-ahead
+logging add latency and throughput cost to the hot path, and they still make you
+pick an `fsync` interval that can lose data on a crash anyway — trading speed for
+a durability guarantee that is only ever partial. Those policies are better owned
+by you, outside the data store: trigger periodic snapshots from `cron` (or your
+scheduler), and if you need a durable, replayable write log, put the writes
+through a system built for it — Kafka, say — ahead of Goblin Core. Goblin Core
+stays a fast in-memory index; durability policy lives where it belongs.
 
 `GOBLIN.LOAD` and `--load` auto-detect the file by magic: a native Goblin
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
