@@ -82,12 +82,16 @@ throughput, and it deliberately declines guarantees that look good on paper but
 that your users never feel.
 
 The clearest example is tail latency. Goblin Core's Swiss-table member index
-grows by "stop the world and reindex" — an occasional synchronous rehash (and
-`GOBLIN.OPTIMIZE` is a deliberate repack) — where Redis rehashes incrementally
-and holds a better P99.9. That is a genuine advantage for Redis, and we are
-rejecting it on purpose: a bad P99.9 means one web page, once, loaded a little
-slowly. Don't optimize for a real-time guarantee your web app doesn't cash.
-You're paying RAM rent and CPU for determinism your users never notice.
+grows by "stop the world and reindex" — an amortized O(1) insert with an
+occasional synchronous O(n) rehash. We measured it (see BENCHMARKS.md): through
+p99.9, Goblin Core's write latency matches or slightly beats Redis; the cost
+lands in the far tail, where a rehash during growth is a millisecond-scale pause
+— about 19 spikes per million writes, worst ~30 ms — against Redis's incremental
+rehash and its ~1.5 ms max. We take that trade on purpose. A rare spike while a
+set is growing means one web page, once, loaded a little slowly — and
+`GOBLIN.OPTIMIZE` moves the reindex out of the serving path entirely. Don't
+optimize for a real-time guarantee your web app doesn't cash; you'd be paying RAM
+rent and CPU for determinism your users never notice.
 
 And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
 2025, server DRAM ran up over 60% quarter-over-quarter in Q2, and even now, in

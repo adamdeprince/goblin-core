@@ -56,6 +56,21 @@ Scaling note: a smaller ~950K-member run measured much faster per item (default 
 | Goblin Core, full | `~8s` | `~7s` | `~4.1` GB |
 | Goblin Core, `NOACCEL` | `~6s` | `~32s` | `~3.1` GB |
 
+## Write-Path Tail Latency
+
+The memory win comes from a Swiss-table member index that grows by reindexing: an amortized O(1) insert with an occasional synchronous O(n) rehash. That rehash is a pause, so it lands in the extreme tail of write latency. To measure it, one connection issues 1,000,000 individually-timed `ZADD`s that grow a single set from empty — no pipelining, so every round trip is one sample — on avx10 with the server pinned to one core and the client to another, versus Redis 7.2.4. Reproduce with `benchmarks/write_tail_latency.py`.
+
+| Percentile | Goblin Core | Redis 7.2.4 |
+| --- | ---: | ---: |
+| p50 | `31.6` us | `33.2` us |
+| p90 | `33.5` us | `35.5` us |
+| p99 | `43.1` us | `45.0` us |
+| p99.9 | `49.2` us | `50.6` us |
+| p99.99 | `85.8` us | `63.6` us |
+| max | `29.9` ms | `1.5` ms |
+
+**Through p99.9, Goblin Core matches or slightly beats Redis** — the rehash does not move the p50–p99.9 band. The difference is in the far tail: of 1,000,000 writes, 19 crossed 1 ms and 10 crossed 5 ms (the member-index rehashes), the largest being the final reindex of ~1M members at ~30 ms. Redis's incremental rehash spreads that work across operations and holds its max near 1.5 ms. So the "stop the world and reindex" cost is real but rare — ~19 spikes per million writes *during growth*, all beyond p99.99 — and it is the price of the memory layout. `GOBLIN.OPTIMIZE` performs the reindex on demand, so a load-then-`OPTIMIZE`-then-serve pattern moves those pauses out of the serving path entirely.
+
 ## Methodology
 
 The benchmark starts each server on a temporary localhost port, drives both over RESP, and records throughput plus process RSS. Redis also reports `INFO memory used_memory`; Goblin Core reports internal zset allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.
