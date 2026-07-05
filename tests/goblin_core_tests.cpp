@@ -1064,6 +1064,28 @@ void test_snapshot_save_clear_reload() {
   }
 }
 
+// The member-bytes arena is built from 1 MiB chunks. Filling one exactly
+// (8-byte members: 2^20 / 8 = 131072 of them) once left next_offset_ on a fresh
+// chunk boundary whose chunk was not yet allocated, so the next append indexed
+// an out-of-bounds chunk and crashed. Cross the boundary and verify the data.
+void test_member_arena_chunk_boundary() {
+  using goblin::core::Store;
+  Store store;
+  constexpr int kFill = (1 << 20) / 8;  // 8-byte members that fill one chunk
+  const int n = kFill + 200;
+  for (int i = 0; i < n; ++i) {
+    char m[9];
+    std::snprintf(m, sizeof(m), "%08d", i);
+    assert(store.zadd("arena", static_cast<double>(i), std::string_view(m, 8)) == 1);
+  }
+  assert(store.zcard("arena") == n);
+  for (int i : {0, kFill - 1, kFill, kFill + 1, n - 1}) {
+    char m[9];
+    std::snprintf(m, sizeof(m), "%08d", i);
+    assert(store.zscore("arena", std::string_view(m, 8)) == static_cast<double>(i));
+  }
+}
+
 // Background (fork/COW) save: the child writes the snapshot from a frozen copy
 // of the store while the parent could keep serving; it must reload identically.
 void test_background_save() {
@@ -1220,6 +1242,7 @@ int main() {
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
   test_snapshot_save_clear_reload();
+  test_member_arena_chunk_boundary();
   test_background_save();
   test_rdb_import();
   test_range_command_parses_indexes();

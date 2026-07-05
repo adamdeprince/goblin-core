@@ -294,16 +294,23 @@ class ZSetMemberStorage {
     }
 
     auto chunk_offset = next_offset_ & kChunkMask;
-    if (chunks_.empty() || chunk_offset + member.size() > kChunkBytes) {
-      if (chunk_offset != 0) {
-        next_offset_ += kChunkBytes - chunk_offset;
-      }
-      chunks_.push_back(std::make_unique_for_overwrite<char[]>(kChunkBytes));
+    // If the member would straddle a chunk boundary, skip to the next chunk.
+    if (chunk_offset + member.size() > kChunkBytes) {
+      next_offset_ += kChunkBytes - chunk_offset;
       chunk_offset = 0;
+    }
+    // Ensure the chunk holding next_offset_ exists. Keying the allocation on the
+    // chunk index (not the fit check) covers the case where the previous member
+    // filled a chunk exactly: next_offset_ then sits on a boundary with
+    // chunk_offset == 0, the fit check passes, but that chunk is not yet
+    // allocated.
+    const size_type chunk_index = next_offset_ >> kChunkShift;
+    while (chunks_.size() <= chunk_index) {
+      chunks_.push_back(std::make_unique_for_overwrite<char[]>(kChunkBytes));
     }
 
     const auto offset = static_cast<std::uint32_t>(next_offset_);
-    std::memcpy(chunks_[offset >> kChunkShift].get() + chunk_offset,
+    std::memcpy(chunks_[chunk_index].get() + chunk_offset,
                 member.data(),
                 member.size());
     next_offset_ += member.size();
@@ -331,16 +338,21 @@ class ZSetMemberStorage {
     }
 
     auto chunk_offset = score_text_next_offset_ & kChunkMask;
-    if (score_text_chunks_.empty() || chunk_offset + text.size() > kChunkBytes) {
-      if (chunk_offset != 0) {
-        score_text_next_offset_ += kChunkBytes - chunk_offset;
-      }
-      score_text_chunks_.push_back(std::make_unique_for_overwrite<char[]>(kChunkBytes));
+    // If the text would straddle a chunk boundary, skip to the next chunk.
+    if (chunk_offset + text.size() > kChunkBytes) {
+      score_text_next_offset_ += kChunkBytes - chunk_offset;
       chunk_offset = 0;
+    }
+    // Same exact-fill guard as append_bytes: allocate by chunk index so a
+    // chunk filled to the byte does not leave next_offset_ pointing at an
+    // unallocated chunk.
+    const size_type chunk_index = score_text_next_offset_ >> kChunkShift;
+    while (score_text_chunks_.size() <= chunk_index) {
+      score_text_chunks_.push_back(std::make_unique_for_overwrite<char[]>(kChunkBytes));
     }
 
     const auto offset = static_cast<std::uint32_t>(score_text_next_offset_);
-    std::memcpy(score_text_chunks_[offset >> kChunkShift].get() + chunk_offset,
+    std::memcpy(score_text_chunks_[chunk_index].get() + chunk_offset,
                 text.data(),
                 text.size());
     score_text_next_offset_ += text.size();
