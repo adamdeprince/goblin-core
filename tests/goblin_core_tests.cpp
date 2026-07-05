@@ -1034,6 +1034,22 @@ void test_snapshot_save_clear_reload() {
   std::istringstream in(out.str(), std::ios::binary);
   const auto stats = store.load(in);
   assert(stats.keys == keys.size());
+  assert(stats.used_accelerator);
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    assert(store.zcard(keys[i]) == cards[i]);
+    assert(full_range(keys[i]) == ranges[i]);
+  }
+
+  // Canonical-only save (accelerator dropped): smaller file, reports no
+  // accelerator on load, still round-trips exactly.
+  std::ostringstream lean(std::ios::binary);
+  store.save(lean, /*with_accelerator=*/false);
+  assert(lean.str().size() < out.str().size());
+  store.clear();
+  std::istringstream lean_in(lean.str(), std::ios::binary);
+  const auto lean_stats = store.load(lean_in);
+  assert(!lean_stats.used_accelerator);
+  assert(lean_stats.keys == keys.size());
   for (std::size_t i = 0; i < keys.size(); ++i) {
     assert(store.zcard(keys[i]) == cards[i]);
     assert(full_range(keys[i]) == ranges[i]);

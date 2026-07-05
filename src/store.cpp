@@ -713,7 +713,7 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
   return zset;
 }
 
-void Store::save(std::ostream& out) const {
+void Store::save(std::ostream& out, bool with_accelerator) const {
   // File header, then one section per data family. Only ZSET exists today.
   std::string header;
   snapshot::Writer writer(header);
@@ -721,21 +721,23 @@ void Store::save(std::ostream& out) const {
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
   writer.u32(1);  // section count
-  // ZSET section header: family, accelerator version, and the hash identity the
-  // accelerator's swiss dump was built with (a loader with a different std::hash
-  // must rebuild from canonical rather than trust the dump).
+  // ZSET section header: family, accelerator version (0 = this snapshot carries
+  // no accelerator), and the hash identity the accelerator's swiss dump was
+  // built with (a loader with a different std::hash must rebuild from canonical
+  // rather than trust the dump).
   writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Zset));
-  writer.u32(snapshot::kZsetAcceleratorVersion);
+  writer.u32(with_accelerator ? snapshot::kZsetAcceleratorVersion : 0);
   writer.u64(ZSetMemberIndex::hash_identity());
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
 
   // ZSET section body: a stream of OP_ZSET instructions, then OP_END.
   std::string operands;
-  auto emit_zset = [&out, &operands](std::string_view key, const ZSet& zset) {
+  auto emit_zset = [&out, &operands, with_accelerator](std::string_view key,
+                                                       const ZSet& zset) {
     operands.clear();
     snapshot::Writer operand_writer(operands);
     operand_writer.str(key);
-    zset.save(operand_writer, /*with_accelerator=*/true);
+    zset.save(operand_writer, with_accelerator);
 
     std::string instruction;
     snapshot::Writer instruction_writer(instruction);

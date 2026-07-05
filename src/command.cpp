@@ -331,7 +331,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   }
 
   if (equals_ci(command.name, "GOBLIN.SAVE")) {
-    if (command.args.size() != 1) {
+    if (command.args.size() != 1 && command.args.size() != 2) {
       return parse_error(wrong_arity("goblin.save"));
     }
     command.type = CommandType::goblin_save;
@@ -456,6 +456,15 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::goblin_save: {
+      bool with_accelerator = true;
+      if (command.args.size() == 2) {
+        if (equals_ci(command.args[1], "noaccel")) {
+          with_accelerator = false;
+        } else if (!equals_ci(command.args[1], "accel")) {
+          resp::append_error(out, "ERR syntax error, expected ACCEL or NOACCEL");
+          return;
+        }
+      }
       std::ofstream file(std::string(command.args[0]),
                          std::ios::binary | std::ios::trunc);
       if (!file) {
@@ -463,7 +472,7 @@ void execute_command_into(Store& store,
         return;
       }
       try {
-        store.save(file);
+        store.save(file, with_accelerator);
       } catch (const std::exception& error) {
         resp::append_error(out, "ERR snapshot save failed: " + std::string(error.what()));
         return;

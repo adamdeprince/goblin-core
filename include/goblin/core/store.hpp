@@ -604,9 +604,11 @@ class Store {
       std::string_view key,
       double member_index_density = kDefaultMemberIndexDensity);
 
-  // Write every zset to `out` as a snapshot (see snapshot.hpp). Throws
-  // std::ios_base::failure / snapshot_error on I/O trouble.
-  void save(std::ostream& out) const;
+  // Write every zset to `out` as a snapshot (see snapshot.hpp). With
+  // with_accelerator=false the packed indexes are omitted -- a smaller,
+  // portable, canonical-only file that rebuilds its indexes on load. Throws
+  // snapshot_error on I/O trouble.
+  void save(std::ostream& out, bool with_accelerator = true) const;
 
   // Replace all current data with the snapshot read from `in`. Auto-detects a
   // native Goblin snapshot ("GCSN") or a Redis RDB file ("REDIS") by magic. On
