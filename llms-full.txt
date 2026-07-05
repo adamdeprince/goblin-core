@@ -246,15 +246,18 @@ Monitoring:
 
 ## Persistence
 
-Persistence is snapshot-based and driven by you. By design there is no automated
-(timing-based) save and no append-only write log (AOF), and there will not be --
-the same principle as the 64 KiB member cap: do the core sorted-set operations
-better than Redis rather than reimplement its peripheral features. Automated
-saving and write-ahead logging add hot-path latency and still force an `fsync`
-interval that can lose data on a crash anyway. Own that policy yourself: trigger
-periodic snapshots from `cron` (or your scheduler), and if you need a durable,
-replayable write log, put the writes through a system built for it (Kafka, say)
-ahead of Goblin Core.
+Persistence is snapshot-based and driven by you. By design there is no
+append-only write log (AOF) and no internal snapshot scheduler, for two different
+reasons. An append-only log adds latency to every write and still forces an
+`fsync` interval that can lose data on a crash anyway -- a hot-path cost for
+only-partial durability; if you need durable, replayable writes, run them through
+a system built for it (Kafka, say) ahead of Goblin Core, which replays them (same
+principle as the 64 KiB member cap: do the core operations better than Redis
+rather than reimplement a weaker peripheral). Scheduled snapshots are lighter:
+`GOBLIN.SAVE` is the primitive and costs nothing on the write path; Goblin Core
+just does not own the policy of when and how often to run it -- drive that from
+`cron` or your scheduler. (A foreground save briefly pauses the server whether an
+internal timer or cron triggers it; non-blocking save is a roadmap item.)
 
 - `GOBLIN.SAVE path` writes a point-in-time image of every zset to `path` and
   replies `+OK`. It is synchronous and blocks the server while writing, so size
