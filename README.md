@@ -54,7 +54,8 @@ sorted-set command surface above plus `PING` for liveness checks. It does not
 implement automatic (background) persistence, replication, cluster mode,
 pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or general
 Redis key types. Point-in-time snapshots are available on demand via
-`GOBLIN.SAVE`/`GOBLIN.LOAD` (see Run below).
+`GOBLIN.SAVE`/`GOBLIN.LOAD`, and a Redis `dump.rdb` can be imported to migrate
+sorted sets (see Run and "Migrating from Redis" below).
 
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
@@ -138,11 +139,15 @@ load factor high (memory) at the cost of more frequent rehashes during writes;
 replies `+OK`. `GOBLIN.LOAD <path>` (or `--load <path>` at startup) replaces the
 current data with a snapshot, replying with the number of keys loaded. Snapshots
 are a portable canonical layer (members and scores) plus a version-gated
-accelerator (the packed indexes); a snapshot written by a newer build whose
-index internals changed still loads, rebuilding the indexes from the canonical
-layer. There is no automatic or background saving yet: a crash loses writes made
-since the last `GOBLIN.SAVE`, so drive saves from your operations and `--load`
-on startup.
+accelerator (the packed indexes); a snapshot always loads on any build or
+machine, rebuilding the indexes from the canonical layer when the accelerator
+cannot be trusted (a different `std::hash`, a changed index format). There is no
+automatic or background saving yet: a crash loses writes made since the last
+`GOBLIN.SAVE`, so drive saves from your operations and `--load` on startup.
+
+`GOBLIN.LOAD` and `--load` auto-detect the file by magic: a native Goblin
+snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
+"Migrating from Redis" below.
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for
 range output benchmarking. It is off by default because it adds a packed side
@@ -164,6 +169,28 @@ Example:
 redis-cli -p 6379 ZADD leaders 42 alice 17 bob
 redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 ```
+
+## Migrating from Redis
+
+Point Goblin Core at a Redis `dump.rdb` and its sorted sets come across:
+
+```sh
+./build-release/goblin-core --port 6379 --load /path/to/dump.rdb
+# or, against a running server:
+redis-cli -p 6379 GOBLIN.LOAD /path/to/dump.rdb
+```
+
+The reader accepts RDB files from **Redis 2.6 through 7.2.x** (RDB versions
+6–11). Sorted sets are imported; other key types (strings, lists, sets, hashes)
+are skipped, since Goblin Core only stores sorted sets today. Streams and modules
+abort the load with a message — migrate those separately. `+inf`/`-inf` scores
+clamp to the largest finite double, and a member larger than 64 KiB aborts the
+load.
+
+Newer RDB versions (Redis 7.4+ / RDB 12+) are intentionally not read. Re-save the
+dump under Redis ≤ 7.2, or migrate over the wire (`SCAN` + `ZRANGE ... WITHSCORES`
+into `ZADD`). After a one-time import, `GOBLIN.SAVE` a native snapshot so
+subsequent restarts use the faster native `--load`.
 
 ## Benchmark
 

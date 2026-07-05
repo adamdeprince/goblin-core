@@ -129,8 +129,10 @@ Admin commands (Goblin Core extensions, not part of Redis):
   Replies `+OK`. Synchronous; it blocks the server for the duration of the
   write. See "Persistence".
 - `GOBLIN.LOAD path` — replace all current data with the snapshot at `path`.
-  Replies with the number of keys loaded. On any error (bad file, checksum
-  mismatch) it fails and leaves the store empty.
+  Replies with the number of keys loaded. Auto-detects the file by magic: a
+  native Goblin snapshot or a Redis `dump.rdb` (see "Migrating from Redis"). On
+  any error (bad file, checksum mismatch, unsupported RDB) it fails and leaves
+  the store empty.
 
 ## Configuration flags
 
@@ -139,10 +141,11 @@ Set these on the command line at startup.
 - `--bind ADDRESS` — interface to listen on. Default `127.0.0.1`. Use
   `0.0.0.0` to accept remote connections (only behind trusted network controls).
 - `--port PORT` — TCP port. Default `6379`.
-- `--load SNAPSHOT` — load a snapshot file at startup before accepting
-  connections (equivalent to `GOBLIN.LOAD`). Logs how many members/keys loaded
-  and whether the accelerator was used. If the file is missing or invalid the
-  server exits non-zero rather than starting empty. See "Persistence".
+- `--load FILE` — load a native snapshot or a Redis `dump.rdb` at startup before
+  accepting connections (equivalent to `GOBLIN.LOAD`; the format is auto-
+  detected). Logs how many members/keys loaded. If the file is missing or
+  invalid the server exits non-zero rather than starting empty. See "Persistence"
+  and "Migrating from Redis".
 - `--member-index-growth FACTOR` — how much the member hash index grows on each
   rehash. Default `2^0.25` (about `1.19`). A smaller factor keeps the index
   fuller (less RAM) between rehashes at the cost of more frequent rehashes
@@ -257,17 +260,43 @@ per-write log yet.
   `GOBLIN.SAVE`. Choose a save cadence that bounds that window, and keep a
   system of record for a full rebuild.
 
-Format and forward-compatibility: a snapshot has a portable canonical layer
-(members and scores) plus a version-gated accelerator (the packed indexes,
-dumped so load can skip re-hashing and re-sorting). A snapshot always remains
-loadable by later builds: if a newer build changed its index internals, it
-ignores the accelerator and rebuilds the indexes from the canonical layer (a
-slower load, same data). Snapshots are host-endianness specific (little-endian);
-this matters only if you move files between architectures.
+Format and portability: a snapshot has a portable canonical layer (members and
+scores) plus a version-gated accelerator (the packed indexes, dumped so load can
+skip re-hashing and re-sorting). The canonical layer is little-endian and
+machine-independent, so a snapshot loads on any build or architecture. When the
+accelerator cannot be trusted — a newer index format, or a different `std::hash`
+(for example moving a file between a macOS/libc++ build and a Linux/libstdc++
+build) — the loader ignores it and rebuilds the indexes from canonical: a slower
+load, identical data. Checksums are CRC32C.
 
 Operationally: `GOBLIN.SAVE` before planned shutdowns and on a cron-like
 schedule; `--load` the latest snapshot on startup. A snapshot is smaller than
 the live RSS (no index slack), roughly the member bytes plus ~20 bytes/member.
+
+## Migrating from Redis
+
+`--load` and `GOBLIN.LOAD` auto-detect a Redis `dump.rdb` (by its `REDIS` magic)
+and import its sorted sets, so migrating an existing zset workload is a one-step
+operation:
+
+    goblin-core --port 6379 --load /path/to/dump.rdb
+    # or against a running server:
+    redis-cli -p 6379 GOBLIN.LOAD /path/to/dump.rdb
+
+- Supported: RDB files from Redis 2.6 through 7.2.x (RDB versions 6-11), all
+  encodings of sorted sets (listpack/ziplist/skiplist, binary and text scores,
+  integer members).
+- Sorted sets are imported; other key types (string/list/set/hash) are parsed
+  and skipped, since only sorted sets exist here today. Streams and modules abort
+  the load with a message — migrate those separately (e.g. over the wire).
+- `+inf`/`-inf` scores clamp to the largest finite double; a member larger than
+  64 KiB aborts the load; a bad CRC64 aborts the load.
+- Not supported: Redis 7.4+ (RDB 12+) dumps are rejected. Re-save the dump under
+  Redis <= 7.2, or migrate over the wire: `SCAN` for keys, `ZRANGE key 0 -1
+  WITHSCORES` (or `ZSCAN`), and `ZADD` into Goblin Core.
+
+After a one-time RDB import, `GOBLIN.SAVE` a native snapshot; later restarts then
+use the faster native `--load` (RDB parsing and full index rebuild happen once).
 
 ## Tuning: OPTIMIZE density
 
@@ -325,6 +354,9 @@ point `src/main.cpp`.
 - `include/goblin/core/store.hpp` — the sorted-set store and `GOBLIN.OPTIMIZE`.
 - `include/goblin/core/zset_member_index.hpp` — member-to-id hash index.
 - `include/goblin/core/zset_score_index.hpp` — score-ordered index.
+- `include/goblin/core/snapshot.hpp` — native snapshot format (sections, bytecode,
+  CRC32C).
+- `include/goblin/core/rdb.hpp`, `src/rdb.cpp` — Redis RDB reader (migration).
 - `include/goblin/core/resp_parser.hpp`, `resp_writer.hpp` — RESP protocol.
 - `benchmarks/` — Goblin Core vs Redis memory and throughput drivers.
 - `tests/redis_differential.py` — Redis-backed behavior parity test.

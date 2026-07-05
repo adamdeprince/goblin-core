@@ -37,10 +37,18 @@ Plus Goblin-specific maintenance and persistence commands:
   member index to `density` (target load factor in `(0, 1]`, default `0.97`),
   returning the bytes reclaimed.
 - `GOBLIN.SAVE path` / `GOBLIN.LOAD path`: write/read a snapshot of all zsets
-  (also `--load path` at startup). The format is a portable canonical layer
-  (members + scores) plus a version-gated accelerator (packed indexes dumped so
-  load skips re-hashing/re-sorting); a version mismatch falls back to rebuilding
-  the indexes from the canonical layer. See `include/goblin/core/snapshot.hpp`.
+  (also `--load path` at startup). The format is typed sections, each a small
+  instruction bytecode; a section carries a portable canonical layer (members +
+  scores) plus a version- and hash-identity-gated accelerator (packed indexes
+  dumped so load skips re-hashing/re-sorting). When the accelerator cannot be
+  trusted (a changed index format, or a different `std::hash`) the indexes are
+  rebuilt from canonical, so snapshots load across builds and architectures.
+  Checksums are CRC32C (hardware instruction where available). See
+  `include/goblin/core/snapshot.hpp`.
+- `GOBLIN.LOAD` / `--load` also import a Redis RDB file (versions 6-11, Redis
+  2.6-7.2.x), detected by magic: sorted sets are imported, other types skipped,
+  streams/modules rejected. Clean-room from public format descriptions; BSD
+  sources only (see `include/goblin/core/rdb.hpp`). This is the migration path.
 
 The server accepts RESP array commands and a basic inline command format used by
 tests.
