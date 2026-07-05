@@ -1,5 +1,6 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/chunked_sorted_list.hpp"
+#include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/store.hpp"
@@ -971,6 +972,83 @@ void test_snapshot_round_trip() {
   }
 }
 
+// Hand-crafted RDB v11 bytes (no redis dependency). Real-encoding and CRC64
+// validation against a period-correct redis is a separate fixture step.
+void test_rdb_import() {
+  using goblin::core::Store;
+
+  // CRC64 must match Redis's published vector (validates the checksum path
+  // independently of any real dump).
+  assert(goblin::core::rdb::crc64("123456789") == 0xe9c6d914c4b8d9caULL);
+  auto u8 = [](std::string& s, unsigned b) { s.push_back(static_cast<char>(b)); };
+  auto str = [&u8](std::string& s, std::string_view v) {  // 6-bit length (len < 64)
+    u8(s, v.size());
+    s.append(v);
+  };
+  auto dbl = [](std::string& s, double d) {
+    const auto bits = std::bit_cast<std::uint64_t>(d);
+    for (int i = 0; i < 8; ++i) s.push_back(static_cast<char>((bits >> (8 * i)) & 0xFF));
+  };
+  auto crc0 = [&u8](std::string& s) { for (int i = 0; i < 8; ++i) u8(s, 0); };
+
+  // A ZSET_2 (type 5) with negative and +inf scores; CRC disabled (all zero).
+  {
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0xFE); u8(rdb, 0x00);   // SELECTDB 0
+    u8(rdb, 0x05);                  // ZSET_2
+    str(rdb, "zk");
+    u8(rdb, 0x03);                  // 3 members
+    str(rdb, "a"); dbl(rdb, 1.5);
+    str(rdb, "bb"); dbl(rdb, -2.0);
+    str(rdb, "inf"); dbl(rdb, std::numeric_limits<double>::infinity());
+    u8(rdb, 0xFF);
+    crc0(rdb);
+
+    Store store;
+    std::istringstream in(rdb, std::ios::binary);
+    const auto stats = store.load(in);
+    assert(stats.keys == 1 && stats.members == 3);
+    assert(store.zscore("zk", "a") == 1.5);
+    assert(store.zscore("zk", "bb") == -2.0);
+    assert(store.zscore("zk", "inf") == std::numeric_limits<double>::max());  // clamped
+    assert(store.zcard("zk") == 3);
+  }
+
+  auto throws = [](const std::string& rdb) {
+    Store store;
+    (void)store.zadd("pre", 1.0, "x");
+    std::istringstream in(rdb, std::ios::binary);
+    try {
+      (void)store.load(in);
+    } catch (const goblin::core::rdb::rdb_error&) {
+      return store.zcard("pre") == 0;  // left empty on failure
+    }
+    return false;
+  };
+
+  // Version newer than v11 is rejected.
+  {
+    std::string rdb = "REDIS0012";
+    u8(rdb, 0xFF); crc0(rdb);
+    assert(throws(rdb));
+  }
+  // A stream type aborts.
+  {
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0x0F);  // STREAM_LISTPACKS
+    str(rdb, "s");
+    assert(throws(rdb));
+  }
+  // A non-zero but wrong CRC is rejected.
+  {
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0x05); str(rdb, "z"); u8(rdb, 0x01); str(rdb, "m"); dbl(rdb, 1.0);
+    u8(rdb, 0xFF);
+    for (int i = 0; i < 8; ++i) u8(rdb, 0xAB);  // bogus checksum
+    assert(throws(rdb));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1005,6 +1083,7 @@ int main() {
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
+  test_rdb_import();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
   test_score_string_cache_updates_with_scores();

@@ -608,12 +608,17 @@ class Store {
   // std::ios_base::failure / snapshot_error on I/O trouble.
   void save(std::ostream& out) const;
 
-  // Replace all current data with the snapshot read from `in`. On any error
-  // (bad magic, unsupported canonical version, checksum mismatch, truncation)
-  // throws snapshot::snapshot_error and leaves the store empty.
+  // Replace all current data with the snapshot read from `in`. Auto-detects a
+  // native Goblin snapshot ("GCSN") or a Redis RDB file ("REDIS") by magic. On
+  // any error (bad magic, checksum mismatch, truncation, unsupported encoding)
+  // throws and leaves the store empty. Requires a seekable stream.
   SnapshotLoadStats load(std::istream& in);
 
+  // Remove every key.
+  void clear() noexcept;
+
  private:
+  SnapshotLoadStats load_native(std::istream& in);
   void place_loaded_zset(std::string key, ZSet&& zset);
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;
   [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept;

@@ -61,6 +61,7 @@ endif()
 
 add_library(goblin_core
   src/command.cpp
+  src/rdb.cpp
   src/resp_parser.cpp
   src/resp_writer.cpp
   src/server.cpp

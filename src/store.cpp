@@ -1,5 +1,7 @@
 #include "goblin/core/store.hpp"
 
+#include "goblin/core/rdb.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <array>
@@ -757,6 +759,26 @@ void Store::save(std::ostream& out) const {
 }
 
 SnapshotLoadStats Store::load(std::istream& in) {
+  // Auto-detect the format by magic (requires a seekable stream).
+  char magic[5] = {};
+  in.read(magic, sizeof(magic));
+  const auto got = in.gcount();
+  in.clear();
+  in.seekg(0);
+  if (got == static_cast<std::streamsize>(sizeof(magic)) &&
+      std::string_view(magic, sizeof(magic)) == "REDIS") {
+    return rdb::import(*this, in);
+  }
+  return load_native(in);
+}
+
+void Store::clear() noexcept {
+  inline_zset_.reset();
+  inline_key_.clear();
+  overflow_zsets_.clear();
+}
+
+SnapshotLoadStats Store::load_native(std::istream& in) {
   inline_zset_.reset();
   inline_key_.clear();
   overflow_zsets_.clear();
