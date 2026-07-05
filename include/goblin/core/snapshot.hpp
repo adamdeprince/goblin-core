@@ -41,12 +41,34 @@ inline constexpr char kMagic[4] = {'G', 'C', 'S', 'N'};
 // Bump when the canonical layer layout changes (and keep an old reader).
 inline constexpr std::uint32_t kFormatVersion = 1;
 
-// Bump when the accelerator/member-index dump layout or the swiss-table
-// bucketing, fingerprint, or control/slot layout changes. Old accelerators are
-// then ignored and indexes are rebuilt from canonical.
-inline constexpr std::uint32_t kAcceleratorVersion = 1;
+// The snapshot body is a sequence of typed sections so each Redis value type
+// gets its own section, and a reader can skip a section type it does not
+// recognize (every section's entries are uniformly length-framed). Only ZSET is
+// emitted today; the rest are reserved for when those types are implemented.
+enum class SectionType : std::uint32_t {
+  Zset = 1,
+  String = 2,
+  Hash = 3,
+  List = 4,
+  Set = 5,
+};
 
-inline constexpr std::uint32_t kFlagAccelerator = 1u << 0;
+// Each section body is a stream of instructions -- a tiny per-family bytecode --
+// terminated by the End opcode. A non-End instruction is: opcode (u8), operand
+// length (u64), operand checksum (u64), then the operands. A reader executes the
+// (section_type, opcode) pairs it knows and skips the rest by operand length, so
+// new opcodes and even whole new section types stay loadable by older readers.
+inline constexpr std::uint8_t kOpEnd = 0x00;
+
+enum class ZsetOpcode : std::uint8_t {
+  End = kOpEnd,
+  Zset = 0x01,  // operands: key, options, canonical members, optional accelerator
+};
+
+// Bump when the ZSET accelerator (member-index dump) layout or the swiss-table
+// bucketing, fingerprint, or control/slot layout changes. Old accelerators are
+// then ignored and indexes are rebuilt from the canonical layer.
+inline constexpr std::uint32_t kZsetAcceleratorVersion = 1;
 
 // FNV-1a 64-bit. Corruption detection only; not cryptographic.
 inline constexpr std::uint64_t kFnvOffsetBasis = 0xcbf29ce484222325ULL;

@@ -291,9 +291,11 @@ class ZSet {
   [[nodiscard]] ZSetMemoryStats memory_stats() const noexcept;
   void compact(double member_index_density = kDefaultMemberIndexDensity);
 
-  // Snapshot serialization of a single zset (options + canonical members +
-  // accelerator). See snapshot.hpp for the format contract.
-  void save(snapshot::Writer& writer) const;
+  // Serialize this zset as the operands of an OP_ZSET instruction: options,
+  // canonical members, and (when with_accelerator) the index accelerator.
+  void save(snapshot::Writer& writer, bool with_accelerator) const;
+  // Reconstruct from OP_ZSET operands. use_accelerator says to trust a present
+  // accelerator (version matched) rather than rebuild from the canonical layer.
   [[nodiscard]] static ZSet load(snapshot::Reader& reader, bool use_accelerator);
 
   [[nodiscard]] std::size_t allocated_member_slots() const noexcept;

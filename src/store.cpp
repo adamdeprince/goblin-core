@@ -630,7 +630,7 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
   return before > after ? before - after : 0;
 }
 
-void ZSet::save(snapshot::Writer& writer) const {
+void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
   writer.u8(static_cast<std::uint8_t>(options_.rank_cache_mode));
   writer.u8(options_.score_string_cache ? 1 : 0);
   writer.f64(options_.member_index_growth);
@@ -645,12 +645,15 @@ void ZSet::save(snapshot::Writer& writer) const {
     writer.str(member_storage_->view(id));
   }
 
-  // Accelerator layer: the member index dumped verbatim, then member ids in
-  // ascending score order (so the score index can be rebuilt without sorting).
-  members_.write_accelerator(writer);
-  const auto ordered = entries_.range(0, entries_.size());
-  for (const auto& entry : ordered) {
-    writer.u32(entry.member_id);
+  // Accelerator layer (optional): the member index dumped verbatim, then member
+  // ids in ascending score order (so the score index rebuilds without sorting).
+  writer.u8(with_accelerator ? 1 : 0);
+  if (with_accelerator) {
+    members_.write_accelerator(writer);
+    const auto ordered = entries_.range(0, entries_.size());
+    for (const auto& entry : ordered) {
+      writer.u32(entry.member_id);
+    }
   }
 }
 
@@ -673,7 +676,8 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
     (void)zset.member_storage_->push_back(member, score);
   }
 
-  if (use_accelerator) {
+  const bool accelerator_present = reader.u8() != 0;
+  if (accelerator_present && use_accelerator) {
     zset.members_.read_accelerator(reader, zset.member_storage_.get());
     if (zset.members_.size() != member_count) {
       throw snapshot::snapshot_error("snapshot member index size mismatch");
@@ -692,8 +696,8 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
   } else {
     // Slow path: rebuild both indexes from the canonical members. The score
     // index is built with insert() so that equal scores order by member bytes
-    // exactly as the live structure does -- matching the order the accelerator
-    // would have restored.
+    // exactly as the live structure does. Any present-but-unused accelerator
+    // bytes are bounded by the instruction's operand length and simply ignored.
     zset.members_.reserve_for_density(member_count, kDefaultMemberIndexDensity);
     for (std::uint32_t id = 0; id < member_count; ++id) {
       zset.members_.insert_packed(zset.member_storage_->view(id),
@@ -708,39 +712,44 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
 }
 
 void Store::save(std::ostream& out) const {
-  const std::size_t key_count =
-      (inline_zset_.has_value() ? 1 : 0) + overflow_zsets_.size();
-
+  // File header, then one section per data family. Only ZSET exists today.
   std::string header;
-  snapshot::Writer header_writer(header);
-  header_writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
-  header_writer.u32(snapshot::kFormatVersion);
-  header_writer.u32(snapshot::kAcceleratorVersion);
-  header_writer.u32(snapshot::kFlagAccelerator);
-  header_writer.u64(key_count);
+  snapshot::Writer writer(header);
+  writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
+  writer.u32(snapshot::kFormatVersion);
+  writer.u32(0);  // file flags (reserved)
+  writer.u32(1);  // section count
+  // ZSET section header: family + accelerator version.
+  writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Zset));
+  writer.u32(snapshot::kZsetAcceleratorVersion);
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
 
-  std::string payload;
-  auto emit = [&out, &payload](std::string_view key, const ZSet& zset) {
-    payload.clear();
-    snapshot::Writer writer(payload);
-    writer.str(key);
-    zset.save(writer);
+  // ZSET section body: a stream of OP_ZSET instructions, then OP_END.
+  std::string operands;
+  auto emit_zset = [&out, &operands](std::string_view key, const ZSet& zset) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    zset.save(operand_writer, /*with_accelerator=*/true);
 
-    std::string frame;
-    snapshot::Writer frame_writer(frame);
-    frame_writer.u64(payload.size());
-    frame_writer.u64(snapshot::checksum(payload));
-    out.write(frame.data(), static_cast<std::streamsize>(frame.size()));
-    out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(snapshot::ZsetOpcode::Zset));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u64(snapshot::checksum(operands));
+    out.write(instruction.data(), static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
   };
 
   if (inline_zset_.has_value()) {
-    emit(inline_key_, *inline_zset_);
+    emit_zset(inline_key_, *inline_zset_);
   }
-  overflow_zsets_.for_each([&emit](const std::pair<std::string, ZSet>& entry) {
-    emit(entry.first, entry.second);
+  overflow_zsets_.for_each([&emit_zset](const std::pair<std::string, ZSet>& entry) {
+    emit_zset(entry.first, entry.second);
   });
+
+  const char end = static_cast<char>(snapshot::kOpEnd);
+  out.write(&end, 1);
 
   if (!out) {
     throw snapshot::snapshot_error("snapshot write failed");
@@ -752,50 +761,75 @@ SnapshotLoadStats Store::load(std::istream& in) {
   inline_key_.clear();
   overflow_zsets_.clear();
 
-  auto read_exact = [&in](std::size_t size) {
+  // A corrupt length field must fail cleanly, not attempt a wild allocation.
+  constexpr std::uint64_t kMaxOperandBytes = std::uint64_t{1} << 40;
+  auto read_exact = [&in](std::uint64_t size) {
+    if (size > kMaxOperandBytes) {
+      throw snapshot::snapshot_error("snapshot length implausible");
+    }
     std::string buffer(size, '\0');
     in.read(buffer.data(), static_cast<std::streamsize>(size));
-    if (static_cast<std::size_t>(in.gcount()) != size) {
+    if (static_cast<std::uint64_t>(in.gcount()) != size) {
       throw snapshot::snapshot_error("snapshot truncated");
     }
     return buffer;
   };
 
   try {
-    const auto header = read_exact(sizeof(snapshot::kMagic) + 4 + 4 + 4 + 8);
+    const auto header = read_exact(sizeof(snapshot::kMagic) + 4 + 4 + 4);
     snapshot::Reader header_reader(header);
     if (header_reader.bytes(sizeof(snapshot::kMagic)) !=
         std::string_view(snapshot::kMagic, sizeof(snapshot::kMagic))) {
       throw snapshot::snapshot_error("not a Goblin Core snapshot");
     }
     if (header_reader.u32() != snapshot::kFormatVersion) {
-      throw snapshot::snapshot_error("unsupported snapshot canonical version");
+      throw snapshot::snapshot_error("unsupported snapshot version");
     }
-    const auto accelerator_version = header_reader.u32();
-    const auto flags = header_reader.u32();
-    const auto key_count = header_reader.u64();
-
-    const bool use_accelerator =
-        (flags & snapshot::kFlagAccelerator) != 0 &&
-        accelerator_version == snapshot::kAcceleratorVersion;
+    (void)header_reader.u32();  // file flags (reserved)
+    const auto section_count = header_reader.u32();
 
     SnapshotLoadStats stats;
-    stats.used_accelerator = use_accelerator;
-    for (std::uint64_t k = 0; k < key_count; ++k) {
-      const auto frame = read_exact(16);
-      snapshot::Reader frame_reader(frame);
-      const auto payload_size = frame_reader.u64();
-      const auto expected_checksum = frame_reader.u64();
-      const auto payload = read_exact(payload_size);
-      if (snapshot::checksum(payload) != expected_checksum) {
-        throw snapshot::snapshot_error("snapshot checksum mismatch");
+    for (std::uint32_t s = 0; s < section_count; ++s) {
+      const auto section_header = read_exact(4 + 4);
+      snapshot::Reader section_reader(section_header);
+      const auto section_type = section_reader.u32();
+      const auto section_version = section_reader.u32();
+
+      const bool is_zset =
+          section_type == static_cast<std::uint32_t>(snapshot::SectionType::Zset);
+      const bool use_accelerator =
+          is_zset && section_version == snapshot::kZsetAcceleratorVersion;
+      if (is_zset) {
+        stats.used_accelerator = use_accelerator;
       }
-      snapshot::Reader reader(payload);
-      auto key = std::string(reader.str());
-      ZSet zset = ZSet::load(reader, use_accelerator);
-      stats.members += zset.size();
-      place_loaded_zset(std::move(key), std::move(zset));
-      ++stats.keys;
+
+      // Interpret the section's instruction stream until OP_END.
+      for (;;) {
+        const auto opcode = static_cast<std::uint8_t>(read_exact(1)[0]);
+        if (opcode == snapshot::kOpEnd) {
+          break;
+        }
+        const auto frame = read_exact(16);
+        snapshot::Reader frame_reader(frame);
+        const auto operand_size = frame_reader.u64();
+        const auto expected_checksum = frame_reader.u64();
+        const auto operands = read_exact(operand_size);
+        if (snapshot::checksum(operands) != expected_checksum) {
+          throw snapshot::snapshot_error("snapshot checksum mismatch");
+        }
+
+        const bool is_zset_op =
+            is_zset && opcode == static_cast<std::uint8_t>(snapshot::ZsetOpcode::Zset);
+        if (!is_zset_op) {
+          continue;  // unknown opcode or unknown section: skip (already consumed)
+        }
+        snapshot::Reader reader(operands);
+        auto key = std::string(reader.str());
+        ZSet zset = ZSet::load(reader, use_accelerator);
+        stats.members += zset.size();
+        place_loaded_zset(std::move(key), std::move(zset));
+        ++stats.keys;
+      }
     }
     return stats;
   } catch (...) {

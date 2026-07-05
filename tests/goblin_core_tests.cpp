@@ -906,7 +906,8 @@ void test_snapshot_round_trip() {
   // The result must be identical (including tie order).
   {
     std::string slow = bytes;
-    slow[8] = static_cast<char>(slow[8] + 1);  // accel_version low byte
+    // Header(16) + section_type(4); section_version low byte is at offset 20.
+    slow[20] = static_cast<char>(slow[20] + 1);
     Store loaded;
     std::istringstream in(slow, std::ios::binary);
     const auto stats = loaded.load(in);
@@ -919,7 +920,7 @@ void test_snapshot_round_trip() {
   // store empty (not partially loaded).
   {
     std::string corrupt = bytes;
-    corrupt[corrupt.size() - 4] = static_cast<char>(corrupt[corrupt.size() - 4] ^ 0xFF);
+    corrupt[50] = static_cast<char>(corrupt[50] ^ 0xFF);  // inside the first OP_ZSET operands
     Store loaded;
     (void)loaded.zadd("stale", 1.0, "x");
     std::istringstream in(corrupt, std::ios::binary);
