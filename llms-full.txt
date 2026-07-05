@@ -125,9 +125,10 @@ Admin commands (Goblin Core extensions, not part of Redis):
   member index, returning the number of bytes reclaimed. Run it once after a
   bulk load, before serving reads. `density` is the target member-index load
   factor in `(0, 1]` and defaults to `0.97`. See "Tuning: OPTIMIZE density".
-- `GOBLIN.SAVE path` — write a point-in-time snapshot of all zsets to `path`.
-  Replies `+OK`. Synchronous; it blocks the server for the duration of the
-  write. See "Persistence".
+- `GOBLIN.SAVE path [NOACCEL]` — write a point-in-time snapshot of all zsets to
+  `path`. Replies `+OK`. Synchronous; it blocks the server for the duration of
+  the write. `NOACCEL` drops the packed-index accelerator for a smaller, portable
+  file that rebuilds indexes on load (see "Persistence").
 - `GOBLIN.LOAD path` — replace all current data with the snapshot at `path`.
   Replies with the number of keys loaded. Auto-detects the file by magic: a
   native Goblin snapshot or a Redis `dump.rdb` (see "Migrating from Redis"). On
@@ -269,9 +270,20 @@ accelerator cannot be trusted — a newer index format, or a different `std::has
 build) — the loader ignores it and rebuilds the indexes from canonical: a slower
 load, identical data. Checksums are CRC32C.
 
+Accelerator vs canonical-only (`GOBLIN.SAVE path NOACCEL`): the default snapshot
+includes the accelerator; `NOACCEL` omits it. Both save and load faster than
+Redis RDB. At ~950K members (avx10): default saves in 0.06s to a 39 MB file and
+loads in 0.05s (about 5.6x faster than Redis, by memcpy-ing the indexes back);
+`NOACCEL` saves in 0.03s to a 30 MB file (near Redis's 27 MB) and loads in 0.15s,
+rebuilding every index yet still about 1.9x faster than Redis. Use the default
+when restarts are frequent on the same build; use `NOACCEL` for smaller, portable
+files, or when snapshots move between machines with different C++ standard
+libraries (the accelerator would be rebuilt on load there anyway).
+
 Operationally: `GOBLIN.SAVE` before planned shutdowns and on a cron-like
 schedule; `--load` the latest snapshot on startup. A snapshot is smaller than
-the live RSS (no index slack), roughly the member bytes plus ~20 bytes/member.
+the live RSS (no index slack); `NOACCEL` is roughly the member bytes plus ~10
+bytes/member, the default adds the packed indexes on top.
 
 ## Migrating from Redis
 

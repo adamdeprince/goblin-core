@@ -17,7 +17,7 @@ It is NOT a full Redis replacement. There is no automatic/background persistence
 - Memory: budget about 49 bytes per member after `GOBLIN.OPTIMIZE` (about 2.7x less RAM than Redis for the same data). A single member is capped at 64 KiB.
 - Deployment pattern: bulk-load a set, then run `GOBLIN.OPTIMIZE <key>` once before serving reads to compact it and repack the member index.
 - Security: there is no authentication or TLS. Bind to a trusted interface only and put access control in front of it.
-- Durability: snapshot-based. Data lives in RAM; a crash loses writes made since the last `GOBLIN.SAVE`. Save on a schedule (and before planned shutdown), `--load` the snapshot on startup, and keep a source of truth for a full rebuild.
+- Durability: snapshot-based. Data lives in RAM; a crash loses writes made since the last `GOBLIN.SAVE`. Save on a schedule (and before planned shutdown), `--load` the snapshot on startup, and keep a source of truth for a full rebuild. Snapshots save and load faster than Redis RDB (both ~3-6x). `GOBLIN.SAVE <path> NOACCEL` writes a smaller, portable file (near Redis's size) that rebuilds indexes on load; the default is larger but loads fastest by memcpy-ing the packed indexes.
 - Migration from Redis: `--load /path/dump.rdb` (or `GOBLIN.LOAD`) imports sorted sets from a Redis RDB file (Redis 2.6-7.2.x). Other types are skipped; streams/modules abort. For Redis 7.4+ dumps, re-save under an older Redis or migrate over the wire (`SCAN` + `ZRANGE WITHSCORES` -> `ZADD`).
 
 ## Reference

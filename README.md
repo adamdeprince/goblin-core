@@ -149,6 +149,21 @@ automatic or background saving yet: a crash loses writes made since the last
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
 "Migrating from Redis" below.
 
+`GOBLIN.SAVE <path> NOACCEL` writes a smaller, canonical-only snapshot without
+the packed-index accelerator. It saves fastest and produces a file near Redis's
+RDB size; loading it rebuilds the indexes (slower than the default, still faster
+than Redis). Use the default (`GOBLIN.SAVE <path>`) when restarts are frequent
+and it is the same build — the accelerator makes load ~5.6× faster than Redis by
+copying the indexes back instead of rebuilding them; use `NOACCEL` for smaller,
+portable files, or when moving snapshots between machines with different C++
+standard libraries (where the accelerator would be rebuilt on load anyway). See
+BENCHMARKS.md for the numbers.
+
+```sh
+redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn          # default (fast load)
+redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn NOACCEL  # smaller, portable
+```
+
 `--score-string-cache` enables an experimental RESP-ready score text cache for
 range output benchmarking. It is off by default because it adds a packed side
 arena and an 8-byte score-text reference per member; measured default workloads

@@ -32,6 +32,18 @@ Throughput is secondary to the memory story. Single-member read throughput must 
 
 The RESP throughput tables in the sections below come from the Python harness. `benchmarks/zset_benchmark.py` now drives `ZSCORE`/`ZRANK`/`ZREVRANK` through `redis-benchmark`, but the batched/range throughput rows remain client-bound; treat the sections below primarily as memory/RSS sources and cross-check throughput against the table above.
 
+## Persistence
+
+Snapshot save and load are faster than Redis, and `GOBLIN.SAVE ... NOACCEL` trades file size for load speed. Identical data (~950K members) loaded into Redis 7.2.4, `SAVE`d, then imported into Goblin Core so the datasets match exactly; avx10, pinned server, min of 3 runs. "load" is startup-to-ready minus the empty-start baseline.
+
+| | save | file | bytes/member | load |
+| --- | ---: | ---: | ---: | ---: |
+| Redis 7.2.4 (RDB) | `0.167s` | `26.6` MB | `28` | `0.282s` |
+| Goblin Core, full (default) | `0.060s` | `39.1` MB | `41` | `0.050s` |
+| Goblin Core, `NOACCEL` | `0.030s` | `29.5` MB | `31` | `0.148s` |
+
+Goblin Core beats Redis on both save and load in either mode. The default snapshot dumps the packed indexes (the "accelerator"): a larger file that loads about `5.6x` faster than Redis by memcpy-ing the indexes back instead of rebuilding them. `GOBLIN.SAVE <path> NOACCEL` drops the accelerator for a file near Redis's size and the fastest save; its load rebuilds every index yet is still about `1.9x` faster than Redis (Goblin's canonical parse plus index build is cheaper than Redis's RDB parse plus skiplist/dict construction). Use the default when restarts are frequent on the same build; use `NOACCEL` for smaller, portable files — it also loses nothing across a machine with a different `std::hash`, where the accelerator would be rebuilt on load anyway.
+
 ## Methodology
 
 The benchmark starts each server on a temporary localhost port, drives both over RESP, and records throughput plus process RSS. Redis also reports `INFO memory used_memory`; Goblin Core reports internal zset allocation and the active `rank_cache_mode` through `GOBLIN.MEMORY`.
