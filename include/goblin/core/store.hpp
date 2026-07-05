@@ -610,6 +610,25 @@ class Store {
   // snapshot_error on I/O trouble.
   void save(std::ostream& out, bool with_accelerator = true) const;
 
+  // Fork a copy-on-write child that writes the snapshot to `path` (to a temp
+  // file renamed into place on success), so the server keeps serving while it
+  // saves. Returns immediately; call reap_background_save() from the event loop
+  // to collect the result. Only one background save runs at a time.
+  enum class SaveStart { Started, AlreadyRunning, ForkFailed };
+  [[nodiscard]] SaveStart start_background_save(std::string path,
+                                                bool with_accelerator = true);
+
+  // Non-blocking: if the background save has finished, reap it and return its
+  // outcome (clearing the in-progress state); otherwise return nullopt.
+  struct SaveOutcome {
+    std::string path;
+    bool ok;
+  };
+  [[nodiscard]] std::optional<SaveOutcome> reap_background_save() noexcept;
+  [[nodiscard]] bool background_save_in_progress() const noexcept {
+    return background_save_child_ > 0;
+  }
+
   // Replace all current data with the snapshot read from `in`. Auto-detects a
   // native Goblin snapshot ("GCSN") or a Redis RDB file ("REDIS") by magic. On
   // any error (bad magic, checksum mismatch, truncation, unsupported encoding)
@@ -631,6 +650,8 @@ class Store {
   std::string inline_key_;
   SwissTable<std::string, ZSet> overflow_zsets_;
   StoreOptions options_;
+  int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
+  std::string background_save_path_;
 };
 
 [[nodiscard]] std::string format_score(double score);

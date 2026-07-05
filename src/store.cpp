@@ -14,12 +14,18 @@
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <cerrno>
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
@@ -48,6 +54,38 @@ void release_unused_heap_pages() noexcept {
   (void)malloc_trim(0);
 #endif
 }
+
+// Minimal std::ostream backing that write()s to a raw fd, so the background-save
+// child can fsync the descriptor. Store::save writes in large chunks (one per
+// zset), so there are few syscalls; no user-space buffering is needed.
+class FdOutputStreambuf : public std::streambuf {
+ public:
+  explicit FdOutputStreambuf(int fd) noexcept : fd_(fd) {}
+
+ protected:
+  std::streamsize xsputn(const char* data, std::streamsize count) override {
+    std::streamsize total = 0;
+    while (total < count) {
+      const auto written =
+          ::write(fd_, data + total, static_cast<std::size_t>(count - total));
+      if (written < 0) {
+        if (errno == EINTR) continue;
+        return total;  // short write -> the ostream fails, caller detects it
+      }
+      total += written;
+    }
+    return total;
+  }
+
+  int_type overflow(int_type ch) override {
+    if (ch == traits_type::eof()) return ch;
+    const char byte = static_cast<char>(ch);
+    return xsputn(&byte, 1) == 1 ? ch : traits_type::eof();
+  }
+
+ private:
+  int fd_;
+};
 
 }  // namespace
 
@@ -761,6 +799,74 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   if (!out) {
     throw snapshot::snapshot_error("snapshot write failed");
   }
+}
+
+Store::SaveStart Store::start_background_save(std::string path,
+                                             bool with_accelerator) {
+  if (background_save_child_ > 0) {
+    return SaveStart::AlreadyRunning;
+  }
+
+  const pid_t child = ::fork();
+  if (child < 0) {
+    return SaveStart::ForkFailed;
+  }
+
+  if (child == 0) {
+    // Child: a copy-on-write snapshot of the store, frozen at fork time. Write
+    // to a temp file, fsync, rename into place, and _exit without running the
+    // parent's destructors or atexit handlers (they belong to the parent). The
+    // inherited descriptors are left untouched -- blindly closing them is unsafe
+    // on some platforms (macOS keeps runtime ports in low fds) -- and close on
+    // _exit anyway.
+    const std::string temp = path + ".tmp";
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+      _exit(1);
+    }
+    bool ok = true;
+    {
+      FdOutputStreambuf sink(fd);
+      std::ostream out(&sink);
+      try {
+        save(out, with_accelerator);
+        out.flush();
+      } catch (...) {
+        ok = false;
+      }
+      if (!out) {
+        ok = false;
+      }
+    }
+    if (ok && ::fsync(fd) != 0) ok = false;
+    if (::close(fd) != 0) ok = false;
+    if (ok && ::rename(temp.c_str(), path.c_str()) != 0) ok = false;
+    if (!ok) {
+      ::unlink(temp.c_str());
+    }
+    _exit(ok ? 0 : 1);
+  }
+
+  background_save_child_ = child;
+  background_save_path_ = std::move(path);
+  return SaveStart::Started;
+}
+
+std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
+  if (background_save_child_ <= 0) {
+    return std::nullopt;
+  }
+  int status = 0;
+  const pid_t result = ::waitpid(background_save_child_, &status, WNOHANG);
+  if (result == 0) {
+    return std::nullopt;  // still running
+  }
+  const bool ok = result == background_save_child_ && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0;
+  SaveOutcome outcome{.path = std::move(background_save_path_), .ok = ok};
+  background_save_child_ = -1;
+  background_save_path_.clear();
+  return outcome;
 }
 
 SnapshotLoadStats Store::load(std::istream& in) {

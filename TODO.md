@@ -35,13 +35,6 @@ To make this easy to pick up:
 
 ## Also deferred
 
-- **Non-blocking (fork/COW) snapshot.** `GOBLIN.SAVE` is a foreground,
-  single-threaded pass, so it pauses command execution for the save duration
-  (~0.8s at 10M members, several seconds at 100M). A copy-on-write snapshot
-  (`fork`, or a COW view of the arena and indexes) would let saves run without
-  stalling the server. This is the prerequisite before any internal snapshot
-  scheduling would be worth offering — until then, the pause exists whether cron
-  or an internal timer triggers the save, so scheduling stays the operator's job.
 - **Old RDB fixtures.** The RDB reader implements the ziplist zset (type 12) and
   ASCII-double (type 3) encodings for Redis 2.6–6.x, but they are only
   ground-truthed against a real 7.2.4 dump (types 5/17). Build a redis 6.2 (and

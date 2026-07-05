@@ -330,6 +330,17 @@ int Server::run() {
             << '\n';
 
   while (running_) {
+    if (auto outcome = store_.reap_background_save()) {
+      if (outcome->ok) {
+        std::cout << "goblin-core: background save of " << outcome->path
+                  << " completed\n"
+                  << std::flush;
+      } else {
+        std::cerr << "goblin-core: background save of " << outcome->path
+                  << " FAILED\n";
+      }
+    }
+
     std::vector<pollfd> pollfds;
     pollfds.reserve(clients.size() + 1);
     pollfds.push_back(pollfd{.fd = *listener, .events = POLLIN, .revents = 0});

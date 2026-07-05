@@ -6,14 +6,22 @@
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
 
+// Tests must validate even in Release builds; keep assert() live regardless of
+// the build's NDEBUG setting.
+#undef NDEBUG
 #include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdio>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -1056,6 +1064,50 @@ void test_snapshot_save_clear_reload() {
   }
 }
 
+// Background (fork/COW) save: the child writes the snapshot from a frozen copy
+// of the store while the parent could keep serving; it must reload identically.
+void test_background_save() {
+  using goblin::core::Store;
+  const std::string path = "/tmp/goblin_core_bgsave_test.gcsn";
+  std::remove(path.c_str());
+
+  Store store;
+  for (int i = 0; i < 1000; ++i) {
+    (void)store.zadd("bg", static_cast<double>(i % 50) - 10.0,
+                     "m" + std::to_string(i));
+  }
+  (void)store.zadd("bg2", 3.5, "x");
+  const auto expected = execute_fields(store, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"});
+  const auto card = store.zcard("bg");
+
+  const auto started = store.start_background_save(path, /*with_accelerator=*/true);
+  assert(started == Store::SaveStart::Started);
+  assert(store.background_save_in_progress());
+
+  std::optional<Store::SaveOutcome> outcome;
+  for (int i = 0; i < 5000 && !outcome; ++i) {
+    outcome = store.reap_background_save();
+    if (!outcome) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  assert(outcome.has_value());
+  assert(outcome->ok);
+  assert(outcome->path == path);
+  assert(!store.background_save_in_progress());
+
+  // The parent's data is unchanged, and the file (written from the fork) reloads
+  // identically.
+  assert(store.zcard("bg") == card);
+  Store loaded;
+  std::ifstream in(path, std::ios::binary);
+  assert(in.good());
+  const auto stats = loaded.load(in);
+  assert(stats.keys == 2);
+  assert(loaded.zcard("bg") == card);
+  assert(execute_fields(loaded, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"}) == expected);
+  assert(loaded.zscore("bg2", "x") == 3.5);
+  std::remove(path.c_str());
+}
+
 // Hand-crafted RDB v11 bytes (no redis dependency). Real-encoding and CRC64
 // validation against a period-correct redis is a separate fixture step.
 void test_rdb_import() {
@@ -1168,6 +1220,7 @@ int main() {
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
   test_snapshot_save_clear_reload();
+  test_background_save();
   test_rdb_import();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();

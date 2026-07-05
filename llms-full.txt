@@ -125,10 +125,14 @@ Admin commands (Goblin Core extensions, not part of Redis):
   member index, returning the number of bytes reclaimed. Run it once after a
   bulk load, before serving reads. `density` is the target member-index load
   factor in `(0, 1]` and defaults to `0.97`. See "Tuning: OPTIMIZE density".
-- `GOBLIN.SAVE path [NOACCEL]` — write a point-in-time snapshot of all zsets to
-  `path`. Replies `+OK`. Synchronous; it blocks the server for the duration of
-  the write. `NOACCEL` drops the packed-index accelerator for a smaller, portable
-  file that rebuilds indexes on load (see "Persistence").
+- `GOBLIN.SAVE path [NOACCEL]` — snapshot all zsets to `path`. Forks a
+  copy-on-write child that writes from a frozen image of the data, so it returns
+  immediately with `Background saving started` and the server keeps serving;
+  completion or failure is logged, and only one background save runs at a time (a
+  second returns an error). The child writes to a temp file and renames on
+  success, so a crash mid-save never corrupts the previous snapshot. `NOACCEL`
+  drops the packed-index accelerator for a smaller, portable file that rebuilds
+  indexes on load (see "Persistence").
 - `GOBLIN.LOAD path` — replace all current data with the snapshot at `path`.
   Replies with the number of keys loaded. Auto-detects the file by magic: a
   native Goblin snapshot or a Redis `dump.rdb` (see "Migrating from Redis"). On
@@ -254,16 +258,17 @@ only-partial durability; if you need durable, replayable writes, run them throug
 a system built for it (Kafka, say) ahead of Goblin Core, which replays them (same
 principle as the 64 KiB member cap: do the core operations better than Redis
 rather than reimplement a weaker peripheral). Scheduled snapshots are lighter:
-`GOBLIN.SAVE` is the primitive and costs nothing on the write path; Goblin Core
-just does not own the policy of when and how often to run it -- drive that from
-`cron` or your scheduler. (A foreground save briefly pauses the server whether an
-internal timer or cron triggers it; non-blocking save is a roadmap item.)
+`GOBLIN.SAVE` forks and returns immediately, so it costs almost nothing and does
+not pause the server; Goblin Core just does not own the policy of when and how
+often to run it -- drive that from `cron` or your scheduler.
 
-- `GOBLIN.SAVE path` writes a point-in-time image of every zset to `path` and
-  replies `+OK`. It is synchronous and blocks the server while writing, so size
-  the pause for your dataset and drive it off-peak or from a sidecar on a
-  schedule. Write to a temp path and rename into place if you need the visible
-  file to update atomically.
+- `GOBLIN.SAVE path` snapshots every zset to `path`. It forks a copy-on-write
+  child that writes from a frozen image of the data, so the command returns
+  immediately with `Background saving started` and the server keeps serving while
+  the child writes; watch the log for `background save of <path> completed` (or a
+  `FAILED` line). Only one background save runs at a time. The child writes to a
+  temp file and renames it into place, so a crash mid-save never corrupts the
+  previous snapshot.
 - `GOBLIN.LOAD path` (or `--load path` at startup) replaces all current data
   with the snapshot. On any error — bad magic, checksum mismatch, truncation —
   it fails and leaves the store empty rather than half-loaded.

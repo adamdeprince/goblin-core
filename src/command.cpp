@@ -465,24 +465,18 @@ void execute_command_into(Store& store,
           return;
         }
       }
-      std::ofstream file(std::string(command.args[0]),
-                         std::ios::binary | std::ios::trunc);
-      if (!file) {
-        resp::append_error(out, "ERR cannot open snapshot file for writing");
-        return;
+      switch (store.start_background_save(std::string(command.args[0]),
+                                          with_accelerator)) {
+        case Store::SaveStart::Started:
+          resp::append_simple_string(out, "Background saving started");
+          break;
+        case Store::SaveStart::AlreadyRunning:
+          resp::append_error(out, "ERR background save already in progress");
+          break;
+        case Store::SaveStart::ForkFailed:
+          resp::append_error(out, "ERR cannot fork for background save");
+          break;
       }
-      try {
-        store.save(file, with_accelerator);
-      } catch (const std::exception& error) {
-        resp::append_error(out, "ERR snapshot save failed: " + std::string(error.what()));
-        return;
-      }
-      file.flush();
-      if (!file) {
-        resp::append_error(out, "ERR snapshot write failed");
-        return;
-      }
-      resp::append_simple_string(out, "OK");
       return;
     }
 

@@ -34,7 +34,7 @@ The RESP throughput tables in the sections below come from the Python harness. `
 
 ## Persistence
 
-Snapshot save and load are several times faster than Redis, and `GOBLIN.SAVE ... NOACCEL` trades file size for load speed. Identical data loaded into Redis 7.2.4, `SAVE`d, then imported into Goblin Core so the datasets match exactly; avx10, pinned server, min of 3 runs. "load" is startup-to-ready minus the empty-start baseline.
+Snapshot save and load are several times faster than Redis, and `GOBLIN.SAVE ... NOACCEL` trades file size for load speed. Identical data loaded into Redis 7.2.4, `SAVE`d, then imported into Goblin Core so the datasets match exactly; avx10, pinned server, min of 3 runs. "load" is startup-to-ready minus the empty-start baseline. The "save" figure is the serialization work: in production Goblin Core runs it as a background copy-on-write `fork()` (`GOBLIN.SAVE` returns immediately and the server keeps serving), so it never pauses the server — this table times that work synchronously to compare like-for-like with Redis `SAVE`.
 
 9.5M members:
 

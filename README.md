@@ -73,6 +73,28 @@ divergence: a single sorted-set member is capped at 64 KiB (Redis allows more),
 which keeps the per-member reference two bytes smaller — well above any
 realistic member.
 
+## Design Priorities
+
+Goblin Core is practical, not pure. It optimizes for low cost and high overall
+throughput, and it deliberately declines guarantees that look good on paper but
+that your users never feel.
+
+The clearest example is tail latency. Goblin Core's Swiss-table member index
+grows by "stop the world and reindex" — an occasional synchronous rehash (and
+`GOBLIN.OPTIMIZE` is a deliberate repack) — where Redis rehashes incrementally
+and holds a better P99.9. That is a genuine advantage for Redis, and we are
+rejecting it on purpose: a bad P99.9 means one web page, once, loaded a little
+slowly. Redis optimizes for a real-time guarantee your web app doesn't cash.
+You're paying RAM rent and CPU for determinism your users never notice.
+
+And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
+2025, server DRAM ran up over 60% quarter-over-quarter in Q2, and even now, in
+the "cooling" phase, conventional DRAM contract prices are forecast to rise
+13–18% quarter-over-quarter in Q3 2026. When a sorted set costs about 37% of what
+Redis spends to hold it, that is money, not a benchmark curiosity. Goblin Core
+spends the cheap resource — an occasional rehash pause — to save the expensive
+one, memory.
+
 ## Build From Source
 
 Goblin Core is distributed as source. Build it locally with CMake
@@ -144,15 +166,21 @@ rehash (default `2^0.25 ≈ 1.19`). A smaller factor keeps the never-compacted
 load factor high (memory) at the cost of more frequent rehashes during writes;
 `2.0` is the classic doubling that favors write throughput.
 
-`GOBLIN.SAVE <path>` writes a point-in-time snapshot of every zset to a file and
-replies `+OK`. `GOBLIN.LOAD <path>` (or `--load <path>` at startup) replaces the
-current data with a snapshot, replying with the number of keys loaded. Snapshots
-are a portable canonical layer (members and scores) plus a version-gated
-accelerator (the packed indexes); a snapshot always loads on any build or
-machine, rebuilding the indexes from the canonical layer when the accelerator
-cannot be trusted (a different `std::hash`, a changed index format). Persistence
-is explicit and client-driven: a crash loses writes made since the last
-`GOBLIN.SAVE`, so drive saves from your operations and `--load` on startup.
+`GOBLIN.SAVE <path>` snapshots every zset to a file. It `fork()`s a
+copy-on-write child that writes the snapshot from a frozen image of the data, so
+the command returns immediately — replying `Background saving started` — and the
+server keeps serving while the child writes; completion or failure is logged, and
+only one background save runs at a time (a second returns an error). The child
+writes to a temp file and renames it into place, so a crash mid-save never
+corrupts the previous snapshot. `GOBLIN.LOAD <path>` (or `--load <path>` at
+startup) replaces the current data with a snapshot, replying with the number of
+keys loaded. Snapshots are a portable canonical layer (members and scores) plus a
+version-gated accelerator (the packed indexes); a snapshot always loads on any
+build or machine, rebuilding the indexes from the canonical layer when the
+accelerator cannot be trusted (a different `std::hash`, a changed index format).
+Persistence is explicit and client-driven: a crash loses writes made since the
+last successful `GOBLIN.SAVE`, so drive saves from your operations and `--load`
+on startup.
 
 By design, Goblin Core does not — and will not — offer an append-only write log
 (AOF) or an internal snapshot scheduler, for two different reasons.
@@ -165,12 +193,12 @@ similar) ahead of Goblin Core, which replays them. This is the same principle as
 the 64 KiB member cap — do the core sorted-set operations better than Redis
 rather than reimplement a weaker version of a peripheral feature.
 
-Scheduled snapshots are a lighter matter: `GOBLIN.SAVE` is the primitive and it
-costs nothing on the write path. Goblin Core simply does not own the *policy* of
-when and how often to run it — drive that from `cron` or your scheduler, where
-you already own the rest of your operations. (An internal timer would only move
-the trigger inside the process; it would not change that a foreground save
-briefly pauses the server.)
+Scheduled snapshots are a lighter matter: `GOBLIN.SAVE` forks and returns
+immediately, so it costs almost nothing and does not pause the server. Goblin
+Core simply does not own the *policy* of when and how often to run it — drive
+that from `cron` or your scheduler, where you already own the rest of your
+operations. An internal timer would only move that trigger inside the process for
+no real gain.
 
 `GOBLIN.LOAD` and `--load` auto-detect the file by magic: a native Goblin
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
