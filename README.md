@@ -51,8 +51,10 @@ format for local testing.
 
 Goblin Core is not a full Redis replacement. This release is scoped to the
 sorted-set command surface above plus `PING` for liveness checks. It does not
-implement persistence, replication, cluster mode, pub/sub, Lua, transactions,
-ACLs, Redis modules, eviction policies, or general Redis key types.
+implement automatic (background) persistence, replication, cluster mode,
+pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or general
+Redis key types. Point-in-time snapshots are available on demand via
+`GOBLIN.SAVE`/`GOBLIN.LOAD` (see Run below).
 
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
@@ -131,6 +133,16 @@ no empty slot, so a lookup of a missing member scans the whole table.
 rehash (default `2^0.25 ≈ 1.19`). A smaller factor keeps the never-compacted
 load factor high (memory) at the cost of more frequent rehashes during writes;
 `2.0` is the classic doubling that favors write throughput.
+
+`GOBLIN.SAVE <path>` writes a point-in-time snapshot of every zset to a file and
+replies `+OK`. `GOBLIN.LOAD <path>` (or `--load <path>` at startup) replaces the
+current data with a snapshot, replying with the number of keys loaded. Snapshots
+are a portable canonical layer (members and scores) plus a version-gated
+accelerator (the packed indexes); a snapshot written by a newer build whose
+index internals changed still loads, rebuilding the indexes from the canonical
+layer. There is no automatic or background saving yet: a crash loses writes made
+since the last `GOBLIN.SAVE`, so drive saves from your operations and `--load`
+on startup.
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for
 range output benchmarking. It is off by default because it adds a packed side

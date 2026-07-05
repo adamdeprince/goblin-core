@@ -30,12 +30,17 @@ possible.
 - `ZREM key member [member ...]`
 - `ZSCORE key member`
 
-Plus two Goblin-specific maintenance commands:
+Plus Goblin-specific maintenance and persistence commands:
 
 - `GOBLIN.MEMORY key`: reports per-zset allocation and the active rank-cache mode.
 - `GOBLIN.OPTIMIZE key [density]`: compacts a zset in place and repacks the
   member index to `density` (target load factor in `(0, 1]`, default `0.97`),
   returning the bytes reclaimed.
+- `GOBLIN.SAVE path` / `GOBLIN.LOAD path`: write/read a snapshot of all zsets
+  (also `--load path` at startup). The format is a portable canonical layer
+  (members + scores) plus a version-gated accelerator (packed indexes dumped so
+  load skips re-hashing/re-sorting); a version mismatch falls back to rebuilding
+  the indexes from the canonical layer. See `include/goblin/core/snapshot.hpp`.
 
 The server accepts RESP array commands and a basic inline command format used by
 tests.

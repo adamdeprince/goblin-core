@@ -2,9 +2,9 @@
 
 > Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly 37% of Redis's memory (about 49 bytes per member) and serves it faster. This file is written for an operator installing, configuring, and running Goblin Core in production; it deliberately omits code internals.
 
-Goblin Core listens on a TCP port and speaks RESP, so existing Redis clients and `redis-cli` connect unchanged. It supports `PING` and the sorted-set commands `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`, `ZRANK`, `ZREVRANK`, `ZREM`, plus two admin commands, `GOBLIN.MEMORY` (per-key memory introspection) and `GOBLIN.OPTIMIZE` (in-place compaction).
+Goblin Core listens on a TCP port and speaks RESP, so existing Redis clients and `redis-cli` connect unchanged. It supports `PING` and the sorted-set commands `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`, `ZRANK`, `ZREVRANK`, `ZREM`, plus admin commands `GOBLIN.MEMORY` (per-key memory introspection), `GOBLIN.OPTIMIZE` (in-place compaction), and `GOBLIN.SAVE`/`GOBLIN.LOAD` (point-in-time snapshots).
 
-It is NOT a full Redis replacement. There is no persistence, replication, clustering, pub/sub, Lua, transactions, ACLs/auth, modules, key eviction, or any non-ZSET key type. Treat it as an in-memory, ephemeral, single-node sorted-set service that you rebuild from a source of truth on restart.
+It is NOT a full Redis replacement. There is no automatic/background persistence, replication, clustering, pub/sub, Lua, transactions, ACLs/auth, modules, key eviction, or any non-ZSET key type. Durability is via on-demand snapshots (`GOBLIN.SAVE` / `GOBLIN.LOAD` / `--load`), not per-write logging. Treat it as an in-memory, single-node sorted-set service that you snapshot and reload, backed by a source of truth.
 
 ## Install and run
 
@@ -17,7 +17,7 @@ It is NOT a full Redis replacement. There is no persistence, replication, cluste
 - Memory: budget about 49 bytes per member after `GOBLIN.OPTIMIZE` (about 2.7x less RAM than Redis for the same data). A single member is capped at 64 KiB.
 - Deployment pattern: bulk-load a set, then run `GOBLIN.OPTIMIZE <key>` once before serving reads to compact it and repack the member index.
 - Security: there is no authentication or TLS. Bind to a trusted interface only and put access control in front of it.
-- Durability: none. Data lives in RAM and is gone on restart; reload from your primary store.
+- Durability: snapshot-based. Data lives in RAM; a crash loses writes made since the last `GOBLIN.SAVE`. Save on a schedule (and before planned shutdown), `--load` the snapshot on startup, and keep a source of truth for a full rebuild.
 
 ## Reference
 

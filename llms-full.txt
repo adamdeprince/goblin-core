@@ -17,11 +17,14 @@ It implements only:
 - `PING`
 - Sorted-set commands: `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`,
   `ZRANK`, `ZREVRANK`, `ZREM`
-- Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`
+- Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`, `GOBLIN.SAVE`,
+  `GOBLIN.LOAD`
 
 It does NOT implement, and you must not plan around:
 
-- Persistence (no RDB/AOF). Data is RAM-only and lost on restart.
+- Automatic/background persistence (no scheduled RDB, no AOF per-write log).
+  On-demand snapshots exist (`GOBLIN.SAVE`/`GOBLIN.LOAD`; see "Persistence"),
+  but between saves data is RAM-only.
 - Replication, clustering, or failover.
 - Pub/sub, Lua scripting, transactions (`MULTI`/`EXEC`), pipelining semantics
   beyond normal RESP, keyspace notifications.
@@ -29,9 +32,9 @@ It does NOT implement, and you must not plan around:
 - Eviction/expiry (`EXPIRE`, `maxmemory` policies) — keys live until removed.
 - Any non-sorted-set type (no strings, hashes, lists, sets, streams).
 
-Because there is no persistence or replication, treat a Goblin Core node as a
-rebuildable cache/index: your application or a loader repopulates it from a
-system of record at startup.
+Because saving is on-demand (not per-write) and there is no replication, treat a
+Goblin Core node as a snapshot-backed cache/index: snapshot it periodically,
+reload the snapshot on startup, and keep a system of record you can rebuild from.
 
 Status: alpha, pre-1.0. Interfaces and defaults may change between releases.
 Validate against your own workload before relying on it.
@@ -122,6 +125,12 @@ Admin commands (Goblin Core extensions, not part of Redis):
   member index, returning the number of bytes reclaimed. Run it once after a
   bulk load, before serving reads. `density` is the target member-index load
   factor in `(0, 1]` and defaults to `0.97`. See "Tuning: OPTIMIZE density".
+- `GOBLIN.SAVE path` — write a point-in-time snapshot of all zsets to `path`.
+  Replies `+OK`. Synchronous; it blocks the server for the duration of the
+  write. See "Persistence".
+- `GOBLIN.LOAD path` — replace all current data with the snapshot at `path`.
+  Replies with the number of keys loaded. On any error (bad file, checksum
+  mismatch) it fails and leaves the store empty.
 
 ## Configuration flags
 
@@ -130,6 +139,10 @@ Set these on the command line at startup.
 - `--bind ADDRESS` — interface to listen on. Default `127.0.0.1`. Use
   `0.0.0.0` to accept remote connections (only behind trusted network controls).
 - `--port PORT` — TCP port. Default `6379`.
+- `--load SNAPSHOT` — load a snapshot file at startup before accepting
+  connections (equivalent to `GOBLIN.LOAD`). Logs how many members/keys loaded
+  and whether the accelerator was used. If the file is missing or invalid the
+  server exits non-zero rather than starting empty. See "Persistence".
 - `--member-index-growth FACTOR` — how much the member hash index grows on each
   rehash. Default `2^0.25` (about `1.19`). A smaller factor keeps the index
   fuller (less RAM) between rehashes at the cost of more frequent rehashes
@@ -182,10 +195,14 @@ Load-then-serve pattern (recommended):
 
 Durability and restarts:
 
-- There is no persistence. A restart starts empty. Have a loader that
-  repopulates from your system of record, and gate traffic until it finishes.
+- Persistence is snapshot-based and on-demand (see "Persistence"). Between saves
+  data is RAM-only, so a crash loses writes since the last `GOBLIN.SAVE`. Take
+  snapshots on a schedule and before planned shutdowns.
+- Restart with `--load SNAPSHOT` to come back with the last saved state instead
+  of empty; gate traffic until load finishes (it is synchronous).
 - There is no replication or failover. If you need HA, run independent nodes
-  each loaded from the source of truth and handle failover in your client/proxy.
+  each loaded from a snapshot or the source of truth and handle failover in your
+  client/proxy.
 
 Security:
 
@@ -212,8 +229,8 @@ Running under systemd (example unit):
     [Install]
     WantedBy=multi-user.target
 
-Because a restart loses data, pair `Restart=on-failure` with a loader (an
-`ExecStartPost` script or an application step) that repopulates the node.
+Pair `Restart=on-failure` with `--load` of your latest snapshot (and/or an
+application step that repopulates from the source of truth).
 
 Monitoring:
 
@@ -222,6 +239,35 @@ Monitoring:
   bytes/member, index sizing).
 - Process RSS via your normal host metrics; it should track the sum of
   `GOBLIN.MEMORY` allocations within a few percent.
+
+## Persistence
+
+Persistence is snapshot-based and driven by you; there is no background save or
+per-write log yet.
+
+- `GOBLIN.SAVE path` writes a point-in-time image of every zset to `path` and
+  replies `+OK`. It is synchronous and blocks the server while writing, so size
+  the pause for your dataset and drive it off-peak or from a sidecar on a
+  schedule. Write to a temp path and rename into place if you need the visible
+  file to update atomically.
+- `GOBLIN.LOAD path` (or `--load path` at startup) replaces all current data
+  with the snapshot. On any error — bad magic, checksum mismatch, truncation —
+  it fails and leaves the store empty rather than half-loaded.
+- What you lose on a crash: everything written since the last successful
+  `GOBLIN.SAVE`. Choose a save cadence that bounds that window, and keep a
+  system of record for a full rebuild.
+
+Format and forward-compatibility: a snapshot has a portable canonical layer
+(members and scores) plus a version-gated accelerator (the packed indexes,
+dumped so load can skip re-hashing and re-sorting). A snapshot always remains
+loadable by later builds: if a newer build changed its index internals, it
+ignores the accelerator and rebuilds the indexes from the canonical layer (a
+slower load, same data). Snapshots are host-endianness specific (little-endian);
+this matters only if you move files between architectures.
+
+Operationally: `GOBLIN.SAVE` before planned shutdowns and on a cron-like
+schedule; `--load` the latest snapshot on startup. A snapshot is smaller than
+the live RSS (no index slack), roughly the member bytes plus ~20 bytes/member.
 
 ## Tuning: OPTIMIZE density
 
