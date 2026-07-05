@@ -990,6 +990,56 @@ void test_snapshot_round_trip() {
   }
 }
 
+// The full persistence cycle on one store: save, clear, reload, same data back.
+void test_snapshot_save_clear_reload() {
+  using goblin::core::Store;
+  Store store;
+
+  // Varied data: duplicate, negative, and zero scores; an empty member; several
+  // keys; and removals (dense-id and tombstone paths).
+  const std::vector<std::string> keys = {"alpha", "beta", "gamma"};
+  for (int i = 0; i < 400; ++i) {
+    (void)store.zadd("alpha", static_cast<double>((i * 11) % 30) - 10.0,
+                     "m" + std::to_string(i));
+  }
+  for (int i = 0; i < 400; i += 9) {
+    execute_fields(store, {"ZREM", "alpha", "m" + std::to_string(i)});
+  }
+  (void)store.zadd("beta", 0.0, "");    // empty member
+  (void)store.zadd("beta", 1.5, "x");
+  (void)store.zadd("beta", 1.5, "y");   // equal score -> ordered by member bytes
+  (void)store.zadd("gamma", -3.25, "only");
+
+  // Record the full observable state of each key (count + every member and
+  // score, in rank order).
+  auto full_range = [&store](const std::string& key) {
+    return execute_fields(store, {"ZRANGE", key, "0", "-1", "WITHSCORES"});
+  };
+  std::vector<long long> cards;
+  std::vector<std::string> ranges;
+  for (const auto& key : keys) {
+    cards.push_back(store.zcard(key));
+    ranges.push_back(full_range(key));
+  }
+
+  // Save, then clear the same store in place.
+  std::ostringstream out(std::ios::binary);
+  store.save(out);
+  store.clear();
+  for (const auto& key : keys) {
+    assert(store.zcard(key) == 0);  // genuinely emptied
+  }
+
+  // Reload into the same store; every key must come back identical.
+  std::istringstream in(out.str(), std::ios::binary);
+  const auto stats = store.load(in);
+  assert(stats.keys == keys.size());
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    assert(store.zcard(keys[i]) == cards[i]);
+    assert(full_range(keys[i]) == ranges[i]);
+  }
+}
+
 // Hand-crafted RDB v11 bytes (no redis dependency). Real-encoding and CRC64
 // validation against a period-correct redis is a separate fixture step.
 void test_rdb_import() {
@@ -1101,6 +1151,7 @@ int main() {
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
+  test_snapshot_save_clear_reload();
   test_rdb_import();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
