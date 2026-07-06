@@ -1,10 +1,10 @@
 # Goblin Core — Operator Guide
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly half the memory of Redis or Valkey (about 49 bytes per member, every engine measured on the same jemalloc 5.3.0) and serves it faster. This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
+> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in roughly half the memory of Redis or Valkey (about 49 bytes per member, every engine measured on the same jemalloc 5.3.0) and serves it faster; hashes get the same lean layout at about 45 bytes per field (roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1). This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
 
-This guide assumes you already run Redis-style sorted sets and want to serve the
-same data on less RAM. Read it top to bottom to stand up a node; jump to
-"Production checklist" when you are ready to deploy.
+This guide assumes you already run Redis-style sorted sets (and now hashes) and
+want to serve the same data on less RAM. Read it top to bottom to stand up a node;
+jump to "Production checklist" when you are ready to deploy.
 
 ## What Goblin Core is and is not
 
@@ -17,6 +17,8 @@ It implements only:
 - `PING`
 - Sorted-set commands: `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`,
   `ZRANK`, `ZREVRANK`, `ZREM`
+- Hash commands: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HGETALL`, `HKEYS`,
+  `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, `HINCRBY`
 - Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`, `GOBLIN.SAVE`,
   `GOBLIN.LOAD`
 
@@ -30,7 +32,12 @@ It does NOT implement, and you must not plan around:
   beyond normal RESP, keyspace notifications.
 - Authentication, ACLs, or TLS.
 - Eviction/expiry (`EXPIRE`, `maxmemory` policies) — keys live until removed.
-- Any non-sorted-set type (no strings, hashes, lists, sets, streams).
+- Any key type beyond sorted sets and hashes (no strings, lists, sets, streams).
+
+A key holds at most one type. A hash command against a sorted-set key — or a
+sorted-set command against a hash key — returns the standard `WRONGTYPE Operation
+against a key holding the wrong kind of value` error rather than coercing the
+value, exactly as Redis does with its single-namespace keyspace.
 
 Because saving is on-demand (not per-write) and there is no replication, treat a
 Goblin Core node as a snapshot-backed cache/index: snapshot it periodically,
@@ -92,6 +99,8 @@ Any Redis client works. With `redis-cli`:
     redis-cli -p 6379 ZADD leaders 42 alice 17 bob
     redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
     redis-cli -p 6379 ZSCORE leaders alice
+    redis-cli -p 6379 HSET session:42 user alice seen 1719878400
+    redis-cli -p 6379 HGETALL session:42
 
 Application clients (redis-py, node-redis, go-redis, Jedis/Lettuce, etc.) connect
 the same way; point them at the host and port. Only the commands listed above are
@@ -116,16 +125,49 @@ strings up to 64 KiB each (see "Limits").
 - `ZREVRANK key member` — rank by descending score, or nil.
 - `ZREM key member [member ...]` — remove members. Returns the number removed.
 
+Hash fields and values are arbitrary byte strings up to 64 KiB each (see
+"Limits"). A key holds at most one type: a hash command against a sorted-set key
+returns a `WRONGTYPE` error (and vice versa). A hash is unordered, so `HGETALL`,
+`HKEYS`, and `HVALS` return fields in an unspecified order.
+
+- `HSET key field value [field value ...]` — set one or more fields. Returns the
+  number of fields that were newly created (updating an existing field does not
+  count).
+- `HSETNX key field value` — set `field` only if it does not already exist.
+  Returns `1` if set, `0` if the field was already present.
+- `HGET key field` — the field's value, or nil if the field (or key) is absent.
+- `HMGET key field [field ...]` — the values for the listed fields, in request
+  order, with nil for each missing field.
+- `HDEL key field [field ...]` — remove fields. Returns the number removed; the
+  key itself is deleted when its last field goes.
+- `HGETALL key` — all field/value pairs (field then value, interleaved). Empty
+  for a missing key.
+- `HKEYS key` — all field names.
+- `HVALS key` — all values.
+- `HLEN key` — number of fields in the hash.
+- `HEXISTS key field` — `1` if the field exists, else `0`.
+- `HSTRLEN key field` — byte length of the field's value, or `0` if the field (or
+  key) is absent.
+- `HINCRBY key field increment` — add the signed integer `increment` to the
+  field's value (parsed as a base-10 integer; a missing field starts at `0`) and
+  return the new value. Errors if the current value is not an integer or the
+  result overflows a 64-bit signed integer.
+
 Admin commands (Goblin Core extensions, not part of Redis):
 
-- `GOBLIN.MEMORY key` — reports per-key allocation, member count, and internal
-  index sizing. Use it to measure real bytes-per-member for capacity planning
-  and to confirm the effect of `GOBLIN.OPTIMIZE`.
-- `GOBLIN.OPTIMIZE key [density]` — compacts the set in place and repacks its
-  member index, returning the number of bytes reclaimed. Run it once after a
-  bulk load, before serving reads. `density` is the target member-index load
-  factor in `(0, 1]` and defaults to `0.97`. See "Tuning: OPTIMIZE density".
-- `GOBLIN.SAVE path [NOACCEL]` — snapshot all zsets to `path`. Forks a
+- `GOBLIN.MEMORY key` — reports per-key allocation, entry count (members or
+  fields), and internal index sizing, for a zset or a hash key. Use it to measure
+  real bytes-per-member (or bytes-per-field) for capacity planning and to confirm
+  the effect of `GOBLIN.OPTIMIZE`.
+- `GOBLIN.OPTIMIZE key [density]` — compacts a zset or hash in place and repacks
+  its index, returning the number of bytes reclaimed. On a zset it reclaims
+  insertion slack; on a hash it drops dead arena bytes left by value updates and
+  field deletes and repacks the field index. Run it once after a bulk load,
+  before serving reads. `density` is the target member/field-index load factor in
+  `(0, 1]` and defaults to `0.97`. Both types also auto-compact on their own (see
+  "Tuning: fragmentation and auto-compaction"), so this is an optimization, not a
+  requirement. See "Tuning: OPTIMIZE density".
+- `GOBLIN.SAVE path [NOACCEL]` — snapshot all zsets and hashes to `path`. Forks a
   copy-on-write child that writes from a frozen image of the data, so it returns
   immediately with `Background saving started` and the server keeps serving;
   completion or failure is logged, and only one background save runs at a time (a
@@ -152,11 +194,20 @@ Set these on the command line at startup.
   invalid the server exits non-zero rather than starting empty. See "Persistence"
   and "Migrating from Redis".
 - `--member-index-growth FACTOR` — how much the member hash index grows on each
-  rehash. Default `2^0.25` (about `1.19`). A smaller factor keeps the index
-  fuller (less RAM) between rehashes at the cost of more frequent rehashes
-  during heavy writes; `2.0` is classic doubling that favors write throughput
-  over steady-state memory. The default is memory-first; leave it unless you are
-  write-bound and profiling says otherwise.
+  rehash, for both the zset member index and the hash field index. Default
+  `2^0.25` (about `1.19`). A smaller factor keeps the index fuller (less RAM)
+  between rehashes at the cost of more frequent rehashes during heavy writes;
+  `2.0` is classic doubling that favors write throughput over steady-state
+  memory. The default is memory-first; leave it unless you are write-bound and
+  profiling says otherwise.
+- `--zset-chunk-bytes BYTES` / `--hash-chunk-bytes BYTES` — size of each
+  packed-arena chunk for the respective type. Each must be a power of two and at
+  least the per-type minimum — `65536` (64 KiB) for zsets, `131072` (128 KiB) for
+  hashes, since one chunk must hold the largest possible entry (a member, or a
+  field-plus-value pair). Default `1048576` (1 MiB) for both. Larger chunks reduce
+  allocation churn for very large structures; the defaults suit typical workloads.
+  An invalid value (not a power of two, or below the minimum) makes the server
+  exit with an error.
 - `--rank-cache-mode off|exact|block-hint` — optional structure to speed up
   `ZRANK`/`ZREVRANK`. Default `off`. `exact` adds about 4 bytes per member and
   makes rank lookups fast but adds work to every write. `block-hint` is a
@@ -184,6 +235,13 @@ Capacity (RAM):
   members is roughly 4.6 GiB of sorted-set data, plus a small fixed overhead.
 - This is roughly half of what Redis 8.8 or Valkey 9.1 spend for the same data
   (and less against older Redis), so a fixed-RAM box holds roughly twice as much.
+- Hashes budget about 45 bytes per field after `GOBLIN.OPTIMIZE` (16-byte field +
+  16-byte value; a constant ~13.4 bytes of that is per-field overhead — an 8-byte
+  struct-of-arrays reference plus an amortized Swiss slot, versus Redis 8.8's
+  ~27–38 bytes). Against Redis 7.2.4 that is roughly half the RAM; against modern
+  Redis 8.8 it is about 20% leaner, and about 29% leaner than Valkey 9.1. The
+  margin grows as values get smaller. Every engine measured on the same jemalloc
+  5.3.0 and shared config.
 - Measure your real workload with `GOBLIN.MEMORY key` (its reported allocation
   tracks resident memory within a few percent). Member length and set count both
   affect the total.
@@ -262,7 +320,7 @@ rather than reimplement a weaker peripheral). Scheduled snapshots are lighter:
 not pause the server; Goblin Core just does not own the policy of when and how
 often to run it -- drive that from `cron` or your scheduler.
 
-- `GOBLIN.SAVE path` snapshots every zset to `path`. It forks a copy-on-write
+- `GOBLIN.SAVE path` snapshots every zset and hash to `path`. It forks a copy-on-write
   child that writes from a frozen image of the data, so the command returns
   immediately with `Background saving started` and the server keeps serving while
   the child writes; watch the log for `background save of <path> completed` (or a
@@ -276,9 +334,11 @@ often to run it -- drive that from `cron` or your scheduler.
   `GOBLIN.SAVE`. Choose a save cadence that bounds that window, and keep a
   system of record for a full rebuild.
 
-Format and portability: a snapshot has a portable canonical layer (members and
-scores) plus a version-gated accelerator (the packed indexes, dumped so load can
-skip re-hashing and re-sorting). The canonical layer is little-endian and
+Format and portability: a snapshot has a portable canonical layer (zset members
+and scores, hash fields and values, in their own per-type sections) plus a
+version-gated accelerator (the packed indexes, dumped so load can skip re-hashing
+and re-sorting). Hashes are a newer section, so a current build still loads an
+older zset-only snapshot unchanged. The canonical layer is little-endian and
 machine-independent, so a snapshot loads on any build or architecture. When the
 accelerator cannot be trusted — a newer index format, or a different `std::hash`
 (for example moving a file between a macOS/libc++ build and a Linux/libstdc++
@@ -320,8 +380,11 @@ operation:
   encodings of sorted sets (listpack/ziplist/skiplist, binary and text scores,
   integer members).
 - Sorted sets are imported; other key types (string/list/set/hash) are parsed
-  and skipped, since only sorted sets exist here today. Streams and modules abort
-  the load with a message — migrate those separately (e.g. over the wire).
+  and skipped. RDB hash import is not yet supported, so a Redis hash does not come
+  across this way — move Goblin Core's own hashes between nodes with a native
+  `GOBLIN.SAVE` snapshot, or migrate a Redis hash over the wire (`HGETALL` ->
+  `HSET`). Streams and modules abort the load with a message — migrate those
+  separately (e.g. over the wire).
 - `+inf`/`-inf` scores clamp to the largest finite double; a member larger than
   64 KiB aborts the load; a bad CRC64 aborts the load.
 - Not supported: Redis 7.4+ (RDB 12+) dumps are rejected. Re-save the dump under
@@ -348,12 +411,34 @@ idempotent.
 
 ## Tuning: member-index growth
 
-`--member-index-growth` controls steady-state memory for sets that receive
-ongoing writes and are never compacted. The default (`2^0.25`) keeps the index
-at least ~84% full at any size. If you always load-then-`OPTIMIZE` and serve
-read-mostly, the growth factor barely matters because `OPTIMIZE` repacks anyway.
-Raise it toward `2.0` only if write throughput during bulk load is the
-bottleneck and you can spend the extra memory.
+`--member-index-growth` controls steady-state memory for sets and hashes that
+receive ongoing writes and are never compacted; it governs both the zset member
+index and the hash field index. The default (`2^0.25`) keeps the index at least
+~84% full at any size. If you always load-then-`OPTIMIZE` and serve read-mostly,
+the growth factor barely matters because `OPTIMIZE` repacks anyway. Raise it
+toward `2.0` only if write throughput during bulk load is the bottleneck and you
+can spend the extra memory.
+
+## Tuning: arena chunk size
+
+`--zset-chunk-bytes` and `--hash-chunk-bytes` set the packed-arena chunk each
+type allocates in (member bytes for a zset; field and value bytes for a hash).
+Both default to 1 MiB and must be a power of two no smaller than the per-type
+minimum (64 KiB zset, 128 KiB hash — one chunk must hold the largest possible
+entry). Leave the defaults unless you run very large structures and want fewer,
+larger arena allocations.
+
+## Tuning: fragmentation and auto-compaction
+
+Both sorted sets and hashes keep their variable-length bytes (members, or fields
+and values) in a packed arena. Updating a value in place is free when the new
+bytes fit; a larger value, or a delete (`ZREM`, `HDEL`), orphans the old bytes as
+dead arena space until the structure is rebuilt. To bound that without operator
+intervention, each structure auto-compacts: once its dead (reclaimable) arena
+bytes exceed its live bytes past a ~1 MiB floor, it rebuilds in place. So a
+value-update- or delete-heavy hash (or a `ZREM`-heavy zset) caps its own arena at
+roughly twice the live bytes. `GOBLIN.OPTIMIZE` forces the same rebuild
+immediately and also repacks the index to your chosen density.
 
 ## Limits
 
@@ -361,6 +446,10 @@ bottleneck and you can spend the extra memory.
   Redis (which allows larger) that keeps per-member overhead small. If your
   members are larger than this, you are using a sorted set as a blob store;
   store the blob elsewhere and keep a key in the set.
+- In a hash, each field and each value is capped at 64 KiB as well, for the same
+  reason (it keeps the per-field reference to 8 bytes). A value larger than that
+  belongs in a blob store — goblin-store.dev — with the hash holding the returned
+  key; a hash is an index, not a place to park large blobs.
 - Scores are doubles, matching Redis precision.
 - Single node, single logical keyspace; no database select semantics beyond the
   default.
@@ -384,9 +473,12 @@ point `src/main.cpp`.
 
 - `include/goblin/core/server.hpp` — nonblocking TCP server and RESP I/O loop.
 - `include/goblin/core/command.hpp` — command parsing and dispatch.
-- `include/goblin/core/store.hpp` — the sorted-set store and `GOBLIN.OPTIMIZE`.
+- `include/goblin/core/store.hpp` — the key store (sorted sets and hashes) and
+  `GOBLIN.OPTIMIZE`.
 - `include/goblin/core/zset_member_index.hpp` — member-to-id hash index.
 - `include/goblin/core/zset_score_index.hpp` — score-ordered index.
+- `include/goblin/core/hash.hpp`, `hash_storage.hpp` — the HASH type: Swiss-table
+  field index and packed field/value arena.
 - `include/goblin/core/snapshot.hpp` — native snapshot format (sections, bytecode,
   CRC32C).
 - `include/goblin/core/rdb.hpp`, `src/rdb.cpp` — Redis RDB reader (migration).

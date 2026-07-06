@@ -79,6 +79,16 @@ enum class ZsetOpcode : std::uint8_t {
 // then ignored and indexes are rebuilt from the canonical layer.
 inline constexpr std::uint32_t kZsetAcceleratorVersion = 1;
 
+enum class HashOpcode : std::uint8_t {
+  End = kOpEnd,
+  Hash = 0x01,  // operands: key, options, canonical field/value pairs, optional accelerator
+};
+
+// Bump when the HASH accelerator (field-index dump) layout or the swiss-table
+// bucketing/fingerprint/control/slot layout changes. Old accelerators are then
+// ignored and the field index is rebuilt from the canonical layer.
+inline constexpr std::uint32_t kHashAcceleratorVersion = 1;
+
 // CRC32C (Castagnoli), for corruption detection. The result is standard
 // CRC32C, so it is identical across the hardware and software paths and across
 // architectures (a snapshot written on one machine verifies on another).

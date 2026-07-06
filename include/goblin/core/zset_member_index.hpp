@@ -27,7 +27,14 @@ struct ZSetMemberMeta {
 };
 static_assert(sizeof(ZSetMemberMeta) == 4);
 
-class ZSetMemberIndex {
+// The tuned Swiss table (SIMD group probe, non-power-of-two capacity, growth
+// factor, density-targeted packing). It is storage-agnostic: it stores only
+// member ids in its slots and resolves a slot's key bytes on demand through
+// `Storage::view(uint32) -> std::string_view`. `ZSetMemberIndex` (below) is the
+// zset instantiation over ZSetMemberStorage; the hash type reuses it over
+// HashStorage for its field->id index.
+template <class Storage>
+class MemberIndex {
  public:
   using size_type = std::size_t;
   using hash_type = std::uint32_t;
@@ -54,13 +61,13 @@ class ZSetMemberIndex {
         std::hash<std::string_view>{}("goblin-core member index hash probe"));
   }
 
-  ZSetMemberIndex() = default;
+  MemberIndex() = default;
 
-  explicit ZSetMemberIndex(const ZSetMemberStorage* members,
-                           double growth = kDefaultGrowth)
+  explicit MemberIndex(const Storage* members,
+                       double growth = kDefaultGrowth)
       : members_(members), growth_(growth > 1.0 ? growth : kDefaultGrowth) {}
 
-  void set_members(const ZSetMemberStorage* members) noexcept {
+  void set_members(const Storage* members) noexcept {
     members_ = members;
   }
 
@@ -246,7 +253,7 @@ class ZSetMemberIndex {
   // Restore a table dumped by write_accelerator(). growth_ is left as
   // constructed (it comes from options, not the dump). The caller must only
   // invoke this when the accelerator version matches the running binary.
-  void read_accelerator(snapshot::Reader& reader, const ZSetMemberStorage* members) {
+  void read_accelerator(snapshot::Reader& reader, const Storage* members) {
     members_ = members;
     capacity_ = static_cast<size_type>(reader.u64());
     size_ = static_cast<size_type>(reader.u64());
@@ -504,7 +511,7 @@ class ZSetMemberIndex {
   }
 
   void rehash(size_type requested_capacity) {
-    ZSetMemberIndex replacement(members_, growth_);
+    MemberIndex replacement(members_, growth_);
     replacement.allocate_capacity(requested_capacity);
 
     for (size_type i = 0; i < capacity_; ++i) {
@@ -520,7 +527,7 @@ class ZSetMemberIndex {
     capacity_ = replacement.capacity_;
   }
 
-  const ZSetMemberStorage* members_{nullptr};
+  const Storage* members_{nullptr};
   std::vector<std::uint8_t> control_;
   std::vector<Slot> slots_;
   size_type size_{0};
@@ -529,5 +536,9 @@ class ZSetMemberIndex {
   double growth_{kDefaultGrowth};
   [[no_unique_address]] std::hash<std::string_view> hasher_{};
 };
+
+// The zset instantiation: field->member_id over the member-bytes storage. Every
+// existing use of ZSetMemberIndex is unchanged.
+using ZSetMemberIndex = MemberIndex<ZSetMemberStorage>;
 
 }  // namespace goblin::core

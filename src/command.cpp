@@ -142,6 +142,77 @@ namespace {
   return resp::array(views);
 }
 
+[[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats) {
+  std::vector<std::string> fields;
+  auto add = [&fields](std::string_view name, std::size_t value) {
+    fields.emplace_back(name);
+    fields.push_back(std::to_string(value));
+  };
+  add("field_count", stats.field_count);
+  add("field_value_live_bytes", stats.field_value_live_bytes);
+  add("field_value_dead_bytes", stats.field_value_dead_bytes);
+  add("field_value_allocated_bytes", stats.field_value_allocated_bytes);
+  add("field_index_allocated_bytes", stats.field_index_allocated_bytes);
+  add("total_allocated_bytes", stats.total_allocated_bytes);
+
+  std::vector<std::string_view> views;
+  views.reserve(fields.size());
+  for (const auto& field : fields) {
+    views.push_back(field);
+  }
+  return resp::array(views);
+}
+
+constexpr std::string_view kWrongType =
+    "WRONGTYPE Operation against a key holding the wrong kind of value";
+
+[[nodiscard]] bool is_zset_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::zadd:
+    case CommandType::zcard:
+    case CommandType::zrange:
+    case CommandType::zrank:
+    case CommandType::zrevrange:
+    case CommandType::zrevrank:
+    case CommandType::zrem:
+    case CommandType::zscore:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool is_hash_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::hset:
+    case CommandType::hsetnx:
+    case CommandType::hget:
+    case CommandType::hmget:
+    case CommandType::hdel:
+    case CommandType::hgetall:
+    case CommandType::hkeys:
+    case CommandType::hvals:
+    case CommandType::hlen:
+    case CommandType::hexists:
+    case CommandType::hstrlen:
+    case CommandType::hincrby:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] std::optional<long long> parse_ll(std::string_view text) {
+  long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end) {
+    return std::nullopt;
+  }
+  return value;
+}
+
 void append_range_response(Store& store,
                            const Command& command,
                            bool reverse,
@@ -314,6 +385,102 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     return {.command = std::move(command)};
   }
 
+  if (equals_ci(command.name, "HSET")) {
+    if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
+      return parse_error(wrong_arity("hset"));
+    }
+    command.type = CommandType::hset;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HSETNX")) {
+    if (command.args.size() != 3) {
+      return parse_error(wrong_arity("hsetnx"));
+    }
+    command.type = CommandType::hsetnx;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HGET")) {
+    if (command.args.size() != 2) {
+      return parse_error(wrong_arity("hget"));
+    }
+    command.type = CommandType::hget;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HMGET")) {
+    if (command.args.size() < 2) {
+      return parse_error(wrong_arity("hmget"));
+    }
+    command.type = CommandType::hmget;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HDEL")) {
+    if (command.args.size() < 2) {
+      return parse_error(wrong_arity("hdel"));
+    }
+    command.type = CommandType::hdel;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HGETALL")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("hgetall"));
+    }
+    command.type = CommandType::hgetall;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HKEYS")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("hkeys"));
+    }
+    command.type = CommandType::hkeys;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HVALS")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("hvals"));
+    }
+    command.type = CommandType::hvals;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HLEN")) {
+    if (command.args.size() != 1) {
+      return parse_error(wrong_arity("hlen"));
+    }
+    command.type = CommandType::hlen;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HEXISTS")) {
+    if (command.args.size() != 2) {
+      return parse_error(wrong_arity("hexists"));
+    }
+    command.type = CommandType::hexists;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HSTRLEN")) {
+    if (command.args.size() != 2) {
+      return parse_error(wrong_arity("hstrlen"));
+    }
+    command.type = CommandType::hstrlen;
+    return {.command = std::move(command)};
+  }
+
+  if (equals_ci(command.name, "HINCRBY")) {
+    if (command.args.size() != 3) {
+      return parse_error(wrong_arity("hincrby"));
+    }
+    command.type = CommandType::hincrby;
+    return {.command = std::move(command)};
+  }
+
   if (equals_ci(command.name, "GOBLIN.MEMORY")) {
     if (command.args.size() != 1) {
       return parse_error(wrong_arity("goblin.memory"));
@@ -354,6 +521,20 @@ void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,
                           CommandExecutionOptions options) {
+  // WRONGTYPE: a key holds at most one type. A zset command on a hash key (or a
+  // hash command on a zset key) is rejected before it operates. GOBLIN.* commands
+  // resolve the type themselves and are exempt.
+  if (!command.args.empty()) {
+    if (is_zset_command(command.type) && store.key_is_hash(command.args[0])) {
+      resp::append_error(out, kWrongType);
+      return;
+    }
+    if (is_hash_command(command.type) && store.key_is_zset(command.args[0])) {
+      resp::append_error(out, kWrongType);
+      return;
+    }
+  }
+
   switch (command.type) {
     case CommandType::ping:
       if (command.args.empty()) {
@@ -426,12 +607,120 @@ void execute_command_into(Store& store,
       return;
     }
 
-    case CommandType::goblin_memory: {
-      const auto stats = store.zset_memory_stats(command.args[0]);
-      if (!stats) {
+    case CommandType::hset: {
+      const auto& key = command.args[0];
+      long long added = 0;
+      for (std::size_t i = 1; i < command.args.size(); i += 2) {
+        added += store.hset(key, command.args[i], command.args[i + 1]);
+      }
+      resp::append_integer(out, added);
+      return;
+    }
+
+    case CommandType::hsetnx:
+      resp::append_integer(
+          out, store.hsetnx(command.args[0], command.args[1], command.args[2]));
+      return;
+
+    case CommandType::hget: {
+      const auto value = store.hget(command.args[0], command.args[1]);
+      if (!value) {
         resp::append_null_bulk_string(out);
       } else {
-        out.append(memory_stats_response(*stats));
+        resp::append_bulk_string(out, *value);
+      }
+      return;
+    }
+
+    case CommandType::hmget: {
+      resp::append_array_header(out, command.args.size() - 1);
+      for (std::size_t i = 1; i < command.args.size(); ++i) {
+        const auto value = store.hget(command.args[0], command.args[i]);
+        if (!value) {
+          resp::append_null_bulk_string(out);
+        } else {
+          resp::append_bulk_string(out, *value);
+        }
+      }
+      return;
+    }
+
+    case CommandType::hdel: {
+      long long removed = 0;
+      for (std::size_t i = 1; i < command.args.size(); ++i) {
+        removed += store.hdel(command.args[0], command.args[i]) ? 1 : 0;
+      }
+      resp::append_integer(out, removed);
+      return;
+    }
+
+    case CommandType::hgetall: {
+      resp::append_array_header(out, store.hlen(command.args[0]) * 2);
+      store.hash_for_each(command.args[0],
+                          [&out](std::string_view field, std::string_view value) {
+                            resp::append_bulk_string(out, field);
+                            resp::append_bulk_string(out, value);
+                          });
+      return;
+    }
+
+    case CommandType::hkeys: {
+      resp::append_array_header(out, store.hlen(command.args[0]));
+      store.hash_for_each(command.args[0],
+                          [&out](std::string_view field, std::string_view) {
+                            resp::append_bulk_string(out, field);
+                          });
+      return;
+    }
+
+    case CommandType::hvals: {
+      resp::append_array_header(out, store.hlen(command.args[0]));
+      store.hash_for_each(command.args[0],
+                          [&out](std::string_view, std::string_view value) {
+                            resp::append_bulk_string(out, value);
+                          });
+      return;
+    }
+
+    case CommandType::hlen:
+      resp::append_integer(out, static_cast<long long>(store.hlen(command.args[0])));
+      return;
+
+    case CommandType::hexists:
+      resp::append_integer(
+          out, store.hexists(command.args[0], command.args[1]) ? 1 : 0);
+      return;
+
+    case CommandType::hstrlen: {
+      const auto len = store.hstrlen(command.args[0], command.args[1]);
+      resp::append_integer(out, static_cast<long long>(len.value_or(0)));
+      return;
+    }
+
+    case CommandType::hincrby: {
+      const auto delta = parse_ll(command.args[2]);
+      if (!delta) {
+        resp::append_error(out, "ERR value is not an integer or out of range");
+        return;
+      }
+      const auto result = store.hincrby(command.args[0], command.args[1], *delta);
+      if (!result) {
+        resp::append_error(
+            out, "ERR hash value is not an integer or out of range");
+      } else {
+        resp::append_integer(out, *result);
+      }
+      return;
+    }
+
+    case CommandType::goblin_memory: {
+      if (const auto zstats = store.zset_memory_stats(command.args[0]); zstats) {
+        out.append(memory_stats_response(*zstats));
+      } else if (const auto hstats = store.hash_memory_stats(command.args[0]);
+                 hstats) {
+        out.append(hash_memory_stats_response(*hstats));
+      } else {
+        resp::append_null_bulk_string(out);
       }
       return;
     }

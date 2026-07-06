@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "goblin/core/hash.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
@@ -47,6 +48,7 @@ struct ZSetOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
+  std::size_t member_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
 };
 
 struct ZSetMemoryStats {
@@ -296,7 +298,9 @@ class ZSet {
   void save(snapshot::Writer& writer, bool with_accelerator) const;
   // Reconstruct from OP_ZSET operands. use_accelerator says to trust a present
   // accelerator (version matched) rather than rebuild from the canonical layer.
-  [[nodiscard]] static ZSet load(snapshot::Reader& reader, bool use_accelerator);
+  [[nodiscard]] static ZSet load(
+      snapshot::Reader& reader, bool use_accelerator,
+      std::size_t member_chunk_bytes = ZSetMemberStorage::kDefaultChunkBytes);
 
   [[nodiscard]] std::size_t allocated_member_slots() const noexcept;
   [[nodiscard]] std::size_t free_member_slots() const noexcept;
@@ -325,6 +329,8 @@ struct StoreOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
+  std::size_t zset_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
+  std::size_t hash_chunk_bytes{HashStorage::kDefaultChunkBytes};
 };
 
 struct StoreMemoryStats {
@@ -595,6 +601,42 @@ class Store {
   }
   [[nodiscard]] std::optional<ZSetMemoryStats> zset_memory_stats(
       std::string_view key) const;
+
+  // --- Hash (field -> value) ---
+  // A key holds at most one type. A hash command on a zset key (or vice versa)
+  // is a WRONGTYPE error; the command layer gates on these before operating.
+  // Both short-circuit when the other type's keyspace is empty.
+  [[nodiscard]] bool key_is_zset(std::string_view key) const noexcept {
+    return find_zset(key) != nullptr;
+  }
+  [[nodiscard]] bool key_is_hash(std::string_view key) const noexcept {
+    return find_hash(key) != nullptr;
+  }
+
+  [[nodiscard]] int hset(std::string_view key, std::string_view field,
+                         std::string_view value);
+  [[nodiscard]] int hsetnx(std::string_view key, std::string_view field,
+                           std::string_view value);
+  [[nodiscard]] std::optional<std::string_view> hget(
+      std::string_view key, std::string_view field) const;
+  [[nodiscard]] bool hexists(std::string_view key, std::string_view field) const;
+  [[nodiscard]] bool hdel(std::string_view key, std::string_view field);
+  [[nodiscard]] std::size_t hlen(std::string_view key) const;
+  [[nodiscard]] std::optional<std::size_t> hstrlen(std::string_view key,
+                                                   std::string_view field) const;
+  [[nodiscard]] std::optional<long long> hincrby(std::string_view key,
+                                                 std::string_view field,
+                                                 long long delta);
+  template <class Fn>
+  void hash_for_each(std::string_view key, Fn&& fn) const {
+    const auto* hash = find_hash(key);
+    if (hash != nullptr) {
+      hash->for_each(std::forward<Fn>(fn));
+    }
+  }
+  [[nodiscard]] std::optional<HashMemoryStats> hash_memory_stats(
+      std::string_view key) const;
+
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
   // Compact a zset in place to reclaim insertion slack (block capacity, vector
   // over-allocation) and repack the member index to `member_index_density`.
@@ -646,9 +688,18 @@ class Store {
   [[nodiscard]] ZSet& get_or_create_zset(std::string_view key);
   void erase_if_empty(std::string_view key, const ZSet& zset);
 
+  void place_loaded_hash(std::string key, Hash&& hash);
+  [[nodiscard]] Hash* find_hash(std::string_view key) noexcept;
+  [[nodiscard]] const Hash* find_hash(std::string_view key) const noexcept;
+  [[nodiscard]] Hash& get_or_create_hash(std::string_view key);
+  void erase_if_empty(std::string_view key, const Hash& hash);
+
   std::optional<ZSet> inline_zset_;
   std::string inline_key_;
   SwissTable<std::string, ZSet> overflow_zsets_;
+  std::optional<Hash> inline_hash_;
+  std::string inline_hash_key_;
+  SwissTable<std::string, Hash> overflow_hashes_;
   StoreOptions options_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;

@@ -36,9 +36,21 @@
 namespace goblin::core {
 namespace {
 
-constexpr std::size_t kMinRemovedForCompactionCheck = 4096;
-constexpr std::size_t kMinFreeSlotsForCompaction = 4096;
-constexpr std::size_t kCompactionFreeSlotsPerAllocatedSlot = 4;
+// Arena auto-compaction floor: rebuild only once at least this many member
+// bytes are dead (and dead has caught up to live), so small sets never churn.
+constexpr std::size_t kMemberArenaAutoCompactDeadFloor = std::size_t{1} << 20;
+
+// Parse a base-10 signed 64-bit integer, rejecting trailing junk (for HINCRBY).
+[[nodiscard]] std::optional<long long> parse_i64(std::string_view text) {
+  long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end) {
+    return std::nullopt;
+  }
+  return value;
+}
 
 [[nodiscard]] long long normalize_index(long long index, std::size_t size) noexcept {
   if (index < 0) {
@@ -90,7 +102,8 @@ class FdOutputStreambuf : public std::streambuf {
 }  // namespace
 
 ZSet::ZSet(ZSetOptions options)
-    : member_storage_(std::make_unique<ZSetMemberStorage>(options.score_string_cache)),
+    : member_storage_(std::make_unique<ZSetMemberStorage>(
+          options.score_string_cache, options.member_chunk_bytes)),
       members_(member_storage_.get(), options.member_index_growth),
       entries_(member_storage_.get(), options.rank_cache_mode),
       options_(options) {}
@@ -246,6 +259,7 @@ bool ZSet::remove(std::string_view member) {
 
   const bool erased = members_.erase(member);
   assert(erased);
+  member_storage_->orphan(member_id);
   move_last_member_into_slot(member_id);
   return erased;
 }
@@ -396,8 +410,8 @@ void ZSet::compact(double member_index_density) {
     member_bytes += member_view(old_entry.member_id).size();
   }
 
-  auto new_storage =
-      std::make_unique<ZSetMemberStorage>(options_.score_string_cache);
+  auto new_storage = std::make_unique<ZSetMemberStorage>(
+      options_.score_string_cache, options_.member_chunk_bytes);
   new_storage->reserve(old_entries.size());
   new_storage->reserve_bytes(member_bytes);
   if (options_.score_string_cache) {
@@ -448,14 +462,17 @@ std::size_t ZSet::member_index_tombstones() const noexcept {
 }
 
 bool ZSet::should_compact_after_removal(std::size_t removed_count) const noexcept {
-  if (removed_count < kMinRemovedForCompactionCheck || empty()) {
+  if (removed_count == 0 || empty()) {
     return false;
   }
 
-  const auto allocated = allocated_member_slots();
-  const auto free = free_member_slots();
-  return free >= kMinFreeSlotsForCompaction &&
-         free * kCompactionFreeSlotsPerAllocatedSlot >= allocated;
+  // Member ids are dense (swap-remove), so there are no free index slots to
+  // reclaim -- the fragmentation lives in the member-bytes arena, where a
+  // removal orphans the member's bytes until a rebuild. Compact once the dead
+  // bytes exceed the live bytes (bounding the arena at ~2x live) past a floor.
+  const auto dead = member_storage_->dead_bytes();
+  return dead >= kMemberArenaAutoCompactDeadFloor &&
+         dead >= member_storage_->live_bytes();
 }
 
 bool ZSet::cleanup_member_index_after_removal_if_needed(std::size_t removed_count) {
@@ -515,6 +532,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
         .rank_cache_mode = options_.rank_cache_mode,
         .score_string_cache = options_.score_string_cache,
         .member_index_growth = options_.member_index_growth,
+        .member_chunk_bytes = options_.zset_chunk_bytes,
     });
     return *inline_zset_;
   }
@@ -525,6 +543,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
           .rank_cache_mode = options_.rank_cache_mode,
           .score_string_cache = options_.score_string_cache,
           .member_index_growth = options_.member_index_growth,
+          .member_chunk_bytes = options_.zset_chunk_bytes,
       });
   (void)inserted;
   return *zset;
@@ -567,6 +586,158 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
   erase_if_empty(key, *zset);
 
   return removed;
+}
+
+// ---- Hash ----
+
+Hash* Store::find_hash(std::string_view key) noexcept {
+  if (inline_hash_.has_value() && std::string_view(inline_hash_key_) == key) {
+    return &*inline_hash_;
+  }
+  if (overflow_hashes_.empty()) {
+    return nullptr;
+  }
+  return overflow_hashes_.find(std::string(key));
+}
+
+const Hash* Store::find_hash(std::string_view key) const noexcept {
+  if (inline_hash_.has_value() && std::string_view(inline_hash_key_) == key) {
+    return &*inline_hash_;
+  }
+  if (overflow_hashes_.empty()) {
+    return nullptr;
+  }
+  return overflow_hashes_.find(std::string(key));
+}
+
+Hash& Store::get_or_create_hash(std::string_view key) {
+  if (inline_hash_.has_value() && std::string_view(inline_hash_key_) == key) {
+    return *inline_hash_;
+  }
+  if (!overflow_hashes_.empty()) {
+    auto* overflow = overflow_hashes_.find(std::string(key));
+    if (overflow != nullptr) {
+      return *overflow;
+    }
+  }
+  const HashOptions hash_options{
+      .member_index_growth = options_.member_index_growth,
+      .chunk_bytes = options_.hash_chunk_bytes,
+  };
+  if (!inline_hash_.has_value() && overflow_hashes_.empty()) {
+    inline_hash_key_.assign(key);
+    inline_hash_.emplace(hash_options);
+    return *inline_hash_;
+  }
+  auto [hash, inserted] =
+      overflow_hashes_.try_emplace(std::string(key), hash_options);
+  (void)inserted;
+  return *hash;
+}
+
+void Store::erase_if_empty(std::string_view key, const Hash& hash) {
+  if (!hash.empty()) {
+    return;
+  }
+  if (inline_hash_.has_value() && std::string_view(inline_hash_key_) == key &&
+      &*inline_hash_ == &hash) {
+    inline_hash_.reset();
+    inline_hash_key_.clear();
+    return;
+  }
+  overflow_hashes_.erase(std::string(key));
+}
+
+void Store::place_loaded_hash(std::string key, Hash&& hash) {
+  if (!inline_hash_.has_value() && overflow_hashes_.empty()) {
+    inline_hash_key_ = std::move(key);
+    inline_hash_.emplace(std::move(hash));
+  } else {
+    overflow_hashes_.try_emplace(std::move(key), std::move(hash));
+  }
+}
+
+int Store::hset(std::string_view key, std::string_view field,
+                std::string_view value) {
+  return get_or_create_hash(key).set(field, value);
+}
+
+int Store::hsetnx(std::string_view key, std::string_view field,
+                  std::string_view value) {
+  return get_or_create_hash(key).set_nx(field, value);
+}
+
+std::optional<std::string_view> Store::hget(std::string_view key,
+                                            std::string_view field) const {
+  const auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return std::nullopt;
+  }
+  return hash->get(field);
+}
+
+bool Store::hexists(std::string_view key, std::string_view field) const {
+  const auto* hash = find_hash(key);
+  return hash != nullptr && hash->contains(field);
+}
+
+bool Store::hdel(std::string_view key, std::string_view field) {
+  auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return false;
+  }
+  const bool removed = hash->erase(field);
+  erase_if_empty(key, *hash);
+  return removed;
+}
+
+std::size_t Store::hlen(std::string_view key) const {
+  const auto* hash = find_hash(key);
+  return hash == nullptr ? 0 : hash->size();
+}
+
+std::optional<std::size_t> Store::hstrlen(std::string_view key,
+                                          std::string_view field) const {
+  const auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return std::size_t{0};
+  }
+  const auto value = hash->get(field);
+  return value ? value->size() : std::size_t{0};
+}
+
+std::optional<long long> Store::hincrby(std::string_view key,
+                                        std::string_view field,
+                                        long long delta) {
+  auto& hash = get_or_create_hash(key);
+  long long current = 0;
+  if (const auto value = hash.get(field); value) {
+    const auto parsed = parse_i64(*value);
+    if (!parsed) {
+      erase_if_empty(key, hash);
+      return std::nullopt;  // existing value is not an integer
+    }
+    current = *parsed;
+  }
+  constexpr auto kMax = std::numeric_limits<long long>::max();
+  constexpr auto kMin = std::numeric_limits<long long>::min();
+  if ((delta > 0 && current > kMax - delta) ||
+      (delta < 0 && current < kMin - delta)) {
+    erase_if_empty(key, hash);
+    return std::nullopt;  // would overflow
+  }
+  const long long next = current + delta;
+  hash.set(field, std::to_string(next));
+  return next;
+}
+
+std::optional<HashMemoryStats> Store::hash_memory_stats(
+    std::string_view key) const {
+  const auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return std::nullopt;
+  }
+  return hash->memory_stats();
 }
 
 long long Store::zcard(std::string_view key) const {
@@ -659,15 +830,22 @@ std::optional<ZSetMemoryStats> Store::zset_memory_stats(std::string_view key) co
 
 std::optional<std::size_t> Store::optimize(std::string_view key,
                                            double member_index_density) {
-  auto* zset = find_zset(key);
-  if (zset == nullptr) {
-    return std::nullopt;
+  if (auto* zset = find_zset(key); zset != nullptr) {
+    const auto before = zset->memory_stats().total_allocated_bytes;
+    zset->compact(member_index_density);
+    const auto after = zset->memory_stats().total_allocated_bytes;
+    return before > after ? before - after : 0;
   }
-
-  const auto before = zset->memory_stats().total_allocated_bytes;
-  zset->compact(member_index_density);
-  const auto after = zset->memory_stats().total_allocated_bytes;
-  return before > after ? before - after : 0;
+  if (auto* hash = find_hash(key); hash != nullptr) {
+    const auto before = hash->memory_stats().total_allocated_bytes;
+    hash->compact(member_index_density);
+    // Hand the freed arena/index pages back to the OS, matching ZSet::compact
+    // (a no-op under jemalloc, effective under glibc -- goblin's default).
+    release_unused_heap_pages();
+    const auto after = hash->memory_stats().total_allocated_bytes;
+    return before > after ? before - after : 0;
+  }
+  return std::nullopt;
 }
 
 void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
@@ -697,11 +875,15 @@ void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
   }
 }
 
-ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator) {
+ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
+                std::size_t member_chunk_bytes) {
   ZSetOptions options;
   options.rank_cache_mode = static_cast<RankCacheMode>(reader.u8());
   options.score_string_cache = reader.u8() != 0;
   options.member_index_growth = reader.f64();
+  // Chunk size is a server-level layout tuning, not persisted per set: the
+  // loading server's configuration applies.
+  options.member_chunk_bytes = member_chunk_bytes;
 
   ZSet zset(options);
   const auto member_count = static_cast<std::uint32_t>(reader.u64());
@@ -758,7 +940,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(1);  // section count
+  writer.u32(2);  // section count (ZSET, then HASH)
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -794,6 +976,40 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   });
 
   const char end = static_cast<char>(snapshot::kOpEnd);
+  out.write(&end, 1);
+
+  // HASH section: header, then a stream of OP_HASH instructions, then OP_END.
+  // The field index and the member index share a hash identity (same std::hash
+  // probe), so the zset's identity gates the hash accelerator too.
+  std::string hash_header;
+  snapshot::Writer hash_writer(hash_header);
+  hash_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Hash));
+  hash_writer.u32(with_accelerator ? snapshot::kHashAcceleratorVersion : 0);
+  hash_writer.u64(ZSetMemberIndex::hash_identity());
+  out.write(hash_header.data(), static_cast<std::streamsize>(hash_header.size()));
+
+  auto emit_hash = [&out, &operands, with_accelerator](std::string_view key,
+                                                       const Hash& hash) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    hash.save(operand_writer, with_accelerator);
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(snapshot::HashOpcode::Hash));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(), static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  };
+
+  if (inline_hash_.has_value()) {
+    emit_hash(inline_hash_key_, *inline_hash_);
+  }
+  overflow_hashes_.for_each([&emit_hash](const std::pair<std::string, Hash>& entry) {
+    emit_hash(entry.first, entry.second);
+  });
   out.write(&end, 1);
 
   if (!out) {
@@ -887,12 +1103,18 @@ void Store::clear() noexcept {
   inline_zset_.reset();
   inline_key_.clear();
   overflow_zsets_.clear();
+  inline_hash_.reset();
+  inline_hash_key_.clear();
+  overflow_hashes_.clear();
 }
 
 SnapshotLoadStats Store::load_native(std::istream& in) {
   inline_zset_.reset();
   inline_key_.clear();
   overflow_zsets_.clear();
+  inline_hash_.reset();
+  inline_hash_key_.clear();
+  overflow_hashes_.clear();
 
   // A corrupt length field must fail cleanly, not attempt a wild allocation.
   constexpr std::uint64_t kMaxOperandBytes = std::uint64_t{1} << 40;
@@ -931,11 +1153,16 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
 
       const bool is_zset =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Zset);
-      const bool use_accelerator =
+      const bool is_hash =
+          section_type == static_cast<std::uint32_t>(snapshot::SectionType::Hash);
+      const bool zset_use_accelerator =
           is_zset && section_version == snapshot::kZsetAcceleratorVersion &&
           hash_identity == ZSetMemberIndex::hash_identity();
+      const bool hash_use_accelerator =
+          is_hash && section_version == snapshot::kHashAcceleratorVersion &&
+          hash_identity == ZSetMemberIndex::hash_identity();
       if (is_zset) {
-        stats.used_accelerator = use_accelerator;
+        stats.used_accelerator = zset_use_accelerator;
       }
 
       // Interpret the section's instruction stream until OP_END.
@@ -953,17 +1180,26 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           throw snapshot::snapshot_error("snapshot checksum mismatch");
         }
 
-        const bool is_zset_op =
-            is_zset && opcode == static_cast<std::uint8_t>(snapshot::ZsetOpcode::Zset);
-        if (!is_zset_op) {
-          continue;  // unknown opcode or unknown section: skip (already consumed)
+        if (is_zset &&
+            opcode == static_cast<std::uint8_t>(snapshot::ZsetOpcode::Zset)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          ZSet zset =
+              ZSet::load(reader, zset_use_accelerator, options_.zset_chunk_bytes);
+          stats.members += zset.size();
+          place_loaded_zset(std::move(key), std::move(zset));
+          ++stats.keys;
+        } else if (is_hash && opcode == static_cast<std::uint8_t>(
+                                            snapshot::HashOpcode::Hash)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          Hash hash =
+              Hash::load(reader, hash_use_accelerator, options_.hash_chunk_bytes);
+          stats.members += hash.size();
+          place_loaded_hash(std::move(key), std::move(hash));
+          ++stats.keys;
         }
-        snapshot::Reader reader(operands);
-        auto key = std::string(reader.str());
-        ZSet zset = ZSet::load(reader, use_accelerator);
-        stats.members += zset.size();
-        place_loaded_zset(std::move(key), std::move(zset));
-        ++stats.keys;
+        // else: unknown opcode or section -- already consumed, skip.
       }
     }
     return stats;
@@ -971,6 +1207,9 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
     inline_zset_.reset();
     inline_key_.clear();
     overflow_zsets_.clear();
+    inline_hash_.reset();
+    inline_hash_key_.clear();
+    overflow_hashes_.clear();
     throw;
   }
 }

@@ -1,10 +1,10 @@
 # Goblin Core
 
-Goblin Core is a Redis-like server built to hold sorted sets in far less
-memory than Redis — **roughly half** the resident set of Redis or Valkey for the
-same data — while beating their throughput. The initial implementation
-focuses on sorted sets with a vector-backed layout and a small RESP command
-surface.
+Goblin Core is a Redis-like server built to hold sorted sets and hashes in far
+less memory than Redis — **roughly half** the resident set of Redis or Valkey for
+the same sorted-set data — while beating their throughput. The initial
+implementation focuses on sorted sets and hashes with a vector-backed layout and
+a small RESP command surface.
 
 **Because no CTO ever wants to say: "We're letting you go — the cloud bill got too high."**
 
@@ -18,7 +18,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 ## Quick Summary
 
 - Source-only C++23 Redis-like server from Goblin Reactor.
-- Current scope: sorted sets plus `PING`, not full Redis compatibility.
+- Current scope: sorted sets, hashes, and `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
 - Memory is the point: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin Core
@@ -26,6 +26,19 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   members — versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for
   Redis 7.2.4. That is **roughly half** the RAM, with every engine measured on
   the same jemalloc `5.3.0` and a shared config (Ubuntu, Intel Xeon 6975P-C).
+- Hashes get the same memory treatment: built on the same tuned Swiss table and
+  packed arena as the zset but with no scores and no ordering, a hash holds a
+  field in about `45` bytes — flat across sizes (16-byte field plus 16-byte
+  value), a constant `~13.4` bytes of it per-field overhead. That is **roughly
+  half** of Redis `7.2.4`, but the lead over modern engines is smaller — about
+  `20%` leaner than Redis `8.8` and `29%` leaner than Valkey `9.1`, and smaller
+  values widen it — with every engine on the same jemalloc `5.3.0` and shared
+  config.
+- Hash throughput is a measured number, not a hedge: unlike the zset per-op
+  figures (too noisy on the shared-VM host), the hash ops ran on the quiet
+  dedicated host, where Goblin Core leads every one — `HSET` `+13–26%`, `HGET`
+  `+18–22%`, `HGETALL` `+30–58%` over the Redis-family engines — with depth-1
+  `HGET` latency a near-tie (~`21` µs). See BENCHMARKS.md.
 - Throughput is a secondary win: on pipelined `redis-benchmark`, Goblin Core is
   broadly competitive with Redis 8.8 and Valkey 9.1 and consistently ahead on
   `ZADD`. (The shared-VM benchmark host is too noisy for reliable per-op figures;
@@ -59,6 +72,18 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `ZREVRANK key member`
 - `ZREM key member [member ...]`
 - `ZSCORE key member`
+- `HSET key field value [field value ...]`
+- `HSETNX key field value`
+- `HGET key field`
+- `HMGET key field [field ...]`
+- `HDEL key field [field ...]`
+- `HGETALL key`
+- `HKEYS key`
+- `HVALS key`
+- `HLEN key`
+- `HEXISTS key field`
+- `HSTRLEN key field`
+- `HINCRBY key field increment`
 
 The protocol handler accepts RESP array commands and a basic inline command
 format for local testing.
@@ -66,19 +91,26 @@ format for local testing.
 ## Compatibility Scope
 
 Goblin Core is not a full Redis replacement. This release is scoped to the
-sorted-set command surface above plus `PING` for liveness checks. It does not
-implement automatic (background) persistence, replication, cluster mode,
-pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or general
-Redis key types. Point-in-time snapshots are available on demand via
+sorted-set and hash command surfaces above plus `PING` for liveness checks. It
+does not implement automatic (background) persistence, replication, cluster mode,
+pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or Redis key
+types beyond sorted sets and hashes. Point-in-time snapshots are available on demand via
 `GOBLIN.SAVE`/`GOBLIN.LOAD`, and a Redis `dump.rdb` can be imported to migrate
 sorted sets (see Run and "Migrating from Redis" below).
+
+Following Redis's single-namespace keyspace, a key holds at most one type: a hash
+command against a sorted-set key (or a sorted-set command against a hash key)
+returns the standard `WRONGTYPE Operation against a key holding the wrong kind of
+value` error rather than coercing the value.
 
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
 leaving room to optimize internal layouts aggressively. One deliberate
-divergence: a single sorted-set member is capped at 64 KiB (Redis allows more),
-which keeps the per-member reference two bytes smaller — well above any
-realistic member.
+divergence: a single sorted-set member — and, in a hash, each field and each
+value — is capped at 64 KiB (Redis allows more), which keeps the per-entry
+reference two bytes smaller and stays well above any realistic member. A value
+larger than that belongs in a blob store (goblin-store.dev), with the hash holding
+the returned key.
 
 ## Design Priorities
 
@@ -187,12 +219,30 @@ factor in `(0, 1]`; it defaults to `0.97`. Use `1.0` only for a set that is
 truly read-only and never queried for absent members — a fully packed index has
 no empty slot, so a lookup of a missing member scans the whole table.
 
-`--member-index-growth <factor>` sets how much the member index grows on each
-rehash (default `2^0.25 ≈ 1.19`). A smaller factor keeps the never-compacted
-load factor high (memory) at the cost of more frequent rehashes during writes;
-`2.0` is the classic doubling that favors write throughput.
+`GOBLIN.OPTIMIZE` and `GOBLIN.MEMORY` work on hash keys too. On a hash,
+`GOBLIN.OPTIMIZE <key>` reclaims dead arena bytes left by value updates and field
+deletes and repacks the field index. Both sorted sets and hashes also
+auto-compact: once dead (reclaimable) arena bytes exceed the live bytes past a
+~`1` MiB floor, the structure rebuilds itself, so a value-update/delete-heavy hash
+(or a `ZREM`-heavy zset) bounds its own footprint — about twice the live bytes —
+without a manual `GOBLIN.OPTIMIZE`.
 
-`GOBLIN.SAVE <path>` snapshots every zset to a file. It `fork()`s a
+`--member-index-growth <factor>` sets how much the member index grows on each
+rehash (default `2^0.25 ≈ 1.19`), for both the zset member index and the hash
+field index. A smaller factor keeps the never-compacted load factor high (memory)
+at the cost of more frequent rehashes during writes; `2.0` is the classic
+doubling that favors write throughput.
+
+`--zset-chunk-bytes <bytes>` and `--hash-chunk-bytes <bytes>` set the
+packed-arena chunk size per type. Each must be a power of two and at least the
+per-type minimum — `64` KiB for zsets, `128` KiB for hashes, since one chunk must
+hold the largest possible entry — and both default to `1` MiB. Larger chunks
+trade granularity for fewer allocations on big structures; the defaults suit
+typical workloads.
+
+`GOBLIN.SAVE <path>` snapshots every zset and hash to a file (hashes ride in a
+new section, so newer snapshots stay backward compatible with older zset-only
+ones). It `fork()`s a
 copy-on-write child that writes the snapshot from a frozen image of the data, so
 the command returns immediately — replying `Background saving started` — and the
 server keeps serving while the child writes; completion or failure is logged, and
@@ -200,8 +250,8 @@ only one background save runs at a time (a second returns an error). The child
 writes to a temp file and renames it into place, so a crash mid-save never
 corrupts the previous snapshot. `GOBLIN.LOAD <path>` (or `--load <path>` at
 startup) replaces the current data with a snapshot, replying with the number of
-keys loaded. Snapshots are a portable canonical layer (members and scores) plus a
-version-gated accelerator (the packed indexes); a snapshot always loads on any
+keys loaded. Snapshots are a portable canonical layer (zset members and scores, hash fields
+and values) plus a version-gated accelerator (the packed indexes); a snapshot always loads on any
 build or machine, rebuilding the indexes from the canonical layer when the
 accelerator cannot be trusted (a different `std::hash`, a changed index format).
 Persistence is explicit and client-driven: a crash loses writes made since the
@@ -276,8 +326,10 @@ redis-cli -p 6379 GOBLIN.LOAD /path/to/dump.rdb
 ```
 
 The reader accepts RDB files from **Redis 2.6 through 7.2.x** (RDB versions
-6–11). Sorted sets are imported; other key types (strings, lists, sets, hashes)
-are skipped, since Goblin Core only stores sorted sets today. Streams and modules
+6–11). Sorted sets are imported; other RDB key types (strings, lists, sets, and —
+for now — hashes) are parsed and skipped. RDB hash import is not yet wired up, so
+a hash in a `dump.rdb` does not come across; carry Goblin Core's own hashes
+between restarts with a native `GOBLIN.SAVE` snapshot instead. Streams and modules
 abort the load with a message — migrate those separately. `+inf`/`-inf` scores
 clamp to the largest finite double, and a member larger than 64 KiB aborts the
 load.
@@ -299,6 +351,12 @@ competitive with Redis 8.8 and Valkey and consistently ahead on `ZADD`, though
 the shared-VM benchmark host is too noisy to report reliable per-operation
 figures.
 
+Hashes tell the same story in miniature: about `45` RSS bytes per field, flat
+across sizes — **roughly half** of Redis 7.2.4, but a narrower `20–29%` lead over
+Redis 8.8 and Valkey 9.1 (the margin grows as values shrink). Hash throughput was
+measured on the quiet dedicated host, where Goblin Core leads every op (`HSET`
++13–26%, `HGET` +18–22%, `HGETALL` +30–58%). See BENCHMARKS.md.
+
 See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
 reproducible benchmark commands.
 
@@ -312,7 +370,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.3.1
+git checkout v0.4.0
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure

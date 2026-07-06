@@ -1,5 +1,6 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/chunked_sorted_list.hpp"
+#include "goblin/core/hash.hpp"
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
@@ -1064,6 +1065,190 @@ void test_snapshot_save_clear_reload() {
   }
 }
 
+// The hash type: field->value via the shared swiss index over HashStorage.
+void test_hash_basic() {
+  goblin::core::Hash h;
+  assert(h.set("name", "alice") == 1);
+  assert(h.set("age", "30") == 1);
+  assert(h.set("name", "bob") == 0);        // update an existing field
+  assert(h.size() == 2);
+  assert(h.get("name") == "bob");
+  assert(h.get("age") == "30");
+  assert(!h.get("missing").has_value());
+  assert(h.contains("name") && !h.contains("missing"));
+  assert(h.set("name", "al") == 0);         // shorter value -> in-place
+  assert(h.get("name") == "al");
+  assert(h.set("name", "alexander") == 0);  // longer value -> re-append
+  assert(h.get("name") == "alexander");
+  assert(h.erase("age"));                    // swap-remove
+  assert(!h.contains("age") && h.size() == 1);
+  assert(h.get("name") == "alexander");      // survivor intact after the swap
+  int count = 0;
+  h.for_each([&](std::string_view f, std::string_view v) {
+    ++count;
+    assert(f == "name" && v == "alexander");
+  });
+  assert(count == 1);
+  h.compact();
+  assert(h.size() == 1 && h.get("name") == "alexander");
+  assert(h.memory_stats().field_count == 1);
+}
+
+// Snapshot round-trip via both the accelerator (fast) path and the canonical
+// rebuild path.
+void test_hash_snapshot_roundtrip() {
+  goblin::core::Hash h;
+  h.set("a", "1");
+  h.set("b", "22");
+  h.set("c", "333");
+  assert(h.erase("b"));  // swap-remove leaves c in b's former id slot
+
+  std::string buf;
+  goblin::core::snapshot::Writer w(buf);
+  h.save(w, /*with_accelerator=*/true);
+
+  goblin::core::snapshot::Reader r(buf);
+  auto fast = goblin::core::Hash::load(r, /*use_accelerator=*/true);
+  assert(fast.size() == 2);
+  assert(fast.get("a") == "1" && fast.get("c") == "333");
+  assert(!fast.get("b").has_value());
+
+  goblin::core::snapshot::Reader r2(buf);
+  auto rebuilt = goblin::core::Hash::load(r2, /*use_accelerator=*/false);
+  assert(rebuilt.size() == 2);
+  assert(rebuilt.get("a") == "1" && rebuilt.get("c") == "333");
+  assert(!rebuilt.get("b").has_value());
+}
+
+// The arena chunk size is configurable per type; smaller chunks still store and
+// retrieve correctly (spanning several chunks), and an invalid size is rejected.
+void test_configurable_chunk_size() {
+  goblin::core::Hash h(
+      goblin::core::HashOptions{.chunk_bytes = std::size_t{1} << 17});  // 128 KiB
+  for (int i = 0; i < 5000; ++i) {
+    h.set("field-" + std::to_string(i), "value-" + std::to_string(i));
+  }
+  assert(h.size() == 5000);
+  assert(h.get("field-1234") == "value-1234");
+  assert(h.get("field-4999") == "value-4999");
+
+  goblin::core::ZSet z(goblin::core::ZSetOptions{
+      .member_chunk_bytes = std::size_t{1} << 16});  // 64 KiB
+  for (int i = 0; i < 5000; ++i) {
+    assert(z.add(static_cast<double>(i), "member-" + std::to_string(i)) == 1);
+  }
+  assert(z.size() == 5000);
+  assert(z.score("member-1234") == 1234.0);
+
+  // Non-power-of-two / too-small sizes fall back to the default.
+  goblin::core::HashStorage bad_hash(1000);
+  assert(bad_hash.chunk_bytes() == goblin::core::HashStorage::kDefaultChunkBytes);
+  goblin::core::ZSetMemberStorage bad_zset(false, std::size_t{1} << 10);
+  assert(bad_zset.chunk_bytes() ==
+         goblin::core::ZSetMemberStorage::kDefaultChunkBytes);
+}
+
+// ZREM orphans member bytes in the arena; once dead exceeds live past the floor,
+// the same trigger the store runs after a ZREM batch reclaims it.
+void test_zset_arena_auto_compacts_on_removal() {
+  goblin::core::ZSet z;
+  const std::string pad(100, 'x');  // ~105 bytes/member
+  for (int i = 0; i < 20000; ++i) {
+    assert(z.add(static_cast<double>(i), pad + std::to_string(i)) == 1);
+  }
+  const auto before = z.memory_stats().total_allocated_bytes;
+  int removed = 0;
+  for (int i = 0; i < 15000; ++i) {
+    removed += z.remove(pad + std::to_string(i)) ? 1 : 0;
+  }
+  assert(removed == 15000);
+  // ~1.5 MiB dead vs ~0.5 MiB live -> the store's post-batch trigger compacts.
+  const bool compacted = z.compact_after_removal_if_needed(removed);
+  assert(compacted);
+  assert(z.memory_stats().total_allocated_bytes < before);
+  assert(z.size() == 5000);
+  assert(z.score(pad + std::to_string(19999)) == 19999.0);  // survivor intact
+}
+
+// The hash command surface over RESP (id-order iteration is deterministic).
+void test_hash_commands() {
+  goblin::core::Store store;
+  assert(execute_fields(store, {"HSET", "h", "f1", "v1", "f2", "v2"}) == ":2\r\n");
+  assert(execute_fields(store, {"HSET", "h", "f1", "V1"}) == ":0\r\n");  // update
+  assert(execute_fields(store, {"HGET", "h", "f1"}) == "$2\r\nV1\r\n");
+  assert(execute_fields(store, {"HGET", "h", "nope"}) == "$-1\r\n");
+  assert(execute_fields(store, {"HLEN", "h"}) == ":2\r\n");
+  assert(execute_fields(store, {"HEXISTS", "h", "f2"}) == ":1\r\n");
+  assert(execute_fields(store, {"HEXISTS", "h", "nope"}) == ":0\r\n");
+  assert(execute_fields(store, {"HSTRLEN", "h", "f2"}) == ":2\r\n");
+  assert(execute_fields(store, {"HSETNX", "h", "f1", "x"}) == ":0\r\n");
+  assert(execute_fields(store, {"HSETNX", "h", "f3", "v3"}) == ":1\r\n");
+  assert(execute_fields(store, {"HGETALL", "h"}) ==
+         "*6\r\n$2\r\nf1\r\n$2\r\nV1\r\n$2\r\nf2\r\n$2\r\nv2\r\n$2\r\nf3\r\n$2\r\nv3\r\n");
+  assert(execute_fields(store, {"HKEYS", "h"}) ==
+         "*3\r\n$2\r\nf1\r\n$2\r\nf2\r\n$2\r\nf3\r\n");
+  assert(execute_fields(store, {"HVALS", "h"}) ==
+         "*3\r\n$2\r\nV1\r\n$2\r\nv2\r\n$2\r\nv3\r\n");
+  assert(execute_fields(store, {"HMGET", "h", "f1", "nope", "f3"}) ==
+         "*3\r\n$2\r\nV1\r\n$-1\r\n$2\r\nv3\r\n");
+  assert(execute_fields(store, {"HSET", "h", "n", "10"}) == ":1\r\n");
+  assert(execute_fields(store, {"HINCRBY", "h", "n", "5"}) == ":15\r\n");
+  assert(execute_fields(store, {"HINCRBY", "h", "fresh", "3"}) == ":3\r\n");
+  assert(execute_fields(store, {"HINCRBY", "h", "f1", "1"}).find("ERR") !=
+         std::string::npos);  // "V1" is not an integer
+  assert(execute_fields(store, {"HDEL", "h", "f2", "nope"}) == ":1\r\n");
+  assert(execute_fields(store, {"HEXISTS", "h", "f2"}) == ":0\r\n");
+}
+
+// A key holds one type; the cross-type command is a WRONGTYPE error.
+void test_wrongtype() {
+  goblin::core::Store store;
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"HSET", "z", "f", "v"}).find("WRONGTYPE") !=
+         std::string::npos);
+  assert(execute_fields(store, {"HGET", "z", "f"}).find("WRONGTYPE") !=
+         std::string::npos);
+  assert(execute_fields(store, {"HSET", "h", "f", "v"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "h", "1", "m"}).find("WRONGTYPE") !=
+         std::string::npos);
+  assert(execute_fields(store, {"ZSCORE", "h", "m"}).find("WRONGTYPE") !=
+         std::string::npos);
+  // GOBLIN.MEMORY and GOBLIN.OPTIMIZE resolve either type.
+  assert(execute_fields(store, {"GOBLIN.MEMORY", "z"}).find("member_count") !=
+         std::string::npos);
+  assert(execute_fields(store, {"GOBLIN.MEMORY", "h"}).find("field_count") !=
+         std::string::npos);
+  assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "h"}) != "$-1\r\n");
+}
+
+// A snapshot carries both the ZSET and HASH sections; each round-trips through
+// the accelerator (fast) path and the canonical rebuild path.
+void test_hash_snapshot_persistence() {
+  goblin::core::Store store;
+  assert(store.zadd("z", 1.0, "m1") == 1);
+  assert(store.zadd("z", 2.0, "m2") == 1);
+  assert(store.hset("h", "f1", "v1") == 1);
+  assert(store.hset("h", "f2", "v2") == 1);
+  assert(store.hset("h2", "x", "y") == 1);
+
+  for (const bool with_accelerator : {true, false}) {
+    std::stringstream buf;
+    store.save(buf, with_accelerator);
+
+    goblin::core::Store loaded;
+    const auto stats = loaded.load(buf);
+    assert(stats.keys == 3);  // z, h, h2
+    assert(loaded.zscore("z", "m1") == 1.0);
+    assert(loaded.zscore("z", "m2") == 2.0);
+    assert(loaded.zcard("z") == 2);
+    assert(loaded.hget("h", "f1") == "v1");
+    assert(loaded.hget("h", "f2") == "v2");
+    assert(loaded.hlen("h") == 2);
+    assert(loaded.hget("h2", "x") == "y");
+    assert(!loaded.hget("h", "missing").has_value());
+  }
+}
+
 // Erasing from the score index rebalances underflowing blocks by merging with a
 // neighbor (merge_with_next). Scattered scores make blocks vary in fullness, so
 // a block that underflows (< kLoad/2) next to a near-full one merges into more
@@ -1279,6 +1464,13 @@ int main() {
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
   test_snapshot_save_clear_reload();
+  test_hash_basic();
+  test_hash_snapshot_roundtrip();
+  test_configurable_chunk_size();
+  test_zset_arena_auto_compacts_on_removal();
+  test_hash_commands();
+  test_wrongtype();
+  test_hash_snapshot_persistence();
   test_score_index_merge_after_erase();
   test_member_arena_chunk_boundary();
   test_background_save();

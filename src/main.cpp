@@ -2,6 +2,7 @@
 #include "goblin/core/simd.hpp"
 #include "goblin/core/store.hpp"
 
+#include <bit>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,25 @@ namespace {
   return static_cast<std::size_t>(value * bytes_per_kib);
 }
 
+[[nodiscard]] std::optional<std::size_t> parse_chunk_bytes(
+    std::string_view text, std::size_t min_bytes) {
+  unsigned long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end ||
+      value > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+  const auto bytes = static_cast<std::size_t>(value);
+  // The arena addresses a chunk with a shift/mask, so the chunk size must be a
+  // power of two, and large enough to hold the biggest item.
+  if (!std::has_single_bit(bytes) || bytes < min_bytes) {
+    return std::nullopt;
+  }
+  return bytes;
+}
+
 [[nodiscard]] std::optional<double> parse_growth(std::string_view text) {
   double value = 0.0;
   const auto* begin = text.data();
@@ -83,6 +103,7 @@ void print_usage(std::string_view program) {
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--member-index-growth FACTOR]\n"
+            << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n";
@@ -160,6 +181,39 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.member_index_growth = *growth;
+      continue;
+    }
+
+    if (arg == "--zset-chunk-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_chunk_bytes(
+          argv[++i], goblin::core::ZSetMemberStorage::kMinChunkBytes);
+      if (!bytes) {
+        std::cerr << "goblin-core: --zset-chunk-bytes must be a power of two >= "
+                  << goblin::core::ZSetMemberStorage::kMinChunkBytes
+                  << " bytes\n";
+        return 2;
+      }
+      store_options.zset_chunk_bytes = *bytes;
+      continue;
+    }
+
+    if (arg == "--hash-chunk-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_chunk_bytes(
+          argv[++i], goblin::core::HashStorage::kMinChunkBytes);
+      if (!bytes) {
+        std::cerr << "goblin-core: --hash-chunk-bytes must be a power of two >= "
+                  << goblin::core::HashStorage::kMinChunkBytes << " bytes\n";
+        return 2;
+      }
+      store_options.hash_chunk_bytes = *bytes;
       continue;
     }
 
