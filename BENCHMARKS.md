@@ -66,18 +66,18 @@ look twice as large.
 
 ## Throughput
 
-Pipelined `redis-benchmark -P16 -c1`, 1M ops, requests/second:
+On pipelined `redis-benchmark -P 16 -c 1`, Goblin Core is broadly competitive
+with Redis 8.8 and Valkey 9.1, and consistently ahead on `ZADD` (writes) across
+every run.
 
-| engine | ZADD | ZSCORE | ZRANK | ZRANGE |
-| --- | ---: | ---: | ---: | ---: |
-| **Goblin Core** | `346,740` | `415,800` | `394,166` | `643,086` |
-| Redis 7.2.4 | `262,329` | `382,263` | `344,946` | `428,816` |
-| Redis 8.8 | `265,041` | `400,641` | `348,189` | `340,251` |
-| Valkey 9.1 | `263,227` | `369,003` | `330,469` | `303,122` |
-
-Versus Redis 8.8: about `1.3×` `ZADD`, `1.04×` `ZSCORE`, `1.13×` `ZRANK`, and
-`1.9×` `ZRANGE`. `ZRANGE` is the standout — a contiguous, prefetch-friendly score
-index versus pointer-chased skiplist traversal.
+Precise per-operation ops/sec figures are omitted here on purpose. The benchmark
+host is a shared cloud VM, and these short microbenchmarks show 2–2.5× run-to-run
+variance — enough to invert same-engine op orderings (a run where `ZRANK`'s
+skiplist traversal "beats" the O(1) `ZSCORE` hash lookup is noise, not a result).
+Any single ops/sec number would report the host's jitter, not the server. Unlike
+throughput, the memory, latency, and persistence figures in this document are
+footprint- or large-sample-based and stable across runs. Reliable per-operation
+throughput will be published from a quiet, dedicated host.
 
 ## Latency
 

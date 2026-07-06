@@ -26,9 +26,10 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   members — versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for
   Redis 7.2.4. That is **roughly half** the RAM, with every engine measured on
   the same jemalloc `5.3.0` and a shared config (Ubuntu, Intel Xeon 6975P-C).
-- Throughput is a secondary win: measured with `redis-benchmark`, Goblin Core is
-  about `1.3×` `ZADD`, `1.9×` `ZRANGE`, and `1.1×` `ZSCORE`/`ZRANK` versus Redis
-  8.8 and Valkey 9.1.
+- Throughput is a secondary win: on pipelined `redis-benchmark`, Goblin Core is
+  broadly competitive with Redis 8.8 and Valkey 9.1 and consistently ahead on
+  `ZADD`. (The shared-VM benchmark host is too noisy for reliable per-op figures;
+  see BENCHMARKS.md.)
 - Latency too: on a depth-1 connection a single `ZSCORE`/`ZADD` round trip is
   about `10` µs — a `2–3×` edge over Redis and Valkey — because Goblin Core writes
   each reply immediately. It holds through moderate concurrency and slips slightly
@@ -292,10 +293,11 @@ Memory is the headline: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin
 Core stores a sorted set in about `49` RSS bytes per member versus about `80` for
 Redis 8.8, `84` for Valkey 9.1, and `110` for Redis 7.2.4 — **roughly half** the
 RAM, consistently from 250K to 4M members and even just past a power of two, with
-every engine measured on the same jemalloc `5.3.0`. See BENCHMARKS.md. Throughput is a secondary benefit; measured
-with `redis-benchmark` (a single Python client is client-bound and understates
-both servers), Goblin Core is faster than Redis on every supported operation,
-for example `1.30x` `ZSCORE` and `~2x` `ZRANK`/`ZADD`.
+every engine measured on the same jemalloc `5.3.0`. See BENCHMARKS.md. Throughput
+is a secondary benefit; on pipelined `redis-benchmark` Goblin Core is broadly
+competitive with Redis 8.8 and Valkey and consistently ahead on `ZADD`, though
+the shared-VM benchmark host is too noisy to report reliable per-operation
+figures.
 
 See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
 reproducible benchmark commands.
@@ -310,7 +312,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.3.0
+git checkout v0.3.1
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure
