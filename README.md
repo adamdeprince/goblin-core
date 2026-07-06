@@ -86,7 +86,7 @@ format for local testing.
 
 ## Compatibility Scope
 
-Goblin Core is not a full Redis replacement. This release is scoped to the
+Goblin Core is not yet a full Redis replacement. This release is scoped to the
 sorted-set and hash command surfaces above plus `PING` for liveness checks. It
 does not implement automatic (background) persistence, replication, cluster mode,
 pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or Redis key
@@ -129,8 +129,8 @@ rent and CPU for determinism your users never notice.
 And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
 2025, server DRAM ran up over 60% quarter-over-quarter in Q2, and even now, in
 the "cooling" phase, conventional DRAM contract prices are forecast to rise
-13–18% quarter-over-quarter in Q3 2026. When a sorted set costs roughly half of
-what Redis or Valkey spend to hold it, that is money, not a benchmark curiosity.
+13–18% quarter-over-quarter in Q3 2026. When a sorted set costs a third to a half
+less RAM than Redis or Valkey to hold, that is money, not a benchmark curiosity.
 Goblin Core spends the cheap resource — an occasional rehash pause — to save the
 expensive one, memory.
 
