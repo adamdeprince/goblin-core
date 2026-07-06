@@ -6,9 +6,11 @@
 // reflects the true round trip, not the client. Build and run:
 //
 //   c++ -O2 -std=c++20 -o write_tail_latency write_tail_latency.cpp
-//   taskset -c 1 ./write_tail_latency 127.0.0.1 6379 1000000
+//   taskset -c 1 ./write_tail_latency 127.0.0.1 6379 1000000 [--ping]
 //
-// Pin the server and this client to separate cores for clean numbers.
+// --ping sends PING instead of ZADD to measure the pure round trip (no data
+// work), isolating server reply latency. Pin the server and this client to
+// separate cores for clean numbers.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -22,10 +24,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+static long g_multiread = 0;
+
 int main(int argc, char** argv) {
   const char* host = argc > 1 ? argv[1] : "127.0.0.1";
   const int port = argc > 2 ? std::atoi(argv[2]) : 6379;
   const long n = argc > 3 ? std::atol(argv[3]) : 1000000;
+  bool ping = false;  // --ping: measure pure round trip (PING) instead of ZADD
+  for (int a = 1; a < argc; ++a)
+    if (std::strcmp(argv[a], "--ping") == 0) ping = true;
 
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   int one = 1;
@@ -49,10 +56,12 @@ int main(int argc, char** argv) {
     const int sclen = std::snprintf(sc, sizeof(sc), "%ld", i % 1000);
     char mem[32];
     const int mlen = std::snprintf(mem, sizeof(mem), "m:%ld", i);
-    const int len = std::snprintf(
+    int len = std::snprintf(
         cmd, sizeof(cmd),
         "*4\r\n$4\r\nZADD\r\n$4\r\ntail\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
         sclen, sc, mlen, mem);
+    if (ping)
+      len = std::snprintf(cmd, sizeof(cmd), "*1\r\n$4\r\nPING\r\n");
 
     const auto t0 = clk::now();
     if (::write(fd, cmd, static_cast<size_t>(len)) != len) {
@@ -60,8 +69,10 @@ int main(int argc, char** argv) {
       return 1;
     }
     int got = 0;
+    int nreads = 0;
     for (;;) {
       const ssize_t r = ::read(fd, rbuf + got, sizeof(rbuf) - static_cast<size_t>(got));
+      ++nreads;
       if (r <= 0) {
         std::fprintf(stderr, "connection closed at op %ld\n", i);
         return 1;
@@ -70,6 +81,7 @@ int main(int argc, char** argv) {
       if (got >= 2 && rbuf[got - 1] == '\n') break;
     }
     const auto t1 = clk::now();
+    if (nreads > 1) ++g_multiread;
     lat[static_cast<size_t>(i)] =
         std::chrono::duration<double, std::micro>(t1 - t0).count();
   }
@@ -81,6 +93,8 @@ int main(int argc, char** argv) {
   std::printf(
       "n=%ld p50=%.2f p90=%.2f p99=%.2f p99.9=%.2f p99.99=%.2f max=%.2f us\n", n,
       pct(0.5), pct(0.9), pct(0.99), pct(0.999), pct(0.9999), lat[static_cast<size_t>(n - 1)]);
+  std::fprintf(stderr, "ops needing >1 read() = %ld / %ld (%.1f%%)\n",
+               g_multiread, n, 100.0 * static_cast<double>(g_multiread) / static_cast<double>(n));
   long s1 = 0, s5 = 0;
   for (double x : lat) {
     if (x > 1000) ++s1;

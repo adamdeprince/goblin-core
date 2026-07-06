@@ -102,10 +102,10 @@ whole table — reserve it for read-only sets queried only for present members.
 
 **Memory is the story.** After a load-then-`GOBLIN.OPTIMIZE` sequence (the
 deployment path), Goblin Core holds a sorted set in roughly `49` bytes per
-member versus Redis at roughly `130`, i.e. about `37%` of Redis's resident
-memory for the same data — flat from 250K to 4M members, and flat even at counts
-just past a power of two (the non-pow2 member index removes the boundary
-blowup). Throughput is a secondary benefit; Goblin Core also
+member versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for Redis
+7.2.4 — **roughly half** the resident set, every engine measured on the same
+jemalloc `5.3.0`, flat from 250K to 4M members, and flat even at counts just past
+a power of two (the non-pow2 member index removes the boundary blowup). Throughput is a secondary benefit; Goblin Core also
 happens to be faster than Redis on the supported operations.
 
 Snapshot host (the deployment-relevant environment):

@@ -1,6 +1,6 @@
 # Goblin Core
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly 37% of Redis's memory (about 49 bytes per member) and serves it faster. This file is written for an operator installing, configuring, and running Goblin Core in production; it deliberately omits code internals.
+> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly half the memory of Redis or Valkey (about 49 bytes per member, measured with every engine on the same jemalloc 5.3.0) and serves it faster. This file is written for an operator installing, configuring, and running Goblin Core in production; it deliberately omits code internals.
 
 Goblin Core listens on a TCP port and speaks RESP, so existing Redis clients and `redis-cli` connect unchanged. It supports `PING` and the sorted-set commands `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`, `ZRANK`, `ZREVRANK`, `ZREM`, plus admin commands `GOBLIN.MEMORY` (per-key memory introspection), `GOBLIN.OPTIMIZE` (in-place compaction), and `GOBLIN.SAVE`/`GOBLIN.LOAD` (point-in-time snapshots). `GOBLIN.LOAD`/`--load` also import a Redis `dump.rdb` (Redis 2.6-7.2.x) to migrate sorted sets in.
 
@@ -14,7 +14,7 @@ It is NOT a full Redis replacement. There is no automatic/background persistence
 
 ## Configure and operate
 
-- Memory: budget about 49 bytes per member after `GOBLIN.OPTIMIZE` (about 2.7x less RAM than Redis for the same data). A single member is capped at 64 KiB.
+- Memory: budget about 49 bytes per member after `GOBLIN.OPTIMIZE` (roughly half the RAM of Redis 8.8 or Valkey 9.1, and less against older Redis; measured with every engine on the same jemalloc 5.3.0). A single member is capped at 64 KiB.
 - Deployment pattern: bulk-load a set, then run `GOBLIN.OPTIMIZE <key>` once before serving reads to compact it and repack the member index.
 - Security: there is no authentication or TLS. Bind to a trusted interface only and put access control in front of it.
 - Durability: snapshot-based. Data lives in RAM; a crash loses writes made since the last `GOBLIN.SAVE`. Save on a schedule (and before planned shutdown), `--load` the snapshot on startup, and keep a source of truth for a full rebuild. `GOBLIN.SAVE` forks a copy-on-write child and returns immediately (`Background saving started`), so it does not pause the server; watch the log for completion. The common path is the default accelerated snapshot: a restart memcpy's the packed indexes back and loads about 5.7x faster than Redis (0.69s vs 3.98s to restore 9.5M members), with save about 5x faster. `GOBLIN.SAVE <path> NOACCEL` is the upgrade/migration path, not an everyday-restart option: a smaller, portable, canonical-only file for moving data across Goblin versions, architectures, or C++ standard libraries (where the accelerator would be rebuilt on load anyway).

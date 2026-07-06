@@ -241,22 +241,29 @@ def start_redis(binary: Path) -> ServerProcess:
     binary = resolve_executable(binary, "Redis server")
     port = free_port()
     temp_dir = Path(tempfile.mkdtemp(prefix="goblin-redis-bench-"))
+    command = [str(binary)]
+    # Load the shared parity config (listpack thresholds, maxmemory-policy,
+    # activedefrag, io-threads) so Redis 7.2.4 / 8.8 / Valkey are configured
+    # identically; CLI flags below still override per-run settings.
+    parity_conf = Path(__file__).resolve().parent / "redis-parity.conf"
+    if parity_conf.exists():
+        command.append(str(parity_conf))
+    command += [
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+        "--protected-mode",
+        "no",
+        "--dir",
+        str(temp_dir),
+    ]
     process = subprocess.Popen(
-        [
-            str(binary),
-            "--bind",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-            "--protected-mode",
-            "no",
-            "--dir",
-            str(temp_dir),
-        ],
+        command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

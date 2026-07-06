@@ -1,8 +1,8 @@
 # Goblin Core
 
 Goblin Core is a Redis-like server built to hold sorted sets in far less
-memory than Redis — about `37%` of Redis's resident set for the same data —
-while beating its throughput. The initial implementation
+memory than Redis — **roughly half** the resident set of Redis or Valkey for the
+same data — while beating their throughput. The initial implementation
 focuses on sorted sets with a vector-backed layout and a small RESP command
 surface.
 
@@ -22,13 +22,17 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
 - Memory is the point: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin Core
-  holds a sorted set in about `49` bytes per member versus Redis at about `130`
-  — roughly `37%` of Redis's resident memory — flat from 250K to 4M members and
-  even at counts just past a power of two (Ubuntu 26.04, Intel Xeon 6975P-C,
-  Redis `8.0.5`). At 4M members it saves about `305` MiB of RSS.
-- Throughput is a secondary win: measured with `redis-benchmark`,
-  Goblin Core is `1.30x` `ZSCORE`, `2.03x` `ZRANK`, `2.23x` `ZADD`, and `1.46x`
-  `ZRANGE` versus Redis.
+  holds a sorted set in about `49` bytes per member — flat from 250K to 4M
+  members — versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for
+  Redis 7.2.4. That is **roughly half** the RAM, with every engine measured on
+  the same jemalloc `5.3.0` and a shared config (Ubuntu, Intel Xeon 6975P-C).
+- Throughput is a secondary win: measured with `redis-benchmark`, Goblin Core is
+  about `1.3×` `ZADD`, `1.9×` `ZRANGE`, and `1.1×` `ZSCORE`/`ZRANK` versus Redis
+  8.8 and Valkey 9.1.
+- Latency too: on a depth-1 connection a single `ZSCORE`/`ZADD` round trip is
+  about `10` µs — a `2–3×` edge over Redis and Valkey — because Goblin Core writes
+  each reply immediately. It holds through moderate concurrency and slips slightly
+  under heavy overload (see Design Priorities).
 - Persistence is fast too: `GOBLIN.SAVE`/`--load` snapshots dump and restore the
   packed indexes, so at 9.5M members they save about `5x` and load about `5.7x`
   faster than a Redis RDB (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
@@ -96,10 +100,25 @@ rent and CPU for determinism your users never notice.
 And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
 2025, server DRAM ran up over 60% quarter-over-quarter in Q2, and even now, in
 the "cooling" phase, conventional DRAM contract prices are forecast to rise
-13–18% quarter-over-quarter in Q3 2026. When a sorted set costs about 37% of what
-Redis spends to hold it, that is money, not a benchmark curiosity. Goblin Core
-spends the cheap resource — an occasional rehash pause — to save the expensive
-one, memory.
+13–18% quarter-over-quarter in Q3 2026. When a sorted set costs roughly half of
+what Redis or Valkey spend to hold it, that is money, not a benchmark curiosity.
+Goblin Core spends the cheap resource — an occasional rehash pause — to save the
+expensive one, memory.
+
+Single-op latency is where that philosophy reaches the common user directly.
+Goblin Core writes each reply the instant it is ready, so on a depth-1 connection
+a single `ZSCORE` or `ZADD` round trip completes in roughly `10` µs — a `2–3×`
+edge over Redis and Valkey, widest against Redis 7.2.4 and Valkey (low-30s of µs,
+which defer replies to the event-loop boundary) and narrowest against the leaner
+Redis 8.8. That advantage holds under normal load and erodes only under heavy
+overload: when hundreds of concurrent clients saturate the single core,
+reply-batching amortizes syscalls better and Goblin slips slightly behind (at 500
+clients it trails by about `11%`). We take that trade on purpose: for every
+workload that fans out to hundreds of streaming connections, a hundred web apps
+open a handful of connections and do one round trip per page load, and those
+users feel the edge on every request. The memory and throughput lead is the
+headroom that lets us hand the common user that latency gift without giving up
+the overall story.
 
 ## Build From Source
 
@@ -270,9 +289,10 @@ subsequent restarts use the faster native `--load`.
 ## Benchmark
 
 Memory is the headline: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin
-Core stores a sorted set in about `49` RSS bytes per member versus Redis at about
-`130` — roughly `37%` of Redis's resident memory — consistently from 250K to 4M
-members and even just past a power of two. Throughput is a secondary benefit; measured
+Core stores a sorted set in about `49` RSS bytes per member versus about `80` for
+Redis 8.8, `84` for Valkey 9.1, and `110` for Redis 7.2.4 — **roughly half** the
+RAM, consistently from 250K to 4M members and even just past a power of two, with
+every engine measured on the same jemalloc `5.3.0`. See BENCHMARKS.md. Throughput is a secondary benefit; measured
 with `redis-benchmark` (a single Python client is client-bound and understates
 both servers), Goblin Core is faster than Redis on every supported operation,
 for example `1.30x` `ZSCORE` and `~2x` `ZRANK`/`ZADD`.

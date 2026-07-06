@@ -1,6 +1,6 @@
 # Goblin Core — Operator Guide
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly 37% of Redis's memory (about 49 bytes per member) and serves it faster. This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
+> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs). It stores the same sorted-set data in roughly half the memory of Redis or Valkey (about 49 bytes per member, every engine measured on the same jemalloc 5.3.0) and serves it faster. This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
 
 This guide assumes you already run Redis-style sorted sets and want to serve the
 same data on less RAM. Read it top to bottom to stand up a node; jump to
@@ -182,8 +182,8 @@ Capacity (RAM):
 
 - Budget about 49 bytes per member after `GOBLIN.OPTIMIZE`. Example: 100M
   members is roughly 4.6 GiB of sorted-set data, plus a small fixed overhead.
-- This is about 2.7x less than Redis for the same data, so a fixed-RAM box holds
-  roughly 2.7x more.
+- This is roughly half of what Redis 8.8 or Valkey 9.1 spend for the same data
+  (and less against older Redis), so a fixed-RAM box holds roughly twice as much.
 - Measure your real workload with `GOBLIN.MEMORY key` (its reported allocation
   tracks resident memory within a few percent). Member length and set count both
   affect the total.
