@@ -1,6 +1,6 @@
 # Goblin Core — Operator Guide
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in roughly half the memory of Redis or Valkey (about 49 bytes per member, every engine measured on the same jemalloc 5.3.0) and serves it faster; hashes get the same lean layout at about 45 bytes per field (roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1). This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
+> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in about 51 bytes per member — roughly half of Redis 7.2.4, and about 35% under modern Redis 8.8 / Valkey 9.1, every engine measured on the same jemalloc 5.3.0 — and serves it faster; hashes get the same lean layout at about 45 bytes per field (roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1). This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
 
 This guide assumes you already run Redis-style sorted sets (and now hashes) and
 want to serve the same data on less RAM. Read it top to bottom to stand up a node;
@@ -49,7 +49,7 @@ Validate against your own workload before relying on it.
 ## Requirements
 
 - A C++23 compiler: GCC 14 or newer, or Clang 18 or newer. (Benchmarks are run
-  with GCC 16 on Ubuntu 26.04, Intel Xeon.)
+  with GCC 16 on a quiet, dedicated 128-core Linux host.)
 - CMake 3.25 or newer.
 - A 64-bit Linux host is the supported target. Development also builds on macOS
   (arm64), but Linux is what to deploy.
@@ -231,10 +231,11 @@ Set these on the command line at startup.
 
 Capacity (RAM):
 
-- Budget about 49 bytes per member after `GOBLIN.OPTIMIZE`. Example: 100M
-  members is roughly 4.6 GiB of sorted-set data, plus a small fixed overhead.
-- This is roughly half of what Redis 8.8 or Valkey 9.1 spend for the same data
-  (and less against older Redis), so a fixed-RAM box holds roughly twice as much.
+- Budget about 51 bytes per member after `GOBLIN.OPTIMIZE`. Example: 100M
+  members is roughly 4.75 GiB of sorted-set data, plus a small fixed overhead.
+- This is about 35% under what Redis 8.8 or Valkey 9.1 spend for the same data,
+  and roughly half of older Redis 7.2.4 — so a fixed-RAM box holds about 1.6x as
+  much as Redis 8.8, and ~2x as much as Redis 7.2.4.
 - Hashes budget about 45 bytes per field after `GOBLIN.OPTIMIZE` (16-byte field +
   16-byte value; a constant ~13.4 bytes of that is per-field overhead — an 8-byte
   struct-of-arrays reference plus an amortized Swiss slot, versus Redis 8.8's
