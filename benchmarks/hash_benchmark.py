@@ -35,6 +35,7 @@ from zset_benchmark import (  # noqa: E402  (path insert above)
     goblin_memory_stats,
     process_rss_mib,
     redis_used_memory_mib,
+    start_dragonfly,
     start_goblin,
     start_redis,
 )
@@ -75,6 +76,8 @@ def start_engine(kind: str, binary: Path):
         return start_goblin(binary, rank_cache=False, rank_cache_mode="off")
     if kind == "redis":  # redis-server / valkey-server share the protocol + flags
         return start_redis(binary)
+    if kind == "dragonfly":
+        return start_dragonfly(binary)
     raise ValueError(f"unknown engine kind: {kind}")
 
 
@@ -128,8 +131,9 @@ def parse_engine(spec: str) -> tuple[str, str, Path]:
         raise argparse.ArgumentTypeError(
             f"--engine expects LABEL:KIND:PATH, got {spec!r}")
     label, kind, path = parts
-    if kind not in ("goblin", "redis"):
-        raise argparse.ArgumentTypeError(f"kind must be goblin|redis, got {kind!r}")
+    if kind not in ("goblin", "redis", "dragonfly"):
+        raise argparse.ArgumentTypeError(
+            f"kind must be goblin|redis|dragonfly, got {kind!r}")
     return label, kind, Path(path)
 
 

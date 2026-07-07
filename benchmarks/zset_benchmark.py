@@ -276,6 +276,40 @@ def start_redis(binary: Path) -> ServerProcess:
     return server
 
 
+def start_dragonfly(binary: Path) -> ServerProcess:
+    binary = resolve_executable(binary, "Dragonfly server")
+    port = free_port()
+    temp_dir = Path(tempfile.mkdtemp(prefix="goblin-dragonfly-bench-"))
+    # --proactor_threads=1 runs Dragonfly with a single shard/proactor -- one core
+    # of serving, the fair comparison to single-threaded Redis/Valkey/Goblin.
+    # Dragonfly manages its own CPU affinity (it ignores an external taskset), so we
+    # test it as shipped. Snapshotting is off by default (no --snapshot_cron);
+    # --maxmemory=0 disables eviction during load.
+    command = [
+        str(binary),
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--proactor_threads=1",
+        "--maxmemory=0",
+        "--dir",
+        str(temp_dir),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    server = ServerProcess("dragonfly", process, port, temp_dir)
+    try:
+        wait_for_server(port)
+    except Exception:
+        server.stop()
+        raise
+    return server
+
+
 def process_rss_mib(pid: int) -> float:
     output = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True)
     rss_kib = int(output.strip() or "0")

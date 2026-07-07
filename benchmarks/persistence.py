@@ -113,6 +113,34 @@ def bench_redis(binary: Path, members: int, batch: int, pipeline: int):
     return save_time, file_mb, max(0.0, loaded - baseline)
 
 
+def start_dragonfly(binary: Path, port: int, directory: Path) -> subprocess.Popen:
+    cmd = [str(binary), "--bind", "127.0.0.1", "--port", str(port),
+           "--proactor_threads=1", "--maxmemory=0", "--dir", str(directory),
+           "--dbfilename", "dump"]
+    return subprocess.Popen(cmd, stdout=DEVNULL, stderr=DEVNULL)
+
+
+def bench_dragonfly(binary: Path, members: int, batch: int, pipeline: int):
+    directory = Path(tempfile.mkdtemp(prefix="persist-dragonfly-"))
+    port = free_port()
+    proc = start_dragonfly(binary, port, directory)
+    wait_for_server(port)
+    populate(port, members, batch, pipeline)
+    client = RespClient("127.0.0.1", port, timeout=600.0)
+    t0 = time.monotonic()
+    client.command("SAVE")  # blocking; writes dump-summary.dfs + dump-NNNN.dfs shards
+    save_time = time.monotonic() - t0
+    client.close()
+    proc.terminate()
+    proc.wait(timeout=10)
+    file_mb = sum(f.stat().st_size for f in directory.glob("dump*")) / (1024.0 * 1024.0)
+
+    empty = Path(tempfile.mkdtemp(prefix="persist-dragonfly-empty-"))
+    baseline = time_ready(lambda p: start_dragonfly(binary, p, empty))
+    loaded = time_ready(lambda p: start_dragonfly(binary, p, directory))
+    return save_time, file_mb, max(0.0, loaded - baseline)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", action="append", required=True,
@@ -130,6 +158,8 @@ def main() -> int:
         for _ in range(max(1, args.repeats)):
             if kind == "goblin":
                 r = bench_goblin(Path(path), args.members, args.batch, args.pipeline, True)
+            elif kind == "dragonfly":
+                r = bench_dragonfly(Path(path), args.members, args.batch, args.pipeline)
             else:
                 r = bench_redis(Path(path), args.members, args.batch, args.pipeline)
             # keep the run with the fastest load (least noise)

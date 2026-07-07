@@ -16,7 +16,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from zset_benchmark import start_goblin, start_redis  # noqa: E402
+from zset_benchmark import (  # noqa: E402
+    start_dragonfly,
+    start_goblin,
+    start_redis,
+)
 
 
 def start_engine(kind: str, binary: Path):
@@ -24,6 +28,8 @@ def start_engine(kind: str, binary: Path):
         return start_goblin(binary, rank_cache=False, rank_cache_mode="off")
     if kind == "redis":
         return start_redis(binary)
+    if kind == "dragonfly":
+        return start_dragonfly(binary)
     raise ValueError(kind)
 
 
