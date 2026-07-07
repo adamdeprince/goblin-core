@@ -15,6 +15,9 @@
 #include <utility>
 #include <vector>
 
+// gperf-generated perfect hash for command dispatch (source: command_hash.gperf).
+#include "command_hash.hpp"
+
 namespace goblin::core {
 namespace {
 
@@ -338,224 +341,198 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   command.name = fields.front();
   command.args = fields.subspan(1);
 
-  if (equals_ci(command.name, "PING")) {
-    if (command.args.size() > 1) {
-      return parse_error(wrong_arity("ping"));
+  // Upper-case the name into a fixed 16-byte buffer, then perfect-hash it in O(1).
+  // Names longer than the longest command (GOBLIN.OPTIMIZE, 15) cannot match and
+  // short-circuit to unknown without touching the buffer.
+  const CommandEntry* entry = nullptr;
+  if (command.name.size() <= 15) {
+    std::array<char, 16> upper{};
+    for (std::size_t k = 0; k < command.name.size(); ++k) {
+      upper[k] = ascii_upper_char(command.name[k]);
     }
-    command.type = CommandType::ping;
+    entry = CommandDispatch::lookup(upper.data(), command.name.size());
+  }
+  if (entry == nullptr) {
+    command.type = CommandType::unknown;
     return {.command = std::move(command)};
   }
 
-  if (equals_ci(command.name, "ZADD")) {
-    if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
-      return parse_error(wrong_arity("zadd"));
-    }
-    command.type = CommandType::zadd;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZCARD")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("zcard"));
-    }
-    command.type = CommandType::zcard;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZRANGE")) {
-    if (command.args.size() != 3 && command.args.size() != 4) {
-      return parse_error(wrong_arity("zrange"));
-    }
-    if (command.args.size() == 4) {
-      if (!equals_ci(command.args[3], "WITHSCORES")) {
-        return parse_error(syntax_error());
+  // Arity/setup bodies are identical to the former equals_ci chain; only the
+  // selection changed. equals_ci is still used for in-handler argument checks.
+  switch (entry->type) {
+    case CommandType::ping:
+      if (command.args.size() > 1) {
+        return parse_error(wrong_arity("ping"));
       }
-      command.with_scores = true;
-    }
-    if (!parse_range_indexes(command)) {
-      return parse_error(integer_range_error());
-    }
-    command.type = CommandType::zrange;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZRANK")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("zrank"));
-    }
-    command.type = CommandType::zrank;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZREVRANGE")) {
-    if (command.args.size() != 3 && command.args.size() != 4) {
-      return parse_error(wrong_arity("zrevrange"));
-    }
-    if (command.args.size() == 4) {
-      if (!equals_ci(command.args[3], "WITHSCORES")) {
-        return parse_error(syntax_error());
+      command.type = CommandType::ping;
+      return {.command = std::move(command)};
+    case CommandType::zadd:
+      if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
+        return parse_error(wrong_arity("zadd"));
       }
-      command.with_scores = true;
+      command.type = CommandType::zadd;
+      return {.command = std::move(command)};
+    case CommandType::zcard:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("zcard"));
+      }
+      command.type = CommandType::zcard;
+      return {.command = std::move(command)};
+    case CommandType::zrange: {
+      if (command.args.size() != 3 && command.args.size() != 4) {
+        return parse_error(wrong_arity("zrange"));
+      }
+      if (command.args.size() == 4) {
+        if (!equals_ci(command.args[3], "WITHSCORES")) {
+          return parse_error(syntax_error());
+        }
+        command.with_scores = true;
+      }
+      if (!parse_range_indexes(command)) {
+        return parse_error(integer_range_error());
+      }
+      command.type = CommandType::zrange;
+      return {.command = std::move(command)};
     }
-    if (!parse_range_indexes(command)) {
-      return parse_error(integer_range_error());
+    case CommandType::zrank:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("zrank"));
+      }
+      command.type = CommandType::zrank;
+      return {.command = std::move(command)};
+    case CommandType::zrevrange: {
+      if (command.args.size() != 3 && command.args.size() != 4) {
+        return parse_error(wrong_arity("zrevrange"));
+      }
+      if (command.args.size() == 4) {
+        if (!equals_ci(command.args[3], "WITHSCORES")) {
+          return parse_error(syntax_error());
+        }
+        command.with_scores = true;
+      }
+      if (!parse_range_indexes(command)) {
+        return parse_error(integer_range_error());
+      }
+      command.type = CommandType::zrevrange;
+      return {.command = std::move(command)};
     }
-    command.type = CommandType::zrevrange;
-    return {.command = std::move(command)};
+    case CommandType::zrevrank:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("zrevrank"));
+      }
+      command.type = CommandType::zrevrank;
+      return {.command = std::move(command)};
+    case CommandType::zrem:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("zrem"));
+      }
+      command.type = CommandType::zrem;
+      return {.command = std::move(command)};
+    case CommandType::zscore:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("zscore"));
+      }
+      command.type = CommandType::zscore;
+      return {.command = std::move(command)};
+    case CommandType::hset:
+      if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
+        return parse_error(wrong_arity("hset"));
+      }
+      command.type = CommandType::hset;
+      return {.command = std::move(command)};
+    case CommandType::hsetnx:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("hsetnx"));
+      }
+      command.type = CommandType::hsetnx;
+      return {.command = std::move(command)};
+    case CommandType::hget:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("hget"));
+      }
+      command.type = CommandType::hget;
+      return {.command = std::move(command)};
+    case CommandType::hmget:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("hmget"));
+      }
+      command.type = CommandType::hmget;
+      return {.command = std::move(command)};
+    case CommandType::hdel:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("hdel"));
+      }
+      command.type = CommandType::hdel;
+      return {.command = std::move(command)};
+    case CommandType::hgetall:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("hgetall"));
+      }
+      command.type = CommandType::hgetall;
+      return {.command = std::move(command)};
+    case CommandType::hkeys:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("hkeys"));
+      }
+      command.type = CommandType::hkeys;
+      return {.command = std::move(command)};
+    case CommandType::hvals:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("hvals"));
+      }
+      command.type = CommandType::hvals;
+      return {.command = std::move(command)};
+    case CommandType::hlen:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("hlen"));
+      }
+      command.type = CommandType::hlen;
+      return {.command = std::move(command)};
+    case CommandType::hexists:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("hexists"));
+      }
+      command.type = CommandType::hexists;
+      return {.command = std::move(command)};
+    case CommandType::hstrlen:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("hstrlen"));
+      }
+      command.type = CommandType::hstrlen;
+      return {.command = std::move(command)};
+    case CommandType::hincrby:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("hincrby"));
+      }
+      command.type = CommandType::hincrby;
+      return {.command = std::move(command)};
+    case CommandType::goblin_memory:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("goblin.memory"));
+      }
+      command.type = CommandType::goblin_memory;
+      return {.command = std::move(command)};
+    case CommandType::goblin_optimize:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity("goblin.optimize"));
+      }
+      command.type = CommandType::goblin_optimize;
+      return {.command = std::move(command)};
+    case CommandType::goblin_save:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity("goblin.save"));
+      }
+      command.type = CommandType::goblin_save;
+      return {.command = std::move(command)};
+    case CommandType::goblin_load:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("goblin.load"));
+      }
+      command.type = CommandType::goblin_load;
+      return {.command = std::move(command)};
+    case CommandType::unknown:
+      break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
-
-  if (equals_ci(command.name, "ZREVRANK")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("zrevrank"));
-    }
-    command.type = CommandType::zrevrank;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZREM")) {
-    if (command.args.size() < 2) {
-      return parse_error(wrong_arity("zrem"));
-    }
-    command.type = CommandType::zrem;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "ZSCORE")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("zscore"));
-    }
-    command.type = CommandType::zscore;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HSET")) {
-    if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
-      return parse_error(wrong_arity("hset"));
-    }
-    command.type = CommandType::hset;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HSETNX")) {
-    if (command.args.size() != 3) {
-      return parse_error(wrong_arity("hsetnx"));
-    }
-    command.type = CommandType::hsetnx;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HGET")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("hget"));
-    }
-    command.type = CommandType::hget;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HMGET")) {
-    if (command.args.size() < 2) {
-      return parse_error(wrong_arity("hmget"));
-    }
-    command.type = CommandType::hmget;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HDEL")) {
-    if (command.args.size() < 2) {
-      return parse_error(wrong_arity("hdel"));
-    }
-    command.type = CommandType::hdel;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HGETALL")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("hgetall"));
-    }
-    command.type = CommandType::hgetall;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HKEYS")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("hkeys"));
-    }
-    command.type = CommandType::hkeys;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HVALS")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("hvals"));
-    }
-    command.type = CommandType::hvals;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HLEN")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("hlen"));
-    }
-    command.type = CommandType::hlen;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HEXISTS")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("hexists"));
-    }
-    command.type = CommandType::hexists;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HSTRLEN")) {
-    if (command.args.size() != 2) {
-      return parse_error(wrong_arity("hstrlen"));
-    }
-    command.type = CommandType::hstrlen;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "HINCRBY")) {
-    if (command.args.size() != 3) {
-      return parse_error(wrong_arity("hincrby"));
-    }
-    command.type = CommandType::hincrby;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "GOBLIN.MEMORY")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("goblin.memory"));
-    }
-    command.type = CommandType::goblin_memory;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "GOBLIN.OPTIMIZE")) {
-    if (command.args.size() != 1 && command.args.size() != 2) {
-      return parse_error(wrong_arity("goblin.optimize"));
-    }
-    command.type = CommandType::goblin_optimize;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "GOBLIN.SAVE")) {
-    if (command.args.size() != 1 && command.args.size() != 2) {
-      return parse_error(wrong_arity("goblin.save"));
-    }
-    command.type = CommandType::goblin_save;
-    return {.command = std::move(command)};
-  }
-
-  if (equals_ci(command.name, "GOBLIN.LOAD")) {
-    if (command.args.size() != 1) {
-      return parse_error(wrong_arity("goblin.load"));
-    }
-    command.type = CommandType::goblin_load;
-    return {.command = std::move(command)};
-  }
-
   command.type = CommandType::unknown;
   return {.command = std::move(command)};
 }

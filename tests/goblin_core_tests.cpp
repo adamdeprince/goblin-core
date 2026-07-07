@@ -110,6 +110,37 @@ void test_resp_parser_pipeline_and_pop_into() {
   assert(!parser.has_error());
 }
 
+void test_command_perfect_hash() {
+  using CT = goblin::core::CommandType;
+  auto type_of = [](std::initializer_list<std::string_view> f) {
+    std::vector<std::string_view> fields(f);
+    auto p = goblin::core::parse_command(fields);
+    assert(p.ok());
+    return p.command->type;
+  };
+  // Case-folded three ways, each command resolves to the same type.
+  assert(type_of({"PING"}) == CT::ping);
+  assert(type_of({"ping"}) == CT::ping);
+  assert(type_of({"PiNg"}) == CT::ping);
+  assert(type_of({"zscore", "k", "m"}) == CT::zscore);
+  assert(type_of({"zRaNgE", "k", "0", "-1"}) == CT::zrange);
+  assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
+  assert(type_of({"goblin.memory", "k"}) == CT::goblin_memory);
+  assert(type_of({"Goblin.Optimize", "k"}) == CT::goblin_optimize);
+  // Unknowns, near-misses, the length boundary, an embedded NUL.
+  assert(type_of({"PIN", "x"}) == CT::unknown);
+  assert(type_of({"PINGG"}) == CT::unknown);
+  assert(type_of({"ZZZ"}) == CT::unknown);
+  assert(type_of({"GOBLIN.NOPE", "x"}) == CT::unknown);
+  assert(type_of({"THISNAMEISTOOLONG"}) == CT::unknown);  // 17 bytes > 15
+  assert(type_of({std::string_view("ZAD\0", 4)}) == CT::unknown);
+  // The hash does not swallow arity errors.
+  std::vector<std::string_view> bad{"ZADD", "k"};
+  auto p = goblin::core::parse_command(bad);
+  assert(!p.ok());
+  assert(p.error == "ERR wrong number of arguments for 'zadd' command");
+}
+
 void test_resp_bulk_writer_small_header_table() {
   assert(goblin::core::resp::bulk_string("") == "$0\r\n\r\n");
 
@@ -1639,6 +1670,7 @@ int main() {
   test_inline_parser();
   test_protocol_error();
   test_resp_parser_pipeline_and_pop_into();
+  test_command_perfect_hash();
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
   test_resp_bulk_wire_size_matches_output();

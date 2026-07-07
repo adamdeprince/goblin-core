@@ -1,0 +1,44 @@
+%{
+// Perfect-hash command dispatch. Regenerate the checked-in header with:
+//   gperf src/command_hash.gperf --output-file=src/command_hash.hpp
+// (or: cmake --build <dir> --target goblin_core_regen_command_hash)
+// Keywords are UPPER-CASE; the caller upper-cases the command name first (see
+// parse_command in command.cpp), so this table is matched case-sensitively.
+#include "goblin/core/command.hpp"
+%}
+%language=C++
+%define class-name CommandDispatch
+%define lookup-function-name lookup
+%define hash-function-name hash
+%readonly-tables
+%compare-lengths
+%struct-type
+%define initializer-suffix ,goblin::core::CommandType::unknown
+struct CommandEntry { const char* name; goblin::core::CommandType type; };
+%%
+PING, goblin::core::CommandType::ping
+ZADD, goblin::core::CommandType::zadd
+ZCARD, goblin::core::CommandType::zcard
+ZRANGE, goblin::core::CommandType::zrange
+ZRANK, goblin::core::CommandType::zrank
+ZREVRANGE, goblin::core::CommandType::zrevrange
+ZREVRANK, goblin::core::CommandType::zrevrank
+ZREM, goblin::core::CommandType::zrem
+ZSCORE, goblin::core::CommandType::zscore
+HSET, goblin::core::CommandType::hset
+HSETNX, goblin::core::CommandType::hsetnx
+HGET, goblin::core::CommandType::hget
+HMGET, goblin::core::CommandType::hmget
+HDEL, goblin::core::CommandType::hdel
+HGETALL, goblin::core::CommandType::hgetall
+HKEYS, goblin::core::CommandType::hkeys
+HVALS, goblin::core::CommandType::hvals
+HLEN, goblin::core::CommandType::hlen
+HEXISTS, goblin::core::CommandType::hexists
+HSTRLEN, goblin::core::CommandType::hstrlen
+HINCRBY, goblin::core::CommandType::hincrby
+GOBLIN.MEMORY, goblin::core::CommandType::goblin_memory
+GOBLIN.OPTIMIZE, goblin::core::CommandType::goblin_optimize
+GOBLIN.SAVE, goblin::core::CommandType::goblin_save
+GOBLIN.LOAD, goblin::core::CommandType::goblin_load
+%%

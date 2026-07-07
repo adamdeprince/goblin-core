@@ -92,6 +92,18 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
   endif()
 endif()
 
+# Optional maintainer target: regenerate the checked-in command-dispatch perfect
+# hash after editing src/command_hash.gperf. The checked-in src/command_hash.hpp is
+# authoritative, so builds without gperf are unaffected.
+find_program(GPERF_EXECUTABLE gperf)
+if(GPERF_EXECUTABLE)
+  add_custom_target(goblin_core_regen_command_hash
+    COMMAND ${GPERF_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/src/command_hash.gperf
+            --output-file=${CMAKE_CURRENT_SOURCE_DIR}/src/command_hash.hpp
+    COMMENT "Regenerating command-dispatch perfect hash from command_hash.gperf"
+    VERBATIM)
+endif()
+
 if(MSVC)
   target_compile_options(goblin_core PRIVATE /W4)
 else()

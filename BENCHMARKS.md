@@ -229,6 +229,25 @@ allocator rounding that grows with the value). So the lead is widest on small
 values (~`32%` leaner than Redis 8.8 at 8 B) and narrows as the shared content
 dominates (~`21%` at 64 B). Goblin Core stays ahead of every engine at every size.
 
+## Command parsing
+
+Command dispatch is a gperf perfect hash: the name is upper-cased into a 16-byte
+buffer and looked up in O(1), replacing the former 25-way linear `equals_ci` chain
+where a late command (`GOBLIN.LOAD`) paid for every earlier comparison.
+`parse_command` is now flat regardless of which command arrives — ~`23–28` ns/op
+(`goblin_core_microbench --category resp_parse`, `dispatch`), independent of the
+command's former position in the chain.
+
+SIMD kernels for the inline tokenizer and the name upper-caser (SSE4.2 / AVX2 /
+AVX512 / NEON / LoongArch LASX+LSX) were prototyped and measured on real hardware,
+then removed — they didn't earn their place. Real command frames are short (~30 B),
+so a line can't fill a 32- or 64-byte vector and the wide lanes fall to the scalar
+tail plus setup overhead: on identical hardware SSE4.2 (16 B) beat AVX512 (64 B) at
+tokenizing, and on a LoongArch 3A6000 plain scalar beat every SIMD lane. Since real
+clients send length-framed RESP arrays (parsed scalar anyway) and inline frames are
+short, SIMD bought nothing on typical traffic. The perfect hash — the actual,
+portable, ISA-independent win — stays.
+
 ## Methodology
 
 **Parity — the point of this whole document.**

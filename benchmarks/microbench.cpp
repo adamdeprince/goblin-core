@@ -1,4 +1,5 @@
 #include "goblin/core/command.hpp"
+#include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/score_format.hpp"
 #include "goblin/core/store.hpp"
@@ -845,6 +846,9 @@ void list_benchmark_catalog(std::ostream& out) {
       {"parse_command_into", "zrevrank"},
       {"parse_command_into", "zrange"},
       {"parse_command_into", "zrange_withscores"},
+      {"resp_parse", "dispatch"},
+      {"resp_parse", "tokenize_inline"},
+      {"resp_parse", "inline_full"},
       {"parse_command_string", "zscore"},
       {"parse_command_string", "zrank"},
       {"parse_command_string", "zrevrank"},
@@ -1389,6 +1393,75 @@ void list_benchmark_catalog(std::ostream& out) {
     }
     return checksum;
   });
+
+  // --- Command-parsing path (gperf perfect-hash dispatch) ---
+  // dispatch: parse_command only -- isolates the gperf perfect hash. Rotating names
+  // show the O(1) hash is flat, unlike the former 25-way if-chain where a late
+  // command (GOBLIN.LOAD) paid for every earlier comparison.
+  maybe_bench("resp_parse", "dispatch", options.ops, [&] {
+    static constexpr std::string_view names[] = {
+        "PING", "ZSCORE", "ZRANK", "HGET", "HSTRLEN", "GOBLIN.MEMORY",
+        "GOBLIN.LOAD"};
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const std::array<std::string_view, 3> fields{
+          names[i % std::size(names)], Fixture::key, "member:000000"};
+      const auto parsed = goblin::core::parse_command(fields);
+      checksum = mix(checksum, static_cast<std::uint64_t>(
+                                   parsed.ok() ? static_cast<int>(parsed.command->type) : -1));
+    }
+    return checksum;
+  });
+
+  {
+    // A cache-resident batch of inline frames, replayed to reach options.ops
+    // frames -- keeps the working set hot rather than measuring DRAM bandwidth on a
+    // multi-megabyte buffer. Real clients send RESP arrays (length-framed); inline
+    // is the manual/redis-cli path this exercises.
+    const std::size_t batch = std::min<std::size_t>(fixture.lookup_ids.size(), 1024);
+    std::string inline_wire;
+    for (std::size_t j = 0; j < batch; ++j) {
+      inline_wire += "ZSCORE ";
+      inline_wire += Fixture::key;
+      inline_wire += ' ';
+      inline_wire += fixture.members[fixture.lookup_ids[j]];
+      inline_wire += "\r\n";
+    }
+    const std::size_t reps = batch == 0 ? 0 : (options.ops + batch - 1) / batch;
+    const std::size_t total_ops = reps * batch;
+
+    // tokenize_inline: append + tokenize + pop, no dispatch or execution.
+    maybe_bench("resp_parse", "tokenize_inline", total_ops, [&, inline_wire, reps] {
+      goblin::core::RespParser parser;
+      std::vector<std::string_view> fields;
+      std::uint64_t checksum = 0;
+      for (std::size_t r = 0; r < reps; ++r) {
+        parser.clear();
+        parser.append(inline_wire);
+        while (parser.pop_into(fields)) {
+          checksum = mix(checksum, static_cast<std::uint64_t>(fields.size()));
+        }
+      }
+      return checksum;
+    });
+
+    // inline_full: end-to-end append -> pop_into -> parse_command.
+    maybe_bench("resp_parse", "inline_full", total_ops, [&, inline_wire, reps] {
+      goblin::core::RespParser parser;
+      std::vector<std::string_view> fields;
+      std::uint64_t checksum = 0;
+      for (std::size_t r = 0; r < reps; ++r) {
+        parser.clear();
+        parser.append(inline_wire);
+        while (parser.pop_into(fields)) {
+          const auto parsed = goblin::core::parse_command(fields);
+          checksum = mix(checksum, static_cast<std::uint64_t>(
+                                       parsed.ok() ? static_cast<int>(parsed.command->type) : -1));
+        }
+      }
+      return checksum;
+    });
+  }
 
   maybe_bench("parse_command_string", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
