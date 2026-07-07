@@ -371,12 +371,11 @@ bool ZSet::remove(std::string_view member) {
 
   const bool erased_block_was_singleton =
       entries().block_was_singleton(removed_location->first);
-  entries().erase_at_location(*removed_location);
 
   member_storage()->orphan(member_id);
   member_storage()->copy_ref(member_id, last_member_id);
 
-  const bool score_updated = entries().retarget_last_after_erase(
+  const bool score_updated = entries().erase_removed_and_retarget_last(
       *removed_location, *last_location, erased_block_was_singleton, last_entry,
       member_id);
   assert(score_updated);

@@ -215,19 +215,22 @@ class ZSetScoreIndex {
     return locate_entry(value);
   }
 
-  void erase_at_location(std::pair<size_type, size_type> location) {
-    erase_at(location.first, location.second);
-  }
-
-  // Retarget `last` to `new_member_id` after `erased` was removed. Call only
-  // after member storage has been updated so lex-order checks see the moved
-  // member bytes.
-  [[nodiscard]] bool retarget_last_after_erase(
+  // Remove `removed` and retarget `last` to `new_member_id`. Call only after
+  // member storage has been updated so lex-order checks see the moved bytes.
+  [[nodiscard]] bool erase_removed_and_retarget_last(
       std::pair<size_type, size_type> erased,
       std::pair<size_type, size_type> last,
       bool erased_block_was_singleton,
       ZSetScoreEntry last_entry,
       std::uint32_t new_member_id) {
+    if (erased.first == last.first && !erased_block_was_singleton &&
+        erase_and_retarget_same_block(erased.second, last.second, last_entry,
+                                      new_member_id, erased.first)) {
+      return true;
+    }
+
+    erase_at(erased.first, erased.second, EraseRebalancePolicy::Remove);
+
     const auto r_block = erased.first;
     const auto r_offset = erased.second;
     auto adj_l_block = last.first;
@@ -1359,7 +1362,61 @@ class ZSetScoreIndex {
     return true;
   }
 
-  void erase_at(size_type block_index, size_type offset) {
+  enum class EraseRebalancePolicy {
+    Default,
+    Remove,
+  };
+
+  [[nodiscard]] bool erase_and_retarget_same_block(size_type r_offset,
+                                                    size_type l_offset,
+                                                    ZSetScoreEntry last_entry,
+                                                    std::uint32_t new_member_id,
+                                                    size_type block_index) {
+    if (r_offset == l_offset || block_index >= blocks_.size()) {
+      return false;
+    }
+
+    auto& block = blocks_[block_index];
+    if (r_offset >= block.size() || l_offset >= block.size()) {
+      return false;
+    }
+
+    const auto removed_member_id = block.member_id_at(r_offset);
+    if (block.member_id_at(l_offset) != last_entry.member_id ||
+        block.score_at(l_offset) != last_entry.score) {
+      return false;
+    }
+
+    clear_location(removed_member_id);
+    clear_location(last_entry.member_id);
+
+    block.erase(r_offset);
+    --size_;
+
+    auto adj_l = l_offset;
+    if (r_offset < l_offset) {
+      --adj_l;
+    }
+    if (adj_l >= block.size()) {
+      return false;
+    }
+
+    block.set_member_id(adj_l, new_member_id);
+    if (!order_valid_at(block_index, adj_l)) {
+      return false;
+    }
+
+    set_location(new_member_id, block_index, adj_l);
+    maxes_[block_index] = block.back();
+    update_index(block_index, -1);
+    finish_erase_block(block_index, std::min(r_offset, adj_l),
+                       EraseRebalancePolicy::Remove);
+    return true;
+  }
+
+  void erase_at(size_type block_index,
+                size_type offset,
+                EraseRebalancePolicy policy = EraseRebalancePolicy::Default) {
     auto& block = blocks_[block_index];
     const auto removed_member_id = block.member_id_at(offset);
     block.erase(offset);
@@ -1377,15 +1434,24 @@ class ZSetScoreIndex {
 
     maxes_[block_index] = block.back();
     update_index(block_index, -1);
+    finish_erase_block(block_index, offset, policy);
+  }
 
-    if (block.size() < kLoad / 2 && blocks_.size() > 1) {
+  void finish_erase_block(size_type block_index,
+                          size_type refresh_from,
+                          EraseRebalancePolicy policy) {
+    const auto& block = blocks_[block_index];
+    const auto rebalance_threshold =
+        policy == EraseRebalancePolicy::Remove ? (kLoad / 4) : (kLoad / 2);
+
+    if (block.size() < rebalance_threshold && blocks_.size() > 1) {
       rebalance_after_erase(block_index);
       invalidate_index();
       return;
     }
 
     if (rank_cache_mode_ == RankCacheMode::Exact) {
-      refresh_block_locations_from(block_index, offset);
+      refresh_block_locations_from(block_index, refresh_from);
     }
   }
 

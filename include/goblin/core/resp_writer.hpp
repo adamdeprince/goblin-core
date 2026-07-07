@@ -289,6 +289,84 @@ inline void append_bulk_member_and_finite_double(std::string& out,
 }
 
 inline constexpr std::size_t kBulkWithscoresBatchLimit = 256;
+inline constexpr std::size_t kWithscoresStreamChunk = 16;
+
+inline void append_bulk_withscores_chunk(
+    std::string& out,
+    std::span<const std::pair<std::string_view, double>> entries) {
+  if (entries.empty()) {
+    return;
+  }
+
+  struct FormattedEntry {
+    std::string_view member;
+    std::string_view score;
+    std::array<char, 32> buffer{};
+    std::string fallback;
+  };
+
+  std::array<FormattedEntry, kWithscoresStreamChunk> formatted{};
+  std::size_t wire_bytes = 0;
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    auto& row = formatted[i];
+    row.member = entries[i].first;
+    row.score = score_format::try_format_finite_to_buffer(entries[i].second,
+                                                          row.buffer);
+    if (row.score.empty()) {
+      row.fallback = score_format::fallback(entries[i].second);
+      row.score = row.fallback;
+    }
+
+    if (!detail::can_write_small_bulk_string(row.member.size()) ||
+        !detail::can_write_small_bulk_string(row.score.size())) {
+      for (const auto& entry : entries) {
+        append_bulk_member_and_finite_double(out, entry.first, entry.second);
+      }
+      return;
+    }
+
+    wire_bytes += detail::bulk_string_wire_size(row.member.size()) +
+                  detail::bulk_string_wire_size(row.score.size());
+  }
+
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    const auto& row = formatted[i];
+    dst = detail::write_small_bulk_string(dst, row.member);
+    dst = detail::write_small_bulk_string(dst, row.score);
+  }
+}
+
+inline void append_bulk_withscores_text_chunk(
+    std::string& out,
+    std::span<const std::pair<std::string_view, std::string_view>> entries) {
+  if (entries.empty()) {
+    return;
+  }
+
+  std::size_t wire_bytes = 0;
+  for (const auto& entry : entries) {
+    if (!detail::can_write_small_bulk_string(entry.first.size()) ||
+        !detail::can_write_small_bulk_string(entry.second.size())) {
+      for (const auto& fallback : entries) {
+        append_bulk_member_and_text(out, fallback.first, fallback.second);
+      }
+      return;
+    }
+    wire_bytes += detail::bulk_string_wire_size(entry.first.size()) +
+                  detail::bulk_string_wire_size(entry.second.size());
+  }
+
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  for (const auto& entry : entries) {
+    dst = detail::write_small_bulk_string(dst, entry.first);
+    dst = detail::write_small_bulk_string(dst, entry.second);
+  }
+}
 
 inline void append_bulk_members_batch(std::string& out,
                                       std::span<const std::string_view> members) {

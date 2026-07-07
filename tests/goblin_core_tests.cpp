@@ -292,6 +292,11 @@ void test_zrange_withscores_batch_matches_streaming_append() {
   goblin::core::resp::append_array_header(batched, entries.size() * 2);
   goblin::core::resp::append_bulk_withscores_batch(batched, entries);
   assert(batched == streaming);
+
+  std::string chunked;
+  goblin::core::resp::append_array_header(chunked, entries.size() * 2);
+  goblin::core::resp::append_bulk_withscores_chunk(chunked, entries);
+  assert(chunked == streaming);
 }
 
 void test_zrange_withscores_fused_matches_legacy_append() {

@@ -4,6 +4,7 @@
 #include "goblin/core/store.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <exception>
@@ -213,6 +214,49 @@ constexpr std::string_view kWrongType =
   return value;
 }
 
+struct WithscoresChunkAppender {
+  std::string& out;
+  std::array<std::pair<std::string_view, double>, resp::kWithscoresStreamChunk> chunk{};
+  std::size_t count{0};
+
+  void operator()(std::string_view member, double score) {
+    chunk[count++] = {member, score};
+    if (count == chunk.size()) {
+      flush();
+    }
+  }
+
+  void flush() {
+    if (count == 0) {
+      return;
+    }
+    resp::append_bulk_withscores_chunk(out, std::span(chunk.data(), count));
+    count = 0;
+  }
+};
+
+struct WithscoresTextChunkAppender {
+  std::string& out;
+  std::array<std::pair<std::string_view, std::string_view>, resp::kWithscoresStreamChunk>
+      chunk{};
+  std::size_t count{0};
+
+  void operator()(std::string_view member, std::string_view score_text) {
+    chunk[count++] = {member, score_text};
+    if (count == chunk.size()) {
+      flush();
+    }
+  }
+
+  void flush() {
+    if (count == 0) {
+      return;
+    }
+    resp::append_bulk_withscores_text_chunk(out, std::span(chunk.data(), count));
+    count = 0;
+  }
+};
+
 void append_range_response(Store& store,
                            const Command& command,
                            bool reverse,
@@ -249,30 +293,25 @@ void append_range_response(Store& store,
 
   if (with_scores) {
     if (store.score_string_cache_enabled()) {
-      auto append_cached = [&out](std::string_view member,
-                                  std::string_view score_text) {
-        resp::append_bulk_member_and_text(out, member, score_text);
-      };
+      WithscoresTextChunkAppender appender{out};
       if (reverse) {
         store.zrevrange_score_text_values_for_each_counted(
-            key, start, stop, append_header, append_cached);
+            key, start, stop, append_header, appender);
       } else {
         store.zrange_score_text_values_for_each_counted(
-            key, start, stop, append_header, append_cached);
+            key, start, stop, append_header, appender);
       }
+      appender.flush();
       return;
     }
 
-    auto append_score = [&out](std::string_view member, double score) {
-      resp::append_bulk_member_and_finite_double(out, member, score);
-    };
+    WithscoresChunkAppender appender{out};
     if (reverse) {
-      store.zrevrange_values_for_each_counted(
-          key, start, stop, append_header, append_score);
+      store.zrevrange_values_for_each_counted(key, start, stop, append_header, appender);
     } else {
-      store.zrange_values_for_each_counted(
-          key, start, stop, append_header, append_score);
+      store.zrange_values_for_each_counted(key, start, stop, append_header, appender);
     }
+    appender.flush();
     return;
   }
 
