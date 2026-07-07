@@ -35,6 +35,7 @@ enum class ScoreShape {
 
 struct Options {
   std::size_t members{1'000'000};
+  std::size_t keys{1};
   std::size_t ops{1'000'000};
   std::size_t range_size{16};
   std::size_t warmups{1};
@@ -67,6 +68,8 @@ struct RangeText {
 struct Fixture {
   static constexpr std::string_view key = "leaders";
 
+  std::size_t key_count{1};
+  std::vector<std::string> store_keys;
   std::vector<std::string> members;
   std::vector<double> scores;
   std::vector<std::string> score_texts;
@@ -102,6 +105,19 @@ struct ScoreEntryLess {
     number.insert(number.begin(), 10 - number.size(), '0');
   }
   return "member:" + number;
+}
+
+[[nodiscard]] std::string overflow_store_key(std::size_t key_id) {
+  auto number = std::to_string(key_id);
+  if (number.size() < 10) {
+    number.insert(number.begin(), 10 - number.size(), '0');
+  }
+  return "overflow:" + number;
+}
+
+[[nodiscard]] std::size_t overflow_key_index(std::size_t key_count,
+                                             std::size_t op_index) noexcept {
+  return 1 + (op_index % (key_count - 1));
 }
 
 [[nodiscard]] std::uint64_t splitmix64(std::uint64_t value) noexcept {
@@ -222,7 +238,7 @@ struct ScoreEntryLess {
 
 void print_usage(std::ostream& out, std::string_view program) {
   out << "usage: " << program
-      << " [--members N] [--ops N] [--range-size N] [--warmups N]\n"
+      << " [--members N] [--keys N] [--ops N] [--range-size N] [--warmups N]\n"
       << "       [--seed N] [--rank-cache|--no-rank-cache]\n"
       << "       [--rank-cache-mode off|exact|block-hint]\n"
       << "       [--score-shape integer|short-decimal|long-decimal|random-double]\n"
@@ -258,6 +274,19 @@ void print_usage(std::ostream& out, std::string_view program) {
         return false;
       }
       options.members = *value;
+      continue;
+    }
+    if (arg == "--keys") {
+      const auto text = need_value(arg);
+      if (!text) {
+        return false;
+      }
+      const auto value = parse_size(*text);
+      if (!value || *value == 0) {
+        std::cerr << "--keys must be a positive integer\n";
+        return false;
+      }
+      options.keys = *value;
       continue;
     }
     if (arg == "--ops") {
@@ -575,8 +604,21 @@ void append_member_score_range_direct(
   const auto load_ids = shuffled_ids(options.members, options.seed);
   for (const auto member_id : load_ids) {
     (void)fixture.zset.add(fixture.scores[member_id], fixture.members[member_id]);
-    (void)fixture.store.zadd(Fixture::key, fixture.scores[member_id],
-                             fixture.members[member_id]);
+  }
+
+  fixture.key_count = options.keys;
+  fixture.store_keys.reserve(options.keys);
+  for (std::size_t key_id = 0; key_id < options.keys; ++key_id) {
+    if (key_id == 0) {
+      fixture.store_keys.emplace_back(Fixture::key);
+    } else {
+      fixture.store_keys.push_back(overflow_store_key(key_id));
+    }
+    for (const auto member_id : load_ids) {
+      (void)fixture.store.zadd(fixture.store_keys[key_id],
+                               fixture.scores[member_id],
+                               fixture.members[member_id]);
+    }
   }
 
   fixture.lookup_ids.reserve(options.ops);
@@ -738,6 +780,19 @@ void list_benchmark_catalog(std::ostream& out) {
       {"parse_command_string", "zrevrank"},
       {"parse_command_string", "zrange"},
       {"parse_command_string", "zrange_withscores"},
+      {"overflow_store", "key_is_zset_inline"},
+      {"overflow_store", "key_is_zset_overflow"},
+      {"overflow_store", "key_is_zset_rotating"},
+      {"overflow_store", "zscore_inline"},
+      {"overflow_store", "zscore_overflow"},
+      {"overflow_store", "zscore_rotating"},
+      {"overflow_store", "zcard_inline"},
+      {"overflow_store", "zcard_overflow"},
+      {"overflow_store", "zcard_rotating"},
+      {"overflow_store", "execute_command_into_inline"},
+      {"overflow_store", "execute_command_into_overflow"},
+      {"overflow_store", "execute_command_into_rotating"},
+      {"overflow_store", "execute_command_into_withscores_overflow"},
   };
 
   for (const auto& [category, metric] : catalog) {
@@ -748,7 +803,7 @@ void list_benchmark_catalog(std::ostream& out) {
 [[nodiscard]] std::vector<BenchmarkResult> run_benchmarks(const Options& options,
                                                           Fixture& fixture) {
   std::vector<BenchmarkResult> results;
-  results.reserve(48);
+  results.reserve(64);
 
   const auto maybe_bench = [&](std::string_view category,
                                std::string_view metric,
@@ -1292,6 +1347,182 @@ void list_benchmark_catalog(std::ostream& out) {
     return checksum;
   });
 
+  maybe_bench("overflow_store", "key_is_zset_inline", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      checksum = mix(checksum, fixture.store.key_is_zset(key) ? 1 : 0);
+    }
+    return checksum;
+  });
+
+  if (fixture.key_count >= 2) {
+    maybe_bench("overflow_store", "key_is_zset_overflow", options.ops, [&] {
+      std::uint64_t checksum = 0;
+      for (std::size_t i = 0; i < options.ops; ++i) {
+        const auto key =
+            std::string_view(fixture.store_keys[overflow_key_index(
+                fixture.key_count, i)]);
+        checksum = mix(checksum, fixture.store.key_is_zset(key) ? 1 : 0);
+      }
+      return checksum;
+    });
+  }
+
+  maybe_bench("overflow_store", "key_is_zset_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      checksum = mix(checksum, fixture.store.key_is_zset(key) ? 1 : 0);
+    }
+    return checksum;
+  });
+
+  maybe_bench("overflow_store", "zscore_inline", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (const auto member_id : fixture.lookup_ids) {
+      const auto score = fixture.store.zscore(key, fixture.members[member_id]);
+      checksum = mix(checksum, score ? static_cast<std::uint64_t>(*score) : 0);
+    }
+    return checksum;
+  });
+
+  if (fixture.key_count >= 2) {
+    maybe_bench("overflow_store", "zscore_overflow", options.ops, [&] {
+      std::uint64_t checksum = 0;
+      for (std::size_t i = 0; i < fixture.lookup_ids.size(); ++i) {
+        const auto key = std::string_view(fixture.store_keys[overflow_key_index(
+            fixture.key_count, i)]);
+        const auto member_id = fixture.lookup_ids[i];
+        const auto score =
+            fixture.store.zscore(key, fixture.members[member_id]);
+        checksum =
+            mix(checksum, score ? static_cast<std::uint64_t>(*score) : 0);
+      }
+      return checksum;
+    });
+  }
+
+  maybe_bench("overflow_store", "zscore_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < fixture.lookup_ids.size(); ++i) {
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const auto member_id = fixture.lookup_ids[i];
+      const auto score = fixture.store.zscore(key, fixture.members[member_id]);
+      checksum = mix(checksum, score ? static_cast<std::uint64_t>(*score) : 0);
+    }
+    return checksum;
+  });
+
+  maybe_bench("overflow_store", "zcard_inline", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      checksum = mix(checksum, static_cast<std::uint64_t>(fixture.store.zcard(key)));
+    }
+    return checksum;
+  });
+
+  if (fixture.key_count >= 2) {
+    maybe_bench("overflow_store", "zcard_overflow", options.ops, [&] {
+      std::uint64_t checksum = 0;
+      for (std::size_t i = 0; i < options.ops; ++i) {
+        const auto key = std::string_view(fixture.store_keys[overflow_key_index(
+            fixture.key_count, i)]);
+        checksum =
+            mix(checksum, static_cast<std::uint64_t>(fixture.store.zcard(key)));
+      }
+      return checksum;
+    });
+  }
+
+  maybe_bench("overflow_store", "zcard_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(fixture.store.zcard(key)));
+    }
+    return checksum;
+  });
+
+  maybe_bench("overflow_store", "execute_command_into_inline", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (const auto& text : fixture.range_texts) {
+      out.clear();
+      const std::array<std::string_view, 3> args{
+          key, std::string_view(text.start), std::string_view(text.stop)};
+      const auto command =
+          make_command(goblin::core::CommandType::zrange, "ZRANGE", args);
+      goblin::core::execute_command_into(fixture.store, command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
+  if (fixture.key_count >= 2) {
+    maybe_bench("overflow_store", "execute_command_into_overflow", options.ops,
+                [&] {
+      std::uint64_t checksum = 0;
+      std::string out;
+      for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
+        out.clear();
+        const auto& text = fixture.range_texts[i];
+        const auto key = std::string_view(fixture.store_keys[overflow_key_index(
+            fixture.key_count, i)]);
+        const std::array<std::string_view, 3> args{
+            key, std::string_view(text.start), std::string_view(text.stop)};
+        const auto command =
+            make_command(goblin::core::CommandType::zrange, "ZRANGE", args);
+        goblin::core::execute_command_into(fixture.store, command, out);
+        checksum = mix(checksum, digest_output(out));
+      }
+      return checksum;
+    });
+
+    maybe_bench("overflow_store", "execute_command_into_withscores_overflow",
+                options.ops, [&] {
+      std::uint64_t checksum = 0;
+      std::string out;
+      for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
+        out.clear();
+        const auto& text = fixture.range_texts[i];
+        const auto key = std::string_view(fixture.store_keys[overflow_key_index(
+            fixture.key_count, i)]);
+        const std::array<std::string_view, 3> args{
+            key, std::string_view(text.start), std::string_view(text.stop)};
+        const auto command = make_command(
+            goblin::core::CommandType::zrange, "ZRANGE", args, true);
+        goblin::core::execute_command_into(fixture.store, command, out);
+        checksum = mix(checksum, digest_output(out));
+      }
+      return checksum;
+    });
+  }
+
+  maybe_bench("overflow_store", "execute_command_into_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
+      out.clear();
+      const auto& text = fixture.range_texts[i];
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const std::array<std::string_view, 3> args{
+          key, std::string_view(text.start), std::string_view(text.stop)};
+      const auto command =
+          make_command(goblin::core::CommandType::zrange, "ZRANGE", args);
+      goblin::core::execute_command_into(fixture.store, command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
   return results;
 }
 
@@ -1327,6 +1558,7 @@ void write_markdown(std::ostream& out,
                     std::span<const BenchmarkResult> results) {
   out << "# Goblin Core Microbenchmark\n\n";
   out << "- members: `" << options.members << "`\n";
+  out << "- keys: `" << options.keys << "`\n";
   out << "- operations per metric: `" << options.ops << "`\n";
   out << "- range size: `" << options.range_size << "`\n";
   out << "- warmups: `" << options.warmups << "`\n";
@@ -1362,6 +1594,7 @@ void write_json(std::ostream& out,
                 std::span<const BenchmarkResult> results) {
   out << "{\n  \"config\": {\n";
   out << "    \"members\": " << options.members << ",\n";
+  out << "    \"keys\": " << options.keys << ",\n";
   out << "    \"ops\": " << options.ops << ",\n";
   out << "    \"range_size\": " << options.range_size << ",\n";
   out << "    \"warmups\": " << options.warmups << ",\n";
@@ -1456,6 +1689,7 @@ int main(int argc, char** argv) {
   }
 
   std::cerr << "building fixture: members=" << options.members
+            << " keys=" << options.keys
             << " ops=" << options.ops
             << " range_size=" << options.range_size
             << " score_shape=" << score_shape_name(options.score_shape)
@@ -1463,6 +1697,13 @@ int main(int argc, char** argv) {
             << " score_string_cache="
             << (options.score_string_cache ? "on" : "off") << '\n';
   auto fixture = build_fixture(options);
+  if (options.keys > 1) {
+    const auto stats = fixture.store.memory_stats();
+    std::cerr << "store layout: inline_zsets=" << stats.inline_zset_count
+              << " overflow_zsets=" << stats.overflow_zset_count
+              << " overflow_table_bytes=" << stats.overflow_table_allocated_bytes
+              << '\n';
+  }
   std::cerr << "running microbenchmarks\n";
   const auto results = run_benchmarks(options, fixture);
   if ((!options.categories.empty() || !options.metrics.empty()) &&
