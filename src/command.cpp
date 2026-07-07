@@ -251,8 +251,7 @@ void append_range_response(Store& store,
     if (store.score_string_cache_enabled()) {
       auto append_cached = [&out](std::string_view member,
                                   std::string_view score_text) {
-        resp::append_bulk_string(out, member);
-        resp::append_bulk_string(out, score_text);
+        resp::append_bulk_member_and_text(out, member, score_text);
       };
       if (reverse) {
         store.zrevrange_score_text_values_for_each_counted(
@@ -265,8 +264,7 @@ void append_range_response(Store& store,
     }
 
     auto append_score = [&out](std::string_view member, double score) {
-      resp::append_bulk_string(out, member);
-      resp::append_bulk_finite_double(out, score);
+      resp::append_bulk_member_and_finite_double(out, member, score);
     };
     if (reverse) {
       store.zrevrange_values_for_each_counted(

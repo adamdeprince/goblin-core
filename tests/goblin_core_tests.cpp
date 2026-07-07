@@ -286,6 +286,15 @@ void test_zrange_withscores_fused_matches_legacy_append() {
   goblin::core::resp::append_bulk_member_and_finite_double(fused, "b", 2.0);
   assert(fused == expected);
 
+  std::string integer_scores;
+  goblin::core::resp::append_array_header(integer_scores, 4);
+  goblin::core::resp::append_bulk_member_and_finite_double(
+      integer_scores, "a", 42.0);
+  goblin::core::resp::append_bulk_member_and_finite_double(
+      integer_scores, "b", -7.0);
+  assert(integer_scores ==
+         "*4\r\n$1\r\na\r\n$2\r\n42\r\n$1\r\nb\r\n$2\r\n-7\r\n");
+
   std::string legacy;
   goblin::core::resp::append_array_header(legacy, 4);
   goblin::core::resp::append_bulk_string(legacy, "a");
@@ -713,8 +722,8 @@ void test_store_inline_and_overflow_zsets() {
 
   assert(store.zadd("two", 2.0, "b") == 1);
   stats = store.memory_stats();
-  assert(stats.inline_zset_count == 1);
-  assert(stats.overflow_zset_count == 1);
+  assert(stats.inline_zset_count == 2);
+  assert(stats.overflow_zset_count == 0);
 
   assert(store.zscore("one", "a") == 1.0);
   assert(store.zscore("two", "b") == 2.0);
@@ -725,15 +734,32 @@ void test_store_inline_and_overflow_zsets() {
   assert(store.zscore("two", "b") == 2.0);
 
   stats = store.memory_stats();
-  assert(stats.inline_zset_count == 0);
-  assert(stats.overflow_zset_count == 1);
+  assert(stats.inline_zset_count == 1);
+  assert(stats.overflow_zset_count == 0);
 
   assert(store.zadd("three", 3.0, "c") == 1);
   assert(store.zscore("two", "b") == 2.0);
   assert(store.zscore("three", "c") == 3.0);
   stats = store.memory_stats();
-  assert(stats.inline_zset_count == 0);
-  assert(stats.overflow_zset_count == 2);
+  assert(stats.inline_zset_count == 2);
+  assert(stats.overflow_zset_count == 0);
+}
+
+void test_store_inline_zset_slot_limit() {
+  goblin::core::Store store(
+      goblin::core::StoreOptions{.inline_zset_limit = 2});
+
+  assert(store.zadd("one", 1.0, "a") == 1);
+  assert(store.zadd("two", 2.0, "b") == 1);
+  auto stats = store.memory_stats();
+  assert(stats.inline_zset_count == 2);
+  assert(stats.overflow_zset_count == 0);
+
+  assert(store.zadd("three", 3.0, "c") == 1);
+  stats = store.memory_stats();
+  assert(stats.inline_zset_count == 2);
+  assert(stats.overflow_zset_count == 1);
+  assert(store.zscore("three", "c") == 3.0);
 }
 
 void run_store_rank_cache_test(goblin::core::RankCacheMode mode) {
@@ -1523,6 +1549,7 @@ int main() {
   test_zset_skips_auto_compaction_for_small_removals();
   test_store_zset_methods();
   test_store_inline_and_overflow_zsets();
+  test_store_inline_zset_slot_limit();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
   test_block_hint_rank_cache_lazy_offset_repair();

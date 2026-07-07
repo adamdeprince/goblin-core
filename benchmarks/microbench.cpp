@@ -501,14 +501,17 @@ void append_range(std::string& out,
   goblin::core::resp::append_array_header(
       out, with_scores ? entries.size() * 2 : entries.size());
   for (const auto& entry : entries) {
-    goblin::core::resp::append_bulk_string(out, entry.member);
     if (with_scores) {
       if (entry.score_text.empty()) {
-        goblin::core::resp::append_bulk_finite_double(out, entry.score);
+        goblin::core::resp::append_bulk_member_and_finite_double(
+            out, entry.member, entry.score);
       } else {
-        goblin::core::resp::append_bulk_string(out, entry.score_text);
+        goblin::core::resp::append_bulk_member_and_text(
+            out, entry.member, entry.score_text);
       }
+      continue;
     }
+    goblin::core::resp::append_bulk_string(out, entry.member);
   }
 }
 
@@ -551,8 +554,8 @@ void append_member_score_range_direct(
   goblin::core::resp::reserve_append_capacity(out, 16 + entries.size() * 48);
   goblin::core::resp::append_array_header(out, entries.size() * 2);
   for (const auto& entry : entries) {
-    goblin::core::resp::append_bulk_string(out, members.view(entry.member_id));
-    goblin::core::resp::append_bulk_finite_double(out, entry.score);
+    goblin::core::resp::append_bulk_member_and_finite_double(
+        out, members.view(entry.member_id), entry.score);
   }
 }
 

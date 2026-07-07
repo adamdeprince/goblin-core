@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <span>
 #include <string>
@@ -106,6 +107,24 @@ inline void append_bulk_payload(std::string& out, std::string_view value) {
   append_bulk_framing(out, value.size());
   out.append(value);
   out.append("\r\n", 2);
+}
+
+inline char* write_small_bulk_string(char* dst, std::string_view value) noexcept {
+  const auto& header = kSmallBulkHeaders[value.size()];
+  std::memcpy(dst, header.bytes.data(), header.size);
+  dst += header.size;
+  if (!value.empty()) {
+    std::memcpy(dst, value.data(), value.size());
+    dst += value.size();
+  }
+  dst[0] = '\r';
+  dst[1] = '\n';
+  return dst + 2;
+}
+
+[[nodiscard]] inline bool can_write_small_bulk_string(
+    std::size_t length) noexcept {
+  return length < kSmallBulkHeaders.size();
 }
 
 }  // namespace detail
@@ -214,15 +233,49 @@ inline void append_bulk_finite_double(std::string& out, double value) {
 inline void append_bulk_member_and_text(std::string& out,
                                         std::string_view member,
                                         std::string_view text) {
-  append_bulk_string(out, member);
-  append_bulk_string(out, text);
+  if (!detail::can_write_small_bulk_string(member.size()) ||
+      !detail::can_write_small_bulk_string(text.size())) {
+    append_bulk_string(out, member);
+    append_bulk_string(out, text);
+    return;
+  }
+
+  const auto wire_bytes = detail::bulk_string_wire_size(member.size()) +
+                          detail::bulk_string_wire_size(text.size());
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  dst = detail::write_small_bulk_string(dst, member);
+  (void)detail::write_small_bulk_string(dst, text);
 }
 
 inline void append_bulk_member_and_finite_double(std::string& out,
                                                  std::string_view member,
                                                  double score) {
-  append_bulk_string(out, member);
-  append_bulk_finite_double(out, score);
+  std::array<char, 32> score_buffer;
+  std::string score_fallback;
+  std::string_view score_text =
+      score_format::try_format_finite_to_buffer(score, score_buffer);
+  if (score_text.empty()) {
+    score_fallback = score_format::fallback(score);
+    score_text = score_fallback;
+  }
+
+  if (!detail::can_write_small_bulk_string(member.size()) ||
+      !detail::can_write_small_bulk_string(score_text.size())) {
+    append_bulk_string(out, member);
+    append_bulk_string(out, score_text);
+    return;
+  }
+
+  const auto wire_bytes =
+      detail::bulk_string_wire_size(member.size()) +
+      detail::bulk_string_wire_size(score_text.size());
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  dst = detail::write_small_bulk_string(dst, member);
+  (void)detail::write_small_bulk_string(dst, score_text);
 }
 
 inline void append_bulk_double(std::string& out, double value) {
