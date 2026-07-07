@@ -769,6 +769,8 @@ void test_store_shared_member_layer() {
   assert(stats_b.has_value());
   assert(stats_a->member_layer_share_count >= 2);
   assert(stats_b->member_layer_share_count >= 2);
+  assert(stats_a->score_index_share_count >= 2);
+  assert(stats_b->score_index_share_count >= 2);
 
   assert(store.zadd("key-b", 99.0, "member-0") == 0);
   assert(store.zscore("key-a", "member-0") == 0.0);

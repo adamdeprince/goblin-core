@@ -66,6 +66,7 @@ struct ZSetMemoryStats {
   std::size_t member_index_tombstones{0};
   std::size_t member_index_allocated_bytes{0};
   std::size_t member_layer_share_count{0};
+  std::size_t score_index_share_count{0};
   std::size_t score_entry_count{0};
   std::size_t score_block_count{0};
   std::size_t score_block_capacity_sum{0};
@@ -122,7 +123,7 @@ class ZSet {
         fn(storage->view(ids[i]));
       }
     };
-    entries_.for_member_id_spans(bounds.first, bounds.count, span);
+    entries().for_member_id_spans(bounds.first, bounds.count, span);
     return bounds.count;
   }
   template <class Fn>
@@ -139,7 +140,7 @@ class ZSet {
     auto callback = [this, &fn](double score, std::uint32_t member_id) {
       fn(member_view(member_id), score);
     };
-    entries_.for_range(bounds.first, bounds.count, callback);
+    entries().for_range(bounds.first, bounds.count, callback);
     return bounds.count;
   }
   template <class Fn>
@@ -157,7 +158,7 @@ class ZSet {
     auto callback = [this, &fn](double, std::uint32_t member_id) {
       fn(member_view(member_id), score_text_view(member_id));
     };
-    entries_.for_range(bounds.first, bounds.count, callback);
+    entries().for_range(bounds.first, bounds.count, callback);
     return bounds.count;
   }
   template <class Fn>
@@ -183,7 +184,7 @@ class ZSet {
                    .score = score,
                    .score_text = {}});
     };
-    entries_.for_range(bounds->first, bounds->count, callback);
+    entries().for_range(bounds->first, bounds->count, callback);
     return bounds->count;
   }
   template <class Fn>
@@ -200,7 +201,7 @@ class ZSet {
                    .score = score,
                    .score_text = score_text_view(member_id)});
     };
-    entries_.for_range(bounds->first, bounds->count, callback);
+    entries().for_range(bounds->first, bounds->count, callback);
     return bounds->count;
   }
   template <class Fn>
@@ -208,7 +209,7 @@ class ZSet {
     auto callback = [this, &fn](std::uint32_t member_id) {
       fn(member_view(member_id));
     };
-    entries_.for_reverse_member_ids(bounds.first, bounds.count, callback);
+    entries().for_reverse_member_ids(bounds.first, bounds.count, callback);
     return bounds.count;
   }
   template <class Fn>
@@ -227,7 +228,7 @@ class ZSet {
     auto callback = [this, &fn](double score, std::uint32_t member_id) {
       fn(member_view(member_id), score);
     };
-    entries_.for_reverse_range(bounds.first, bounds.count, callback);
+    entries().for_reverse_range(bounds.first, bounds.count, callback);
     return bounds.count;
   }
   template <class Fn>
@@ -247,7 +248,7 @@ class ZSet {
     auto callback = [this, &fn](double, std::uint32_t member_id) {
       fn(member_view(member_id), score_text_view(member_id));
     };
-    entries_.for_reverse_range(bounds.first, bounds.count, callback);
+    entries().for_reverse_range(bounds.first, bounds.count, callback);
     return bounds.count;
   }
   template <class Fn>
@@ -273,7 +274,7 @@ class ZSet {
                    .score = score,
                    .score_text = {}});
     };
-    entries_.for_reverse_range(bounds->first, bounds->count, callback);
+    entries().for_reverse_range(bounds->first, bounds->count, callback);
     return bounds->count;
   }
   template <class Fn>
@@ -290,7 +291,7 @@ class ZSet {
                    .score = score,
                    .score_text = score_text_view(member_id)});
     };
-    entries_.for_reverse_range(bounds->first, bounds->count, callback);
+    entries().for_reverse_range(bounds->first, bounds->count, callback);
     return bounds->count;
   }
   [[nodiscard]] bool check_invariants() const;
@@ -324,16 +325,18 @@ class ZSet {
   [[nodiscard]] std::string_view score_text_view(std::uint32_t member_id) const noexcept;
   void rebind_indexes() noexcept;
   void move_last_member_into_slot(std::uint32_t removed_member_id);
-  void ensure_unique_member_layer();
+  void ensure_unique_mutable_state();
   void adopt_shared_state_from(const ZSet& source);
 
   [[nodiscard]] ZSetMemberStorage* member_storage() noexcept;
   [[nodiscard]] const ZSetMemberStorage* member_storage() const noexcept;
   [[nodiscard]] ZSetMemberIndex& members() noexcept;
   [[nodiscard]] const ZSetMemberIndex& members() const noexcept;
+  [[nodiscard]] ZSetScoreIndex& entries() noexcept;
+  [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
   std::shared_ptr<ZSetMemberLayer> member_layer_;
-  ZSetScoreIndex entries_;
+  std::shared_ptr<ZSetScoreIndex> score_index_;
   ZSetOptions options_;
 };
 

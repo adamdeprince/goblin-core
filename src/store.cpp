@@ -149,22 +149,31 @@ ZSet::ZSet(ZSetOptions options)
           options.score_string_cache,
           options.member_chunk_bytes,
           options.member_index_growth)),
-      entries_(member_storage(), options.rank_cache_mode),
+      score_index_(std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                    options.rank_cache_mode)),
       options_(options) {}
 
 ZSet::ZSet(ZSet&& other) noexcept
     : member_layer_(std::move(other.member_layer_)),
-      entries_(std::move(other.entries_)),
+      score_index_(std::move(other.score_index_)),
       options_(other.options_) {
   if (member_layer_ == nullptr) {
     member_layer_ = std::make_shared<ZSetMemberLayer>(
         options_.score_string_cache, options_.member_chunk_bytes,
         options_.member_index_growth);
   }
+  if (score_index_ == nullptr) {
+    score_index_ = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                    options_.rank_cache_mode);
+  }
   if (other.member_layer_ == nullptr) {
     other.member_layer_ = std::make_shared<ZSetMemberLayer>(
         other.options_.score_string_cache, other.options_.member_chunk_bytes,
         other.options_.member_index_growth);
+  }
+  if (other.score_index_ == nullptr) {
+    other.score_index_ = std::make_shared<ZSetScoreIndex>(
+        other.member_storage(), other.options_.rank_cache_mode);
   }
   rebind_indexes();
   other.rebind_indexes();
@@ -176,17 +185,25 @@ ZSet& ZSet::operator=(ZSet&& other) noexcept {
   }
 
   member_layer_ = std::move(other.member_layer_);
-  entries_ = std::move(other.entries_);
+  score_index_ = std::move(other.score_index_);
   options_ = other.options_;
   if (member_layer_ == nullptr) {
     member_layer_ = std::make_shared<ZSetMemberLayer>(
         options_.score_string_cache, options_.member_chunk_bytes,
         options_.member_index_growth);
   }
+  if (score_index_ == nullptr) {
+    score_index_ = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                    options_.rank_cache_mode);
+  }
   if (other.member_layer_ == nullptr) {
     other.member_layer_ = std::make_shared<ZSetMemberLayer>(
         other.options_.score_string_cache, other.options_.member_chunk_bytes,
         other.options_.member_index_growth);
+  }
+  if (other.score_index_ == nullptr) {
+    other.score_index_ = std::make_shared<ZSetScoreIndex>(
+        other.member_storage(), other.options_.rank_cache_mode);
   }
   rebind_indexes();
   other.rebind_indexes();
@@ -213,32 +230,45 @@ const ZSetMemberIndex& ZSet::members() const noexcept {
   return member_layer_->members;
 }
 
-void ZSet::ensure_unique_member_layer() {
-  if (member_layer_.use_count() == 1) {
-    return;
-  }
+ZSetScoreIndex& ZSet::entries() noexcept {
+  assert(score_index_ != nullptr);
+  return *score_index_;
+}
 
-  member_layer_ = member_layer_->clone(options_.member_index_growth);
+const ZSetScoreIndex& ZSet::entries() const noexcept {
+  assert(score_index_ != nullptr);
+  return *score_index_;
+}
+
+void ZSet::ensure_unique_mutable_state() {
+  if (member_layer_.use_count() > 1) {
+    member_layer_ = member_layer_->clone(options_.member_index_growth);
+  }
+  if (score_index_.use_count() > 1) {
+    auto cloned = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                   options_.rank_cache_mode);
+    cloned->assign_sorted(entries().range(0, entries().size()));
+    score_index_ = std::move(cloned);
+  }
   rebind_indexes();
 }
 
 void ZSet::adopt_shared_state_from(const ZSet& source) {
   member_layer_ = source.member_layer_;
-  const auto ordered = source.entries_.range(0, source.entries_.size());
-  entries_.assign_sorted(ordered);
+  score_index_ = source.score_index_;
   rebind_indexes();
 }
 
 bool ZSet::empty() const noexcept {
-  return entries_.empty();
+  return entries().empty();
 }
 
 std::size_t ZSet::size() const noexcept {
-  return entries_.size();
+  return entries().size();
 }
 
 std::size_t ZSet::block_count() const noexcept {
-  return entries_.block_count();
+  return entries().block_count();
 }
 
 std::uint32_t ZSet::allocate_member_id(std::string_view member, double score) {
@@ -259,7 +289,7 @@ std::string_view ZSet::score_text_view(std::uint32_t member_id) const noexcept {
 
 void ZSet::rebind_indexes() noexcept {
   members().set_members(member_storage());
-  entries_.set_members(member_storage());
+  entries().set_members(member_storage());
 }
 
 void ZSet::move_last_member_into_slot(std::uint32_t removed_member_id) {
@@ -275,7 +305,7 @@ void ZSet::move_last_member_into_slot(std::uint32_t removed_member_id) {
   member_storage()->copy_ref(removed_member_id, last_member_id);
 
   const bool replaced_score_entry =
-      entries_.replace_member_id(moved_score, last_member_id, removed_member_id);
+      entries().replace_member_id(moved_score, last_member_id, removed_member_id);
   assert(replaced_score_entry);
   if (!replaced_score_entry) {
     member_storage()->restore_snapshot(removed_member_id, removed_snapshot);
@@ -286,7 +316,7 @@ void ZSet::move_last_member_into_slot(std::uint32_t removed_member_id) {
   assert(moved_member);
   if (!moved_member) {
     const bool restored_score_entry =
-        entries_.replace_member_id(moved_score, removed_member_id, last_member_id);
+        entries().replace_member_id(moved_score, removed_member_id, last_member_id);
     assert(restored_score_entry);
     member_storage()->restore_snapshot(removed_member_id, removed_snapshot);
     (void)restored_score_entry;
@@ -308,26 +338,26 @@ int ZSet::add(double score, std::string_view member) {
       return 0;
     }
 
-    ensure_unique_member_layer();
+    ensure_unique_mutable_state();
 
     const bool removed =
-        entries_.erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
+        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
     assert(removed);
     if (!removed) {
       return 0;
     }
 
     member_storage()->set_score(member_id, score);
-    entries_.insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
     return 0;
   }
 
-  ensure_unique_member_layer();
+  ensure_unique_mutable_state();
 
   const auto member_id = allocate_member_id(member, score);
   const auto view = member_view(member_id);
   members().insert(view, ZSetMemberMeta{.member_id = member_id});
-  entries_.insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+  entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
 
   return 1;
 }
@@ -338,12 +368,12 @@ bool ZSet::remove(std::string_view member) {
     return false;
   }
 
-  ensure_unique_member_layer();
+  ensure_unique_mutable_state();
 
   const auto member_id = meta->member_id;
   const auto old_score = member_storage()->score(member_id);
   const bool removed =
-      entries_.erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
+      entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
   assert(removed);
   if (!removed) {
     return false;
@@ -371,7 +401,7 @@ std::optional<std::size_t> ZSet::rank(std::string_view member) const {
     return std::nullopt;
   }
 
-  return entries_.rank(ZSetScoreEntry{.score = member_storage()->score(meta->member_id),
+  return entries().rank(ZSetScoreEntry{.score = member_storage()->score(meta->member_id),
                                       .member_id = meta->member_id});
 }
 
@@ -386,7 +416,7 @@ std::optional<std::size_t> ZSet::reverse_rank(std::string_view member) const {
 
 std::optional<ZSetRangeBounds> ZSet::range_bounds(long long start,
                                                   long long stop) const noexcept {
-  const auto size = entries_.size();
+  const auto size = entries().size();
   if (size == 0) {
     return std::nullopt;
   }
@@ -421,7 +451,7 @@ std::vector<ZSetEntry> ZSet::range(long long start, long long stop) const {
                             .score = score,
                             .score_text = score_text_view(member_id)});
   };
-  entries_.for_range(bounds->first, bounds->count, append);
+  entries().for_range(bounds->first, bounds->count, append);
   return out;
 }
 
@@ -438,15 +468,15 @@ std::vector<ZSetEntry> ZSet::reverse_range(long long start, long long stop) cons
                             .score = score,
                             .score_text = score_text_view(member_id)});
   };
-  entries_.for_reverse_range(bounds->first, bounds->count, append);
+  entries().for_reverse_range(bounds->first, bounds->count, append);
   return out;
 }
 
 bool ZSet::check_invariants() const {
-  if (members().size() != entries_.size()) {
+  if (members().size() != entries().size()) {
     return false;
   }
-  if (!entries_.validate()) {
+  if (!entries().validate()) {
     return false;
   }
 
@@ -458,7 +488,7 @@ bool ZSet::check_invariants() const {
     ok = member_storage() != nullptr &&
          meta.member_id < member_storage()->size() &&
          member == member_view(meta.member_id) &&
-         entries_.contains(ZSetScoreEntry{.score = member_storage()->score(meta.member_id),
+         entries().contains(ZSetScoreEntry{.score = member_storage()->score(meta.member_id),
                                           .member_id = meta.member_id});
   });
   return ok;
@@ -467,7 +497,7 @@ bool ZSet::check_invariants() const {
 ZSetMemoryStats ZSet::memory_stats() const noexcept {
   ZSetMemoryStats stats;
   stats.member_count = size();
-  stats.rank_cache_mode = entries_.rank_cache_mode();
+  stats.rank_cache_mode = entries().rank_cache_mode();
   const auto layer_shares =
       member_layer_ == nullptr ? std::size_t{1} : member_layer_.use_count();
   stats.member_layer_share_count = layer_shares;
@@ -486,12 +516,15 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
   stats.member_index_member_slot_capacity = members().member_slot_capacity();
   stats.member_index_tombstones = members().tombstone_count();
   stats.member_index_allocated_bytes = members().allocated_bytes() / layer_shares;
-  stats.score_entry_count = entries_.size();
-  stats.score_block_count = entries_.block_count();
-  stats.score_block_capacity_sum = entries_.block_capacity_sum();
+  const auto score_shares =
+      score_index_ == nullptr ? std::size_t{1} : score_index_.use_count();
+  stats.score_index_share_count = score_shares;
+  stats.score_entry_count = entries().size();
+  stats.score_block_count = entries().block_count();
+  stats.score_block_capacity_sum = entries().block_capacity_sum();
   stats.rank_location_cache_allocated_bytes =
-      entries_.location_cache_allocated_bytes();
-  stats.score_index_allocated_bytes = entries_.allocated_bytes();
+      entries().location_cache_allocated_bytes() / score_shares;
+  stats.score_index_allocated_bytes = entries().allocated_bytes() / score_shares;
   stats.total_allocated_bytes = stats.member_storage_allocated_bytes +
                                 stats.member_index_allocated_bytes +
                                 stats.score_index_allocated_bytes;
@@ -499,7 +532,7 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
 }
 
 void ZSet::compact(double member_index_density) {
-  const auto old_entries = entries_.range(0, entries_.size());
+  const auto old_entries = entries().range(0, entries().size());
 
   std::size_t member_bytes = 0;
   for (const auto& old_entry : old_entries) {
@@ -535,7 +568,7 @@ void ZSet::compact(double member_index_density) {
   new_score_index.assign_sorted(new_entries);
 
   member_layer_ = std::move(new_layer);
-  entries_ = std::move(new_score_index);
+  score_index_ = std::make_shared<ZSetScoreIndex>(std::move(new_score_index));
   rebind_indexes();
   release_unused_heap_pages();
 }
@@ -1033,7 +1066,7 @@ void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
   writer.u8(with_accelerator ? 1 : 0);
   if (with_accelerator) {
     members().write_accelerator(writer);
-    const auto ordered = entries_.range(0, entries_.size());
+    const auto ordered = entries().range(0, entries().size());
     for (const auto& entry : ordered) {
       writer.u32(entry.member_id);
     }
@@ -1079,7 +1112,7 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
       ordered.push_back(
           ZSetScoreEntry{.score = zset.member_storage()->score(id), .member_id = id});
     }
-    zset.entries_.assign_sorted(ordered);
+    zset.entries().assign_sorted(ordered);
   } else {
     // Slow path: rebuild both indexes from the canonical members. The score
     // index is built with insert() so that equal scores order by member bytes
@@ -1089,7 +1122,7 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
     for (std::uint32_t id = 0; id < member_count; ++id) {
       zset.members().insert_packed(zset.member_storage()->view(id),
                                   ZSetMemberMeta{.member_id = id});
-      zset.entries_.insert(
+      zset.entries().insert(
           ZSetScoreEntry{.score = zset.member_storage()->score(id), .member_id = id});
     }
   }
