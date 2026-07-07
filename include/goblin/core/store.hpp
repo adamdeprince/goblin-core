@@ -324,7 +324,6 @@ class ZSet {
   [[nodiscard]] std::string_view member_view(std::uint32_t member_id) const noexcept;
   [[nodiscard]] std::string_view score_text_view(std::uint32_t member_id) const noexcept;
   void rebind_indexes() noexcept;
-  void move_last_member_into_slot(std::uint32_t removed_member_id);
   void ensure_unique_mutable_state();
   void adopt_shared_state_from(const ZSet& source);
 

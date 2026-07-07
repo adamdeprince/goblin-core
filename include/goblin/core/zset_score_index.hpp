@@ -207,6 +207,54 @@ class ZSetScoreIndex {
     return true;
   }
 
+  [[nodiscard]] std::optional<std::pair<size_type, size_type>> find_entry_location(
+      ZSetScoreEntry value) const {
+    if (const auto located = cached_entry_location(value)) {
+      return located;
+    }
+    return locate_entry(value);
+  }
+
+  void erase_at_location(std::pair<size_type, size_type> location) {
+    erase_at(location.first, location.second);
+  }
+
+  // Retarget `last` to `new_member_id` after `erased` was removed. Call only
+  // after member storage has been updated so lex-order checks see the moved
+  // member bytes.
+  [[nodiscard]] bool retarget_last_after_erase(
+      std::pair<size_type, size_type> erased,
+      std::pair<size_type, size_type> last,
+      bool erased_block_was_singleton,
+      ZSetScoreEntry last_entry,
+      std::uint32_t new_member_id) {
+    const auto r_block = erased.first;
+    const auto r_offset = erased.second;
+    auto adj_l_block = last.first;
+    auto l_offset = last.second;
+
+    if (r_block == adj_l_block) {
+      if (r_offset < l_offset) {
+        --l_offset;
+      }
+    } else if (erased_block_was_singleton && adj_l_block > r_block) {
+      --adj_l_block;
+    }
+
+    if (adj_l_block < blocks_.size() && l_offset < blocks_[adj_l_block].size() &&
+        blocks_[adj_l_block].score_at(l_offset) == last_entry.score &&
+        blocks_[adj_l_block].member_id_at(l_offset) == last_entry.member_id &&
+        retarget_member_id_at(adj_l_block, l_offset, last_entry.member_id, new_member_id)) {
+      return true;
+    }
+
+    return replace_member_id(last_entry.score, last_entry.member_id, new_member_id);
+  }
+
+  [[nodiscard]] bool block_was_singleton(size_type block_index) const {
+    return block_index < blocks_.size() && blocks_[block_index].size() == 1;
+  }
+
   [[nodiscard]] bool replace_member_id(double score,
                                        std::uint32_t old_member_id,
                                        std::uint32_t new_member_id) {
@@ -1283,6 +1331,31 @@ class ZSetScoreIndex {
         less(blocks_[block_index + 1].front(), value)) {
       return false;
     }
+    return true;
+  }
+
+  [[nodiscard]] bool retarget_member_id_at(size_type block_index,
+                                           size_type offset,
+                                           std::uint32_t old_member_id,
+                                           std::uint32_t new_member_id) {
+    if (block_index >= blocks_.size()) {
+      return false;
+    }
+
+    auto& block = blocks_[block_index];
+    if (offset >= block.size() || block.member_id_at(offset) != old_member_id) {
+      return false;
+    }
+
+    block.set_member_id(offset, new_member_id);
+    if (!order_valid_at(block_index, offset)) {
+      block.set_member_id(offset, old_member_id);
+      return false;
+    }
+
+    clear_location(old_member_id);
+    set_location(new_member_id, block_index, offset);
+    maxes_[block_index] = block.back();
     return true;
   }
 

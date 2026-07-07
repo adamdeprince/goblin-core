@@ -292,42 +292,6 @@ void ZSet::rebind_indexes() noexcept {
   entries().set_members(member_storage());
 }
 
-void ZSet::move_last_member_into_slot(std::uint32_t removed_member_id) {
-  const auto last_member_id =
-      static_cast<std::uint32_t>(member_storage()->size() - 1);
-  if (removed_member_id == last_member_id) {
-    member_storage()->pop_back();
-    return;
-  }
-
-  const auto moved_score = member_storage()->score(last_member_id);
-  const auto removed_snapshot = member_storage()->snapshot(removed_member_id);
-  member_storage()->copy_ref(removed_member_id, last_member_id);
-
-  const bool replaced_score_entry =
-      entries().replace_member_id(moved_score, last_member_id, removed_member_id);
-  assert(replaced_score_entry);
-  if (!replaced_score_entry) {
-    member_storage()->restore_snapshot(removed_member_id, removed_snapshot);
-    return;
-  }
-
-  const auto last_slot = members().find_slot(member_view(last_member_id));
-  const bool moved_member =
-      last_slot &&
-      members().move_member_id_at_slot(*last_slot, last_member_id, removed_member_id);
-  assert(moved_member);
-  if (!moved_member) {
-    const bool restored_score_entry =
-        entries().replace_member_id(moved_score, removed_member_id, last_member_id);
-    assert(restored_score_entry);
-    member_storage()->restore_snapshot(removed_member_id, removed_snapshot);
-    (void)restored_score_entry;
-    return;
-  }
-  member_storage()->pop_back();
-}
-
 int ZSet::add(double score, std::string_view member) {
   if (!std::isfinite(score)) {
     return 0;
@@ -375,17 +339,70 @@ bool ZSet::remove(std::string_view member) {
 
   const auto member_id = members().member_id_at(*slot);
   const auto old_score = member_storage()->score(member_id);
-  const bool removed =
-      entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
-  assert(removed);
-  if (!removed) {
+  const auto last_member_id =
+      static_cast<std::uint32_t>(member_storage()->size() - 1);
+
+  if (member_id == last_member_id) {
+    const bool removed =
+        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
+    assert(removed);
+    if (!removed) {
+      return false;
+    }
+
+    const bool erased = members().erase_at_index(*slot);
+    assert(erased);
+    member_storage()->orphan(member_id);
+    member_storage()->pop_back();
+    return erased;
+  }
+
+  const ZSetScoreEntry removed_entry{.score = old_score, .member_id = member_id};
+  const auto last_score = member_storage()->score(last_member_id);
+  const ZSetScoreEntry last_entry{.score = last_score, .member_id = last_member_id};
+  const auto last_slot = members().find_slot(member_view(last_member_id));
+  const auto removed_snapshot = member_storage()->snapshot(member_id);
+
+  const auto removed_location = entries().find_entry_location(removed_entry);
+  const auto last_location = entries().find_entry_location(last_entry);
+  if (!removed_location || !last_location) {
+    return false;
+  }
+
+  const bool erased_block_was_singleton =
+      entries().block_was_singleton(removed_location->first);
+  entries().erase_at_location(*removed_location);
+
+  member_storage()->orphan(member_id);
+  member_storage()->copy_ref(member_id, last_member_id);
+
+  const bool score_updated = entries().retarget_last_after_erase(
+      *removed_location, *last_location, erased_block_was_singleton, last_entry,
+      member_id);
+  assert(score_updated);
+  if (!score_updated) {
+    member_storage()->restore_snapshot(member_id, removed_snapshot);
     return false;
   }
 
   const bool erased = members().erase_at_index(*slot);
   assert(erased);
-  member_storage()->orphan(member_id);
-  move_last_member_into_slot(member_id);
+  (void)erased;
+
+  if (!last_slot) {
+    member_storage()->restore_snapshot(member_id, removed_snapshot);
+    return false;
+  }
+
+  const bool moved_member =
+      members().move_member_id_at_slot(*last_slot, last_member_id, member_id);
+  assert(moved_member);
+  if (!moved_member) {
+    member_storage()->restore_snapshot(member_id, removed_snapshot);
+    return false;
+  }
+
+  member_storage()->pop_back();
   return erased;
 }
 
