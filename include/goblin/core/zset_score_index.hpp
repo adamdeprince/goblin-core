@@ -84,6 +84,7 @@ class ZSetScoreIndex {
     return locations_.capacity() * sizeof(std::uint32_t) +
            block_hints16_.capacity() * sizeof(std::uint16_t) +
            block_hints32_.capacity() * sizeof(std::uint32_t) +
+           block_hint_offsets16_.capacity() * sizeof(std::uint16_t) +
            block_index_by_id_.capacity() * sizeof(std::uint32_t);
   }
 
@@ -256,6 +257,10 @@ class ZSetScoreIndex {
     const auto located = locate_entry(value);
     if (!located) {
       return std::nullopt;
+    }
+
+    if (rank_cache_mode_ == RankCacheMode::BlockHint) {
+      repair_block_hint(value.member_id, located->first, located->second);
     }
 
     return prefix_size(located->first) + located->second;
@@ -745,6 +750,7 @@ class ZSetScoreIndex {
     locations_ = {};
     block_hints16_ = {};
     block_hints32_ = {};
+    block_hint_offsets16_ = {};
     block_index_by_id_ = {};
     next_block_id_ = 0;
     block_hints_wide_ = false;
@@ -839,7 +845,40 @@ class ZSetScoreIndex {
     }
   }
 
+  void clear_block_hint_offset(std::uint32_t member_id) const noexcept {
+    if (member_id < block_hint_offsets16_.size()) {
+      block_hint_offsets16_[member_id] = kInvalidBlockHint16;
+    }
+  }
+
+  void ensure_block_hint_offset_capacity(std::uint32_t member_id) const {
+    const auto required = static_cast<size_type>(member_id) + 1;
+    if (required > block_hint_offsets16_.size()) {
+      block_hint_offsets16_.resize(required, kInvalidBlockHint16);
+    }
+  }
+
+  void repair_block_hint(std::uint32_t member_id,
+                         size_type block_index,
+                         size_type offset) const {
+    if (!location_cache_enabled() ||
+        rank_cache_mode_ != RankCacheMode::BlockHint ||
+        block_index >= blocks_.size()) {
+      return;
+    }
+
+    const auto& block = blocks_[block_index];
+    if (offset >= block.size() ||
+        block.member_id_at(offset) != member_id) {
+      return;
+    }
+
+    ensure_block_hint_offset_capacity(member_id);
+    block_hint_offsets16_[member_id] = static_cast<std::uint16_t>(offset);
+  }
+
   void set_block_hint(std::uint32_t member_id, std::uint32_t block_id) {
+    clear_block_hint_offset(member_id);
     if (block_id >= block_hint_narrow_limit_) {
       promote_block_hints_to_wide();
     }
@@ -903,6 +942,7 @@ class ZSetScoreIndex {
       }
       return;
     }
+    clear_block_hint_offset(member_id);
     if (block_hints_wide_) {
       if (member_id < block_hints32_.size()) {
         block_hints32_[member_id] = kInvalidBlockHint32;
@@ -961,6 +1001,12 @@ class ZSetScoreIndex {
         return std::nullopt;
       }
       block_id = *hint;
+      if (value.member_id < block_hint_offsets16_.size()) {
+        const auto repaired_offset = block_hint_offsets16_[value.member_id];
+        if (repaired_offset != kInvalidBlockHint16) {
+          exact_offset = repaired_offset;
+        }
+      }
     }
     if (block_id >= block_index_by_id_.size()) {
       return std::nullopt;
@@ -982,7 +1028,18 @@ class ZSetScoreIndex {
       return prefix_size(block_index) + exact_offset;
     }
 
+    if (exact_offset < block.size() &&
+        block.member_id_at(exact_offset) == value.member_id &&
+        block.score_at(exact_offset) == value.score) {
+      return prefix_size(block_index) + exact_offset;
+    }
+
+    if (exact_offset < block.size()) {
+      clear_block_hint_offset(value.member_id);
+    }
+
     if (const auto offset = locate_entry_offset(block, value)) {
+      repair_block_hint(value.member_id, block_index, *offset);
       return prefix_size(block_index) + *offset;
     }
 
@@ -1376,6 +1433,7 @@ class ZSetScoreIndex {
   std::vector<std::uint32_t> locations_;
   std::vector<std::uint16_t> block_hints16_;
   std::vector<std::uint32_t> block_hints32_;
+  mutable std::vector<std::uint16_t> block_hint_offsets16_;
   std::vector<std::uint32_t> block_index_by_id_;
   mutable size_type index_offset_{0};
   size_type size_{0};

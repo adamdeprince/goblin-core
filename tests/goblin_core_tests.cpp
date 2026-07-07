@@ -796,6 +796,27 @@ std::uint32_t add_score_index_member(goblin::core::ZSetMemberStorage& storage,
   return member_id;
 }
 
+void test_block_hint_rank_cache_lazy_offset_repair() {
+  goblin::core::ZSetMemberStorage storage;
+  goblin::core::ZSetScoreIndex index(
+      &storage, goblin::core::RankCacheMode::BlockHint);
+
+  for (std::uint32_t i = 0; i < 512; ++i) {
+    add_score_index_member(storage, index, i);
+  }
+
+  const auto before_rank_bytes = index.location_cache_allocated_bytes();
+  const auto target =
+      goblin::core::ZSetScoreEntry{.score = 256.0, .member_id = 256};
+  assert(index.rank(target) == 256U);
+  assert(index.location_cache_allocated_bytes() > before_rank_bytes);
+  assert(index.rank(target) == 256U);
+
+  assert(index.erase_one(goblin::core::ZSetScoreEntry{.score = 0.0, .member_id = 0}));
+  assert(index.rank(target) == 255U);
+  assert(index.validate());
+}
+
 void test_block_hint_rank_cache_promotes_to_wide_storage() {
   goblin::core::ZSetMemberStorage forced_storage;
   goblin::core::ZSetScoreIndex forced_index(
@@ -1504,6 +1525,7 @@ int main() {
   test_store_inline_and_overflow_zsets();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
+  test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();
   test_inline_parser();
