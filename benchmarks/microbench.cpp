@@ -44,6 +44,9 @@ struct Options {
   bool score_string_cache{false};
   std::string format{"markdown"};
   std::string output;
+  std::vector<std::string> categories;
+  std::vector<std::string> metrics;
+  bool list_benchmarks{false};
 };
 
 struct BenchmarkResult {
@@ -224,7 +227,9 @@ void print_usage(std::ostream& out, std::string_view program) {
       << "       [--rank-cache-mode off|exact|block-hint]\n"
       << "       [--score-shape integer|short-decimal|long-decimal|random-double]\n"
       << "       [--score-string-cache|--no-score-string-cache]\n"
-      << "       [--format markdown|json|csv] [--output PATH]\n";
+      << "       [--format markdown|json|csv] [--output PATH]\n"
+      << "       [--category NAME]... [--metric NAME]...\n"
+      << "       [--list-benchmarks]\n";
 }
 
 [[nodiscard]] bool parse_args(int argc, char** argv, Options& options) {
@@ -372,6 +377,26 @@ void print_usage(std::ostream& out, std::string_view program) {
       continue;
     }
 
+    if (arg == "--category") {
+      const auto text = need_value(arg);
+      if (!text) {
+        return false;
+      }
+      options.categories.emplace_back(*text);
+      continue;
+    }
+    if (arg == "--metric") {
+      const auto text = need_value(arg);
+      if (!text) {
+        return false;
+      }
+      options.metrics.emplace_back(*text);
+      continue;
+    }
+    if (arg == "--list-benchmarks") {
+      options.list_benchmarks = true;
+      continue;
+    }
     std::cerr << "unknown option: " << arg << '\n';
     return false;
   }
@@ -640,39 +665,134 @@ template <class Fn>
   return command;
 }
 
+
+[[nodiscard]] bool benchmark_selected(const Options& options,
+                                      std::string_view category,
+                                      std::string_view metric) noexcept {
+  if (!options.categories.empty()) {
+    bool matched = false;
+    for (const auto& selected : options.categories) {
+      if (selected == category) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      return false;
+    }
+  }
+  if (!options.metrics.empty()) {
+    bool matched = false;
+    for (const auto& selected : options.metrics) {
+      if (selected == metric) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void list_benchmark_catalog(std::ostream& out) {
+  static constexpr std::pair<std::string_view, std::string_view> catalog[] = {
+      {"raw_zset", "zscore"},
+      {"raw_zset", "zrank"},
+      {"raw_zset", "zrevrank"},
+      {"raw_zset", "zrange_iter"},
+      {"raw_zset", "zrange_vector"},
+      {"zrange_breakdown", "score_index_traversal"},
+      {"zrange_breakdown", "member_lookup"},
+      {"zrange_breakdown", "score_format_only"},
+      {"zrange_breakdown", "member_resp_append_only"},
+      {"zrange_breakdown", "score_resp_append_preformatted"},
+      {"zrange_breakdown", "score_resp_append_formatting"},
+      {"zrange_breakdown", "direct_resp_append_withscores"},
+      {"zrange_breakdown", "resp_append"},
+      {"zrange_breakdown", "resp_append_withscores"},
+      {"zrange_breakdown", "execute_command_into"},
+      {"zrange_breakdown", "execute_command_into_withscores"},
+      {"resp", "zscore_bulk"},
+      {"resp", "zrank_integer"},
+      {"resp", "zrange"},
+      {"resp", "zrange_withscores"},
+      {"command_into", "zscore"},
+      {"command_into", "zrank"},
+      {"command_into", "zrevrank"},
+      {"command_into", "zrange"},
+      {"command_into", "zrange_withscores"},
+      {"command_string", "zscore"},
+      {"command_string", "zrank"},
+      {"command_string", "zrevrank"},
+      {"command_string", "zrange"},
+      {"command_string", "zrange_withscores"},
+      {"parse_command_into", "zscore"},
+      {"parse_command_into", "zrank"},
+      {"parse_command_into", "zrevrank"},
+      {"parse_command_into", "zrange"},
+      {"parse_command_into", "zrange_withscores"},
+      {"parse_command_string", "zscore"},
+      {"parse_command_string", "zrank"},
+      {"parse_command_string", "zrevrank"},
+      {"parse_command_string", "zrange"},
+      {"parse_command_string", "zrange_withscores"},
+  };
+
+  for (const auto& [category, metric] : catalog) {
+    out << category << '\t' << metric << '\n';
+  }
+}
+
 [[nodiscard]] std::vector<BenchmarkResult> run_benchmarks(const Options& options,
                                                           Fixture& fixture) {
   std::vector<BenchmarkResult> results;
   results.reserve(48);
 
-  results.push_back(measure(options, "raw_zset", "zscore", options.ops, [&] {
+  const auto maybe_bench = [&](std::string_view category,
+                               std::string_view metric,
+                               std::size_t operations,
+                               auto&& fn) {
+    if (!benchmark_selected(options, category, metric)) {
+      return;
+    }
+    results.push_back(measure(
+        options,
+        std::string(category),
+        std::string(metric),
+        operations,
+        std::forward<decltype(fn)>(fn)));
+  };
+
+  maybe_bench("raw_zset", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const auto score = fixture.zset.score(fixture.members[member_id]);
       checksum = mix(checksum, score ? static_cast<std::uint64_t>(*score) : 0);
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "raw_zset", "zrank", options.ops, [&] {
+  maybe_bench("raw_zset", "zrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const auto rank = fixture.zset.rank(fixture.members[member_id]);
       checksum = mix(checksum, rank ? static_cast<std::uint64_t>(*rank) : 0);
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "raw_zset", "zrevrank", options.ops, [&] {
+  maybe_bench("raw_zset", "zrevrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const auto rank = fixture.zset.reverse_rank(fixture.members[member_id]);
       checksum = mix(checksum, rank ? static_cast<std::uint64_t>(*rank) : 0);
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "raw_zset", "zrange_iter", options.ops, [&] {
+  maybe_bench("raw_zset", "zrange_iter", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       fixture.zset.for_range(
@@ -683,9 +803,9 @@ template <class Fn>
           });
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "raw_zset", "zrange_vector", options.ops, [&] {
+  maybe_bench("raw_zset", "zrange_vector", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       const auto entries = fixture.zset.range(
@@ -696,10 +816,9 @@ template <class Fn>
       }
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "score_index_traversal",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "score_index_traversal", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       auto append = [&checksum](double score, std::uint32_t member_id) {
@@ -711,10 +830,9 @@ template <class Fn>
       fixture.score_index.for_range(start, options.range_size, append);
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "member_lookup",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "member_lookup", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       const auto* begin = fixture.sorted_score_entries.data() + start;
@@ -729,10 +847,9 @@ template <class Fn>
       }
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "score_format_only",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "score_format_only", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       const auto* begin = fixture.sorted_score_entries.data() + start;
@@ -741,11 +858,9 @@ template <class Fn>
       }
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown",
-                            "member_resp_append_only",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "member_resp_append_only", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -758,11 +873,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown",
-                            "score_resp_append_preformatted",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "score_resp_append_preformatted", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -775,11 +888,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown",
-                            "score_resp_append_formatting",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "score_resp_append_formatting", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -791,11 +902,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown",
-                            "direct_resp_append_withscores",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "direct_resp_append_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -808,10 +917,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "resp_append",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "resp_append", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -824,10 +932,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "resp_append_withscores",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "resp_append_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto start : fixture.range_starts) {
@@ -840,10 +947,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown", "execute_command_into",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "execute_command_into", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto& text : fixture.range_texts) {
@@ -856,11 +962,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "zrange_breakdown",
-                            "execute_command_into_withscores",
-                            options.ops, [&] {
+  maybe_bench("zrange_breakdown", "execute_command_into_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto& text : fixture.range_texts) {
@@ -873,9 +977,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "resp", "zscore_bulk", options.ops, [&] {
+  maybe_bench("resp", "zscore_bulk", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       std::string out;
@@ -884,9 +988,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "resp", "zrank_integer", options.ops, [&] {
+  maybe_bench("resp", "zrank_integer", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (std::size_t i = 0; i < fixture.lookup_ids.size(); ++i) {
       const auto out = goblin::core::resp::integer(
@@ -894,9 +998,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "resp", "zrange", options.ops, [&] {
+  maybe_bench("resp", "zrange", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       const auto out = serialize_range(
@@ -906,9 +1010,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "resp", "zrange_withscores", options.ops, [&] {
+  maybe_bench("resp", "zrange_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto start : fixture.range_starts) {
       const auto out = serialize_range(
@@ -918,9 +1022,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_into", "zscore", options.ops, [&] {
+  maybe_bench("command_into", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -933,9 +1037,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_into", "zrank", options.ops, [&] {
+  maybe_bench("command_into", "zrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -948,9 +1052,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_into", "zrevrank", options.ops, [&] {
+  maybe_bench("command_into", "zrevrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -963,9 +1067,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_into", "zrange", options.ops, [&] {
+  maybe_bench("command_into", "zrange", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
@@ -979,9 +1083,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_into", "zrange_withscores", options.ops, [&] {
+  maybe_bench("command_into", "zrange_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
@@ -995,9 +1099,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_string", "zscore", options.ops, [&] {
+  maybe_bench("command_string", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 2> args{
@@ -1008,9 +1112,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_string", "zrank", options.ops, [&] {
+  maybe_bench("command_string", "zrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 2> args{
@@ -1021,9 +1125,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_string", "zrevrank", options.ops, [&] {
+  maybe_bench("command_string", "zrevrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 2> args{
@@ -1034,9 +1138,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_string", "zrange", options.ops, [&] {
+  maybe_bench("command_string", "zrange", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
       const auto& text = fixture.range_texts[i];
@@ -1048,9 +1152,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "command_string", "zrange_withscores", options.ops, [&] {
+  maybe_bench("command_string", "zrange_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (std::size_t i = 0; i < fixture.range_texts.size(); ++i) {
       const auto& text = fixture.range_texts[i];
@@ -1062,9 +1166,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_into", "zscore", options.ops, [&] {
+  maybe_bench("parse_command_into", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -1075,9 +1179,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_into", "zrank", options.ops, [&] {
+  maybe_bench("parse_command_into", "zrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -1088,9 +1192,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_into", "zrevrank", options.ops, [&] {
+  maybe_bench("parse_command_into", "zrevrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto member_id : fixture.lookup_ids) {
@@ -1101,9 +1205,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_into", "zrange", options.ops, [&] {
+  maybe_bench("parse_command_into", "zrange", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto& text : fixture.range_texts) {
@@ -1115,9 +1219,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_into", "zrange_withscores", options.ops, [&] {
+  maybe_bench("parse_command_into", "zrange_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     std::string out;
     for (const auto& text : fixture.range_texts) {
@@ -1129,9 +1233,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_string", "zscore", options.ops, [&] {
+  maybe_bench("parse_command_string", "zscore", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 3> fields{
@@ -1140,9 +1244,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_string", "zrank", options.ops, [&] {
+  maybe_bench("parse_command_string", "zrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 3> fields{
@@ -1151,9 +1255,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_string", "zrevrank", options.ops, [&] {
+  maybe_bench("parse_command_string", "zrevrank", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto member_id : fixture.lookup_ids) {
       const std::array<std::string_view, 3> fields{
@@ -1162,9 +1266,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_string", "zrange", options.ops, [&] {
+  maybe_bench("parse_command_string", "zrange", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto& text : fixture.range_texts) {
       const std::array<std::string_view, 4> fields{
@@ -1174,9 +1278,9 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
-  results.push_back(measure(options, "parse_command_string", "zrange_withscores", options.ops, [&] {
+  maybe_bench("parse_command_string", "zrange_withscores", options.ops, [&] {
     std::uint64_t checksum = 0;
     for (const auto& text : fixture.range_texts) {
       const std::array<std::string_view, 5> fields{
@@ -1186,7 +1290,7 @@ template <class Fn>
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
-  }));
+  });
 
   return results;
 }
@@ -1273,7 +1377,23 @@ void write_json(std::ostream& out,
   write_json_string(out, rank_cache_mode_name(options.rank_cache_mode));
   out << ",\n";
   out << "    \"score_string_cache\": "
-      << (options.score_string_cache ? "true" : "false") << "\n";
+      << (options.score_string_cache ? "true" : "false") << ",\n";
+  out << "    \"categories\": [";
+  for (std::size_t i = 0; i < options.categories.size(); ++i) {
+    if (i != 0) {
+      out << ", ";
+    }
+    write_json_string(out, options.categories[i]);
+  }
+  out << "],\n";
+  out << "    \"metrics\": [";
+  for (std::size_t i = 0; i < options.metrics.size(); ++i) {
+    if (i != 0) {
+      out << ", ";
+    }
+    write_json_string(out, options.metrics[i]);
+  }
+  out << "]\n";
   out << "  },\n  \"results\": [\n";
   out << std::setprecision(17);
   for (std::size_t i = 0; i < results.size(); ++i) {
@@ -1315,6 +1435,26 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  if (options.list_benchmarks) {
+    list_benchmark_catalog(std::cout);
+    return 0;
+  }
+
+  if (!options.categories.empty()) {
+    std::cerr << "categories:";
+    for (const auto& category : options.categories) {
+      std::cerr << ' ' << category;
+    }
+    std::cerr << '\n';
+  }
+  if (!options.metrics.empty()) {
+    std::cerr << "metrics:";
+    for (const auto& metric : options.metrics) {
+      std::cerr << ' ' << metric;
+    }
+    std::cerr << '\n';
+  }
+
   std::cerr << "building fixture: members=" << options.members
             << " ops=" << options.ops
             << " range_size=" << options.range_size
@@ -1325,6 +1465,11 @@ int main(int argc, char** argv) {
   auto fixture = build_fixture(options);
   std::cerr << "running microbenchmarks\n";
   const auto results = run_benchmarks(options, fixture);
+  if ((!options.categories.empty() || !options.metrics.empty()) &&
+      results.empty()) {
+    std::cerr << "no benchmarks matched the requested filters\n";
+    return 2;
+  }
 
   if (options.output.empty()) {
     write_results(std::cout, options, results);
