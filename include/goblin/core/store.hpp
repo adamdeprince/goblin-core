@@ -331,6 +331,9 @@ struct StoreOptions {
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t zset_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
   std::size_t hash_chunk_bytes{HashStorage::kDefaultChunkBytes};
+  // Zsets created before the overflow table are kept in a small inline table
+  // for fast key resolution on multi-key workloads.
+  std::size_t inline_zset_limit{32};
 };
 
 struct StoreMemoryStats {
@@ -338,6 +341,7 @@ struct StoreMemoryStats {
   std::size_t overflow_zset_count{0};
   std::size_t overflow_zset_capacity{0};
   std::size_t overflow_table_allocated_bytes{0};
+  std::size_t inline_zset_index_allocated_bytes{0};
   std::size_t inline_zset_allocated_bytes{0};
   std::size_t overflow_zset_allocated_bytes{0};
   std::size_t total_allocated_bytes{0};
@@ -694,8 +698,20 @@ class Store {
   [[nodiscard]] Hash& get_or_create_hash(std::string_view key);
   void erase_if_empty(std::string_view key, const Hash& hash);
 
-  std::optional<ZSet> inline_zset_;
-  std::string inline_key_;
+  struct InlineZsetSlot {
+    std::string key;
+    ZSet zset;
+  };
+
+  [[nodiscard]] ZSet* find_inline_zset(std::string_view key) noexcept;
+  [[nodiscard]] const ZSet* find_inline_zset(std::string_view key) const noexcept;
+  [[nodiscard]] bool inline_zset_slots_full() const noexcept;
+  [[nodiscard]] ZSet& emplace_inline_zset(std::string_view key);
+  void erase_inline_zset_if(std::string_view key, const ZSet& zset) noexcept;
+
+  std::vector<InlineZsetSlot> inline_zsets_;
+  SwissTable<std::string, std::size_t, StringTableHash, StringTableEqual>
+      inline_zset_index_;
   SwissTable<std::string, ZSet, StringTableHash, StringTableEqual> overflow_zsets_;
   std::optional<Hash> inline_hash_;
   std::string inline_hash_key_;

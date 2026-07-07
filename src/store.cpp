@@ -494,9 +494,69 @@ bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
 
 Store::Store(StoreOptions options) : options_(options) {}
 
+ZSet* Store::find_inline_zset(std::string_view key) noexcept {
+  const auto* index = inline_zset_index_.find(key);
+  if (index == nullptr || *index >= inline_zsets_.size()) {
+    return nullptr;
+  }
+  return &inline_zsets_[*index].zset;
+}
+
+const ZSet* Store::find_inline_zset(std::string_view key) const noexcept {
+  const auto* index = inline_zset_index_.find(key);
+  if (index == nullptr || *index >= inline_zsets_.size()) {
+    return nullptr;
+  }
+  return &inline_zsets_[*index].zset;
+}
+
+bool Store::inline_zset_slots_full() const noexcept {
+  return inline_zsets_.size() >= options_.inline_zset_limit;
+}
+
+ZSet& Store::emplace_inline_zset(std::string_view key) {
+  const auto index = inline_zsets_.size();
+  inline_zsets_.push_back(InlineZsetSlot{
+      .key = std::string(key),
+      .zset = ZSet(ZSetOptions{
+          .rank_cache_mode = options_.rank_cache_mode,
+          .score_string_cache = options_.score_string_cache,
+          .member_index_growth = options_.member_index_growth,
+          .member_chunk_bytes = options_.zset_chunk_bytes,
+      }),
+  });
+  auto [slot, inserted] = inline_zset_index_.try_emplace(inline_zsets_.back().key, index);
+  (void)inserted;
+  (void)slot;
+  return inline_zsets_.back().zset;
+}
+
+void Store::erase_inline_zset_if(std::string_view key,
+                                 const ZSet& zset) noexcept {
+  const auto* index = inline_zset_index_.find(key);
+  if (index == nullptr || *index >= inline_zsets_.size() ||
+      &inline_zsets_[*index].zset != &zset) {
+    return;
+  }
+
+  const auto remove_index = *index;
+  inline_zset_index_.erase(inline_zsets_[remove_index].key);
+  if (remove_index + 1 == inline_zsets_.size()) {
+    inline_zsets_.pop_back();
+    return;
+  }
+
+  inline_zsets_[remove_index] = std::move(inline_zsets_.back());
+  inline_zsets_.pop_back();
+  auto moved = inline_zset_index_.find(inline_zsets_[remove_index].key);
+  if (moved != nullptr) {
+    *moved = remove_index;
+  }
+}
+
 ZSet* Store::find_zset(std::string_view key) noexcept {
-  if (inline_zset_.has_value() && std::string_view(inline_key_) == key) {
-    return &*inline_zset_;
+  if (auto* inline_zset = find_inline_zset(key); inline_zset != nullptr) {
+    return inline_zset;
   }
   if (overflow_zsets_.empty()) {
     return nullptr;
@@ -505,8 +565,8 @@ ZSet* Store::find_zset(std::string_view key) noexcept {
 }
 
 const ZSet* Store::find_zset(std::string_view key) const noexcept {
-  if (inline_zset_.has_value() && std::string_view(inline_key_) == key) {
-    return &*inline_zset_;
+  if (const auto* inline_zset = find_inline_zset(key); inline_zset != nullptr) {
+    return inline_zset;
   }
   if (overflow_zsets_.empty()) {
     return nullptr;
@@ -515,26 +575,18 @@ const ZSet* Store::find_zset(std::string_view key) const noexcept {
 }
 
 ZSet& Store::get_or_create_zset(std::string_view key) {
-  if (inline_zset_.has_value() && std::string_view(inline_key_) == key) {
-    return *inline_zset_;
+  if (auto* inline_zset = find_inline_zset(key); inline_zset != nullptr) {
+    return *inline_zset;
   }
 
   if (!overflow_zsets_.empty()) {
-    auto* overflow = overflow_zsets_.find(key);
-    if (overflow != nullptr) {
+    if (auto* overflow = overflow_zsets_.find(key); overflow != nullptr) {
       return *overflow;
     }
   }
 
-  if (!inline_zset_.has_value() && overflow_zsets_.empty()) {
-    inline_key_.assign(key);
-    inline_zset_.emplace(ZSetOptions{
-        .rank_cache_mode = options_.rank_cache_mode,
-        .score_string_cache = options_.score_string_cache,
-        .member_index_growth = options_.member_index_growth,
-        .member_chunk_bytes = options_.zset_chunk_bytes,
-    });
-    return *inline_zset_;
+  if (!inline_zset_slots_full()) {
+    return emplace_inline_zset(key);
   }
 
   auto [zset, inserted] = overflow_zsets_.try_emplace(
@@ -554,13 +606,7 @@ void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
     return;
   }
 
-  if (inline_zset_.has_value() && std::string_view(inline_key_) == key &&
-      &*inline_zset_ == &zset) {
-    inline_zset_.reset();
-    inline_key_.clear();
-    return;
-  }
-
+  erase_inline_zset_if(key, zset);
   overflow_zsets_.erase(key);
 }
 
@@ -968,8 +1014,8 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
     out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
   };
 
-  if (inline_zset_.has_value()) {
-    emit_zset(inline_key_, *inline_zset_);
+  for (const auto& slot : inline_zsets_) {
+    emit_zset(slot.key, slot.zset);
   }
   overflow_zsets_.for_each([&emit_zset](const std::pair<std::string, ZSet>& entry) {
     emit_zset(entry.first, entry.second);
@@ -1100,8 +1146,8 @@ SnapshotLoadStats Store::load(std::istream& in) {
 }
 
 void Store::clear() noexcept {
-  inline_zset_.reset();
-  inline_key_.clear();
+  inline_zsets_.clear();
+  inline_zset_index_.clear();
   overflow_zsets_.clear();
   inline_hash_.reset();
   inline_hash_key_.clear();
@@ -1109,8 +1155,8 @@ void Store::clear() noexcept {
 }
 
 SnapshotLoadStats Store::load_native(std::istream& in) {
-  inline_zset_.reset();
-  inline_key_.clear();
+  inline_zsets_.clear();
+  inline_zset_index_.clear();
   overflow_zsets_.clear();
   inline_hash_.reset();
   inline_hash_key_.clear();
@@ -1204,8 +1250,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
     }
     return stats;
   } catch (...) {
-    inline_zset_.reset();
-    inline_key_.clear();
+    inline_zsets_.clear();
+    inline_zset_index_.clear();
     overflow_zsets_.clear();
     inline_hash_.reset();
     inline_hash_key_.clear();
@@ -1215,29 +1261,34 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
 }
 
 void Store::place_loaded_zset(std::string key, ZSet&& zset) {
-  if (!inline_zset_.has_value() && overflow_zsets_.empty()) {
-    inline_key_ = std::move(key);
-    inline_zset_.emplace(std::move(zset));
-  } else {
-    overflow_zsets_.try_emplace(std::move(key), std::move(zset));
+  if (!inline_zset_slots_full()) {
+    const auto index = inline_zsets_.size();
+    inline_zsets_.push_back(
+        InlineZsetSlot{.key = key, .zset = std::move(zset)});
+    inline_zset_index_.try_emplace(inline_zsets_.back().key, index);
+    return;
   }
+
+  overflow_zsets_.try_emplace(std::move(key), std::move(zset));
 }
 
 StoreMemoryStats Store::memory_stats() const noexcept {
   StoreMemoryStats stats;
-  stats.inline_zset_count = inline_zset_.has_value() ? 1 : 0;
+  stats.inline_zset_count = inline_zsets_.size();
   stats.overflow_zset_count = overflow_zsets_.size();
   stats.overflow_zset_capacity = overflow_zsets_.capacity();
   stats.overflow_table_allocated_bytes = overflow_zsets_.allocated_bytes();
-  if (inline_zset_.has_value()) {
-    stats.inline_zset_allocated_bytes =
-        inline_zset_->memory_stats().total_allocated_bytes;
+  stats.inline_zset_index_allocated_bytes = inline_zset_index_.allocated_bytes();
+  for (const auto& slot : inline_zsets_) {
+    stats.inline_zset_allocated_bytes +=
+        slot.zset.memory_stats().total_allocated_bytes;
   }
   overflow_zsets_.for_each([&stats](const auto& entry) {
     stats.overflow_zset_allocated_bytes +=
         entry.second.memory_stats().total_allocated_bytes;
   });
   stats.total_allocated_bytes = stats.overflow_table_allocated_bytes +
+                                stats.inline_zset_index_allocated_bytes +
                                 stats.inline_zset_allocated_bytes +
                                 stats.overflow_zset_allocated_bytes;
   return stats;
