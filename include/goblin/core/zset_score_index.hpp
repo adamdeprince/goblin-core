@@ -258,18 +258,12 @@ class ZSetScoreIndex {
       return cached;
     }
 
-    const auto block_index = lower_block(value);
-    if (block_index == blocks_.size()) {
+    const auto located = locate_entry(value);
+    if (!located) {
       return std::nullopt;
     }
 
-    const auto& block = blocks_[block_index];
-    const auto offset = block.lower_bound(*this, value);
-    if (offset == block.size() || !equivalent(block.at(offset), value)) {
-      return std::nullopt;
-    }
-
-    return prefix_size(block_index) + offset;
+    return prefix_size(located->first) + located->second;
   }
 
   [[nodiscard]] std::vector<ZSetScoreEntry> range(size_type start, size_type count) const {
@@ -993,12 +987,83 @@ class ZSetScoreIndex {
       return prefix_size(block_index) + exact_offset;
     }
 
-    const auto offset = block.lower_bound(*this, value);
-    if (offset == block.size() || !equivalent(block.at(offset), value)) {
+    if (const auto offset = locate_entry_offset(block, value)) {
+      return prefix_size(block_index) + *offset;
+    }
+
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::pair<size_type, size_type>> locate_entry(
+      ZSetScoreEntry value) const {
+    if (blocks_.empty()) {
       return std::nullopt;
     }
 
-    return prefix_size(block_index) + offset;
+    auto block_index = lower_block_by_score(value.score);
+    while (block_index < blocks_.size()) {
+      const auto& block = blocks_[block_index];
+      if (block.front().score > value.score) {
+        return std::nullopt;
+      }
+      if (block.back().score < value.score) {
+        ++block_index;
+        continue;
+      }
+
+      if (const auto offset = locate_entry_offset(block, value)) {
+        return std::pair<size_type, size_type>{block_index, *offset};
+      }
+
+      ++block_index;
+    }
+
+    return std::nullopt;
+  }
+
+  template <class BlockRef>
+  [[nodiscard]] std::optional<size_type> locate_entry_offset(
+      BlockRef&& block,
+      ZSetScoreEntry value) const noexcept {
+    const auto score_start = block.lower_bound_score(value.score);
+    if (score_start == block.size() ||
+        block.score_at(score_start) != value.score) {
+      return std::nullopt;
+    }
+
+    auto score_end = score_start;
+    while (score_end < block.size() &&
+           block.score_at(score_end) == value.score) {
+      ++score_end;
+    }
+
+    const auto run_length = score_end - score_start;
+    if (run_length == 1) {
+      if (block.member_id_at(score_start) == value.member_id) {
+        return score_start;
+      }
+      return std::nullopt;
+    }
+
+    size_type first = score_start;
+    size_type count = run_length;
+    while (count > 0) {
+      const auto step = count / 2;
+      const auto mid = first + step;
+      if (less_parts(block.score_at(mid), block.member_id_at(mid), value.score,
+                     value.member_id)) {
+        first = mid + 1;
+        count -= step + 1;
+      } else {
+        count = step;
+      }
+    }
+
+    if (first >= score_end || block.member_id_at(first) != value.member_id) {
+      return std::nullopt;
+    }
+
+    return first;
   }
 
   [[nodiscard]] bool less(ZSetScoreEntry lhs, ZSetScoreEntry rhs) const noexcept {
