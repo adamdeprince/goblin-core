@@ -188,14 +188,16 @@ inline void append_integer(std::string& out, long long value) {
 }
 
 inline void append_bulk_string(std::string& out, std::string_view value) {
-  if (value.size() < detail::kSmallBulkHeaders.size()) {
-    const auto& header = detail::kSmallBulkHeaders[value.size()];
-    out.append(header.bytes.data(), header.size);
-  } else {
-    out.push_back('$');
-    detail::append_decimal(out, value.size());
-    out.append("\r\n", 2);
+  if (detail::can_write_small_bulk_string(value.size())) {
+    const auto offset = out.size();
+    out.resize(offset + detail::bulk_string_wire_size(value.size()));
+    (void)detail::write_small_bulk_string(out.data() + offset, value);
+    return;
   }
+
+  out.push_back('$');
+  detail::append_decimal(out, value.size());
+  out.append("\r\n", 2);
   out.append(value);
   out.append("\r\n", 2);
 }
@@ -221,13 +223,21 @@ inline void reserve_zrange_array(std::string& out,
 
 inline void append_bulk_finite_double(std::string& out, double value) {
   std::array<char, 32> buffer;
-  const auto text = score_format::try_format_finite_to_buffer(value, buffer);
-  if (!text.empty()) {
-    append_bulk_string(out, text);
+  std::string_view text = score_format::try_format_finite_to_buffer(value, buffer);
+  std::string fallback;
+  if (text.empty()) {
+    fallback = score_format::fallback(value);
+    text = fallback;
+  }
+
+  if (detail::can_write_small_bulk_string(text.size())) {
+    const auto offset = out.size();
+    out.resize(offset + detail::bulk_string_wire_size(text.size()));
+    (void)detail::write_small_bulk_string(out.data() + offset, text);
     return;
   }
 
-  append_bulk_string(out, score_format::fallback(value));
+  append_bulk_string(out, text);
 }
 
 inline void append_bulk_member_and_text(std::string& out,
@@ -276,6 +286,132 @@ inline void append_bulk_member_and_finite_double(std::string& out,
   auto* dst = out.data() + offset;
   dst = detail::write_small_bulk_string(dst, member);
   (void)detail::write_small_bulk_string(dst, score_text);
+}
+
+inline constexpr std::size_t kBulkWithscoresBatchLimit = 256;
+
+inline void append_bulk_members_batch(std::string& out,
+                                      std::span<const std::string_view> members) {
+  if (members.empty()) {
+    return;
+  }
+
+  if (members.size() > kBulkWithscoresBatchLimit) {
+    for (const auto member : members) {
+      append_bulk_string(out, member);
+    }
+    return;
+  }
+
+  std::size_t wire_bytes = 0;
+  for (const auto member : members) {
+    if (!detail::can_write_small_bulk_string(member.size())) {
+      for (const auto fallback : members) {
+        append_bulk_string(out, fallback);
+      }
+      return;
+    }
+    wire_bytes += detail::bulk_string_wire_size(member.size());
+  }
+
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  for (const auto member : members) {
+    dst = detail::write_small_bulk_string(dst, member);
+  }
+}
+
+inline void append_bulk_withscores_batch(
+    std::string& out,
+    std::span<const std::pair<std::string_view, double>> entries) {
+  if (entries.empty()) {
+    return;
+  }
+
+  struct FormattedEntry {
+    std::string_view member;
+    std::string_view score;
+    std::array<char, 32> buffer{};
+    std::string fallback;
+  };
+
+  if (entries.size() > kBulkWithscoresBatchLimit) {
+    for (const auto& entry : entries) {
+      append_bulk_member_and_finite_double(out, entry.first, entry.second);
+    }
+    return;
+  }
+
+  std::array<FormattedEntry, kBulkWithscoresBatchLimit> formatted{};
+  std::size_t wire_bytes = 0;
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    auto& row = formatted[i];
+    row.member = entries[i].first;
+    row.score = score_format::try_format_finite_to_buffer(entries[i].second,
+                                                          row.buffer);
+    if (row.score.empty()) {
+      row.fallback = score_format::fallback(entries[i].second);
+      row.score = row.fallback;
+    }
+
+    if (!detail::can_write_small_bulk_string(row.member.size()) ||
+        !detail::can_write_small_bulk_string(row.score.size())) {
+      for (std::size_t j = 0; j < entries.size(); ++j) {
+        append_bulk_member_and_finite_double(out, entries[j].first,
+                                             entries[j].second);
+      }
+      return;
+    }
+
+    wire_bytes += detail::bulk_string_wire_size(row.member.size()) +
+                  detail::bulk_string_wire_size(row.score.size());
+  }
+
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    const auto& row = formatted[i];
+    dst = detail::write_small_bulk_string(dst, row.member);
+    dst = detail::write_small_bulk_string(dst, row.score);
+  }
+}
+
+inline void append_bulk_withscores_text_batch(
+    std::string& out,
+    std::span<const std::pair<std::string_view, std::string_view>> entries) {
+  if (entries.empty()) {
+    return;
+  }
+
+  if (entries.size() > kBulkWithscoresBatchLimit) {
+    for (const auto& entry : entries) {
+      append_bulk_member_and_text(out, entry.first, entry.second);
+    }
+    return;
+  }
+
+  std::size_t wire_bytes = 0;
+  for (const auto& entry : entries) {
+    if (!detail::can_write_small_bulk_string(entry.first.size()) ||
+        !detail::can_write_small_bulk_string(entry.second.size())) {
+      for (const auto& fallback : entries) {
+        append_bulk_member_and_text(out, fallback.first, fallback.second);
+      }
+      return;
+    }
+    wire_bytes += detail::bulk_string_wire_size(entry.first.size()) +
+                  detail::bulk_string_wire_size(entry.second.size());
+  }
+
+  const auto offset = out.size();
+  out.resize(offset + wire_bytes);
+  auto* dst = out.data() + offset;
+  for (const auto& entry : entries) {
+    dst = detail::write_small_bulk_string(dst, entry.first);
+    dst = detail::write_small_bulk_string(dst, entry.second);
+  }
 }
 
 inline void append_bulk_double(std::string& out, double value) {

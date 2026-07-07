@@ -273,6 +273,27 @@ void test_resp_bulk_wire_size_matches_output() {
   }
 }
 
+void test_zrange_withscores_batch_matches_streaming_append() {
+  const std::array<std::pair<std::string_view, double>, 4> entries{
+      std::pair<std::string_view, double>{"a", 1.0},
+      {"b", 2.0},
+      {"c", -7.0},
+      {"member:0000000042", 42.0},
+  };
+
+  std::string streaming;
+  goblin::core::resp::append_array_header(streaming, entries.size() * 2);
+  for (const auto& entry : entries) {
+    goblin::core::resp::append_bulk_member_and_finite_double(
+        streaming, entry.first, entry.second);
+  }
+
+  std::string batched;
+  goblin::core::resp::append_array_header(batched, entries.size() * 2);
+  goblin::core::resp::append_bulk_withscores_batch(batched, entries);
+  assert(batched == streaming);
+}
+
 void test_zrange_withscores_fused_matches_legacy_append() {
   goblin::core::Store store;
   assert(execute_fields(store, {"ZADD", "z", "1", "a", "2", "b"}) == ":2\r\n");
@@ -1616,6 +1637,7 @@ int main() {
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
   test_resp_bulk_wire_size_matches_output();
+  test_zrange_withscores_batch_matches_streaming_append();
   test_zrange_withscores_fused_matches_legacy_append();
   test_command_dispatch();
   test_goblin_optimize_reclaims_slack();
