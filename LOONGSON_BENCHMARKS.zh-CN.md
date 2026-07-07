@@ -258,22 +258,22 @@ export LD_LIBRARY_PATH=/opt/loongson-gcc-15.2.0/lib
 
 ---
 
-## 跨主机结论：龙芯上的 Goblin vs Intel 上的主流引擎
+## 跨主机结论：龙芯上的 Goblin vs x86 上的主流引擎
 
 面向国产硅部署的**跨主机**对照：**龙芯 3A6000 上的 Goblin Core**（本文）对比
-[BENCHMARKS.md](BENCHMARKS.md) 中 **x86 服务器**上的 Redis 7.2.4、Redis 8.8.0、
-Valkey 9.1.0、Dragonfly 与 Goblin Core（安静 128 核 Linux，GCC 16.1.0）。CPU、
-主频与内存带宽不同，并非同机对比。
+[BENCHMARKS.md](BENCHMARKS.md) 中 **x86 参考主机**上的 Redis 7.2.4、Redis 8.8.0、
+Valkey 9.1.0、Dragonfly 与 Goblin Core — **AMD Ryzen Threadripper PRO 5995WX**
+（64 核 × 2 线程，GCC 16.1.0）。CPU、主频与内存带宽不同，并非同机对比。
 
-**结论：** 龙芯上的 Goblin 在热点路径上常为 **Intel Redis 的 75–90%**，在**同一
-台龙芯**上领先所有竞品，**快照加载快于 Intel Redis**。相对 **Intel 上的 Goblin**
-则约为吞吐的 **50–75%**，不能宣称同档。诚实卖点：不是「让龙芯变成 Intel」，而是
-**消除 Redis 在龙芯上的性能惩罚**——在加载与内存上，还能超过团队在 Intel 上跑
-Redis 的表现。
+**结论：** 龙芯上的 Goblin 在热点路径上常为 **Threadripper 上 Redis 的 75–90%**，
+在**同一台龙芯**上领先所有竞品，**快照加载快于 x86 Redis**。相对 **x86 上的
+Goblin** 则约为吞吐的 **50–75%**，不能宣称同档。诚实卖点：不是「让龙芯变成
+Threadripper」，而是**消除 Redis 在龙芯上的性能惩罚**——在加载与内存上，还能超过
+团队在 x86 上跑 Redis 的表现。
 
 ### 吞吐量（ops/s，管道 `-P 16`）
 
-| | **Goblin 龙芯** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel | Valkey Intel | Dragonfly Intel | **龙芯 / Redis 7.2.4 Intel** |
+| | **Goblin 龙芯** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 | Valkey x86 | Dragonfly x86 | **龙芯 / Redis 7.2.4 x86** |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | ZADD | `207K` | `398K` | `239K` | `242K` | `242K` | `262K` | **`87%`** |
 | ZSCORE | `357K` | `587K` | `504K` | `488K` | `495K` | `419K` | `71%` |
@@ -283,34 +283,35 @@ Redis 的表现。
 | HGET | `369K` | `591K` | `501K` | `480K` | `498K` | `393K` | `74%` |
 | HGETALL | `155K` | — | `212K` | `213K` | `172K` | `171K` | `73%` |
 
-在**写与排名**（`ZADD`、`ZRANK`）上，龙芯 3A6000 上的 Goblin 与 128 核 x86 上
-的 Redis 7.2.4 相差约 **10–15%**。相对 Redis 8.8 / Valkey on Intel 约 **70–85%**；
-相对 Intel 上的 Goblin 约 **52%**（ZADD）至 **74%**（HGET）。
+在**写与排名**（`ZADD`、`ZRANK`）上，龙芯 3A6000 上的 Goblin 与 5995WX 上的
+Redis 7.2.4 相差约 **10–15%**——2 GHz 的 3A6000 对标工作站级部件，结论可信。
+相对 Redis 8.8 / Valkey（x86）约 **70–85%**；相对 x86 上的 Goblin 约 **52%**
+（ZADD）至 **74%**（HGET）。
 
 ### 时延（µs）
 
-| | **Goblin 龙芯** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel |
+| | **Goblin 龙芯** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 |
 | --- | ---: | ---: | ---: | ---: |
 | PING p50 | `22.9` | `15.8` | `16.7` | `19.3` |
 | PING p99 | `24.7` | `19.9` | `21.1` | `25.4` |
 | ZADD 尾延迟 p99 | `35.4` | `21.3` | `28.3` | `29.2` |
 | ZSCORE 深度 1 | `31.7` | `21.3` | `22.2` | `23.0` |
 
-时延**可用但非 Intel 档**——比 x86 Redis 慢数微秒，在**同一龙芯**上仍最优（PING
-p50 `22.9` vs Redis `25.9–28.9`）。
+时延**可用但非 x86 档**——比 Threadripper 参考主机上的 Redis 慢数微秒，在**同一
+龙芯**上仍最优（PING p50 `22.9` vs Redis `25.9–28.9`）。
 
 ### 持久化与内存（100 万有序集加载；200 万结构字节）
 
-| | **Goblin 龙芯** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel | Valkey Intel | Dragonfly Intel |
+| | **Goblin 龙芯** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 | Valkey x86 | Dragonfly x86 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 加载（s） | **`0.050`** | `0.150` | `0.326` | `0.377` | `0.348` | `0.304` |
 | 保存（s） | **`0.140`** | `0.243` | `0.358` | `0.345` | `0.236` | `0.258` |
 | 有序集（B/成员） | **`48.6`** | ~`49` | `102.7` | `77.8` | `81.3` | `54.5` |
 | 哈希（B/字段） | **`45.7`** | ~`45` | `80.9` | `54.5` | `67.4` | `76.2` |
 
-**龙芯上的 Goblin 加载快于 Intel Redis**（约 **6–7 倍**）。内存优势在龙芯上**不
-缩水**——同一紧凑布局，两列均为最省。Intel 数据来自 [BENCHMARKS.md](BENCHMARKS.md)
-（与本文龙芯表同为 `used_memory` 口径）。
+**龙芯上的 Goblin 加载快于 x86 参考主机上的 Redis**（约 **6–7 倍**）。内存优势在
+龙芯上**不缩水**——同一紧凑布局，两列均为最省。x86 数据来自
+[BENCHMARKS.md](BENCHMARKS.md)（与本文龙芯表同为 `used_memory` 口径）。
 
 ### 同一台龙芯（引擎选择为何重要）
 
@@ -318,17 +319,17 @@ p50 `22.9` vs Redis `25.9–28.9`）。
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 龙芯 | **`207K`** | `153K` | `145K` | `139K` | `115K` |
 
-龙芯上的 Redis 仅为其在 Intel 上数字的 **~64%**（`153K` vs `239K`）。龙芯上的
-Goblin 约为 Intel Redis 的 **87%**。**在龙芯上用 Goblin 替代 Redis，可收回相对
+龙芯上的 Redis 仅为其在 x86 上数字的 **~64%**（`153K` vs `239K`）。龙芯上的
+Goblin 约为 x86 Redis 的 **87%**。**在龙芯上用 Goblin 替代 Redis，可收回相对
 「在 x86 上跑 Redis」的大部分 ISA 损失**。
 
 ### 对外话术（面向国产硅团队）
 
 **强（可辩护）：**
 
-> 在龙芯 3A6000 上跑 Goblin，单核 ZADD/ZRANK 接近 Intel 上 Redis 7.2.4 的
-> **85–90%**，同时比同机 Redis/Valkey 快 **35–50%**；快照加载比 Intel Redis
-> 快一个数量级。
+> 在龙芯 3A6000 上跑 Goblin，单核 ZADD/ZRANK 接近 Threadripper 参考主机上
+> Redis 7.2.4 的 **85–90%**，同时比同机 Redis/Valkey 快 **35–50%**；快照加载比
+> x86 Redis 快一个数量级。
 
 **中：**
 
@@ -337,17 +338,17 @@ Goblin 约为 Intel Redis 的 **87%**。**在龙芯上用 Goblin 替代 Redis，
 
 **弱（勿说）：**
 
-> 龙芯上 Goblin = Intel 上 Goblin — 吞吐量大约只有一半。  
+> 龙芯上 Goblin = x86 上 Goblin — 吞吐量大约只有一半。  
 > 龙芯上 Dragonfly 能扛 — 实测最慢（ZADD `115K` vs Goblin `207K`）。
 
 ### 主张核对表
 
 | 主张 | 结论 |
 | --- | --- |
-| 相对 **Intel 上的 Redis**（写/排名）达 Intel 档 | **约 85–90%** — 可信 |
-| 相对 **Intel 上的 Goblin** 达 Intel 档 | **约 50–75%** — 否 |
+| 相对 **x86 上的 Redis**（写/排名）达参考主机档 | **约 85–90%** — 可信 |
+| 相对 **x86 上的 Goblin** 达参考主机档 | **约 50–75%** — 否 |
 | **龙芯上最佳引擎** | **是** — Goblin 全胜 |
-| **加载时间**优于 Intel Redis | **是** — `0.050s` vs ~`0.33s` |
+| **加载时间**优于 x86 Redis | **是** — `0.050s` vs ~`0.33s` |
 | 国产芯 + 国产栈且不牺牲 Redis 档速度 | **是** — 前提是选用 Goblin |
 
 **注意：** 龙芯上的 Dragonfly 为尽力而为的源码移植；勿将 x86 结论外推到

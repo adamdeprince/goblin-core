@@ -270,24 +270,24 @@ Engine binaries:
 
 ---
 
-## Cross-host pitch: Goblin on Loongson vs incumbents on Intel
+## Cross-host pitch: Goblin on Loongson vs incumbents on x86
 
 Cross-host read for domestic-silicon deployments: **Goblin Core on the 3A6000**
 (this document) versus **Redis 7.2.4, Redis 8.8.0, Valkey 9.1.0, Dragonfly, and
-Goblin Core** on the x86 box in [BENCHMARKS.md](BENCHMARKS.md) (quiet 128-core
-Linux server, GCC 16.1.0). Different CPU, clock, and memory bandwidth — not a
-same-machine comparison.
+Goblin Core** on the x86 reference host in [BENCHMARKS.md](BENCHMARKS.md) —
+**AMD Ryzen Threadripper PRO 5995WX** (64 cores × 2 threads, GCC 16.1.0).
+Different CPU, clock, and memory bandwidth — not a same-machine comparison.
 
-**Verdict:** Goblin on Loongson is often **~75–90% of Redis on Intel** on hot-path
-ops, **beats every competitor on the same Loongson box**, and **beats Intel Redis
-on snapshot load**. It is **not** Intel-class versus **Goblin on Intel** (~`50–75%`
-throughput). The honest hook: not “make Loongson into Intel,” but **remove the
-Redis-on-Loongson performance penalty** — and on load plus memory, beat what teams
-get from Redis on x86.
+**Verdict:** Goblin on Loongson is often **~75–90% of Redis on the Threadripper**
+on hot-path ops, **beats every competitor on the same Loongson box**, and **beats
+x86 Redis on snapshot load**. It is **not** reference-host-class versus **Goblin
+on x86** (~`50–75%` throughput). The honest hook: not “make Loongson into a
+Threadripper,” but **remove the Redis-on-Loongson performance penalty** — and on
+load plus memory, beat what teams get from Redis on x86.
 
 ### Throughput (ops/s, pipelined `-P 16`)
 
-| | **Goblin Loongson** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel | Valkey Intel | Dragonfly Intel | **Loongson / Redis 7.2.4 Intel** |
+| | **Goblin Loongson** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 | Valkey x86 | Dragonfly x86 | **Loongson / Redis 7.2.4 x86** |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | ZADD | `207K` | `398K` | `239K` | `242K` | `242K` | `262K` | **`87%`** |
 | ZSCORE | `357K` | `587K` | `504K` | `488K` | `495K` | `419K` | `71%` |
@@ -298,34 +298,36 @@ get from Redis on x86.
 | HGETALL | `155K` | — | `212K` | `213K` | `172K` | `171K` | `73%` |
 
 On **writes and rank** (`ZADD`, `ZRANK`), Goblin on the 3A6000 is within **~10–15%**
-of legacy Redis on a 128-core x86 server — credible for a 2 GHz 3A6000 vs a server
-part. Versus Redis 8.8 / Valkey on Intel: **~70–85%**. Versus Goblin on Intel:
+of legacy Redis on the 5995WX — credible for a 2 GHz 3A6000 vs a workstation-class
+part. Versus Redis 8.8 / Valkey on x86: **~70–85%**. Versus Goblin on x86:
 **~52%** (ZADD) to **~74%** (HGET).
 
 ### Latency (µs)
 
-| | **Goblin Loongson** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel |
+| | **Goblin Loongson** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 |
 | --- | ---: | ---: | ---: | ---: |
 | PING p50 | `22.9` | `15.8` | `16.7` | `19.3` |
 | PING p99 | `24.7` | `19.9` | `21.1` | `25.4` |
 | ZADD tail p99 | `35.4` | `21.3` | `28.3` | `29.2` |
 | ZSCORE depth-1 | `31.7` | `21.3` | `22.2` | `23.0` |
 
-Latency is **fine but not Intel-class** — a few microseconds slower than x86
-Redis, still **best on the Loongson box** (PING p50 `22.9` vs Redis `25.9–28.9`).
+Latency is **fine but not x86-class** — a few microseconds slower than Redis on
+the Threadripper host, still **best on the Loongson box** (PING p50 `22.9` vs
+Redis `25.9–28.9`).
 
 ### Persistence and memory (1M zset load; 2M structure bytes)
 
-| | **Goblin Loongson** | Goblin Intel | Redis 7.2.4 Intel | Redis 8.8 Intel | Valkey Intel | Dragonfly Intel |
+| | **Goblin Loongson** | Goblin x86 | Redis 7.2.4 x86 | Redis 8.8 x86 | Valkey x86 | Dragonfly x86 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Load (s) | **`0.050`** | `0.150` | `0.326` | `0.377` | `0.348` | `0.304` |
 | Save (s) | **`0.140`** | `0.243` | `0.358` | `0.345` | `0.236` | `0.258` |
 | Zset (B/member) | **`48.6`** | ~`49` | `102.7` | `77.8` | `81.3` | `54.5` |
 | Hash (B/field) | **`45.7`** | ~`45` | `80.9` | `54.5` | `67.4` | `76.2` |
 
-**Goblin on Loongson loads faster than Redis on Intel** (~**6–7×**). Memory
+**Goblin on Loongson loads faster than Redis on the x86 host** (~**6–7×**).
+Memory
 advantage does not shrink on Loongson — same packed layout, leanest in both
-columns. Intel figures from [BENCHMARKS.md](BENCHMARKS.md) (same `used_memory`
+columns. x86 figures from [BENCHMARKS.md](BENCHMARKS.md) (same `used_memory`
 metric as the Loongson tables above).
 
 ### Same Loongson box (why the engine choice matters)
@@ -334,8 +336,8 @@ metric as the Loongson tables above).
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Loongson | **`207K`** | `153K` | `145K` | `139K` | `115K` |
 
-Redis on Loongson is only **~64%** of Redis-on-Intel (`153K` vs `239K`). Goblin
-on Loongson is **~87%** of Redis-on-Intel. **Switching Redis → Goblin on Loongson
+Redis on Loongson is only **~64%** of Redis-on-x86 (`153K` vs `239K`). Goblin
+on Loongson is **~87%** of Redis-on-x86. **Switching Redis → Goblin on Loongson
 recovers most of the ISA gap** relative to running Redis on x86.
 
 ### Pitch guide (for domestic-silicon teams)
@@ -343,8 +345,9 @@ recovers most of the ISA gap** relative to running Redis on x86.
 **Strong (defensible):**
 
 > On Loongson 3A6000, single-core ZADD/ZRANK with Goblin reaches **~85–90%** of
-> Redis 7.2.4 on Intel, while beating Redis/Valkey on the same machine by
-> **~35–50%**; snapshot load is an order of magnitude faster than Intel Redis.
+> Redis 7.2.4 on the Threadripper reference host, while beating Redis/Valkey on
+> the same machine by **~35–50%**; snapshot load is an order of magnitude faster
+> than x86 Redis.
 
 **Medium:**
 
@@ -353,7 +356,7 @@ recovers most of the ISA gap** relative to running Redis on x86.
 
 **Weak (do not claim):**
 
-> Goblin on Loongson equals Goblin on Intel — throughput is roughly half.  
+> Goblin on Loongson equals Goblin on x86 — throughput is roughly half.
 > Dragonfly on Loongson is viable — it trails badly here (`115K` ZADD vs Goblin
 > `207K`).
 
@@ -361,10 +364,10 @@ recovers most of the ISA gap** relative to running Redis on x86.
 
 | Claim | Verdict |
 | --- | --- |
-| Intel-level vs **Redis on Intel** (writes/rank) | **~85–90%** — credible |
-| Intel-level vs **Goblin on Intel** | **~50–75%** — no |
+| Reference-host vs **Redis on x86** (writes/rank) | **~85–90%** — credible |
+| Reference-host vs **Goblin on x86** | **~50–75%** — no |
 | Best engine **on Loongson** | **Yes** — Goblin wins the field |
-| Best **load time** vs Intel Redis | **Yes** — `0.050s` vs ~`0.33s` |
+| Best **load time** vs x86 Redis | **Yes** — `0.050s` vs ~`0.33s` |
 | Domestic silicon + stack without giving up Redis-class speed | **Yes** — if Goblin is the stack |
 
 **Caveats:** Dragonfly on Loongson is a best-effort source port; do not

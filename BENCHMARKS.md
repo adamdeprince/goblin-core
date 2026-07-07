@@ -20,13 +20,25 @@ Redis-family engines on their bundled jemalloc 5.3.0 under a
 Dragonfly is multi-threaded by design; it is run with a single proactor
 (`--proactor_threads=1`) so it is measured on the same one-core budget as the
 single-threaded engines, and it manages its own CPU affinity, so it is tested as
-shipped. Host: a quiet, dedicated 128-core Linux box (GCC 16.1.0); server and
-client on separate cores.
+shipped. Host: see [Host](#host). Server and client on separate cores.
 
 License note: **Redis 7.2.4** is BSD-3-Clause (the last open-source Redis) and is
 the format Goblin Core imports; **Redis 8.8** is RSALv2/SSPL (source-available);
 **Valkey 9.1** is BSD-3-Clause (the community fork); **Dragonfly** is BSL 1.1
 (source-available).
+
+## Host
+
+| | |
+| --- | --- |
+| CPU | AMD Ryzen Threadripper PRO **5995WX** (64 cores × 2 threads) |
+| Logical CPUs | 128 |
+| Max clock | ~4.6 GHz (boost) |
+| OS | Ubuntu Linux (`7.0.0-22-generic`) |
+| Toolchain | GCC **16.1.0** |
+
+Quiet, dedicated box; benchmarks run with server and client pinned to separate
+cores.
 
 ## Memory (the headline)
 
@@ -80,7 +92,7 @@ allocator-independent, and it is the number that halves Redis's.
 
 ## Throughput
 
-Pipelined `redis-benchmark -P 16 -c 1` from the quiet, dedicated 128-core host —
+Pipelined `redis-benchmark -P 16 -c 1` on the x86 host —
 best of three runs, all Redis-family engines on jemalloc 5.3.0 under the shared
 parity config, Goblin Core on its default config (rank cache off, so `ZRANK` is
 O(log n) on both sides). Goblin Core leads every sorted-set operation:
@@ -232,7 +244,7 @@ ones narrow it (see [Hash value-size sensitivity](#hash-value-size-sensitivity))
 
 **Throughput and depth-1 latency** — redis-benchmark, one pipelined connection at
 depth 16 (throughput) and depth 1 (latency), big hash ~1M fields, HGETALL over a
-20-field object, best of three runs on the quiet 128-core host:
+20-field object, best of three runs on the x86 host:
 
 | metric | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -295,8 +307,9 @@ command's former position in the chain.
   manages its own CPU affinity, so it is tested as shipped (no external pinning).
   Differing configs are the most common way a benchmark gets contested; the file
   is published here.
-- **Host:** a single quiet, dedicated 128-core Linux box (GCC 16.1.0), every
-  figure in this document. Server and client pinned to separate cores;
+- **Host:** AMD Ryzen Threadripper PRO 5995WX (128 logical CPUs,
+  GCC 16.1.0); every figure in this document. Server and client pinned to
+  separate cores;
   throughput/latency are best-or-median of repeated runs on the idle machine.
 - **RSS** via `ps -o rss`, measured after load and `GOBLIN.OPTIMIZE`;
   `used_memory` via `INFO memory` (Redis/Valkey) and `GOBLIN.MEMORY` (Goblin
