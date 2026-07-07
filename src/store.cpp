@@ -312,7 +312,10 @@ void ZSet::move_last_member_into_slot(std::uint32_t removed_member_id) {
     return;
   }
 
-  const bool moved_member = members().move_member_id(last_member_id, removed_member_id);
+  const auto last_slot = members().find_slot(member_view(last_member_id));
+  const bool moved_member =
+      last_slot &&
+      members().move_member_id_at_slot(*last_slot, last_member_id, removed_member_id);
   assert(moved_member);
   if (!moved_member) {
     const bool restored_score_entry =
@@ -363,14 +366,14 @@ int ZSet::add(double score, std::string_view member) {
 }
 
 bool ZSet::remove(std::string_view member) {
-  const auto* meta = members().find(member);
-  if (meta == nullptr) {
+  const auto slot = members().find_slot(member);
+  if (!slot) {
     return false;
   }
 
   ensure_unique_mutable_state();
 
-  const auto member_id = meta->member_id;
+  const auto member_id = members().member_id_at(*slot);
   const auto old_score = member_storage()->score(member_id);
   const bool removed =
       entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
@@ -379,7 +382,7 @@ bool ZSet::remove(std::string_view member) {
     return false;
   }
 
-  const bool erased = members().erase(member);
+  const bool erased = members().erase_at_index(*slot);
   assert(erased);
   member_storage()->orphan(member_id);
   move_last_member_into_slot(member_id);

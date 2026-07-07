@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -181,10 +182,42 @@ class MemberIndex {
     return &slots_[index].meta;
   }
 
+  [[nodiscard]] std::optional<size_type> find_slot(std::string_view member) const {
+    const auto index = find_index(member);
+    if (index == npos) {
+      return std::nullopt;
+    }
+    return index;
+  }
+
+  [[nodiscard]] std::uint32_t member_id_at(size_type index) const noexcept {
+    return slots_[index].meta.member_id;
+  }
+
+  bool erase_at_index(size_type index) {
+    if (index >= capacity_ || !is_full(index)) {
+      return false;
+    }
+
+    set_control(index, kDeleted);
+    --size_;
+    ++tombstones_;
+    return true;
+  }
+
   [[nodiscard]] bool move_member_id(std::uint32_t old_member_id,
                                     std::uint32_t new_member_id) {
     const auto index = find_index(member_view(old_member_id));
     if (index == npos) {
+      return false;
+    }
+    return move_member_id_at_slot(index, old_member_id, new_member_id);
+  }
+
+  [[nodiscard]] bool move_member_id_at_slot(size_type index,
+                                            std::uint32_t old_member_id,
+                                            std::uint32_t new_member_id) {
+    if (index >= capacity_ || !is_full(index)) {
       return false;
     }
     if (slots_[index].meta.member_id != old_member_id) {

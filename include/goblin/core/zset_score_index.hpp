@@ -193,6 +193,11 @@ class ZSetScoreIndex {
       return false;
     }
 
+    if (const auto located = cached_entry_location(value)) {
+      erase_at(located->first, located->second);
+      return true;
+    }
+
     const auto located = locate_entry(value);
     if (!located) {
       return false;
@@ -979,6 +984,14 @@ class ZSetScoreIndex {
   }
 
   [[nodiscard]] std::optional<size_type> cached_rank(ZSetScoreEntry value) const {
+    if (const auto located = cached_entry_location(value)) {
+      return prefix_size(located->first) + located->second;
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::pair<size_type, size_type>> cached_entry_location(
+      ZSetScoreEntry value) const {
     if (!location_cache_enabled()) {
       return std::nullopt;
     }
@@ -1025,13 +1038,13 @@ class ZSetScoreIndex {
         return std::nullopt;
       }
 
-      return prefix_size(block_index) + exact_offset;
+      return std::pair<size_type, size_type>{block_index, exact_offset};
     }
 
     if (exact_offset < block.size() &&
         block.member_id_at(exact_offset) == value.member_id &&
         block.score_at(exact_offset) == value.score) {
-      return prefix_size(block_index) + exact_offset;
+      return std::pair<size_type, size_type>{block_index, exact_offset};
     }
 
     if (exact_offset < block.size()) {
@@ -1040,7 +1053,7 @@ class ZSetScoreIndex {
 
     if (const auto offset = locate_entry_offset(block, value)) {
       repair_block_hint(value.member_id, block_index, *offset);
-      return prefix_size(block_index) + *offset;
+      return std::pair<size_type, size_type>{block_index, *offset};
     }
 
     return std::nullopt;
