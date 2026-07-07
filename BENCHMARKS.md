@@ -7,7 +7,7 @@ the engine — and, for Goblin Core, the data structure.
 
 | Engine | Version | Serving threads | Allocator |
 | --- | --- | ---: | --- |
-| Goblin Core | `0.4.0` | 1 | glibc + `malloc_trim` |
+| Goblin Core | `0.4.1` | 1 | glibc + `malloc_trim` |
 | Redis | `7.2.4` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
 | Redis | `8.8.0` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
 | Valkey | `9.1.0` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
