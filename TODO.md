@@ -39,5 +39,3 @@ To make this easy to pick up:
   ASCII-double (type 3) encodings for Redis 2.6–6.x, but they are only
   ground-truthed against a real 7.2.4 dump (types 5/17). Build a redis 6.2 (and
   3.2) to generate ziplist/ASCII fixtures and round-trip them.
-- **LoongArch CRC32C** is written to the builtin docs but untested (no hardware
-  here). Verify on real LoongArch, or against a known vector under emulation.

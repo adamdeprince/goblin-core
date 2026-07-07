@@ -120,7 +120,8 @@ inline constexpr std::uint32_t kHashAcceleratorVersion = 1;
   }
   for (; n > 0; --n) crc = __crc32cb(crc, *p++);
 #elif defined(__loongarch__)
-  // crcc.w.* computes CRC32C directly. Untested here (no LoongArch hardware).
+  // crcc.w.* computes CRC32C directly. Validated on a LoongArch 3A6000 against the
+  // published check value (checksum("123456789") == 0xe3069283) and the x86/ARM paths.
   for (; n >= 8; p += 8, n -= 8) {
     std::uint64_t chunk;
     std::memcpy(&chunk, p, 8);
