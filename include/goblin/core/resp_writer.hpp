@@ -68,6 +68,46 @@ inline void append_decimal(std::string& out, Int value) {
   }
 }
 
+[[nodiscard]] inline std::size_t decimal_digits(std::size_t value) noexcept {
+  std::size_t digits = 1;
+  while (value >= 10) {
+    value /= 10;
+    ++digits;
+  }
+  return digits;
+}
+
+[[nodiscard]] inline std::size_t bulk_string_wire_size(std::size_t length) noexcept {
+  if (length < kSmallBulkHeaders.size()) {
+    return kSmallBulkHeaders[length].size + length + 2;
+  }
+  return 1 + decimal_digits(length) + 2 + length + 2;
+}
+
+[[nodiscard]] inline std::size_t array_header_wire_size(std::size_t count) noexcept {
+  if (count < kSmallArrayHeaders.size()) {
+    return kSmallArrayHeaders[count].size;
+  }
+  return 1 + decimal_digits(count) + 2;
+}
+
+inline void append_bulk_framing(std::string& out, std::size_t length) {
+  if (length < kSmallBulkHeaders.size()) {
+    const auto& header = kSmallBulkHeaders[length];
+    out.append(header.bytes.data(), header.size);
+  } else {
+    out.push_back('$');
+    append_decimal(out, length);
+    out.append("\r\n", 2);
+  }
+}
+
+inline void append_bulk_payload(std::string& out, std::string_view value) {
+  append_bulk_framing(out, value.size());
+  out.append(value);
+  out.append("\r\n", 2);
+}
+
 }  // namespace detail
 
 inline void reserve_append_capacity(std::string& out,
@@ -135,10 +175,29 @@ inline void append_bulk_string(std::string& out, std::string_view value) {
   } else {
     out.push_back('$');
     detail::append_decimal(out, value.size());
-    out.append("\r\n");
+    out.append("\r\n", 2);
   }
   out.append(value);
-  out.append("\r\n");
+  out.append("\r\n", 2);
+}
+
+inline void reserve_zrange_array(std::string& out,
+                                 std::size_t bulk_count,
+                                 std::size_t payload_wire_bytes,
+                                 std::size_t reserve_limit = 0) {
+  reserve_append_capacity(
+      out,
+      detail::array_header_wire_size(bulk_count) + payload_wire_bytes,
+      reserve_limit);
+}
+
+[[nodiscard]] inline std::size_t bulk_finite_double_wire_size(double value) noexcept {
+  std::array<char, 32> buffer;
+  const auto text = score_format::try_format_finite_to_buffer(value, buffer);
+  if (!text.empty()) {
+    return detail::bulk_string_wire_size(text.size());
+  }
+  return detail::bulk_string_wire_size(32);
 }
 
 inline void append_bulk_finite_double(std::string& out, double value) {
@@ -150,6 +209,20 @@ inline void append_bulk_finite_double(std::string& out, double value) {
   }
 
   append_bulk_string(out, score_format::fallback(value));
+}
+
+inline void append_bulk_member_and_text(std::string& out,
+                                        std::string_view member,
+                                        std::string_view text) {
+  append_bulk_string(out, member);
+  append_bulk_string(out, text);
+}
+
+inline void append_bulk_member_and_finite_double(std::string& out,
+                                                 std::string_view member,
+                                                 double score) {
+  append_bulk_string(out, member);
+  append_bulk_finite_double(out, score);
 }
 
 inline void append_bulk_double(std::string& out, double value) {

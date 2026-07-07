@@ -263,6 +263,38 @@ void test_swiss_table_string_view_lookup() {
   assert(table.find("beta") == nullptr);
 }
 
+void test_resp_bulk_wire_size_matches_output() {
+  for (std::size_t len = 0; len < 65; ++len) {
+    const std::string payload(len, 'x');
+    std::string out;
+    goblin::core::resp::append_bulk_string(out, payload);
+    assert(out.size() ==
+           goblin::core::resp::detail::bulk_string_wire_size(len));
+  }
+}
+
+void test_zrange_withscores_fused_matches_legacy_append() {
+  goblin::core::Store store;
+  assert(execute_fields(store, {"ZADD", "z", "1", "a", "2", "b"}) == ":2\r\n");
+
+  const auto expected =
+      execute_fields(store, {"ZRANGE", "z", "0", "-1", "WITHSCORES"});
+
+  std::string fused;
+  goblin::core::resp::append_array_header(fused, 4);
+  goblin::core::resp::append_bulk_member_and_finite_double(fused, "a", 1.0);
+  goblin::core::resp::append_bulk_member_and_finite_double(fused, "b", 2.0);
+  assert(fused == expected);
+
+  std::string legacy;
+  goblin::core::resp::append_array_header(legacy, 4);
+  goblin::core::resp::append_bulk_string(legacy, "a");
+  goblin::core::resp::append_bulk_finite_double(legacy, 1.0);
+  goblin::core::resp::append_bulk_string(legacy, "b");
+  goblin::core::resp::append_bulk_finite_double(legacy, 2.0);
+  assert(legacy == expected);
+}
+
 void test_swiss_table_insert_find_update() {
   goblin::core::SwissTable<std::string, int> table;
 
@@ -1479,6 +1511,8 @@ int main() {
   test_resp_parser_pipeline_and_pop_into();
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
+  test_resp_bulk_wire_size_matches_output();
+  test_zrange_withscores_fused_matches_legacy_append();
   test_command_dispatch();
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();

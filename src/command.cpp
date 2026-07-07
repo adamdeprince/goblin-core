@@ -231,18 +231,23 @@ void append_range_response(Store& store,
     stop = *parsed_stop;
   }
 
-  auto append_header = [&out,
-                        with_scores = command.with_scores,
-                        reserve_limit = options.output_reserve_limit](
-                           std::size_t entry_count) {
+  const auto key = command.args[0];
+  const auto reserve_limit = options.output_reserve_limit;
+  const auto with_scores = command.with_scores;
+
+  // Reserve and write the array header in the counted callback so bounds are
+  // computed once per range (the prior zrange_size + for_each split doubled
+  // find_zset/range_bounds work and regressed WITHSCORES).
+  auto append_header = [&out, with_scores, reserve_limit](std::size_t entry_count) {
+    const auto bulk_count = with_scores ? entry_count * 2 : entry_count;
     resp::reserve_append_capacity(
         out,
         16 + entry_count * (with_scores ? 48 : 32),
         reserve_limit);
-    resp::append_array_header(out, with_scores ? entry_count * 2 : entry_count);
+    resp::append_array_header(out, bulk_count);
   };
 
-  if (command.with_scores) {
+  if (with_scores) {
     if (store.score_string_cache_enabled()) {
       auto append_cached = [&out](std::string_view member,
                                   std::string_view score_text) {
@@ -251,23 +256,24 @@ void append_range_response(Store& store,
       };
       if (reverse) {
         store.zrevrange_score_text_values_for_each_counted(
-            command.args[0], start, stop, append_header, append_cached);
+            key, start, stop, append_header, append_cached);
       } else {
         store.zrange_score_text_values_for_each_counted(
-            command.args[0], start, stop, append_header, append_cached);
+            key, start, stop, append_header, append_cached);
       }
+      return;
+    }
+
+    auto append_score = [&out](std::string_view member, double score) {
+      resp::append_bulk_string(out, member);
+      resp::append_bulk_finite_double(out, score);
+    };
+    if (reverse) {
+      store.zrevrange_values_for_each_counted(
+          key, start, stop, append_header, append_score);
     } else {
-      auto append_score = [&out](std::string_view member, double score) {
-        resp::append_bulk_string(out, member);
-        resp::append_bulk_finite_double(out, score);
-      };
-      if (reverse) {
-        store.zrevrange_values_for_each_counted(
-            command.args[0], start, stop, append_header, append_score);
-      } else {
-        store.zrange_values_for_each_counted(
-            command.args[0], start, stop, append_header, append_score);
-      }
+      store.zrange_values_for_each_counted(
+          key, start, stop, append_header, append_score);
     }
     return;
   }
@@ -277,10 +283,10 @@ void append_range_response(Store& store,
   };
   if (reverse) {
     store.zrevrange_members_for_each_counted(
-        command.args[0], start, stop, append_header, append_member);
+        key, start, stop, append_header, append_member);
   } else {
     store.zrange_members_for_each_counted(
-        command.args[0], start, stop, append_header, append_member);
+        key, start, stop, append_header, append_member);
   }
 }
 
