@@ -162,10 +162,11 @@ class ZSetScoreIndex {
       return;
     }
 
-    const auto block_index = upper_block(value);
-    auto& block = blocks_[block_index];
-    const auto offset = block.upper_bound(*this, value);
+    const auto position = locate_insert_position(value);
+    auto& block = blocks_[position.first];
+    const auto offset = position.second;
     block.insert(offset, value);
+    const auto block_index = position.first;
     ++size_;
 
     if (block.size() > kLoad * 2) {
@@ -191,18 +192,12 @@ class ZSetScoreIndex {
       return false;
     }
 
-    const auto block_index = lower_block(value);
-    if (block_index == blocks_.size()) {
+    const auto located = locate_entry(value);
+    if (!located) {
       return false;
     }
 
-    auto& block = blocks_[block_index];
-    const auto offset = block.lower_bound(*this, value);
-    if (offset == block.size() || !equivalent(block.at(offset), value)) {
-      return false;
-    }
-
-    erase_at(block_index, offset);
+    erase_at(located->first, located->second);
     return true;
   }
 
@@ -1063,6 +1058,85 @@ class ZSetScoreIndex {
       return std::nullopt;
     }
 
+    return first;
+  }
+
+  [[nodiscard]] std::pair<size_type, size_type> locate_insert_position(
+      ZSetScoreEntry value) const {
+    assert(!blocks_.empty());
+
+    auto block_index = lower_block_by_score(value.score);
+    if (block_index >= blocks_.size()) {
+      block_index = blocks_.size() - 1;
+      return {block_index, blocks_[block_index].size()};
+    }
+
+    while (true) {
+      const auto& block = blocks_[block_index];
+      if (block.front().score > value.score) {
+        return {block_index, 0};
+      }
+      if (block.back().score < value.score) {
+        ++block_index;
+        if (block_index >= blocks_.size()) {
+          const auto last = blocks_.size() - 1;
+          return {last, blocks_[last].size()};
+        }
+        continue;
+      }
+
+      const auto offset = locate_insert_offset(block, value);
+      if (offset < block.size()) {
+        return {block_index, offset};
+      }
+
+      ++block_index;
+      if (block_index >= blocks_.size()) {
+        const auto last = blocks_.size() - 1;
+        return {last, blocks_[last].size()};
+      }
+    }
+  }
+
+  template <class BlockRef>
+  [[nodiscard]] size_type locate_insert_offset(BlockRef&& block,
+                                               ZSetScoreEntry value) const noexcept {
+    const auto score_start = block.lower_bound_score(value.score);
+    if (score_start == block.size()) {
+      return block.size();
+    }
+    if (block.score_at(score_start) > value.score) {
+      return score_start;
+    }
+
+    auto score_end = score_start;
+    while (score_end < block.size() &&
+           block.score_at(score_end) == value.score) {
+      ++score_end;
+    }
+
+    const auto run_length = score_end - score_start;
+    if (run_length == 1) {
+      if (less_parts(value.score, value.member_id,
+                     block.score_at(score_start), block.member_id_at(score_start))) {
+        return score_start;
+      }
+      return score_start + 1;
+    }
+
+    size_type first = score_start;
+    size_type count = run_length;
+    while (count > 0) {
+      const auto step = count / 2;
+      const auto mid = first + step;
+      if (less_parts(value.score, value.member_id,
+                     block.score_at(mid), block.member_id_at(mid))) {
+        count = step;
+      } else {
+        first = mid + 1;
+        count -= step + 1;
+      }
+    }
     return first;
   }
 
