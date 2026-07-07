@@ -1,10 +1,13 @@
 # Goblin Core
 
-Goblin Core is a Redis-like server built to hold sorted sets and hashes in far
-less memory than Redis — **roughly half** the resident set of legacy Redis, and
-about a third less than the leanest modern engine — while beating their
-throughput. The initial implementation focuses on sorted sets and hashes with a
-vector-backed layout and a small RESP command surface.
+Goblin Core is a Redis-like server that beats **every** Redis implementation we
+benchmarked — **Redis 7.2.4, Redis 8.8, Valkey 9.1, and Dragonfly** — on both
+memory consumption and single-core throughput. It holds a sorted set in **roughly
+half** the resident set of legacy Redis, stays the leanest of the field at every
+scale, and leads every sorted-set and hash operation measured. See the
+[benchmarks](BENCHMARKS.md).
+The initial implementation focuses on sorted sets and hashes with a vector-backed
+layout and a small RESP command surface.
 
 **Because no CTO ever wants to say: "We're letting you go — the cloud bill got too high."**
 
