@@ -144,6 +144,17 @@ std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone(
   return cloned;
 }
 
+std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone_shallow(
+    double member_index_growth) const {
+  auto cloned = std::make_shared<ZSetMemberLayer>(
+      storage->score_string_cache_enabled(), storage->chunk_bytes(),
+      member_index_growth);
+  cloned->storage =
+      std::make_shared<ZSetMemberStorage>(storage->clone_shallow());
+  cloned->members = members.clone_rebound(cloned->storage.get());
+  return cloned;
+}
+
 ZSet::ZSet(ZSetOptions options)
     : member_layer_(std::make_shared<ZSetMemberLayer>(
           options.score_string_cache,
@@ -240,22 +251,29 @@ const ZSetScoreIndex& ZSet::entries() const noexcept {
   return *score_index_;
 }
 
-void ZSet::ensure_unique_mutable_state() {
+void ZSet::ensure_unique_mutable_state(WriteKind kind) {
   if (member_layer_.use_count() > 1) {
-    member_layer_ = member_layer_->clone(options_.member_index_growth);
+    member_layer_ =
+        member_layer_->clone_shallow(options_.member_index_growth);
+  }
+  if (kind == WriteKind::Structural) {
+    member_storage()->ensure_unique_arena();
   }
   if (score_index_.use_count() > 1) {
     auto cloned = std::make_shared<ZSetScoreIndex>(member_storage(),
                                                    options_.rank_cache_mode);
-    cloned->assign_sorted(entries().range(0, entries().size()));
+    cloned->copy_blocks_from(entries());
     score_index_ = std::move(cloned);
   }
   rebind_indexes();
 }
 
-void ZSet::adopt_shared_state_from(const ZSet& source) {
+void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
   member_layer_ = source.member_layer_;
-  score_index_ = source.score_index_;
+  auto copied = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                 options_.rank_cache_mode);
+  copied->copy_blocks_from(source.entries());
+  score_index_ = std::move(copied);
   rebind_indexes();
 }
 
@@ -305,7 +323,7 @@ int ZSet::add(double score, std::string_view member) {
       return 0;
     }
 
-    ensure_unique_mutable_state();
+    ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
     const bool removed =
         entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
@@ -319,7 +337,7 @@ int ZSet::add(double score, std::string_view member) {
     return 0;
   }
 
-  ensure_unique_mutable_state();
+  ensure_unique_mutable_state(WriteKind::Structural);
 
   const auto member_id = allocate_member_id(member, score);
   const auto view = member_view(member_id);
@@ -335,7 +353,7 @@ bool ZSet::remove(std::string_view member) {
     return false;
   }
 
-  ensure_unique_mutable_state();
+  ensure_unique_mutable_state(WriteKind::Structural);
 
   const auto member_id = members().member_id_at(*slot);
   const auto old_score = member_storage()->score(member_id);
@@ -778,7 +796,7 @@ long long Store::zadd(std::string_view key, double score, std::string_view membe
     if (const ZSet* tmpl = find_member_layer_template(); tmpl != nullptr && tmpl != &zset) {
       if (const auto tmpl_score = tmpl->score(member);
           tmpl_score.has_value() && *tmpl_score == score) {
-        zset.adopt_shared_state_from(*tmpl);
+        zset.adopt_shared_member_layer_from(*tmpl);
       }
     }
   }

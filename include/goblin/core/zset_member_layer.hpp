@@ -20,6 +20,9 @@ struct ZSetMemberLayer {
 
   [[nodiscard]] std::shared_ptr<ZSetMemberLayer> clone(
       double member_index_growth) const;
+
+  [[nodiscard]] std::shared_ptr<ZSetMemberLayer> clone_shallow(
+      double member_index_growth) const;
 };
 
 }  // namespace goblin::core

@@ -324,8 +324,14 @@ class ZSet {
   [[nodiscard]] std::string_view member_view(std::uint32_t member_id) const noexcept;
   [[nodiscard]] std::string_view score_text_view(std::uint32_t member_id) const noexcept;
   void rebind_indexes() noexcept;
-  void ensure_unique_mutable_state();
-  void adopt_shared_state_from(const ZSet& source);
+
+  enum class WriteKind {
+    ScoreUpdate,
+    Structural,
+  };
+
+  void ensure_unique_mutable_state(WriteKind kind);
+  void adopt_shared_member_layer_from(const ZSet& source);
 
   [[nodiscard]] ZSetMemberStorage* member_storage() noexcept;
   [[nodiscard]] const ZSetMemberStorage* member_storage() const noexcept;

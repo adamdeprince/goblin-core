@@ -72,6 +72,17 @@ class MemberIndex {
     members_ = members;
   }
 
+  // Copy the swiss table and rebind to a forked member storage (shallow COW).
+  [[nodiscard]] MemberIndex clone_rebound(const Storage* members) const {
+    MemberIndex copy(members, growth_);
+    copy.control_ = control_;
+    copy.slots_ = slots_;
+    copy.size_ = size_;
+    copy.tombstones_ = tombstones_;
+    copy.capacity_ = capacity_;
+    return copy;
+  }
+
   [[nodiscard]] bool empty() const noexcept {
     return size_ == 0;
   }

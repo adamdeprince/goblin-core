@@ -123,6 +123,30 @@ class ZSetScoreIndex {
     size_ = 0;
   }
 
+  // Deep-copy block storage from another index over the same member layer.
+  void copy_blocks_from(const ZSetScoreIndex& source) {
+    members_ = source.members_;
+    rank_cache_mode_ = source.rank_cache_mode_;
+    block_hint_narrow_limit_ = source.block_hint_narrow_limit_;
+    size_ = source.size_;
+    next_block_id_ = source.next_block_id_;
+    block_hints_wide_ = source.block_hints_wide_;
+
+    blocks_.clear();
+    blocks_.reserve(source.blocks_.size());
+    for (const auto& source_block : source.blocks_) {
+      blocks_.push_back(source_block.clone());
+    }
+    maxes_ = source.maxes_;
+    locations_ = source.locations_;
+    block_hints16_ = source.block_hints16_;
+    block_hints32_ = source.block_hints32_;
+    block_hint_offsets16_ = source.block_hint_offsets16_;
+    block_index_by_id_ = source.block_index_by_id_;
+    index_ = source.index_;
+    index_offset_ = source.index_offset_;
+  }
+
   void assign_sorted(const std::vector<ZSetScoreEntry>& values) {
     clear();
     if (values.empty()) {
@@ -723,6 +747,22 @@ class ZSetScoreIndex {
       std::copy_n(right.scores_.get(), right.size_, scores_.get() + size_);
       std::copy_n(right.member_ids_.get(), right.size_, member_ids_.get() + size_);
       size_ += right.size_;
+    }
+
+    [[nodiscard]] Block clone() const {
+      Block copy;
+      copy.size_ = size_;
+      copy.capacity_ = capacity_;
+      copy.id_ = id_;
+      if (capacity_ > 0) {
+        copy.scores_ = std::make_unique_for_overwrite<double[]>(capacity_);
+        copy.member_ids_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
+        if (size_ > 0) {
+          std::copy_n(scores_.get(), size_, copy.scores_.get());
+          std::copy_n(member_ids_.get(), size_, copy.member_ids_.get());
+        }
+      }
+      return copy;
     }
 
     [[nodiscard]] bool validate() const noexcept {
