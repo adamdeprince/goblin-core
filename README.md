@@ -5,7 +5,7 @@ benchmarked — **Redis 7.2.4, Redis 8.8, Valkey 9.1, and Dragonfly** — on bot
 memory consumption and single-core throughput. It holds a sorted set in **roughly
 half** the resident set of legacy Redis, stays the leanest of the field at every
 scale, and leads every sorted-set and hash operation measured. See the
-[benchmarks](BENCHMARKS.md).
+[x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md).
 The initial implementation focuses on sorted sets and hashes with a vector-backed
 layout and a small RESP command surface.
 
@@ -56,7 +56,8 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   output uses two-stage software prefetch. Portable scalar fallbacks cover
   everything else, so it builds and runs anywhere.
 - Build locally with CMake; benchmark instructions live in
-  [BENCHMARKS.md](BENCHMARKS.md).
+  [BENCHMARKS.md](BENCHMARKS.md) (x86) and
+  [LOONGSON_BENCHMARKS.md](LOONGSON_BENCHMARKS.md) (Loongson 3A6000).
 - A performance and architecture overview lives in
   [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md).
 
@@ -349,8 +350,9 @@ Redis 8.8 and Valkey 9.1 (the margin grows as values shrink). Hash throughput wa
 measured on the quiet dedicated host, where Goblin Core leads every op (`HSET`
 +13–26%, `HGET` +18–22%, `HGETALL` +30–58%). See BENCHMARKS.md.
 
-See the [benchmark report](BENCHMARKS.md) for full results, methodology, and
-reproducible benchmark commands.
+See the [x86 benchmark report](BENCHMARKS.md) and
+[Loongson 3A6000 benchmark report](LOONGSON_BENCHMARKS.md) for full results,
+methodology, and reproducible benchmark commands.
 
 ## Source Releases
 
