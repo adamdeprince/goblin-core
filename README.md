@@ -17,7 +17,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 
 ## Quick Summary
 
-- Source-only C++23 Redis-like server from Goblin Reactor.
+- Source-only C++23 Redis-like server from [Goblin Reactor](https://goblinreactor.com).
 - Current scope: sorted sets, hashes, and `PING`, not full Redis compatibility.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.

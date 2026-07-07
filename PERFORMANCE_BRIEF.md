@@ -6,7 +6,7 @@ wins over Redis come from, and how the benchmarks are run.
 
 ## Project Goal
 
-Goblin Core is a source-only C++23 Redis-like server from Goblin Reactor. The
+Goblin Core is a source-only C++23 Redis-like server from [Goblin Reactor](https://goblinreactor.com). The
 long-term goal is a Redis-compatible server with better memory and performance
 characteristics for cost-sensitive deployments. The current implementation is
 intentionally narrow: sorted sets plus `PING`, with no persistence,
