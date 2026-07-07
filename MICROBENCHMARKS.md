@@ -82,6 +82,32 @@ Source data:
 | `Full command into` | 466.92 | 478.95 | 546.05 |
 | `Full command into WITHSCORES` | 917.07 | 930.34 | 1,351.33 |
 
+## Write Path (`write_path`, rank cache off)
+
+Generated on the local macOS arm64 development machine (`--members 100000`,
+`--ops 100000`, integer scores, `2026-07-07`). Steady-state remove metrics
+(`store_zrem`, `raw_zset_remove`, `execute_command_into_zrem*`) zrem one member
+and immediately zadd-restore it each op. New-member metrics reset an empty
+store/zset per timed run.
+
+| Metric | ns/op | Notes |
+| --- | ---: | --- |
+| `store_zadd_update` | 33.76 | Preloaded store, score change on existing member |
+| `store_zadd_new` | 269.19 | Fresh store per run |
+| `store_zrem` | 381.53 | Remove + zadd restore, inline key |
+| `raw_zset_add_update` | 24.24 | Isolated `ZSet`, score change |
+| `raw_zset_add_new` | 267.38 | Fresh `ZSet` per run |
+| `raw_zset_remove` | 359.79 | Remove + add restore |
+| `execute_command_into_zadd_update` | 69.85 | Command dispatch + integer reply |
+| `execute_command_into_zadd_new` | 309.37 | Fresh store per run |
+| `execute_command_into_zrem` | 497.56 | Remove + zadd restore |
+
+List all write-path metrics:
+
+```sh
+./build-release/goblin_core_microbench --list-benchmarks | rg '^write_path'
+```
+
 ## Read-Path Notes
 
 - `ZRANGE` response construction is the visible in-process cost: RESP-only serialization is 275.77 ns/op versus 242.44 ns/op for raw range iteration.

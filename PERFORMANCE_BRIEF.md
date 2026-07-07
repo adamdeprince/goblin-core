@@ -169,6 +169,22 @@ The in-process microbench report was generated on the local macOS arm64
 development machine. Treat these values as local baselines, not cross-machine
 targets:
 
+Read path (`--members 1000000`, rank cache off, integer scores):
+
+- Multi-key `zscore_rotating` (`--keys 32`): `~51` ns/op.
+- `execute_command_into_withscores`: `~554` ns/op.
+
+Write path (`--members 100000`, rank cache off, integer scores; steady-state
+remove benches zrem then immediately zadd-restore):
+
+- `store_zadd_update`: `~34` ns/op.
+- `raw_zset_remove`: `~360` ns/op.
+- `store_zrem` (+ restore): `~380` ns/op.
+- `store_zadd_new`: `~269` ns/op.
+
+Older read-path baselines from the 1M-member report (still valid for rank-cache
+comparisons):
+
 - Raw default `ZRANK`: `376.51` ns/op.
 - Exact rank-cache raw `ZRANK`: `200.08` ns/op.
 - Default `ZRANGE` score-index traversal: `49.48` ns/op.
@@ -183,6 +199,12 @@ Read the generated reports for the full tables:
 
 ## Known Performance Questions
 
+- `ZREM` remains the dominant write cost in microbenchmarks (~`360` ns/op raw,
+  ~`380` ns/op through the store with immediate restore) versus ~`34` ns/op for
+  score updates. Further wins must come from fewer score-index operations per
+  remove, not auxiliary lookup caches (memory budget is fixed).
+- Multi-key writes pay copy-on-write when a shared zset layer is first mutated
+  per key; reads benefit from sharing, writes do not.
 - `ZRANGE` and `ZRANGE WITHSCORES` are increasingly output/serialization bound.
   Avoid optimizing traversal without checking RESP append and score formatting.
 - `ZRANK` raw data-structure cost is still meaningful with rank cache off. The
@@ -249,6 +271,14 @@ cmake --build build-release --target goblin_core_microbench
   --score-shape integer \
   --format json \
   --output benchmark-results/microbench.json
+
+# Write path only (smaller fixture; destructive benches reset state per run):
+./build-release/goblin_core_microbench \
+  --members 100000 \
+  --ops 100000 \
+  --category write_path \
+  --format json \
+  --output benchmark-results/microbench-write-path.json
 ```
 
 ## Design Principles
