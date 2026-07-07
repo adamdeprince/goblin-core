@@ -73,15 +73,22 @@ struct Fixture {
   std::vector<std::string> members;
   std::vector<double> scores;
   std::vector<std::string> score_texts;
+  std::vector<std::size_t> load_ids;
   std::vector<std::size_t> lookup_ids;
   std::vector<std::size_t> range_starts;
   std::vector<RangeText> range_texts;
+  std::vector<std::string> write_new_members;
+  std::vector<double> write_new_scores;
+  std::vector<std::string> write_new_score_texts;
+  std::vector<double> write_update_scores;
+  std::vector<std::string> write_update_score_texts;
   std::vector<goblin::core::ZSetEntry> sorted_entries;
   std::vector<goblin::core::ZSetScoreEntry> sorted_score_entries;
   goblin::core::ZSetMemberStorage member_storage;
   goblin::core::ZSetScoreIndex score_index;
   goblin::core::ZSet zset;
   goblin::core::Store store;
+  goblin::core::Store write_store;
 };
 
 struct ScoreEntryLess {
@@ -567,18 +574,25 @@ void append_member_score_range_direct(
   return out;
 }
 
+[[nodiscard]] goblin::core::ZSetOptions zset_options(const Options& options) {
+  return goblin::core::ZSetOptions{
+      .rank_cache_mode = options.rank_cache_mode,
+      .score_string_cache = options.score_string_cache,
+  };
+}
+
+[[nodiscard]] goblin::core::StoreOptions store_options(const Options& options) {
+  return goblin::core::StoreOptions{
+      .rank_cache_mode = options.rank_cache_mode,
+      .score_string_cache = options.score_string_cache,
+  };
+}
+
 [[nodiscard]] Fixture build_fixture(const Options& options) {
   Fixture fixture{
-      .zset = goblin::core::ZSet(
-          goblin::core::ZSetOptions{
-              .rank_cache_mode = options.rank_cache_mode,
-              .score_string_cache = options.score_string_cache,
-          }),
-      .store = goblin::core::Store(
-          goblin::core::StoreOptions{
-              .rank_cache_mode = options.rank_cache_mode,
-              .score_string_cache = options.score_string_cache,
-          }),
+      .zset = goblin::core::ZSet(zset_options(options)),
+      .store = goblin::core::Store(store_options(options)),
+      .write_store = goblin::core::Store(store_options(options)),
   };
   fixture.members.reserve(options.members);
   fixture.scores.reserve(options.members);
@@ -605,6 +619,7 @@ void append_member_score_range_direct(
   fixture.score_index.assign_sorted(score_entries);
 
   const auto load_ids = shuffled_ids(options.members, options.seed);
+  fixture.load_ids = load_ids;
   for (const auto member_id : load_ids) {
     (void)fixture.zset.add(fixture.scores[member_id], fixture.members[member_id]);
   }
@@ -646,6 +661,27 @@ void append_member_score_range_direct(
 
   fixture.sorted_entries = fixture.zset.range(0, static_cast<long long>(options.members) - 1);
   fixture.sorted_score_entries = fixture.score_index.range(0, options.members);
+
+  fixture.write_new_members.reserve(options.ops);
+  fixture.write_new_scores.reserve(options.ops);
+  fixture.write_new_score_texts.reserve(options.ops);
+  for (std::size_t i = 0; i < options.ops; ++i) {
+    fixture.write_new_members.push_back(member_for(options.members + i));
+    const auto score =
+        score_for(options.members + i, options.score_shape, options.seed);
+    fixture.write_new_scores.push_back(score);
+    fixture.write_new_score_texts.push_back(goblin::core::format_score(score));
+  }
+
+  fixture.write_update_scores.reserve(options.ops);
+  fixture.write_update_score_texts.reserve(options.ops);
+  for (std::size_t i = 0; i < options.ops; ++i) {
+    const auto member_id = fixture.lookup_ids[i];
+    const auto score = fixture.scores[member_id] + 1.0;
+    fixture.write_update_scores.push_back(score);
+    fixture.write_update_score_texts.push_back(goblin::core::format_score(score));
+  }
+
   return fixture;
 }
 
@@ -659,6 +695,37 @@ template <class Fn>
     consume(fn());
   }
 
+  const auto started = Clock::now();
+  const auto checksum = fn();
+  const auto stopped = Clock::now();
+  consume(checksum);
+
+  const auto seconds =
+      std::chrono::duration<double>(stopped - started).count();
+  return BenchmarkResult{
+      .category = std::move(category),
+      .metric = std::move(metric),
+      .operations = operations,
+      .seconds = seconds,
+      .ns_per_op = seconds * 1'000'000'000.0 / static_cast<double>(operations),
+      .ops_per_second = static_cast<double>(operations) / seconds,
+      .checksum = checksum,
+  };
+}
+
+template <class SetupFn, class Fn>
+[[nodiscard]] BenchmarkResult measure_with_setup(const Options& options,
+                                                 std::string category,
+                                                 std::string metric,
+                                                 std::size_t operations,
+                                                 SetupFn&& setup,
+                                                 Fn&& fn) {
+  for (std::size_t i = 0; i < options.warmups; ++i) {
+    setup();
+    consume(fn());
+  }
+
+  setup();
   const auto started = Clock::now();
   const auto checksum = fn();
   const auto stopped = Clock::now();
@@ -796,6 +863,19 @@ void list_benchmark_catalog(std::ostream& out) {
       {"overflow_store", "execute_command_into_overflow"},
       {"overflow_store", "execute_command_into_rotating"},
       {"overflow_store", "execute_command_into_withscores_overflow"},
+      {"write_path", "store_zadd_new"},
+      {"write_path", "store_zadd_update"},
+      {"write_path", "store_zadd_rotating"},
+      {"write_path", "store_zrem"},
+      {"write_path", "store_zrem_rotating"},
+      {"write_path", "raw_zset_add_new"},
+      {"write_path", "raw_zset_add_update"},
+      {"write_path", "raw_zset_remove"},
+      {"write_path", "execute_command_into_zadd_new"},
+      {"write_path", "execute_command_into_zadd_update"},
+      {"write_path", "execute_command_into_zadd_rotating"},
+      {"write_path", "execute_command_into_zrem"},
+      {"write_path", "execute_command_into_zrem_rotating"},
   };
 
   for (const auto& [category, metric] : catalog) {
@@ -820,6 +900,23 @@ void list_benchmark_catalog(std::ostream& out) {
         std::string(category),
         std::string(metric),
         operations,
+        std::forward<decltype(fn)>(fn)));
+  };
+
+  const auto maybe_bench_setup = [&](std::string_view category,
+                                     std::string_view metric,
+                                     std::size_t operations,
+                                     auto&& setup,
+                                     auto&& fn) {
+    if (!benchmark_selected(options, category, metric)) {
+      return;
+    }
+    results.push_back(measure_with_setup(
+        options,
+        std::string(category),
+        std::string(metric),
+        operations,
+        std::forward<decltype(setup)>(setup),
         std::forward<decltype(fn)>(fn)));
   };
 
@@ -1521,6 +1618,233 @@ void list_benchmark_catalog(std::ostream& out) {
       const auto command =
           make_command(goblin::core::CommandType::zrange, "ZRANGE", args);
       goblin::core::execute_command_into(fixture.store, command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
+  const auto reset_write_store = [&] {
+    fixture.write_store = goblin::core::Store(store_options(options));
+  };
+
+  const auto reset_zset = [&] {
+    fixture.zset = goblin::core::ZSet(zset_options(options));
+    for (const auto member_id : fixture.load_ids) {
+      (void)fixture.zset.add(fixture.scores[member_id], fixture.members[member_id]);
+    }
+  };
+
+  maybe_bench_setup("write_path", "store_zadd_new", options.ops, reset_write_store, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto added = fixture.write_store.zadd(
+          key, fixture.write_new_scores[i], fixture.write_new_members[i]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(added));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "store_zadd_update", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto member_id = fixture.lookup_ids[i];
+      const auto added = fixture.store.zadd(
+          key, fixture.write_update_scores[i], fixture.members[member_id]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(added));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "store_zadd_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const auto member_id = fixture.lookup_ids[i];
+      const auto added = fixture.store.zadd(
+          key, fixture.write_update_scores[i], fixture.members[member_id]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(added));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "store_zrem", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto member_id = fixture.lookup_ids[i];
+      const std::string_view member = fixture.members[member_id];
+      const auto removed =
+          fixture.store.zrem(key, std::span<const std::string_view>(&member, 1));
+      const auto restored = fixture.store.zadd(key, fixture.scores[member_id], member);
+      checksum = mix(checksum, static_cast<std::uint64_t>(removed));
+      checksum = mix(checksum, static_cast<std::uint64_t>(restored));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "store_zrem_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const auto member_id = fixture.lookup_ids[i];
+      const std::string_view member = fixture.members[member_id];
+      const auto removed =
+          fixture.store.zrem(key, std::span<const std::string_view>(&member, 1));
+      const auto restored = fixture.store.zadd(key, fixture.scores[member_id], member);
+      checksum = mix(checksum, static_cast<std::uint64_t>(removed));
+      checksum = mix(checksum, static_cast<std::uint64_t>(restored));
+    }
+    return checksum;
+  });
+
+  maybe_bench_setup("write_path", "raw_zset_add_new", options.ops, [&] {
+    fixture.zset = goblin::core::ZSet(zset_options(options));
+  }, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto added = fixture.zset.add(
+          fixture.write_new_scores[i], fixture.write_new_members[i]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(added));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "raw_zset_add_update", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto member_id = fixture.lookup_ids[i];
+      const auto added = fixture.zset.add(
+          fixture.write_update_scores[i], fixture.members[member_id]);
+      checksum = mix(checksum, static_cast<std::uint64_t>(added));
+    }
+    return checksum;
+  });
+
+  maybe_bench_setup("write_path", "raw_zset_remove", options.ops, reset_zset, [&] {
+    std::uint64_t checksum = 0;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      const auto member_id = fixture.lookup_ids[i];
+      const std::string_view member = fixture.members[member_id];
+      const auto removed = fixture.zset.remove(member);
+      const auto restored = fixture.zset.add(fixture.scores[member_id], member);
+      checksum = mix(checksum, removed ? 1U : 0U);
+      checksum = mix(checksum, static_cast<std::uint64_t>(restored));
+    }
+    return checksum;
+  });
+
+  maybe_bench_setup(
+      "write_path", "execute_command_into_zadd_new", options.ops, reset_write_store, [&] {
+        std::uint64_t checksum = 0;
+        std::string out;
+        const auto key = std::string_view(fixture.store_keys[0]);
+        for (std::size_t i = 0; i < options.ops; ++i) {
+          out.clear();
+          const std::array<std::string_view, 3> args{
+              key,
+              std::string_view(fixture.write_new_score_texts[i]),
+              std::string_view(fixture.write_new_members[i])};
+          const auto command =
+              make_command(goblin::core::CommandType::zadd, "ZADD", args);
+          goblin::core::execute_command_into(fixture.write_store, command, out);
+          checksum = mix(checksum, digest_output(out));
+        }
+        return checksum;
+      });
+
+  maybe_bench("write_path", "execute_command_into_zadd_update", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      out.clear();
+      const auto member_id = fixture.lookup_ids[i];
+      const std::array<std::string_view, 3> args{
+          key,
+          std::string_view(fixture.write_update_score_texts[i]),
+          std::string_view(fixture.members[member_id])};
+      const auto command =
+          make_command(goblin::core::CommandType::zadd, "ZADD", args);
+      goblin::core::execute_command_into(fixture.store, command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "execute_command_into_zadd_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      out.clear();
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const auto member_id = fixture.lookup_ids[i];
+      const std::array<std::string_view, 3> args{
+          key,
+          std::string_view(fixture.write_update_score_texts[i]),
+          std::string_view(fixture.members[member_id])};
+      const auto command =
+          make_command(goblin::core::CommandType::zadd, "ZADD", args);
+      goblin::core::execute_command_into(fixture.store, command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "execute_command_into_zrem", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    const auto key = std::string_view(fixture.store_keys[0]);
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      out.clear();
+      const auto member_id = fixture.lookup_ids[i];
+      const std::array<std::string_view, 2> remove_args{
+          key, std::string_view(fixture.members[member_id])};
+      const auto remove_command =
+          make_command(goblin::core::CommandType::zrem, "ZREM", remove_args);
+      goblin::core::execute_command_into(fixture.store, remove_command, out);
+      checksum = mix(checksum, digest_output(out));
+
+      out.clear();
+      const std::array<std::string_view, 3> restore_args{
+          key,
+          std::string_view(fixture.score_texts[member_id]),
+          std::string_view(fixture.members[member_id])};
+      const auto restore_command =
+          make_command(goblin::core::CommandType::zadd, "ZADD", restore_args);
+      goblin::core::execute_command_into(fixture.store, restore_command, out);
+      checksum = mix(checksum, digest_output(out));
+    }
+    return checksum;
+  });
+
+  maybe_bench("write_path", "execute_command_into_zrem_rotating", options.ops, [&] {
+    std::uint64_t checksum = 0;
+    std::string out;
+    for (std::size_t i = 0; i < options.ops; ++i) {
+      out.clear();
+      const auto key =
+          std::string_view(fixture.store_keys[i % fixture.key_count]);
+      const auto member_id = fixture.lookup_ids[i];
+      const std::array<std::string_view, 2> remove_args{
+          key, std::string_view(fixture.members[member_id])};
+      const auto remove_command =
+          make_command(goblin::core::CommandType::zrem, "ZREM", remove_args);
+      goblin::core::execute_command_into(fixture.store, remove_command, out);
+      checksum = mix(checksum, digest_output(out));
+
+      out.clear();
+      const std::array<std::string_view, 3> restore_args{
+          key,
+          std::string_view(fixture.score_texts[member_id]),
+          std::string_view(fixture.members[member_id])};
+      const auto restore_command =
+          make_command(goblin::core::CommandType::zadd, "ZADD", restore_args);
+      goblin::core::execute_command_into(fixture.store, restore_command, out);
       checksum = mix(checksum, digest_output(out));
     }
     return checksum;
