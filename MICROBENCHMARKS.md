@@ -94,13 +94,20 @@ store/zset per timed run.
 | --- | ---: | --- |
 | `store_zadd_update` | 33.76 | Preloaded store, score change on existing member |
 | `store_zadd_new` | 269.19 | Fresh store per run |
-| `store_zrem` | 381.53 | Remove + zadd restore, inline key |
+| `store_zrem` | 355.34 | Remove + zadd restore, inline key |
 | `raw_zset_add_update` | 24.24 | Isolated `ZSet`, score change |
 | `raw_zset_add_new` | 267.38 | Fresh `ZSet` per run |
-| `raw_zset_remove` | 359.79 | Remove + add restore |
+| `raw_zset_remove` | 339.57 | Remove + add restore |
 | `execute_command_into_zadd_update` | 69.85 | Command dispatch + integer reply |
 | `execute_command_into_zadd_new` | 309.37 | Fresh store per run |
 | `execute_command_into_zrem` | 497.56 | Remove + zadd restore |
+
+Read path (`--members 100000`, range 16, rank cache off):
+
+| Metric | ns/op |
+| --- | ---: |
+| `resp_append_withscores` | 276.20 |
+| `execute_command_into_withscores` | 271.22 |
 
 List all write-path metrics:
 

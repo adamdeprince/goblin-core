@@ -172,14 +172,14 @@ targets:
 Read path (`--members 1000000`, rank cache off, integer scores):
 
 - Multi-key `zscore_rotating` (`--keys 32`): `~51` ns/op.
-- `execute_command_into_withscores`: `~554` ns/op.
+- `execute_command_into_withscores` (range 16): `~271` ns/op.
 
 Write path (`--members 100000`, rank cache off, integer scores; steady-state
 remove benches zrem then immediately zadd-restore):
 
 - `store_zadd_update`: `~34` ns/op.
-- `raw_zset_remove`: `~360` ns/op.
-- `store_zrem` (+ restore): `~380` ns/op.
+- `raw_zset_remove`: `~340` ns/op.
+- `store_zrem` (+ restore): `~355` ns/op.
 - `store_zadd_new`: `~269` ns/op.
 
 Older read-path baselines from the 1M-member report (still valid for rank-cache
@@ -199,8 +199,8 @@ Read the generated reports for the full tables:
 
 ## Known Performance Questions
 
-- `ZREM` remains the dominant write cost in microbenchmarks (~`360` ns/op raw,
-  ~`380` ns/op through the store with immediate restore) versus ~`34` ns/op for
+- `ZREM` remains the dominant write cost in microbenchmarks (~`340` ns/op raw,
+  ~`355` ns/op through the store with immediate restore) versus ~`34` ns/op for
   score updates. Further wins must come from fewer score-index operations per
   remove, not auxiliary lookup caches (memory budget is fixed).
 - Multi-key writes pay copy-on-write when a shared zset layer is first mutated
