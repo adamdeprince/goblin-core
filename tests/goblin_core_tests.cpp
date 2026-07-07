@@ -745,6 +745,57 @@ void test_store_inline_and_overflow_zsets() {
   assert(stats.overflow_zset_count == 0);
 }
 
+void test_store_shared_member_layer() {
+  goblin::core::Store store;
+
+  for (int i = 0; i < 128; ++i) {
+    assert(store.zadd("key-a", static_cast<double>(i), "member-" + std::to_string(i)) == 1);
+  }
+
+  for (int i = 0; i < 128; ++i) {
+    assert(store.zadd("key-b", static_cast<double>(i), "member-" + std::to_string(i)) == 0);
+  }
+
+  assert(store.zcard("key-a") == 128);
+  assert(store.zcard("key-b") == 128);
+  assert(store.zscore("key-a", "member-0") == 0.0);
+  assert(store.zscore("key-b", "member-0") == 0.0);
+  assert(store.zrank("key-a", "member-64") == 64U);
+  assert(store.zrank("key-b", "member-64") == 64U);
+
+  const auto stats_a = store.zset_memory_stats("key-a");
+  const auto stats_b = store.zset_memory_stats("key-b");
+  assert(stats_a.has_value());
+  assert(stats_b.has_value());
+  assert(stats_a->member_layer_share_count >= 2);
+  assert(stats_b->member_layer_share_count >= 2);
+
+  assert(store.zadd("key-b", 99.0, "member-0") == 0);
+  assert(store.zscore("key-a", "member-0") == 0.0);
+  assert(store.zscore("key-b", "member-0") == 99.0);
+
+  const std::vector<std::string_view> remove_one{"member-1"};
+  assert(store.zrem("key-b", remove_one) == 1);
+  assert(store.zcard("key-b") == 127);
+  assert(store.zcard("key-a") == 128);
+  assert(store.zscore("key-a", "member-1") == 1.0);
+  assert(!store.zscore("key-b", "member-1").has_value());
+}
+
+void test_store_shared_member_layer_skips_unrelated_keys() {
+  goblin::core::Store store;
+
+  assert(store.zadd("one", 1.0, "a") == 1);
+  assert(store.zadd("two", 2.0, "b") == 1);
+
+  assert(store.zcard("one") == 1);
+  assert(store.zcard("two") == 1);
+  assert(store.zscore("one", "a") == 1.0);
+  assert(store.zscore("two", "b") == 2.0);
+  assert(!store.zscore("one", "b").has_value());
+  assert(!store.zscore("two", "a").has_value());
+}
+
 void test_store_inline_zset_slot_limit() {
   goblin::core::Store store(
       goblin::core::StoreOptions{.inline_zset_limit = 2});
@@ -1549,6 +1600,8 @@ int main() {
   test_zset_skips_auto_compaction_for_small_removals();
   test_store_zset_methods();
   test_store_inline_and_overflow_zsets();
+  test_store_shared_member_layer();
+  test_store_shared_member_layer_skips_unrelated_keys();
   test_store_inline_zset_slot_limit();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();

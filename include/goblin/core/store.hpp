@@ -15,6 +15,7 @@
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
+#include "goblin/core/zset_member_layer.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 #include "goblin/core/zset_score_index.hpp"
 
@@ -64,6 +65,7 @@ struct ZSetMemoryStats {
   std::size_t member_index_member_slot_capacity{0};
   std::size_t member_index_tombstones{0};
   std::size_t member_index_allocated_bytes{0};
+  std::size_t member_layer_share_count{0};
   std::size_t score_entry_count{0};
   std::size_t score_block_count{0};
   std::size_t score_block_capacity_sum{0};
@@ -71,6 +73,8 @@ struct ZSetMemoryStats {
   std::size_t rank_location_cache_allocated_bytes{0};
   std::size_t total_allocated_bytes{0};
 };
+
+class Store;
 
 class ZSet {
  public:
@@ -104,7 +108,7 @@ class ZSet {
     // id -> location -> bytes two stages deep (location further ahead than the
     // packed bytes, so the byte prefetch reads a resident offset). Neutral for
     // small ranges, ~4% for large ones.
-    const auto* storage = member_storage_.get();
+    const auto* storage = member_storage();
     auto span = [storage, &fn](const std::uint32_t* ids, std::size_t count) {
       constexpr std::size_t kLocationAhead = 10;
       constexpr std::size_t kBytesAhead = 5;
@@ -311,6 +315,8 @@ class ZSet {
   bool rehash_member_index_same_capacity();
   bool compact_after_removal_if_needed(std::size_t removed_count);
 
+  friend class Store;
+
  private:
   [[nodiscard]] std::uint32_t allocate_member_id(std::string_view member,
                                                  double score);
@@ -318,9 +324,15 @@ class ZSet {
   [[nodiscard]] std::string_view score_text_view(std::uint32_t member_id) const noexcept;
   void rebind_indexes() noexcept;
   void move_last_member_into_slot(std::uint32_t removed_member_id);
+  void ensure_unique_member_layer();
+  void adopt_shared_state_from(const ZSet& source);
 
-  std::unique_ptr<ZSetMemberStorage> member_storage_;
-  ZSetMemberIndex members_;
+  [[nodiscard]] ZSetMemberStorage* member_storage() noexcept;
+  [[nodiscard]] const ZSetMemberStorage* member_storage() const noexcept;
+  [[nodiscard]] ZSetMemberIndex& members() noexcept;
+  [[nodiscard]] const ZSetMemberIndex& members() const noexcept;
+
+  std::shared_ptr<ZSetMemberLayer> member_layer_;
   ZSetScoreIndex entries_;
   ZSetOptions options_;
 };
@@ -690,6 +702,7 @@ class Store {
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;
   [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept;
   [[nodiscard]] ZSet& get_or_create_zset(std::string_view key);
+  [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
 
   void place_loaded_hash(std::string key, Hash&& hash);
