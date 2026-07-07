@@ -171,7 +171,7 @@ amortized O(1) insert with an occasional synchronous O(n) rehash. That rehash is
 a pause, visible in the extreme tail of write latency. 1M individually-timed
 `ZADD`s growing one set (same C client, server/client pinned), microseconds:
 
-| | p50 | p99 | p99.9 | max |
+| ZADD (µs) | p50 | p99 | p99.9 | max |
 | --- | ---: | ---: | ---: | ---: |
 | Goblin Core | `16.6` | `21.3` | `23.7` | `31,810` |
 | Redis 7.2.4 | `20.6` | `28.3` | `43.4` | `4,186` |
