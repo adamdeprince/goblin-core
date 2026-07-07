@@ -501,7 +501,7 @@ ZSet* Store::find_zset(std::string_view key) noexcept {
   if (overflow_zsets_.empty()) {
     return nullptr;
   }
-  return overflow_zsets_.find(std::string(key));
+  return overflow_zsets_.find(key);
 }
 
 const ZSet* Store::find_zset(std::string_view key) const noexcept {
@@ -511,7 +511,7 @@ const ZSet* Store::find_zset(std::string_view key) const noexcept {
   if (overflow_zsets_.empty()) {
     return nullptr;
   }
-  return overflow_zsets_.find(std::string(key));
+  return overflow_zsets_.find(key);
 }
 
 ZSet& Store::get_or_create_zset(std::string_view key) {
@@ -520,7 +520,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
   }
 
   if (!overflow_zsets_.empty()) {
-    auto* overflow = overflow_zsets_.find(std::string(key));
+    auto* overflow = overflow_zsets_.find(key);
     if (overflow != nullptr) {
       return *overflow;
     }
@@ -538,7 +538,7 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
   }
 
   auto [zset, inserted] = overflow_zsets_.try_emplace(
-      std::string(key),
+      key,
       ZSetOptions{
           .rank_cache_mode = options_.rank_cache_mode,
           .score_string_cache = options_.score_string_cache,
@@ -561,7 +561,7 @@ void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
     return;
   }
 
-  overflow_zsets_.erase(std::string(key));
+  overflow_zsets_.erase(key);
 }
 
 long long Store::zadd(std::string_view key, double score, std::string_view member) {
@@ -597,7 +597,7 @@ Hash* Store::find_hash(std::string_view key) noexcept {
   if (overflow_hashes_.empty()) {
     return nullptr;
   }
-  return overflow_hashes_.find(std::string(key));
+  return overflow_hashes_.find(key);
 }
 
 const Hash* Store::find_hash(std::string_view key) const noexcept {
@@ -607,7 +607,7 @@ const Hash* Store::find_hash(std::string_view key) const noexcept {
   if (overflow_hashes_.empty()) {
     return nullptr;
   }
-  return overflow_hashes_.find(std::string(key));
+  return overflow_hashes_.find(key);
 }
 
 Hash& Store::get_or_create_hash(std::string_view key) {
@@ -615,7 +615,7 @@ Hash& Store::get_or_create_hash(std::string_view key) {
     return *inline_hash_;
   }
   if (!overflow_hashes_.empty()) {
-    auto* overflow = overflow_hashes_.find(std::string(key));
+    auto* overflow = overflow_hashes_.find(key);
     if (overflow != nullptr) {
       return *overflow;
     }
@@ -630,7 +630,7 @@ Hash& Store::get_or_create_hash(std::string_view key) {
     return *inline_hash_;
   }
   auto [hash, inserted] =
-      overflow_hashes_.try_emplace(std::string(key), hash_options);
+      overflow_hashes_.try_emplace(key, hash_options);
   (void)inserted;
   return *hash;
 }
@@ -645,7 +645,7 @@ void Store::erase_if_empty(std::string_view key, const Hash& hash) {
     inline_hash_key_.clear();
     return;
   }
-  overflow_hashes_.erase(std::string(key));
+  overflow_hashes_.erase(key);
 }
 
 void Store::place_loaded_hash(std::string key, Hash&& hash) {

@@ -7,11 +7,37 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 namespace goblin::core {
+
+// Transparent functors for SwissTable<std::string, T>: hash and compare keys
+// from std::string_view (or other string-like types) without allocating a
+// std::string on lookup.
+struct StringTableHash {
+  using is_transparent = void;
+
+  template <class T>
+    requires std::constructible_from<std::string_view, const T&>
+  [[nodiscard]] std::size_t operator()(const T& key) const noexcept {
+    return std::hash<std::string_view>{}(std::string_view(key));
+  }
+};
+
+struct StringTableEqual {
+  using is_transparent = void;
+
+  template <class Lhs, class Rhs>
+    requires std::constructible_from<std::string_view, const Lhs&> &&
+             std::constructible_from<std::string_view, const Rhs&>
+  [[nodiscard]] bool operator()(const Lhs& lhs, const Rhs& rhs) const noexcept {
+    return std::string_view(lhs) == std::string_view(rhs);
+  }
+};
 
 template <class Key,
           class T,
@@ -126,36 +152,41 @@ class SwissTable {
            capacity_ * sizeof(value_type);
   }
 
-  [[nodiscard]] bool contains(const Key& key) const {
+  template <class K>
+  [[nodiscard]] bool contains(const K& key) const {
     return find(key) != nullptr;
   }
 
-  [[nodiscard]] mapped_type* find(const Key& key) {
-    const auto index = find_index(key);
+  template <class K>
+  [[nodiscard]] mapped_type* find(const K& key) {
+    const auto index = find_index_with_hash(key, hash_key(key));
     if (index == npos) {
       return nullptr;
     }
     return std::addressof(slot_ptr(index)->second);
   }
 
-  [[nodiscard]] const mapped_type* find(const Key& key) const {
-    const auto index = find_index(key);
+  template <class K>
+  [[nodiscard]] const mapped_type* find(const K& key) const {
+    const auto index = find_index_with_hash(key, hash_key(key));
     if (index == npos) {
       return nullptr;
     }
     return std::addressof(slot_ptr(index)->second);
   }
 
-  [[nodiscard]] value_type* find_entry(const Key& key) {
-    const auto index = find_index(key);
+  template <class K>
+  [[nodiscard]] value_type* find_entry(const K& key) {
+    const auto index = find_index_with_hash(key, hash_key(key));
     if (index == npos) {
       return nullptr;
     }
     return slot_ptr(index);
   }
 
-  [[nodiscard]] const value_type* find_entry(const Key& key) const {
-    const auto index = find_index(key);
+  template <class K>
+  [[nodiscard]] const value_type* find_entry(const K& key) const {
+    const auto index = find_index_with_hash(key, hash_key(key));
     if (index == npos) {
       return nullptr;
     }
@@ -234,8 +265,9 @@ class SwissTable {
     return *try_emplace(std::move(key)).first;
   }
 
-  bool erase(const Key& key) {
-    const auto index = find_index(key);
+  template <class K>
+  bool erase(const K& key) {
+    const auto index = find_index_with_hash(key, hash_key(key));
     if (index == npos) {
       return false;
     }
@@ -414,10 +446,6 @@ class SwissTable {
     }
 
     return npos;
-  }
-
-  [[nodiscard]] size_type find_index(const Key& key) const {
-    return find_index_with_hash(key, hash_key(key));
   }
 
   [[nodiscard]] size_type find_insert_index(size_type hash) const {

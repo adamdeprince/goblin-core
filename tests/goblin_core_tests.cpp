@@ -244,6 +244,25 @@ void test_score_string_cache_updates_with_scores() {
   assert(stats->score_string_cache_allocated_bytes > 0);
 }
 
+void test_swiss_table_string_view_lookup() {
+  goblin::core::SwissTable<std::string,
+                           int,
+                           goblin::core::StringTableHash,
+                           goblin::core::StringTableEqual>
+      table;
+
+  table.try_emplace("alpha", 1);
+  table.try_emplace("beta", 2);
+
+  const std::string owned = "alpha";
+  const std::string_view view = owned;
+  assert(table.find(view) != nullptr);
+  assert(*table.find(view) == 1);
+  assert(table.find(std::string_view("gamma")) == nullptr);
+  assert(table.erase(std::string_view("beta")));
+  assert(table.find("beta") == nullptr);
+}
+
 void test_swiss_table_insert_find_update() {
   goblin::core::SwissTable<std::string, int> table;
 
@@ -1432,6 +1451,7 @@ void test_rdb_import() {
 }  // namespace
 
 int main() {
+  test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
   test_swiss_table_collision_probe_and_growth();
   test_swiss_table_erase_reuses_tombstones();

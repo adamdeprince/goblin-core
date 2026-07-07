@@ -696,10 +696,10 @@ class Store {
 
   std::optional<ZSet> inline_zset_;
   std::string inline_key_;
-  SwissTable<std::string, ZSet> overflow_zsets_;
+  SwissTable<std::string, ZSet, StringTableHash, StringTableEqual> overflow_zsets_;
   std::optional<Hash> inline_hash_;
   std::string inline_hash_key_;
-  SwissTable<std::string, Hash> overflow_hashes_;
+  SwissTable<std::string, Hash, StringTableHash, StringTableEqual> overflow_hashes_;
   StoreOptions options_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
