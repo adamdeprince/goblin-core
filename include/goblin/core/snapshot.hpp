@@ -46,8 +46,10 @@ class snapshot_error : public std::runtime_error {
 
 inline constexpr char kMagic[4] = {'G', 'C', 'S', 'N'};
 
-// Bump when the canonical layer layout changes (and keep an old reader).
-inline constexpr std::uint32_t kFormatVersion = 1;
+// Bump when the canonical layer layout changes. v2 records each zset's score
+// width and writes scores at it (i16/i32/f64) instead of always f64. Pre-v2
+// snapshots are rejected by the version check (alpha; no back-compat reader).
+inline constexpr std::uint32_t kFormatVersion = 2;
 
 // The snapshot body is a sequence of typed sections so each Redis value type
 // gets its own section, and a reader can skip a section type it does not

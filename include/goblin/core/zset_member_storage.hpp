@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cassert>
 #include <cstddef>
@@ -12,7 +13,9 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/page_arena.hpp"
 #include "goblin/core/score_format.hpp"
+#include "goblin/core/score_width.hpp"
 
 namespace goblin::core {
 
@@ -29,11 +32,16 @@ struct ZSetMemberByteArena {
   size_type member_next_offset{0};
   size_type member_used_bytes{0};
   size_type member_dead_bytes{0};
+  size_type member_active_bytes{0};     // physical size of the last member block
+  size_type member_committed_bytes{0};  // sum of member block physical sizes
   size_type score_text_next_offset{0};
   size_type score_text_used_bytes{0};
+  size_type score_text_active_bytes{0};
+  size_type score_text_committed_bytes{0};
   size_type chunk_bytes{kZSetMemberDefaultChunkBytes};
   size_type chunk_shift{20};
   size_type chunk_mask{kZSetMemberDefaultChunkBytes - 1};
+  double growth{kDefaultArenaGrowth};
 
   [[nodiscard]] std::shared_ptr<ZSetMemberByteArena> fork() const {
     return std::make_shared<ZSetMemberByteArena>(*this);
@@ -71,10 +79,12 @@ class ZSetMemberStorage {
   ZSetMemberStorage() = default;
 
   explicit ZSetMemberStorage(bool score_string_cache,
-                             size_type chunk_bytes = kDefaultChunkBytes)
+                             size_type chunk_bytes = kDefaultChunkBytes,
+                             double growth = kDefaultArenaGrowth)
       : arena_(std::make_shared<ZSetMemberByteArena>()),
         score_string_cache_enabled_(score_string_cache) {
     configure_chunk_bytes(chunk_bytes);
+    arena_->growth = growth > 1.0 ? growth : kDefaultArenaGrowth;
   }
 
   [[nodiscard]] size_type chunk_bytes() const noexcept { return arena_->chunk_bytes; }
@@ -111,7 +121,7 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] size_type byte_capacity() const noexcept {
-    return arena_->member_chunks.size() * arena_->chunk_bytes;
+    return arena_->member_committed_bytes;
   }
 
   [[nodiscard]] size_type ref_capacity() const noexcept {
@@ -122,7 +132,7 @@ class ZSetMemberStorage {
     return byte_capacity() +
            offsets_.capacity() * sizeof(std::uint32_t) +
            lengths_.capacity() * sizeof(std::uint16_t) +
-           scores_.capacity() * sizeof(double) +
+           scores_.allocated_bytes() +
            score_text_allocated_bytes();
   }
 
@@ -135,7 +145,7 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] size_type score_text_byte_capacity() const noexcept {
-    return arena_->score_text_chunks.size() * arena_->chunk_bytes;
+    return arena_->score_text_committed_bytes;
   }
 
   [[nodiscard]] size_type score_text_ref_capacity() const noexcept {
@@ -228,7 +238,7 @@ class ZSetMemberStorage {
     const auto offset = append_bytes(member);
     offsets_[member_id] = offset;
     lengths_[member_id] = static_cast<std::uint16_t>(member.size());
-    scores_[member_id] = score;
+    scores_.set(member_id, score);
     set_score_text(member_id, score);
   }
 
@@ -236,7 +246,7 @@ class ZSetMemberStorage {
     assert(member_id < offsets_.size());
     return Ref{.offset = offsets_[member_id],
                .length = lengths_[member_id],
-               .score = scores_[member_id]};
+               .score = scores_.at(member_id)};
   }
 
   [[nodiscard]] Snapshot snapshot(std::uint32_t member_id) const noexcept {
@@ -252,7 +262,7 @@ class ZSetMemberStorage {
     assert(member_id < offsets_.size());
     offsets_[member_id] = snapshot.ref.offset;
     lengths_[member_id] = static_cast<std::uint16_t>(snapshot.ref.length);
-    scores_[member_id] = snapshot.ref.score;
+    scores_.set(member_id, snapshot.ref.score);
     if (score_string_cache_enabled_) {
       assert(member_id < score_text_refs_.size());
       score_text_refs_[member_id] = snapshot.score_text;
@@ -263,7 +273,7 @@ class ZSetMemberStorage {
     assert(member_id < offsets_.size());
     offsets_[member_id] = ref.offset;
     lengths_[member_id] = static_cast<std::uint16_t>(ref.length);
-    scores_[member_id] = ref.score;
+    scores_.set(member_id, ref.score);
     set_score_text(member_id, ref.score);
   }
 
@@ -272,7 +282,7 @@ class ZSetMemberStorage {
     assert(src_member_id < offsets_.size());
     offsets_[dst_member_id] = offsets_[src_member_id];
     lengths_[dst_member_id] = lengths_[src_member_id];
-    scores_[dst_member_id] = scores_[src_member_id];
+    scores_.copy_within(dst_member_id, src_member_id);
     if (score_string_cache_enabled_) {
       assert(dst_member_id < score_text_refs_.size());
       assert(src_member_id < score_text_refs_.size());
@@ -282,13 +292,74 @@ class ZSetMemberStorage {
 
   [[nodiscard]] double score(std::uint32_t member_id) const noexcept {
     assert(member_id < scores_.size());
-    return scores_[member_id];
+    return scores_.at(member_id);
   }
 
   void set_score(std::uint32_t member_id, double score) {
     assert(member_id < scores_.size());
-    scores_[member_id] = score;
+    scores_.set(member_id, score);
     set_score_text(member_id, score);
+  }
+
+  // Width the scores are currently stored at (i16/i32/f64). Widens automatically
+  // on set/push_back; rebuild_scores_to is the explicit OPTIMIZE demote path.
+  [[nodiscard]] ScoreWidth score_width() const noexcept {
+    return scores_.width();
+  }
+
+  void rebuild_scores_to(ScoreWidth width) {
+    scores_.rebuild_to(width);
+  }
+
+  // Reclaim dead arena bytes by repacking every live member (and its score text)
+  // into a fresh page-aligned arena in member-id order, updating only offsets.
+  // Member ids, lengths, scores, and both indexes are untouched -- so no index
+  // rebuild -- and the old arena's blocks are munmap'd when this returns (the
+  // fresh arena keeps every block but the last full; only the last is partial).
+  // The caller must hold a unique arena (post-fork), as after a structural write.
+  void compact() {
+    if (arena_->member_dead_bytes == 0) {
+      return;
+    }
+    auto fresh = std::make_shared<ZSetMemberByteArena>();
+    fresh->chunk_bytes = arena_->chunk_bytes;
+    fresh->chunk_shift = arena_->chunk_shift;
+    fresh->chunk_mask = arena_->chunk_mask;
+    fresh->growth = arena_->growth;
+
+    const auto count = offsets_.size();
+    for (std::size_t id = 0; id < count; ++id) {
+      const auto member_id = static_cast<std::uint32_t>(id);
+      const auto member = view(member_id);  // reads the OLD arena
+      const auto r = reserve_run_bytes(
+          fresh->member_chunks, fresh->member_next_offset,
+          fresh->member_active_bytes, fresh->member_committed_bytes,
+          fresh->chunk_bytes, fresh->chunk_shift, fresh->chunk_mask, fresh->growth,
+          kInitialArenaBytes, member.size());
+      if (r.dst != nullptr) {
+        std::memcpy(r.dst, member.data(), member.size());
+        fresh->member_used_bytes += member.size();
+      }
+      offsets_[id] = r.offset;
+
+      if (score_string_cache_enabled_) {
+        const auto text = score_text(member_id);  // reads the OLD score-text arena
+        const auto tr = reserve_run_bytes(
+            fresh->score_text_chunks, fresh->score_text_next_offset,
+            fresh->score_text_active_bytes, fresh->score_text_committed_bytes,
+            fresh->chunk_bytes, fresh->chunk_shift, fresh->chunk_mask,
+            fresh->growth, kInitialArenaBytes, text.size());
+        if (tr.dst != nullptr) {
+          std::memcpy(tr.dst, text.data(), text.size());
+          fresh->score_text_used_bytes += text.size();
+        }
+        score_text_refs_[id] = ScoreTextRef{
+            .offset = tr.offset,
+            .length = static_cast<std::uint32_t>(text.size())};
+      }
+    }
+
+    arena_ = std::move(fresh);  // old arena's blocks are freed/munmap'd here
   }
 
   void pop_back() noexcept {
@@ -373,34 +444,16 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] std::uint32_t append_bytes(std::string_view member) {
-    if (member.empty()) {
-      return static_cast<std::uint32_t>(arena_->member_next_offset);
+    const auto r = reserve_run_bytes(
+        arena_->member_chunks, arena_->member_next_offset,
+        arena_->member_active_bytes, arena_->member_committed_bytes,
+        arena_->chunk_bytes, arena_->chunk_shift, arena_->chunk_mask,
+        arena_->growth, kInitialArenaBytes, member.size());
+    if (r.dst != nullptr) {
+      std::memcpy(r.dst, member.data(), member.size());
+      arena_->member_used_bytes += member.size();
     }
-
-    auto chunk_offset = arena_->member_next_offset & arena_->chunk_mask;
-    // If the member would straddle a chunk boundary, skip to the next chunk.
-    if (chunk_offset + member.size() > arena_->chunk_bytes) {
-      arena_->member_next_offset += arena_->chunk_bytes - chunk_offset;
-      chunk_offset = 0;
-    }
-    // Ensure the chunk holding next_offset_ exists. Keying the allocation on the
-    // chunk index (not the fit check) covers the case where the previous member
-    // filled a chunk exactly: next_offset_ then sits on a boundary with
-    // chunk_offset == 0, the fit check passes, but that chunk is not yet
-    // allocated.
-    const size_type chunk_index = arena_->member_next_offset >> arena_->chunk_shift;
-    while (arena_->member_chunks.size() <= chunk_index) {
-      arena_->member_chunks.push_back(
-          std::shared_ptr<char[]>(new char[arena_->chunk_bytes]));
-    }
-
-    const auto offset = static_cast<std::uint32_t>(arena_->member_next_offset);
-    std::memcpy(arena_->member_chunks[chunk_index].get() + chunk_offset,
-                member.data(),
-                member.size());
-    arena_->member_next_offset += member.size();
-    arena_->member_used_bytes += member.size();
-    return offset;
+    return r.offset;
   }
 
   [[nodiscard]] ScoreTextRef append_score_text(double score) {
@@ -417,35 +470,16 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] ScoreTextRef append_score_text_bytes(std::string_view text) {
-    if (text.empty()) {
-      return ScoreTextRef{
-          .offset = static_cast<std::uint32_t>(arena_->score_text_next_offset),
-          .length = 0};
+    const auto r = reserve_run_bytes(
+        arena_->score_text_chunks, arena_->score_text_next_offset,
+        arena_->score_text_active_bytes, arena_->score_text_committed_bytes,
+        arena_->chunk_bytes, arena_->chunk_shift, arena_->chunk_mask,
+        arena_->growth, kInitialArenaBytes, text.size());
+    if (r.dst != nullptr) {
+      std::memcpy(r.dst, text.data(), text.size());
+      arena_->score_text_used_bytes += text.size();
     }
-
-    auto chunk_offset = arena_->score_text_next_offset & arena_->chunk_mask;
-    // If the text would straddle a chunk boundary, skip to the next chunk.
-    if (chunk_offset + text.size() > arena_->chunk_bytes) {
-      arena_->score_text_next_offset += arena_->chunk_bytes - chunk_offset;
-      chunk_offset = 0;
-    }
-    // Same exact-fill guard as append_bytes: allocate by chunk index so a
-    // chunk filled to the byte does not leave next_offset_ pointing at an
-    // unallocated chunk.
-    const size_type chunk_index =
-        arena_->score_text_next_offset >> arena_->chunk_shift;
-    while (arena_->score_text_chunks.size() <= chunk_index) {
-      arena_->score_text_chunks.push_back(
-          std::shared_ptr<char[]>(new char[arena_->chunk_bytes]));
-    }
-
-    const auto offset = static_cast<std::uint32_t>(arena_->score_text_next_offset);
-    std::memcpy(arena_->score_text_chunks[chunk_index].get() + chunk_offset,
-                text.data(),
-                text.size());
-    arena_->score_text_next_offset += text.size();
-    arena_->score_text_used_bytes += text.size();
-    return ScoreTextRef{.offset = offset,
+    return ScoreTextRef{.offset = r.offset,
                         .length = static_cast<std::uint32_t>(text.size())};
   }
 
@@ -461,7 +495,7 @@ class ZSetMemberStorage {
   bool score_string_cache_enabled_{false};
   std::vector<std::uint32_t> offsets_;
   std::vector<std::uint16_t> lengths_;
-  std::vector<double> scores_;
+  ScoreArray scores_;
   std::vector<ScoreTextRef> score_text_refs_;
 };
 

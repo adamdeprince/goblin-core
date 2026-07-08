@@ -55,6 +55,7 @@ struct ZSetOptions {
 struct ZSetMemoryStats {
   std::size_t member_count{0};
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
+  ScoreWidth score_width{ScoreWidth::I16};
   std::size_t member_storage_bytes{0};
   std::size_t member_storage_allocated_bytes{0};
   std::size_t member_ref_capacity{0};

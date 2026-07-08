@@ -105,7 +105,8 @@ ZSetMemberLayer::ZSetMemberLayer(bool score_string_cache,
                                  std::size_t member_chunk_bytes,
                                  double member_index_growth)
     : storage(std::make_shared<ZSetMemberStorage>(score_string_cache,
-                                                  member_chunk_bytes)),
+                                                  member_chunk_bytes,
+                                                  member_index_growth)),
       members(storage.get(), member_index_growth) {}
 
 std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone(
@@ -310,6 +311,14 @@ void ZSet::rebind_indexes() noexcept {
   entries().set_members(member_storage());
 }
 
+// A ZADD whose score falls outside the zset's current score width auto-promotes
+// it (i16->i32->f64) inside the member storage, which rebuilds the score array
+// O(n). DANGER: when the zset is copy-on-write shared (see
+// adopt_shared_member_layer_from), ensure_unique_mutable_state below already forks
+// the SoA O(n) -- so a *promoting* ZADD on a large shared set pays the fork plus
+// the width rebuild (2*O(n) and transient extra memory), a latency/memory spike a
+// single fractional or out-of-range score can trigger. Widening is one-way;
+// GOBLIN.OPTIMIZE reclaims it by scanning and demoting to the narrowest fit.
 int ZSet::add(double score, std::string_view member) {
   if (!std::isfinite(score)) {
     return 0;
@@ -539,6 +548,7 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
       member_layer_ == nullptr ? std::size_t{1} : member_layer_.use_count();
   stats.member_layer_share_count = layer_shares;
   if (member_storage() != nullptr) {
+    stats.score_width = member_storage()->score_width();
     stats.member_storage_bytes = member_storage()->byte_size();
     stats.member_storage_allocated_bytes =
         member_storage()->allocated_bytes() / layer_shares;
@@ -653,7 +663,13 @@ bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
     return false;
   }
 
-  compact();
+  // Id-stable arena reclaim: repack live member bytes into a fresh page-aligned
+  // arena (only offsets change -- no swiss/score index rebuild, unlike the full
+  // compact() used by GOBLIN.OPTIMIZE), then hand the freed pages back to the OS.
+  // The arena is unique here (the preceding ZREM forked it). The swiss index's
+  // own tombstones are reclaimed separately by the member-index cleanup.
+  member_storage()->compact();
+  release_unused_heap_pages();
   return true;
 }
 
@@ -814,10 +830,11 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
     removed += zset->remove(member) ? 1 : 0;
   }
 
-  if (!zset->compact_after_removal_if_needed(static_cast<std::size_t>(removed))) {
-    (void)zset->cleanup_member_index_after_removal_if_needed(
-        static_cast<std::size_t>(removed));
-  }
+  // Byte-arena reclaim and swiss-index tombstone cleanup are now independent
+  // (the id-stable arena compaction no longer rebuilds the index), so run both.
+  (void)zset->compact_after_removal_if_needed(static_cast<std::size_t>(removed));
+  (void)zset->cleanup_member_index_after_removal_if_needed(
+      static_cast<std::size_t>(removed));
   erase_if_empty(key, *zset);
 
   return removed;
@@ -1083,18 +1100,54 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
   return std::nullopt;
 }
 
+namespace {
+
+// A score is written at the zset's current width (bit-preserving via u16/u32 for
+// the signed integer widths), and read back the same way -- smaller, faster
+// snapshots for integer-scored zsets. The width tag precedes the members.
+void write_zset_score(snapshot::Writer& writer, ScoreWidth width, double score) {
+  switch (width) {
+    case ScoreWidth::I16:
+      writer.u16(static_cast<std::uint16_t>(static_cast<std::int16_t>(score)));
+      return;
+    case ScoreWidth::I32:
+      writer.u32(static_cast<std::uint32_t>(static_cast<std::int32_t>(score)));
+      return;
+    case ScoreWidth::F64:
+      writer.f64(score);
+      return;
+  }
+}
+
+[[nodiscard]] double read_zset_score(snapshot::Reader& reader, ScoreWidth width) {
+  switch (width) {
+    case ScoreWidth::I16:
+      return static_cast<double>(static_cast<std::int16_t>(reader.u16()));
+    case ScoreWidth::I32:
+      return static_cast<double>(static_cast<std::int32_t>(reader.u32()));
+    case ScoreWidth::F64:
+      return reader.f64();
+  }
+  return 0.0;
+}
+
+}  // namespace
+
 void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
   writer.u8(static_cast<std::uint8_t>(options_.rank_cache_mode));
   writer.u8(options_.score_string_cache ? 1 : 0);
   writer.f64(options_.member_index_growth);
 
+  const auto width = member_storage()->score_width();
+  writer.u8(static_cast<std::uint8_t>(width));
+
   const auto member_count = static_cast<std::uint32_t>(member_storage()->size());
   writer.u64(member_count);
 
-  // Canonical layer: (score, member bytes) in member-id order. This alone is
-  // enough to reconstruct the zset.
+  // Canonical layer: (score@width, member bytes) in member-id order. This alone
+  // is enough to reconstruct the zset (at whatever width its scores warrant).
   for (std::uint32_t id = 0; id < member_count; ++id) {
-    writer.f64(member_storage()->score(id));
+    write_zset_score(writer, width, member_storage()->score(id));
     writer.str(member_storage()->view(id));
   }
 
@@ -1120,15 +1173,18 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
   // loading server's configuration applies.
   options.member_chunk_bytes = member_chunk_bytes;
 
+  const auto width = static_cast<ScoreWidth>(reader.u8());
+
   ZSet zset(options);
   const auto member_count = static_cast<std::uint32_t>(reader.u64());
   zset.member_storage()->reserve(member_count);
 
   // Canonical rebuild: push_back assigns member ids 0..N-1 in the same order
-  // they were written, so accelerator member ids stay valid. Dead arena bytes
-  // are naturally dropped.
+  // they were written, so accelerator member ids stay valid. Scores are read at
+  // the persisted width; push_back re-derives the narrowest width that fits (so a
+  // set saved wide but now all-integer loads back narrow). Dead bytes are dropped.
   for (std::uint32_t id = 0; id < member_count; ++id) {
-    const double score = reader.f64();
+    const double score = read_zset_score(reader, width);
     const auto member = reader.str();
     (void)zset.member_storage()->push_back(member, score);
   }

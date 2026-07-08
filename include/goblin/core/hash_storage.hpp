@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/page_arena.hpp"
+
 namespace goblin::core {
 
 // Packed field+value storage for a hash. Each entry stores its field bytes
@@ -49,13 +51,15 @@ class HashStorage {
   // chunk, rounded to the next power of two: 2^17 = 128 KiB.
   static constexpr size_type kMinChunkBytes = size_type{1} << 17;
 
-  explicit HashStorage(size_type chunk_bytes = kDefaultChunkBytes) {
+  explicit HashStorage(size_type chunk_bytes = kDefaultChunkBytes,
+                       double growth = kDefaultArenaGrowth) {
     if (!std::has_single_bit(chunk_bytes) || chunk_bytes < kMinChunkBytes) {
       chunk_bytes = kDefaultChunkBytes;
     }
     chunk_bytes_ = chunk_bytes;
     chunk_shift_ = static_cast<size_type>(std::countr_zero(chunk_bytes));
     chunk_mask_ = chunk_bytes - 1;
+    growth_ = growth > 1.0 ? growth : kDefaultArenaGrowth;
   }
 
   [[nodiscard]] size_type chunk_bytes() const noexcept { return chunk_bytes_; }
@@ -67,7 +71,7 @@ class HashStorage {
     return used_bytes_ - dead_bytes_;
   }
   [[nodiscard]] size_type byte_capacity() const noexcept {
-    return chunks_.size() * chunk_bytes_;
+    return committed_bytes_;
   }
   [[nodiscard]] size_type ref_capacity() const noexcept {
     return offsets_.capacity();
@@ -77,7 +81,7 @@ class HashStorage {
     return byte_capacity() + offsets_.capacity() * sizeof(std::uint32_t) +
            field_lengths_.capacity() * sizeof(std::uint16_t) +
            value_lengths_.capacity() * sizeof(std::uint16_t) +
-           chunks_.capacity() * sizeof(std::unique_ptr<char[]>);
+           chunks_.capacity() * sizeof(std::shared_ptr<char[]>);
   }
 
   void reserve(size_type field_count) {
@@ -198,49 +202,38 @@ class HashStorage {
             total - (chunk_bytes_ - 1)) {
       throw std::length_error("hash arena exhausted");
     }
-    if (total == 0) {
-      return static_cast<std::uint32_t>(next_offset_);
+    // Reserve the blob's bytes in the growable, page-aligned arena (each block
+    // owns a chunk_bytes logical slot, so chunk_ptr's shift/mask addressing is
+    // unchanged; the active block grows to fit and a blob never straddles).
+    const auto r = reserve_run_bytes(chunks_, next_offset_, active_bytes_,
+                                     committed_bytes_, chunk_bytes_, chunk_shift_,
+                                     chunk_mask_, growth_, kInitialArenaBytes,
+                                     total);
+    if (r.dst != nullptr) {
+      if (!field.empty()) {
+        std::memcpy(r.dst, field.data(), field.size());
+      }
+      if (!value.empty()) {
+        std::memcpy(r.dst + field.size(), value.data(), value.size());
+      }
+      used_bytes_ += total;
     }
-
-    auto chunk_offset = next_offset_ & chunk_mask_;
-    // Keep the blob within one chunk (a field+value is at most ~128 KiB, so it
-    // always fits a chunk of at least kMinChunkBytes): skip to the next chunk
-    // if it would straddle.
-    if (chunk_offset + total > chunk_bytes_) {
-      next_offset_ += chunk_bytes_ - chunk_offset;
-      chunk_offset = 0;
-    }
-    // Allocate by chunk index (an exact chunk fill leaves next_offset_ on a
-    // boundary whose chunk is not yet allocated -- the same guard as the zset
-    // arena).
-    const size_type chunk_index = next_offset_ >> chunk_shift_;
-    while (chunks_.size() <= chunk_index) {
-      chunks_.push_back(std::make_unique_for_overwrite<char[]>(chunk_bytes_));
-    }
-
-    const auto offset = static_cast<std::uint32_t>(next_offset_);
-    char* dst = chunks_[chunk_index].get() + chunk_offset;
-    if (!field.empty()) {
-      std::memcpy(dst, field.data(), field.size());
-    }
-    if (!value.empty()) {
-      std::memcpy(dst + field.size(), value.data(), value.size());
-    }
-    next_offset_ += total;
-    used_bytes_ += total;
-    return offset;
+    return r.offset;
   }
 
-  std::vector<std::unique_ptr<char[]>> chunks_;
+  std::vector<std::shared_ptr<char[]>> chunks_;
   std::vector<std::uint32_t> offsets_;
   std::vector<std::uint16_t> field_lengths_;
   std::vector<std::uint16_t> value_lengths_;
   size_type next_offset_{0};
   size_type used_bytes_{0};
   size_type dead_bytes_{0};
+  size_type active_bytes_{0};     // physical size of the last block
+  size_type committed_bytes_{0};  // sum of block physical sizes
   size_type chunk_bytes_{kDefaultChunkBytes};
   size_type chunk_shift_{20};
   size_type chunk_mask_{kDefaultChunkBytes - 1};
+  double growth_{kDefaultArenaGrowth};
 };
 
 }  // namespace goblin::core

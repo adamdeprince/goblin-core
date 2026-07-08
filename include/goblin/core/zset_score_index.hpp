@@ -121,7 +121,10 @@ class ZSetScoreIndex {
     index_offset_ = 0;
     clear_location_cache();
     size_ = 0;
+    score_width_ = ScoreWidth::I16;
   }
+
+  [[nodiscard]] ScoreWidth score_width() const noexcept { return score_width_; }
 
   // Deep-copy block storage from another index over the same member layer.
   void copy_blocks_from(const ZSetScoreIndex& source) {
@@ -129,6 +132,7 @@ class ZSetScoreIndex {
     rank_cache_mode_ = source.rank_cache_mode_;
     block_hint_narrow_limit_ = source.block_hint_narrow_limit_;
     size_ = source.size_;
+    score_width_ = source.score_width_;
     next_block_id_ = source.next_block_id_;
     block_hints_wide_ = source.block_hints_wide_;
 
@@ -153,6 +157,14 @@ class ZSetScoreIndex {
       return;
     }
 
+    // Re-derive the narrowest width that fits every score. This is how OPTIMIZE
+    // demotes: a fresh sorted rebuild picks the smallest sufficient width.
+    ScoreWidth width = ScoreWidth::I16;
+    for (const auto& value : values) {
+      width = score_width_for(value.score, width);
+    }
+    score_width_ = width;
+
     size_ = values.size();
     blocks_.reserve((values.size() + kLoad - 1) / kLoad);
     maxes_.reserve(blocks_.capacity());
@@ -160,6 +172,7 @@ class ZSetScoreIndex {
     for (size_type start = 0; start < values.size(); start += kLoad) {
       const auto count = std::min(kLoad, values.size() - start);
       Block block;
+      block.score_width_ = score_width_;
       assign_block_id(block);
       block.reserve(count);
       for (size_type i = 0; i < count; ++i) {
@@ -176,8 +189,10 @@ class ZSetScoreIndex {
   }
 
   void insert(ZSetScoreEntry value) {
+    ensure_score_width(value.score);
     if (blocks_.empty()) {
       blocks_.push_back(Block{});
+      blocks_.back().score_width_ = score_width_;
       assign_block_id(blocks_.back());
       blocks_.back().push_back(value);
       maxes_.push_back(value);
@@ -557,13 +572,64 @@ class ZSetScoreIndex {
       return capacity_;
     }
 
+    [[nodiscard]] ScoreWidth score_width() const noexcept { return score_width_; }
+
+    [[nodiscard]] size_type score_bytes() const noexcept {
+      return score_width_bytes(score_width_);
+    }
+
+    // Scores are stored at the index's runtime width (i16/i32/f64) in a raw byte
+    // buffer; read/write decode/encode to double via memcpy (alignment-safe). The
+    // comparators stay double-based (decode-on-read), so the SortedList is intact.
+    [[nodiscard]] double read_score(size_type index) const noexcept {
+      const std::byte* p = scores_.get() + index * score_bytes();
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          std::int16_t v;
+          std::memcpy(&v, p, sizeof(v));
+          return static_cast<double>(v);
+        }
+        case ScoreWidth::I32: {
+          std::int32_t v;
+          std::memcpy(&v, p, sizeof(v));
+          return static_cast<double>(v);
+        }
+        case ScoreWidth::F64: {
+          double v;
+          std::memcpy(&v, p, sizeof(v));
+          return v;
+        }
+      }
+      return 0.0;
+    }
+
+    void write_score(size_type index, double value) noexcept {
+      std::byte* p = scores_.get() + index * score_bytes();
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          const auto v = static_cast<std::int16_t>(value);
+          std::memcpy(p, &v, sizeof(v));
+          return;
+        }
+        case ScoreWidth::I32: {
+          const auto v = static_cast<std::int32_t>(value);
+          std::memcpy(p, &v, sizeof(v));
+          return;
+        }
+        case ScoreWidth::F64:
+          std::memcpy(p, &value, sizeof(value));
+          return;
+      }
+    }
+
     [[nodiscard]] size_type allocated_bytes() const noexcept {
       return static_cast<size_type>(capacity_) *
-             (sizeof(double) + sizeof(std::uint32_t));
+             (score_bytes() + sizeof(std::uint32_t));
     }
 
     [[nodiscard]] ZSetScoreEntry at(size_type index) const noexcept {
-      return ZSetScoreEntry{.score = scores_[index], .member_id = member_ids_[index]};
+      return ZSetScoreEntry{.score = read_score(index),
+                            .member_id = member_ids_[index]};
     }
 
     [[nodiscard]] ZSetScoreEntry front() const noexcept {
@@ -581,7 +647,7 @@ class ZSetScoreIndex {
       while (count > 0) {
         const auto step = count / 2;
         const auto mid = first + step;
-        if (owner.less_parts(scores_[mid], member_ids_[mid],
+        if (owner.less_parts(read_score(mid), member_ids_[mid],
                              value.score, value.member_id)) {
           first = mid + 1;
           count -= step + 1;
@@ -600,7 +666,7 @@ class ZSetScoreIndex {
         const auto step = count / 2;
         const auto mid = first + step;
         if (!owner.less_parts(value.score, value.member_id,
-                              scores_[mid], member_ids_[mid])) {
+                              read_score(mid), member_ids_[mid])) {
           first = mid + 1;
           count -= step + 1;
         } else {
@@ -611,13 +677,23 @@ class ZSetScoreIndex {
     }
 
     [[nodiscard]] size_type lower_bound_score(double score) const noexcept {
-      return static_cast<size_type>(
-          std::lower_bound(scores_.get(), scores_.get() + size_, score) -
-          scores_.get());
+      size_type first = 0;
+      size_type count = size_;
+      while (count > 0) {
+        const auto step = count / 2;
+        const auto mid = first + step;
+        if (read_score(mid) < score) {
+          first = mid + 1;
+          count -= step + 1;
+        } else {
+          count = step;
+        }
+      }
+      return first;
     }
 
     [[nodiscard]] double score_at(size_type index) const noexcept {
-      return scores_[index];
+      return read_score(index);
     }
 
     [[nodiscard]] std::uint32_t member_id_at(size_type index) const noexcept {
@@ -634,7 +710,7 @@ class ZSetScoreIndex {
 
     void push_back(ZSetScoreEntry value) {
       reserve(size_ + 1);
-      scores_[size_] = value.score;
+      write_score(size_, value.score);
       member_ids_[size_] = value.member_id;
       ++size_;
     }
@@ -660,14 +736,15 @@ class ZSetScoreIndex {
       reserve(size_ + 1);
       const auto move_count = size_ - offset;
       if (move_count > 0) {
-        std::memmove(scores_.get() + offset + 1,
-                     scores_.get() + offset,
-                     move_count * sizeof(double));
+        const auto sb = score_bytes();
+        std::memmove(scores_.get() + (offset + 1) * sb,
+                     scores_.get() + offset * sb,
+                     move_count * sb);
         std::memmove(member_ids_.get() + offset + 1,
                      member_ids_.get() + offset,
                      move_count * sizeof(std::uint32_t));
       }
-      scores_[offset] = value.score;
+      write_score(offset, value.score);
       member_ids_[offset] = value.member_id;
       ++size_;
     }
@@ -675,9 +752,10 @@ class ZSetScoreIndex {
     void erase(size_type offset) {
       const auto move_count = size_ - offset - 1;
       if (move_count > 0) {
-        std::memmove(scores_.get() + offset,
-                     scores_.get() + offset + 1,
-                     move_count * sizeof(double));
+        const auto sb = score_bytes();
+        std::memmove(scores_.get() + offset * sb,
+                     scores_.get() + (offset + 1) * sb,
+                     move_count * sb);
         std::memmove(member_ids_.get() + offset,
                      member_ids_.get() + offset + 1,
                      move_count * sizeof(std::uint32_t));
@@ -705,7 +783,7 @@ class ZSetScoreIndex {
     void for_range(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
         const auto index = offset + i;
-        fn(scores_[index], member_ids_[index]);
+        fn(read_score(index), member_ids_[index]);
       }
     }
 
@@ -720,7 +798,7 @@ class ZSetScoreIndex {
     void for_reverse_range(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
         const auto index = offset - i;
-        fn(scores_[index], member_ids_[index]);
+        fn(read_score(index), member_ids_[index]);
       }
     }
 
@@ -733,9 +811,12 @@ class ZSetScoreIndex {
 
     [[nodiscard]] Block split_off(size_type split_at) {
       Block right;
+      right.score_width_ = score_width_;
       const auto right_size = size_ - split_at;
       right.reserve(right_size);
-      std::copy_n(scores_.get() + split_at, right_size, right.scores_.get());
+      const auto sb = score_bytes();
+      std::memcpy(right.scores_.get(), scores_.get() + split_at * sb,
+                  right_size * sb);
       std::copy_n(member_ids_.get() + split_at, right_size, right.member_ids_.get());
       right.size_ = right_size;
       size_ = split_at;
@@ -744,25 +825,61 @@ class ZSetScoreIndex {
 
     void append(Block&& right) {
       reserve(size_ + right.size_);
-      std::copy_n(right.scores_.get(), right.size_, scores_.get() + size_);
+      const auto sb = score_bytes();
+      std::memcpy(scores_.get() + size_ * sb, right.scores_.get(),
+                  right.size_ * sb);
       std::copy_n(right.member_ids_.get(), right.size_, member_ids_.get() + size_);
       size_ += right.size_;
     }
 
     [[nodiscard]] Block clone() const {
       Block copy;
+      copy.score_width_ = score_width_;
       copy.size_ = size_;
       copy.capacity_ = capacity_;
       copy.id_ = id_;
       if (capacity_ > 0) {
-        copy.scores_ = std::make_unique_for_overwrite<double[]>(capacity_);
+        const auto sb = score_bytes();
+        copy.scores_ = std::make_unique_for_overwrite<std::byte[]>(
+            static_cast<size_type>(capacity_) * sb);
         copy.member_ids_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
         if (size_ > 0) {
-          std::copy_n(scores_.get(), size_, copy.scores_.get());
+          std::memcpy(copy.scores_.get(), scores_.get(), size_ * sb);
           std::copy_n(member_ids_.get(), size_, copy.member_ids_.get());
         }
       }
       return copy;
+    }
+
+    // Re-encode every live score to a wider width in place (index-driven promote).
+    void promote_scores(ScoreWidth target) {
+      if (target == score_width_) {
+        return;
+      }
+      const auto new_bytes = score_width_bytes(target);
+      auto fresh = std::make_unique_for_overwrite<std::byte[]>(
+          static_cast<size_type>(capacity_) * new_bytes);
+      for (size_type i = 0; i < size_; ++i) {
+        const double value = read_score(i);  // decodes at the old width
+        std::byte* p = fresh.get() + i * new_bytes;
+        switch (target) {
+          case ScoreWidth::I16: {
+            const auto v = static_cast<std::int16_t>(value);
+            std::memcpy(p, &v, sizeof(v));
+            break;
+          }
+          case ScoreWidth::I32: {
+            const auto v = static_cast<std::int32_t>(value);
+            std::memcpy(p, &v, sizeof(v));
+            break;
+          }
+          case ScoreWidth::F64:
+            std::memcpy(p, &value, sizeof(value));
+            break;
+        }
+      }
+      scores_ = std::move(fresh);
+      score_width_ = target;
     }
 
     [[nodiscard]] bool validate() const noexcept {
@@ -801,10 +918,11 @@ class ZSetScoreIndex {
 
     void reallocate(size_type required) {
       const auto new_capacity = allocation_capacity(required);
-      auto scores = std::make_unique_for_overwrite<double[]>(new_capacity);
+      const auto sb = score_bytes();
+      auto scores = std::make_unique_for_overwrite<std::byte[]>(new_capacity * sb);
       auto member_ids = std::make_unique_for_overwrite<std::uint32_t[]>(new_capacity);
       if (size_ > 0) {
-        std::copy_n(scores_.get(), size_, scores.get());
+        std::memcpy(scores.get(), scores_.get(), size_ * sb);
         std::copy_n(member_ids_.get(), size_, member_ids.get());
       }
       scores_ = std::move(scores);
@@ -812,8 +930,9 @@ class ZSetScoreIndex {
       capacity_ = static_cast<std::uint16_t>(new_capacity);
     }
 
-    std::unique_ptr<double[]> scores_;
+    std::unique_ptr<std::byte[]> scores_;
     std::unique_ptr<std::uint32_t[]> member_ids_;
+    ScoreWidth score_width_{ScoreWidth::I16};
     std::uint16_t size_{0};
     std::uint16_t capacity_{0};
     std::uint32_t id_{kInvalidBlockIndex};
@@ -1305,6 +1424,20 @@ class ZSetScoreIndex {
     return less_parts(lhs.score, lhs.member_id, rhs.score, rhs.member_id);
   }
 
+  // One-way widen: if `score` doesn't fit the current width, re-encode every
+  // block to the narrowest width that does. All blocks share the index's width,
+  // so they promote together (see the CoW-promotion danger note in ZSet::add).
+  void ensure_score_width(double score) {
+    if (score_fits(score, score_width_)) {
+      return;
+    }
+    const auto target = score_width_for(score, score_width_);
+    for (auto& block : blocks_) {
+      block.promote_scores(target);
+    }
+    score_width_ = target;
+  }
+
   [[nodiscard]] bool less_parts(double lhs_score,
                                 std::uint32_t lhs_member_id,
                                 double rhs_score,
@@ -1629,6 +1762,7 @@ class ZSetScoreIndex {
   std::vector<std::uint32_t> block_index_by_id_;
   mutable size_type index_offset_{0};
   size_type size_{0};
+  ScoreWidth score_width_{ScoreWidth::I16};
   std::uint32_t next_block_id_{0};
   std::uint32_t block_hint_narrow_limit_{kDefaultBlockHintNarrowLimit};
   bool block_hints_wide_{false};

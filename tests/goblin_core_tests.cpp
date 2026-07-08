@@ -174,9 +174,11 @@ void test_command_dispatch() {
          ":2\r\n");
 
   const auto memory = execute_fields(store, {"GOBLIN.MEMORY", "leaders"});
-  assert(memory.starts_with("*36\r\n"));
+  assert(memory.starts_with("*38\r\n"));
   assert(memory.find("member_index_allocated_bytes") != std::string::npos);
   assert(memory.find("rank_cache_mode") != std::string::npos);
+  assert(memory.find("score_width") != std::string::npos);
+  assert(memory.find("$3\r\ni16\r\n") != std::string::npos);
   assert(memory.find("$3\r\noff\r\n") != std::string::npos);
   assert(memory.find("rank_location_cache_allocated_bytes") != std::string::npos);
   assert(memory.find("score_string_cache_allocated_bytes") != std::string::npos);
@@ -841,6 +843,89 @@ void test_store_shared_member_layer() {
   assert(!store.zscore("key-b", "member-1").has_value());
 }
 
+// Two keys sharing a member layer/arena, then EACH doing a structural append of a
+// distinct new member, is the sequence that used to corrupt: fork() shallow-copied
+// the shared tail block and both sides kept the same next_offset, so the two
+// appends landed at the same arena offset and clobbered each other. The COW-on-
+// shared-active-block guard in reserve_run_bytes closes it.
+void test_store_shared_layer_structural_append_cow() {
+  goblin::core::Store store;
+
+  for (int i = 0; i < 128; ++i) {
+    const auto member = "member-" + std::to_string(i);
+    assert(store.zadd("key-a", static_cast<double>(i), member) == 1);
+  }
+  for (int i = 0; i < 128; ++i) {
+    const auto member = "member-" + std::to_string(i);
+    assert(store.zadd("key-b", static_cast<double>(i), member) == 0);  // shares key-a
+  }
+  const auto stats = store.zset_memory_stats("key-a");
+  assert(stats.has_value() && stats->member_layer_share_count >= 2);
+
+  // Distinct new members, same length, appended into the shared partial tail block.
+  assert(store.zadd("key-a", 1000.0, "only-in-a") == 1);
+  assert(store.zadd("key-b", 2000.0, "only-in-b") == 1);
+
+  // Each new member reads back its own bytes (pre-fix, key-b's write overwrote
+  // key-a's, so the index lookup for "only-in-a" missed).
+  assert(store.zscore("key-a", "only-in-a") == 1000.0);
+  assert(store.zscore("key-b", "only-in-b") == 2000.0);
+  assert(!store.zscore("key-a", "only-in-b").has_value());
+  assert(!store.zscore("key-b", "only-in-a").has_value());
+  // Shared members remain intact on both sides.
+  assert(store.zscore("key-a", "member-0") == 0.0);
+  assert(store.zscore("key-b", "member-127") == 127.0);
+  assert(store.zcard("key-a") == 129);
+  assert(store.zcard("key-b") == 129);
+}
+
+// The small-collection win: a tiny zset must no longer cost a full 1 MiB arena
+// block. The first block starts sub-page and grows, so a single-member set's
+// member arena is a handful of bytes.
+void test_zset_small_collection_footprint() {
+  goblin::core::Store store;
+
+  assert(store.zadd("tiny", 1.0, "m") == 1);
+  const auto stats = store.zset_memory_stats("tiny");
+  assert(stats.has_value());
+  assert(stats->member_storage_allocated_bytes < 4096);  // was chunk_bytes (1 MiB)
+
+  constexpr int kCount = 2000;
+  for (int i = 0; i < kCount; ++i) {
+    assert(store.zadd("z-" + std::to_string(i), 1.0, "member") == 1);
+  }
+  // Pre-change: >= kCount * 1 MiB (~2 GiB). Now a few MiB of indexes + tiny arenas.
+  const auto total = store.memory_stats().total_allocated_bytes;
+  assert(total < static_cast<std::size_t>(kCount) * 16384);
+}
+
+// Correctness of the growable arena across many blocks: small chunk_bytes forces
+// grow -> freeze -> fresh-block cycling, and near-max members force grow-to-fit
+// and straddle into fresh blocks. Every member must round-trip (score + bytes).
+void test_zset_arena_growth_spans_blocks() {
+  goblin::core::StoreOptions opts;
+  opts.zset_chunk_bytes = std::size_t{64} << 10;  // 64 KiB (= kMinChunkBytes)
+  goblin::core::Store store(opts);
+
+  std::vector<std::pair<double, std::string>> expected;
+  for (int i = 0; i < 2000; ++i) {
+    std::string member =
+        "member-" + std::to_string(i) + std::string(static_cast<std::size_t>(i % 11), 'x');
+    assert(store.zadd("z", static_cast<double>(i), member) == 1);
+    expected.emplace_back(static_cast<double>(i), member);
+  }
+  for (int k = 0; k < 3; ++k) {  // ~60 KiB members: grow-to-fit + straddle
+    std::string big(std::size_t{60} << 10, static_cast<char>('A' + k));
+    assert(store.zadd("z", 100000.0 + k, big) == 1);
+    expected.emplace_back(100000.0 + k, big);
+  }
+  for (const auto& [score, member] : expected) {
+    const auto got = store.zscore("z", member);
+    assert(got.has_value() && *got == score);
+  }
+  assert(store.zcard("z") == expected.size());
+}
+
 void test_store_shared_member_layer_skips_unrelated_keys() {
   goblin::core::Store store;
 
@@ -930,6 +1015,124 @@ std::uint32_t add_score_index_member(goblin::core::ZSetMemberStorage& storage,
   assert(member_id == member_number);
   index.insert(goblin::core::ZSetScoreEntry{.score = score, .member_id = member_id});
   return member_id;
+}
+
+// Scores are stored at the narrowest signed width that holds them, widening
+// one-way (i16 -> i32 -> f64) on a value that doesn't fit; -0.0/fractional force
+// f64. Every score reads back exactly through the double boundary.
+void test_zset_score_width_promotes() {
+  using goblin::core::ScoreWidth;
+
+  goblin::core::ZSetMemberStorage storage;
+  const auto a = storage.push_back("a", -32768.0);
+  const auto b = storage.push_back("b", 32767.0);
+  assert(storage.score_width() == ScoreWidth::I16);  // chess range
+  assert(storage.score(a) == -32768.0 && storage.score(b) == 32767.0);
+
+  const auto c = storage.push_back("c", 100000.0);  // beyond i16, within i32
+  assert(storage.score_width() == ScoreWidth::I32);
+  assert(storage.score(a) == -32768.0 && storage.score(c) == 100000.0);
+
+  const auto d = storage.push_back("d", 1.5);  // fractional -> f64
+  assert(storage.score_width() == ScoreWidth::F64);
+  assert(storage.score(a) == -32768.0 && storage.score(c) == 100000.0 &&
+         storage.score(d) == 1.5);
+
+  goblin::core::ZSetMemberStorage big;  // integer beyond i32 -> f64
+  const auto e = big.push_back("e", 5000000000.0);
+  assert(big.score_width() == ScoreWidth::F64 && big.score(e) == 5000000000.0);
+
+  goblin::core::ZSetMemberStorage neg_zero;  // -0.0 must not narrow to int 0
+  const auto f = neg_zero.push_back("f", -0.0);
+  assert(neg_zero.score_width() == ScoreWidth::F64 &&
+         std::signbit(neg_zero.score(f)));
+
+  goblin::core::ZSetMemberStorage upd;  // set_score widens too
+  const auto g = upd.push_back("g", 10.0);
+  assert(upd.score_width() == ScoreWidth::I16);
+  upd.set_score(g, 2.5);
+  assert(upd.score_width() == ScoreWidth::F64 && upd.score(g) == 2.5);
+}
+
+// Widening is one-way during normal ops; GOBLIN.OPTIMIZE rescans the live scores
+// and demotes back to the narrowest width (its full rebuild re-derives it).
+void test_zset_optimize_demotes_score_width() {
+  using goblin::core::ScoreWidth;
+  goblin::core::Store store;
+
+  for (int i = 0; i < 100; ++i) {
+    (void)store.zadd("z", static_cast<double>(i), "m" + std::to_string(i));
+  }
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::I16);
+
+  (void)store.zadd("z", 0.5, "frac");  // fractional forces f64
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::F64);
+
+  const std::vector<std::string_view> to_remove{"frac"};
+  (void)store.zrem("z", to_remove);  // removing it does NOT auto-demote
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::F64);
+
+  (void)store.optimize("z", 0.97);  // OPTIMIZE rescans and demotes
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::I16);
+  assert(store.zscore("z", "m50") == 50.0);
+  assert(!store.zscore("z", "frac").has_value());
+}
+
+// The sorted score index stores scores at the width too; promoting it (i16 ->
+// i32 -> f64 as out-of-range values arrive) must re-encode every block and keep
+// the total order (ranks) and exact score values intact across many blocks.
+void test_zset_score_index_width_ordering() {
+  using goblin::core::ScoreWidth;
+  goblin::core::Store store;
+
+  for (int i = 0; i < 1000; ++i) {  // scores [-500, 499], i16, many blocks
+    (void)store.zadd("z", static_cast<double>(i - 500), "m" + std::to_string(i));
+  }
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::I16);
+
+  (void)store.zadd("z", 100000.0, "big");  // forces i32 (index re-encodes)
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::I32);
+
+  (void)store.zadd("z", 0.25, "frac");  // forces f64
+  assert(store.zset_memory_stats("z")->score_width == ScoreWidth::F64);
+
+  // Order and values intact across both promotions.
+  assert(store.zcard("z") == 1002);
+  assert(store.zrank("z", "m0") == 0);          // score -500, the minimum
+  assert(store.zrank("z", "big") == 1001);      // score 100000, the maximum
+  assert(store.zscore("z", "m750") == 250.0);
+  assert(store.zscore("z", "big") == 100000.0);
+  assert(store.zscore("z", "frac") == 0.25);
+  // frac (0.25) sits between m500 (0.0) and m501 (1.0).
+  assert(store.zrank("z", "frac") == store.zrank("z", "m500").value() + 1);
+}
+
+// Deleting most of a zset triggers the id-stable arena compaction: it reclaims the
+// member-bytes arena (fresh page-aligned blocks, old munmap'd) while keeping member
+// ids and the indexes valid, so every survivor still reads back its exact score.
+void test_zset_arena_id_stable_reclaim() {
+  goblin::core::Store store;
+  constexpr int kN = 100000;
+  std::vector<std::string> members;
+  members.reserve(kN);
+  for (int i = 0; i < kN; ++i) {
+    members.push_back("member-" + std::to_string(i) + "-padding");
+    (void)store.zadd("z", static_cast<double>(i % 25000), members.back());
+  }
+  const auto grown = store.zset_memory_stats("z")->member_storage_allocated_bytes;
+
+  std::vector<std::string_view> batch;  // delete the first 90%
+  for (int i = 0; i < kN * 9 / 10; ++i) {
+    batch.push_back(members[i]);
+  }
+  (void)store.zrem("z", batch);
+
+  const auto shrunk = store.zset_memory_stats("z")->member_storage_allocated_bytes;
+  assert(shrunk < grown / 2);                       // arena reclaimed
+  assert(store.zcard("z") == kN - kN * 9 / 10);
+  for (int i = kN * 9 / 10; i < kN; i += 137) {     // survivors intact
+    assert(store.zscore("z", members[i]) == static_cast<double>(i % 25000));
+  }
 }
 
 void test_block_hint_rank_cache_lazy_offset_repair() {
@@ -1208,6 +1411,37 @@ void test_snapshot_round_trip() {
 }
 
 // The full persistence cycle on one store: save, clear, reload, same data back.
+// An integer-scored (i16) zset serializes its scores at 2 bytes, not 8, so its
+// snapshot is markedly smaller than the same members with fractional scores.
+void test_snapshot_score_width_shrinks() {
+  using goblin::core::Store;
+
+  Store chess;
+  Store frac;
+  for (int i = 0; i < 500; ++i) {
+    const auto member = "m" + std::to_string(i);
+    (void)chess.zadd("z", static_cast<double>(i - 250), member);        // i16
+    (void)frac.zadd("z", static_cast<double>(i - 250) + 0.5, member);   // f64
+  }
+
+  std::ostringstream chess_out(std::ios::binary);
+  std::ostringstream frac_out(std::ios::binary);
+  chess.save(chess_out);
+  frac.save(frac_out);
+  const auto chess_bytes = chess_out.str();
+  const auto frac_bytes = frac_out.str();
+  // 6 bytes/member less (i16 vs f64) across 500 members; be conservative.
+  assert(chess_bytes.size() + 500 * 5 < frac_bytes.size());
+
+  Store loaded;
+  std::istringstream in(chess_bytes, std::ios::binary);
+  (void)loaded.load(in);
+  for (int i = 0; i < 500; i += 7) {
+    const auto member = "m" + std::to_string(i);
+    assert(loaded.zscore("z", member) == static_cast<double>(i - 250));
+  }
+}
+
 void test_snapshot_save_clear_reload() {
   using goblin::core::Store;
   Store store;
@@ -1660,10 +1894,17 @@ int main() {
   test_store_zset_methods();
   test_store_inline_and_overflow_zsets();
   test_store_shared_member_layer();
+  test_store_shared_layer_structural_append_cow();
+  test_zset_small_collection_footprint();
+  test_zset_arena_growth_spans_blocks();
   test_store_shared_member_layer_skips_unrelated_keys();
   test_store_inline_zset_slot_limit();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
+  test_zset_score_width_promotes();
+  test_zset_optimize_demotes_score_width();
+  test_zset_score_index_width_ordering();
+  test_zset_arena_id_stable_reclaim();
   test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();
@@ -1680,6 +1921,7 @@ int main() {
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
+  test_snapshot_score_width_shrinks();
   test_snapshot_save_clear_reload();
   test_hash_basic();
   test_hash_snapshot_roundtrip();

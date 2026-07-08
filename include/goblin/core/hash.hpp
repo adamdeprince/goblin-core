@@ -38,7 +38,8 @@ class Hash {
   static constexpr double kDefaultFieldIndexDensity = 0.97;
 
   explicit Hash(HashOptions options = {})
-      : storage_(std::make_unique<HashStorage>(options.chunk_bytes)),
+      : storage_(std::make_unique<HashStorage>(options.chunk_bytes,
+                                               options.member_index_growth)),
         fields_(storage_.get(), options.member_index_growth),
         options_(options) {}
 
@@ -128,7 +129,8 @@ class Hash {
   // fragmentation exceeds the live bytes (see maybe_compact).
   void compact(double field_index_density = kDefaultFieldIndexDensity) {
     const auto n = static_cast<std::uint32_t>(storage_->size());
-    auto new_storage = std::make_unique<HashStorage>(storage_->chunk_bytes());
+    auto new_storage = std::make_unique<HashStorage>(
+        storage_->chunk_bytes(), options_.member_index_growth);
     new_storage->reserve(n);
     MemberIndex<HashStorage> new_index(new_storage.get(),
                                        options_.member_index_growth);

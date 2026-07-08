@@ -119,6 +119,7 @@ namespace {
 
   add("member_count", stats.member_count);
   add_string("rank_cache_mode", rank_cache_mode_name(stats.rank_cache_mode));
+  add_string("score_width", score_width_name(stats.score_width));
   add("member_storage_bytes", stats.member_storage_bytes);
   add("member_storage_allocated_bytes", stats.member_storage_allocated_bytes);
   add("member_ref_capacity", stats.member_ref_capacity);
