@@ -16,6 +16,7 @@
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
 #include "goblin/core/zset_member_layer.hpp"
+#include "goblin/core/zset_listpack.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 #include "goblin/core/zset_score_index.hpp"
 
@@ -105,6 +106,11 @@ class ZSet {
       long long stop) const noexcept;
   template <class Fn>
   std::size_t for_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
+    if (small_) {
+      small_->for_range(bounds.first, bounds.count, false,
+                        [&fn](double, std::string_view member) { fn(member); });
+      return bounds.count;
+    }
     // Range iteration walks member ids in score order, which is scattered
     // relative to member storage id order. Software-prefetch the pointer chase
     // id -> location -> bytes two stages deep (location further ahead than the
@@ -138,11 +144,11 @@ class ZSet {
   }
   template <class Fn>
   std::size_t for_range_values(ZSetRangeBounds bounds, Fn&& fn) const {
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(member_view(member_id), score);
-    };
-    entries().for_range(bounds.first, bounds.count, callback);
-    return bounds.count;
+    return for_position_range(
+        bounds, false,
+        [&fn](std::string_view member, double score, std::string_view) {
+          fn(member, score);
+        });
   }
   template <class Fn>
   std::size_t for_range_values(long long start, long long stop, Fn&& fn) const {
@@ -156,11 +162,11 @@ class ZSet {
   template <class Fn>
   std::size_t for_range_score_text_values(ZSetRangeBounds bounds,
                                           Fn&& fn) const {
-    auto callback = [this, &fn](double, std::uint32_t member_id) {
-      fn(member_view(member_id), score_text_view(member_id));
-    };
-    entries().for_range(bounds.first, bounds.count, callback);
-    return bounds.count;
+    return for_position_range(
+        bounds, false,
+        [&fn](std::string_view member, double, std::string_view score_text) {
+          fn(member, score_text);
+        });
   }
   template <class Fn>
   std::size_t for_range_score_text_values(long long start,
@@ -180,13 +186,11 @@ class ZSet {
       return 0;
     }
 
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(ZSetEntry{.member = member_view(member_id),
-                   .score = score,
-                   .score_text = {}});
-    };
-    entries().for_range(bounds->first, bounds->count, callback);
-    return bounds->count;
+    return for_position_range(
+        *bounds, false,
+        [&fn](std::string_view member, double score, std::string_view) {
+          fn(ZSetEntry{.member = member, .score = score, .score_text = {}});
+        });
   }
   template <class Fn>
   std::size_t for_range_with_score_text(long long start,
@@ -196,17 +200,21 @@ class ZSet {
     if (!bounds) {
       return 0;
     }
-
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(ZSetEntry{.member = member_view(member_id),
-                   .score = score,
-                   .score_text = score_text_view(member_id)});
-    };
-    entries().for_range(bounds->first, bounds->count, callback);
-    return bounds->count;
+    return for_position_range(
+        *bounds, false,
+        [&fn](std::string_view member, double score,
+              std::string_view score_text) {
+          fn(ZSetEntry{
+              .member = member, .score = score, .score_text = score_text});
+        });
   }
   template <class Fn>
   std::size_t for_reverse_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
+    if (small_) {
+      small_->for_range(bounds.first, bounds.count, true,
+                        [&fn](double, std::string_view member) { fn(member); });
+      return bounds.count;
+    }
     auto callback = [this, &fn](std::uint32_t member_id) {
       fn(member_view(member_id));
     };
@@ -226,11 +234,11 @@ class ZSet {
   }
   template <class Fn>
   std::size_t for_reverse_range_values(ZSetRangeBounds bounds, Fn&& fn) const {
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(member_view(member_id), score);
-    };
-    entries().for_reverse_range(bounds.first, bounds.count, callback);
-    return bounds.count;
+    return for_position_range(
+        bounds, true,
+        [&fn](std::string_view member, double score, std::string_view) {
+          fn(member, score);
+        });
   }
   template <class Fn>
   std::size_t for_reverse_range_values(long long start,
@@ -246,11 +254,11 @@ class ZSet {
   template <class Fn>
   std::size_t for_reverse_range_score_text_values(ZSetRangeBounds bounds,
                                                   Fn&& fn) const {
-    auto callback = [this, &fn](double, std::uint32_t member_id) {
-      fn(member_view(member_id), score_text_view(member_id));
-    };
-    entries().for_reverse_range(bounds.first, bounds.count, callback);
-    return bounds.count;
+    return for_position_range(
+        bounds, true,
+        [&fn](std::string_view member, double, std::string_view score_text) {
+          fn(member, score_text);
+        });
   }
   template <class Fn>
   std::size_t for_reverse_range_score_text_values(long long start,
@@ -270,13 +278,11 @@ class ZSet {
       return 0;
     }
 
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(ZSetEntry{.member = member_view(member_id),
-                   .score = score,
-                   .score_text = {}});
-    };
-    entries().for_reverse_range(bounds->first, bounds->count, callback);
-    return bounds->count;
+    return for_position_range(
+        *bounds, true,
+        [&fn](std::string_view member, double score, std::string_view) {
+          fn(ZSetEntry{.member = member, .score = score, .score_text = {}});
+        });
   }
   template <class Fn>
   std::size_t for_reverse_range_with_score_text(long long start,
@@ -286,14 +292,13 @@ class ZSet {
     if (!bounds) {
       return 0;
     }
-
-    auto callback = [this, &fn](double score, std::uint32_t member_id) {
-      fn(ZSetEntry{.member = member_view(member_id),
-                   .score = score,
-                   .score_text = score_text_view(member_id)});
-    };
-    entries().for_reverse_range(bounds->first, bounds->count, callback);
-    return bounds->count;
+    return for_position_range(
+        *bounds, true,
+        [&fn](std::string_view member, double score,
+              std::string_view score_text) {
+          fn(ZSetEntry{
+              .member = member, .score = score, .score_text = score_text});
+        });
   }
   [[nodiscard]] bool check_invariants() const;
   [[nodiscard]] ZSetMemoryStats memory_stats() const noexcept;
@@ -334,6 +339,36 @@ class ZSet {
   void ensure_unique_mutable_state(WriteKind kind);
   void adopt_shared_member_layer_from(const ZSet& source);
 
+  // Listpack (small) mode: a tiny zset is one blob (member_layer_/score_index_
+  // null) until it outgrows the listpack limits; ensure_full() then converts it.
+  [[nodiscard]] bool is_small() const noexcept { return small_.has_value(); }
+  void ensure_full();
+
+  // The one iteration primitive the range templates funnel through: emit positions
+  // [bounds.first, +count) (forward or reverse) as (member, score, score_text).
+  // Dispatches on small vs full; in small mode score_text is empty (formatted on
+  // demand by the RESP layer, as when the score-text cache is off).
+  template <class Fn>
+  std::size_t for_position_range(ZSetRangeBounds bounds, bool reverse,
+                                 Fn&& fn) const {
+    if (small_) {
+      small_->for_range(bounds.first, bounds.count, reverse,
+                        [&fn](double score, std::string_view member) {
+                          fn(member, score, std::string_view{});
+                        });
+      return bounds.count;
+    }
+    auto callback = [this, &fn](double score, std::uint32_t member_id) {
+      fn(member_view(member_id), score, score_text_view(member_id));
+    };
+    if (reverse) {
+      entries().for_reverse_range(bounds.first, bounds.count, callback);
+    } else {
+      entries().for_range(bounds.first, bounds.count, callback);
+    }
+    return bounds.count;
+  }
+
   [[nodiscard]] ZSetMemberStorage* member_storage() noexcept;
   [[nodiscard]] const ZSetMemberStorage* member_storage() const noexcept;
   [[nodiscard]] ZSetMemberIndex& members() noexcept;
@@ -341,6 +376,7 @@ class ZSet {
   [[nodiscard]] ZSetScoreIndex& entries() noexcept;
   [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
+  std::optional<ZSetListpack> small_;
   std::shared_ptr<ZSetMemberLayer> member_layer_;
   std::shared_ptr<ZSetScoreIndex> score_index_;
   ZSetOptions options_;

@@ -144,6 +144,41 @@ class ZSetListpack {
     }
   }
 
+  // Visit positions [first, first+count) forward (reverse=false) or in descending
+  // order from the end (reverse=true, using the backlen for O(1) reverse steps):
+  // fn(double score, string_view member).
+  template <class Fn>
+  void for_range(std::size_t first, std::size_t count, bool reverse,
+                 Fn&& fn) const {
+    if (count == 0) {
+      return;
+    }
+    const std::size_t score_bytes = score_width_bytes(width_);
+    if (!reverse) {
+      std::size_t off = offset_of_position(first);
+      for (std::size_t i = 0; i < count; ++i) {
+        const auto [len_bytes, member_len] = decode_len(&data_[off]);
+        const double s = read_score(&data_[off + len_bytes]);
+        const std::size_t member_off = off + len_bytes + score_bytes;
+        fn(s, std::string_view(&data_[member_off], member_len));
+        off = member_off + member_len + len_bytes;
+      }
+    } else {
+      std::size_t end = data_.size();
+      for (std::size_t i = 0; i < first && end > 0; ++i) {
+        end = prev_element_start(end);
+      }
+      for (std::size_t i = 0; i < count && end > 0; ++i) {
+        const std::size_t start = prev_element_start(end);
+        const auto [len_bytes, member_len] = decode_len(&data_[start]);
+        const double s = read_score(&data_[start + len_bytes]);
+        const std::size_t member_off = start + len_bytes + score_bytes;
+        fn(s, std::string_view(&data_[member_off], member_len));
+        end = start;
+      }
+    }
+  }
+
  private:
   static constexpr std::size_t kNotFound = static_cast<std::size_t>(-1);
 
@@ -222,6 +257,35 @@ class ZSetListpack {
         std::memcpy(p, &score, sizeof(score));
         return;
     }
+  }
+
+  // data_ offset of the element at sorted position `pos`.
+  [[nodiscard]] std::size_t offset_of_position(std::size_t pos) const noexcept {
+    std::size_t off = 0;
+    const std::size_t score_bytes = score_width_bytes(width_);
+    for (std::size_t i = 0; i < pos; ++i) {
+      const auto [len_bytes, member_len] = decode_len(&data_[off]);
+      off += 2 * len_bytes + score_bytes + member_len;
+    }
+    return off;
+  }
+
+  // Given the end offset of an element, return its start offset via the reversed
+  // backlen (its trailing byte reveals 1- vs 2-byte).
+  [[nodiscard]] std::size_t prev_element_start(std::size_t end) const noexcept {
+    const auto* last = reinterpret_cast<const unsigned char*>(&data_[end - 1]);
+    std::size_t member_len;
+    std::size_t backlen_size;
+    if ((last[0] & 0x80) == 0) {
+      member_len = static_cast<std::size_t>(last[0]) + 1;
+      backlen_size = 1;
+    } else {
+      const std::size_t number =
+          (static_cast<std::size_t>(last[0] & 0x7F) << 8) | last[-1];
+      member_len = number + 128;
+      backlen_size = 2;
+    }
+    return end - (2 * backlen_size + score_width_bytes(width_) + member_len);
   }
 
   // The inline score of the element starting at data_ offset `off`.

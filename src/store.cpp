@@ -166,9 +166,14 @@ ZSet::ZSet(ZSetOptions options)
       options_(options) {}
 
 ZSet::ZSet(ZSet&& other) noexcept
-    : member_layer_(std::move(other.member_layer_)),
+    : small_(std::move(other.small_)),
+      member_layer_(std::move(other.member_layer_)),
       score_index_(std::move(other.score_index_)),
       options_(other.options_) {
+  if (small_.has_value()) {
+    other.small_.emplace();  // leave the source a valid empty (small) zset
+    return;                  // listpack mode: the full structures stay null
+  }
   if (member_layer_ == nullptr) {
     member_layer_ = std::make_shared<ZSetMemberLayer>(
         options_.score_string_cache, options_.member_chunk_bytes,
@@ -198,7 +203,12 @@ ZSet& ZSet::operator=(ZSet&& other) noexcept {
 
   member_layer_ = std::move(other.member_layer_);
   score_index_ = std::move(other.score_index_);
+  small_ = std::move(other.small_);
   options_ = other.options_;
+  if (small_.has_value()) {
+    other.small_.emplace();
+    return *this;  // listpack mode: the full structures stay null
+  }
   if (member_layer_ == nullptr) {
     member_layer_ = std::make_shared<ZSetMemberLayer>(
         options_.score_string_cache, options_.member_chunk_bytes,
@@ -309,6 +319,28 @@ std::string_view ZSet::score_text_view(std::uint32_t member_id) const noexcept {
 void ZSet::rebind_indexes() noexcept {
   members().set_members(member_storage());
   entries().set_members(member_storage());
+}
+
+// Convert the listpack blob into the full arena-shaped structure (member layer +
+// swiss index + score index), replaying its entries in sorted order.
+void ZSet::ensure_full() {
+  if (!small_) {
+    return;
+  }
+  ZSetListpack lp = std::move(*small_);
+  small_.reset();
+  member_layer_ = std::make_shared<ZSetMemberLayer>(
+      options_.score_string_cache, options_.member_chunk_bytes,
+      options_.member_index_growth);
+  score_index_ = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                  options_.rank_cache_mode);
+  rebind_indexes();
+  lp.for_each([this](double score, std::string_view member) {
+    const auto member_id = allocate_member_id(member, score);
+    members().insert(member_view(member_id),
+                     ZSetMemberMeta{.member_id = member_id});
+    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+  });
 }
 
 // A ZADD whose score falls outside the zset's current score width auto-promotes
