@@ -59,7 +59,9 @@ class ZSetListpack {
     return data_.capacity();
   }
   void set_max_entries(std::size_t max_entries) noexcept {
-    max_entries_ = max_entries;
+    // count_ is a uint16, so any threshold above 65535 is unreachable anyway.
+    max_entries_ = max_entries > 0xFFFF ? std::uint16_t{0xFFFF}
+                                        : static_cast<std::uint16_t>(max_entries);
   }
 
   // ZADD semantics for one member. Returns needs_full=true (without mutating) if the
@@ -399,7 +401,7 @@ class ZSetListpack {
   }
 
   std::string data_;  // entries only; the 4-byte header is synthesized on save
-  std::size_t max_entries_{kDefaultListpackMaxEntries};
+  std::uint16_t max_entries_{kDefaultListpackMaxEntries};
   std::uint16_t count_{0};
   ScoreWidth width_{ScoreWidth::I16};
 };
