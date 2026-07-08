@@ -144,13 +144,23 @@ artificially lean), the blob saves a **flat ~1.5× per zset** across sizes. The 
 *structure* is ~7× leaner than the full machinery, but at the store level that dilutes
 to ~1.5× because the per-zset **`ZSet` handle + key string + swiss slot (~220 B)** are
 the same either way — so goblin narrows but does **not yet beat** Redis's ~150 B
-tiny-zset total. **First lever pulled:** `ZSet` now holds a `variant<listpack, full>`
-instead of an `optional` listpack + two shared_ptrs (only one rep is ever live), so
-`sizeof(ZSet)` **112 → 80 B** and every zset — stored by value in the swiss table —
-shrinks; store-level per-zset dropped ~50 B (4-member listpack 319 → **266 B**).
-Remaining levers to close on Redis: share `ZSetOptions` (a 32 B per-zset copy), and the
-big one — store the blob directly / pointer-indirect the slot so a tiny zset's slot
-isn't sized for the full alternative.
+tiny-zset total. Three levers pulled since, closing most of that gap (measured with
+distinct members, N=50k, 4-member zsets):
+
+1. **`variant<listpack, full>`** replaced an `optional` listpack + two shared_ptrs (only
+   one rep is ever live): `sizeof(ZSet)` **112 → 80 B**. Since zsets are stored by value
+   in the swiss table, every one shrinks.
+2. **Shared `ZSetOptions`.** All zsets in a store have identical options; hold a
+   `shared_ptr<const ZSetOptions>` to one shared object instead of a 32 B per-zset copy:
+   `sizeof(ZSet)` **80 → 64 B**.
+3. **Exact-size the blob.** Investigating "store the blob directly" showed the blob is
+   *already* inline in the swiss slot — the tiny slot is right-sized. The real waste was
+   the blob's own `std::string` over-allocating ~2× on geometric growth; `shrink_to_fit`
+   after each mutation reclaims it. **~39 B/zset.**
+
+Net store-total for a 4-member zset: **560 → 172 B** (Redis is ~150). The remaining gap
+is architectural — the swiss table stores the key + the by-value zset at a load factor,
+where Redis uses a pointer-indirect dict; closing it trades against lookup speed.
 
 **CPU knee → threshold 32.** The blob is an O(n) scan, so the promotion threshold is a
 memory-vs-CPU dial. Memory saving is ~flat with size, but `ZSCORE` goes ~2.5× at 32
