@@ -175,13 +175,15 @@ void ZSet::init_empty() {
   }
 }
 
-ZSet::ZSet(ZSetOptions options)
-    : ZSet(std::make_shared<const ZSetOptions>(options)) {}
+namespace {
+// Shared default options for standalone, default-constructed zsets (the store
+// points its own zsets at its owned options instead).
+const ZSetOptions kDefaultZSetOptions{};
+}  // namespace
 
-ZSet::ZSet(std::shared_ptr<const ZSetOptions> options)
-    : options_(std::move(options)) {
-  init_empty();
-}
+ZSet::ZSet() : options_(&kDefaultZSetOptions) { init_empty(); }
+
+ZSet::ZSet(const ZSetOptions* options) : options_(options) { init_empty(); }
 
 ZSet::ZSet(ZSet&& other) noexcept
     : rep_(std::move(other.rep_)), options_(other.options_) {
@@ -734,9 +736,9 @@ bool Store::inline_zset_slots_full() const noexcept {
   return inline_zsets_.size() >= options_.inline_zset_limit;
 }
 
-const std::shared_ptr<const ZSetOptions>& Store::zset_options() {
-  if (!zset_options_) {
-    zset_options_ = std::make_shared<const ZSetOptions>(ZSetOptions{
+const ZSetOptions* Store::zset_options() {
+  if (!zset_options_ready_) {
+    zset_options_ = ZSetOptions{
         .rank_cache_mode = options_.rank_cache_mode,
         .score_string_cache = options_.score_string_cache,
         .member_index_growth = options_.member_index_growth,
@@ -746,9 +748,10 @@ const std::shared_ptr<const ZSetOptions>& Store::zset_options() {
         .listpack_max_entries = options_.score_string_cache
                                     ? std::size_t{0}
                                     : options_.zset_listpack_max_entries,
-    });
+    };
+    zset_options_ready_ = true;
   }
-  return zset_options_;
+  return &zset_options_;
 }
 
 ZSet& Store::emplace_inline_zset(std::string_view key) {
@@ -1225,14 +1228,13 @@ void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
 }
 
 ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
-                std::size_t member_chunk_bytes) {
-  ZSetOptions options;
-  options.rank_cache_mode = static_cast<RankCacheMode>(reader.u8());
-  options.score_string_cache = reader.u8() != 0;
-  options.member_index_growth = reader.f64();
-  // Chunk size is a server-level layout tuning, not persisted per set: the
-  // loading server's configuration applies.
-  options.member_chunk_bytes = member_chunk_bytes;
+                const ZSetOptions* options) {
+  // Per-zset config (rank cache, score-string cache, growth) was persisted, but
+  // the loading server's configuration applies -- as it already did for chunk
+  // size -- so read past it and use the store's options.
+  (void)reader.u8();   // rank_cache_mode
+  (void)reader.u8();   // score_string_cache
+  (void)reader.f64();  // member_index_growth
 
   const auto width = static_cast<ScoreWidth>(reader.u8());
 
@@ -1538,7 +1540,7 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           snapshot::Reader reader(operands);
           auto key = std::string(reader.str());
           ZSet zset =
-              ZSet::load(reader, zset_use_accelerator, options_.zset_chunk_bytes);
+              ZSet::load(reader, zset_use_accelerator, zset_options());
           stats.members += zset.size();
           place_loaded_zset(std::move(key), std::move(zset));
           ++stats.keys;

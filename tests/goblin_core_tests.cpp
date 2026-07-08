@@ -1231,7 +1231,9 @@ void test_zset_listpack_mode() {
   using goblin::core::ZSet;
   using goblin::core::ZSetOptions;
 
-  ZSet zset(ZSetOptions{.listpack_max_entries = 8});
+  // Options must outlive the zsets that point at them; one stable object here.
+  const ZSetOptions opts8{.listpack_max_entries = 8};
+  ZSet zset(&opts8);
   assert(zset.add(3.0, "c") == 1);
   assert(zset.add(1.0, "a") == 1);
   assert(zset.add(2.0, "b") == 1);
@@ -1260,20 +1262,20 @@ void test_zset_listpack_mode() {
 
   // An empty member has no listpack length encoding -> it promotes to full and
   // every member (including the empty one) stays correct.
-  ZSet emptymem(ZSetOptions{.listpack_max_entries = 8});
+  ZSet emptymem(&opts8);
   assert(emptymem.add(1.0, "a") == 1);
   assert(emptymem.add(2.0, "") == 1);  // empty member -> promote to full
   assert(emptymem.size() == 2 && emptymem.score("") == 2.0 &&
          emptymem.score("a") == 1.0);
 
   // save/load round-trips a small (listpack) zset through the canonical format.
-  ZSet small(ZSetOptions{.listpack_max_entries = 8});
+  ZSet small(&opts8);
   assert(small.add(5.0, "x") == 1 && small.add(-2.0, "y") == 1);
   std::string buffer;
   goblin::core::snapshot::Writer writer(buffer);
   small.save(writer, /*with_accelerator=*/false);
   goblin::core::snapshot::Reader reader(buffer);
-  ZSet loaded = ZSet::load(reader, /*use_accelerator=*/false);
+  ZSet loaded = ZSet::load(reader, /*use_accelerator=*/false, &opts8);
   assert(loaded.size() == 2 && loaded.score("x") == 5.0 &&
          loaded.score("y") == -2.0);
 }
@@ -1717,8 +1719,8 @@ void test_configurable_chunk_size() {
   assert(h.get("field-1234") == "value-1234");
   assert(h.get("field-4999") == "value-4999");
 
-  goblin::core::ZSet z(goblin::core::ZSetOptions{
-      .member_chunk_bytes = std::size_t{1} << 16});  // 64 KiB
+  const goblin::core::ZSetOptions zopts{.member_chunk_bytes = std::size_t{1} << 16};  // 64 KiB
+  goblin::core::ZSet z(&zopts);
   for (int i = 0; i < 5000; ++i) {
     assert(z.add(static_cast<double>(i), "member-" + std::to_string(i)) == 1);
   }
