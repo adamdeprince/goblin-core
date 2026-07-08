@@ -626,7 +626,8 @@ def redis_benchmark_rps(rb_bin: Path,
                         pipeline: int,
                         keyspace: int,
                         timeout: float,
-                        unix_socket: str | None = None) -> float:
+                        unix_socket: str | None = None,
+                        clients: int = 1) -> float:
     """Drive `command` with redis-benchmark and return requests/sec.
 
     A C load generator is used for single-member read throughput because a
@@ -637,7 +638,7 @@ def redis_benchmark_rps(rb_bin: Path,
                                                         "-p", str(port)]
     cmd = [
         str(rb_bin), *endpoint,
-        "-n", str(requests), "-P", str(pipeline), "-c", "1", "-q",
+        "-n", str(requests), "-P", str(pipeline), "-c", str(clients), "-q",
         "-r", str(max(1, keyspace)),
     ] + [str(part) for part in command]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
