@@ -11,6 +11,13 @@
 # It only starts/stops servers and reads a payload -- nothing destructive.
 # Edit the paths/flags below and run it ON naamah:  bash feed_payload_uds.sh
 #
+# It feeds the FULL payload to EACH engine, one after another, so total time is
+# ~5x a single load. ~/payload-128.txt is ~187 GB, so `redis-cli < payload` in
+# normal (reply-per-command) mode will take a long time per engine -- that is the
+# number you're timing. To try one engine first, trim the SERVERS list. Normal
+# mode is required here because `redis-cli --pipe` is far faster but discards
+# replies, so your `used_memory_rss:` / `20..-` lines would never appear.
+#
 # NOTE ON GOBLIN + used_memory_rss: goblin does not implement INFO, so an
 # `INFO memory` in your payload returns an error on goblin and goblin.output will
 # have NO `used_memory_rss:` line (only any `20..-` lines). Use the os_rss column
@@ -82,14 +89,12 @@ for name in "${SERVERS[@]}"; do
     continue
   fi
 
-  # Feed the payload; time ONLY the redis-cli invocation.
-  raw="$(mktemp)"
+  # Feed the payload, streaming redis-cli's replies straight through the filter
+  # so nothing multi-GB is buffered even if the payload emits a reply per command
+  # (payload-128.txt is ~187 GB). Timing spans redis-cli + the trivial grep.
   start=$(date +%s.%N)
-  "$REDIS_CLI" -s "$sock" < "$PAYLOAD" > "$raw" 2>&1
+  "$REDIS_CLI" -s "$sock" < "$PAYLOAD" 2>&1 | grep -E "$FILTER" > "$OUTDIR/$name.output"
   end=$(date +%s.%N)
-
-  grep -E "$FILTER" "$raw" > "$OUTDIR/$name.output"
-  rm -f "$raw"
 
   rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
   rss_mb=$(awk "BEGIN{printf \"%.1f\", ${rss_kb:-0}/1024}")
