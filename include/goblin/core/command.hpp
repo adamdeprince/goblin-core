@@ -36,6 +36,8 @@ enum class CommandType {
   goblin_optimize,
   goblin_save,
   goblin_load,
+  echo,
+  info,
   unknown,
 };
 

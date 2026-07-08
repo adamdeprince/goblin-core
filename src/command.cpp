@@ -10,16 +10,73 @@
 #include <exception>
 #include <fstream>
 #include <span>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
+#include <unistd.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#endif
 
 // gperf-generated perfect hash for command dispatch (source: command_hash.gperf).
 #include "command_hash.hpp"
 
 namespace goblin::core {
 namespace {
+
+// Current process resident set size in bytes, for INFO's used_memory_rss (the
+// allocator-honest number the memory benchmarks compare on). 0 if unavailable.
+[[nodiscard]] std::size_t current_rss_bytes() noexcept {
+#if defined(__linux__)
+  std::FILE* f = std::fopen("/proc/self/statm", "r");
+  if (f == nullptr) {
+    return 0;
+  }
+  long total = 0;
+  long resident = 0;
+  const int n = std::fscanf(f, "%ld %ld", &total, &resident);
+  std::fclose(f);
+  if (n != 2 || resident < 0) {
+    return 0;
+  }
+  return static_cast<std::size_t>(resident) *
+         static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+#elif defined(__APPLE__)
+  mach_task_basic_info info{};
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
+    return 0;
+  }
+  return info.resident_size;
+#else
+  return 0;
+#endif
+}
+
+// A minimal redis-compatible INFO payload: enough of the Server + Memory
+// sections for tooling (redis-cli, benchmark harnesses) that keys off
+// used_memory_rss / redis_version. Fields are CRLF-separated per the protocol.
+[[nodiscard]] std::string build_info_string() {
+  const std::size_t rss = current_rss_bytes();
+  const std::string rss_str = std::to_string(rss);
+  std::string s;
+  s += "# Server\r\n";
+  s += "redis_version:7.4.0\r\n";
+  s += "redis_mode:standalone\r\n";
+  s += "# Memory\r\n";
+  s += "used_memory:" + rss_str + "\r\n";
+  s += "used_memory_rss:" + rss_str + "\r\n";
+  s += "used_memory_peak:" + rss_str + "\r\n";
+  s += "maxmemory:0\r\n";
+  s += "maxmemory_policy:noeviction\r\n";
+  s += "mem_fragmentation_ratio:1.00\r\n";
+  return s;
+}
 
 [[nodiscard]] char ascii_upper_char(char value) noexcept {
   if (value >= 'a' && value <= 'z') {
@@ -367,6 +424,18 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::ping;
       return {.command = std::move(command)};
+    case CommandType::echo:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("echo"));
+      }
+      command.type = CommandType::echo;
+      return {.command = std::move(command)};
+    case CommandType::info:
+      if (command.args.size() > 1) {  // optional section arg, ignored
+        return parse_error(wrong_arity("info"));
+      }
+      command.type = CommandType::info;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -563,6 +632,12 @@ void execute_command_into(Store& store,
       } else {
         resp::append_bulk_string(out, command.args.front());
       }
+      return;
+    case CommandType::echo:
+      resp::append_bulk_string(out, command.args.front());
+      return;
+    case CommandType::info:
+      resp::append_bulk_string(out, build_info_string());
       return;
 
     case CommandType::zadd: {

@@ -222,6 +222,31 @@ void test_command_dispatch() {
   assert(execute_fields(store, {"ZCARD", "leaders"}) == ":1\r\n");
 }
 
+void test_echo_info() {
+  goblin::core::Store store;
+  // ECHO returns its one argument as a bulk string.
+  assert(execute_fields(store, {"ECHO", "hello"}) == "$5\r\nhello\r\n");
+  // Arity is rejected at parse time (ECHO needs exactly one arg; INFO 0 or 1).
+  auto rejects = [](std::initializer_list<std::string_view> f) {
+    std::vector<std::string_view> v(f);
+    return !goblin::core::parse_command(v).ok();
+  };
+  assert(rejects({"ECHO"}));
+  assert(rejects({"ECHO", "a", "b"}));
+  assert(rejects({"INFO", "a", "b"}));
+  // INFO returns a bulk string carrying used_memory_rss (what the memory
+  // benchmarks read) + redis_version; with or without a section arg.
+  const auto info = execute_fields(store, {"INFO", "memory"});
+  assert(info.starts_with("$"));
+  assert(info.find("used_memory_rss:") != std::string::npos);
+  assert(info.find("redis_version:") != std::string::npos);
+  assert(execute_fields(store, {"INFO"}).find("used_memory_rss:") !=
+         std::string::npos);
+  // PING regression guard (shares the same arg-branch shape as ECHO).
+  assert(execute_fields(store, {"PING"}) == "+PONG\r\n");
+  assert(execute_fields(store, {"PING", "hey"}) == "$3\r\nhey\r\n");
+}
+
 void test_range_command_parses_indexes() {
   std::vector<std::string_view> fields{"ZRANGE", "leaders", "-2", "-1"};
   auto parsed = goblin::core::parse_command(fields);
@@ -2104,6 +2129,7 @@ int main() {
   test_zrange_withscores_batch_matches_streaming_append();
   test_zrange_withscores_fused_matches_legacy_append();
   test_command_dispatch();
+  test_echo_info();
   test_goblin_optimize_reclaims_slack();
   test_goblin_optimize_density_and_growth();
   test_snapshot_round_trip();
