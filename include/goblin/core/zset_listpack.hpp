@@ -66,7 +66,10 @@ class ZSetListpack {
   // member/blob/count would exceed the listpack's limits -- the caller then rebuilds
   // as a full zset. Widens the score width in place when required.
   [[nodiscard]] AddResult add(double score, std::string_view member) {
-    if (member.size() > kListpackMaxMemberLen) {
+    // The 1-byte length form maps to [1, 128] (byte = len - 1), so a length-0
+    // (empty) member has no encoding; over-long members don't fit. Both promote
+    // to the full structure rather than corrupt the blob.
+    if (member.empty() || member.size() > kListpackMaxMemberLen) {
       return {.changed = false, .needs_full = true};
     }
     const ScoreWidth target = score_width_for(score, width_);
@@ -176,6 +179,21 @@ class ZSetListpack {
         fn(s, std::string_view(&data_[member_off], member_len));
         end = start;
       }
+    }
+  }
+
+  // Re-derive the narrowest width that holds every score and re-encode if it
+  // narrowed -- GOBLIN.OPTIMIZE's demote, mirroring the full zset's rebuild.
+  void optimize() {
+    if (count_ == 0) {
+      return;
+    }
+    ScoreWidth narrowest = ScoreWidth::I16;
+    for_each([&narrowest](double score, std::string_view) {
+      narrowest = score_width_for(score, narrowest);
+    });
+    if (narrowest != width_) {
+      rewiden(narrowest);
     }
   }
 
@@ -354,7 +372,8 @@ class ZSetListpack {
     const std::size_t old_score_bytes = score_width_bytes(width_);
     const std::size_t new_score_bytes = score_width_bytes(target);
     std::string out;
-    out.reserve(data_.size() + count_ * (new_score_bytes - old_score_bytes));
+    // Written so narrowing (new < old) can't underflow the unsigned subtraction.
+    out.reserve(data_.size() + count_ * new_score_bytes - count_ * old_score_bytes);
     std::size_t off = 0;
     for (std::size_t i = 0; i < count_; ++i) {
       const auto [len_bytes, member_len] = decode_len(&data_[off]);

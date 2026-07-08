@@ -806,7 +806,9 @@ void test_store_inline_and_overflow_zsets() {
 }
 
 void test_store_shared_member_layer() {
-  goblin::core::Store store;
+  // Shared member layer is a large-zset optimization; listpack-off forces full.
+  goblin::core::Store store(
+      goblin::core::StoreOptions{.zset_listpack_max_entries = 0});
 
   for (int i = 0; i < 128; ++i) {
     assert(store.zadd("key-a", static_cast<double>(i), "member-" + std::to_string(i)) == 1);
@@ -850,7 +852,9 @@ void test_store_shared_member_layer() {
 // appends landed at the same arena offset and clobbered each other. The COW-on-
 // shared-active-block guard in reserve_run_bytes closes it.
 void test_store_shared_layer_structural_append_cow() {
-  goblin::core::Store store;
+  // Shared-layer CoW is a large-zset optimization; listpack-off forces full.
+  goblin::core::Store store(
+      goblin::core::StoreOptions{.zset_listpack_max_entries = 0});
 
   for (int i = 0; i < 128; ++i) {
     const auto member = "member-" + std::to_string(i);
@@ -1253,6 +1257,14 @@ void test_zset_listpack_mode() {
   assert(zset.score("a") == 1.0 && zset.score("big-10") == 110.0);
   assert(zset.rank("a") == 0U);  // still the minimum
   assert(zset.check_invariants());
+
+  // An empty member has no listpack length encoding -> it promotes to full and
+  // every member (including the empty one) stays correct.
+  ZSet emptymem(ZSetOptions{.listpack_max_entries = 8});
+  assert(emptymem.add(1.0, "a") == 1);
+  assert(emptymem.add(2.0, "") == 1);  // empty member -> promote to full
+  assert(emptymem.size() == 2 && emptymem.score("") == 2.0 &&
+         emptymem.score("a") == 1.0);
 
   // save/load round-trips a small (listpack) zset through the canonical format.
   ZSet small(ZSetOptions{.listpack_max_entries = 8});

@@ -653,7 +653,8 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
 
 void ZSet::compact(double member_index_density) {
   if (small_) {
-    return;  // a listpack is already compact
+    small_->optimize();  // re-derive the narrowest score width (demote)
+    return;              // the blob is already structurally compact
   }
   const auto old_entries = entries().range(0, entries().size());
 
@@ -784,6 +785,12 @@ ZSet& Store::emplace_inline_zset(std::string_view key) {
           .score_string_cache = options_.score_string_cache,
           .member_index_growth = options_.member_index_growth,
           .member_chunk_bytes = options_.zset_chunk_bytes,
+          // The score-string cache preserves exact input text, which the numeric
+          // listpack can't -- so enabling it keeps zsets in the full structure.
+          .listpack_max_entries =
+              options_.score_string_cache
+                  ? std::size_t{0}
+                  : options_.zset_listpack_max_entries,
       }),
   });
   auto [slot, inserted] = inline_zset_index_.try_emplace(inline_zsets_.back().key, index);
@@ -857,6 +864,12 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
           .score_string_cache = options_.score_string_cache,
           .member_index_growth = options_.member_index_growth,
           .member_chunk_bytes = options_.zset_chunk_bytes,
+          // The score-string cache preserves exact input text, which the numeric
+          // listpack can't -- so enabling it keeps zsets in the full structure.
+          .listpack_max_entries =
+              options_.score_string_cache
+                  ? std::size_t{0}
+                  : options_.zset_listpack_max_entries,
       });
   (void)inserted;
   return *zset;
