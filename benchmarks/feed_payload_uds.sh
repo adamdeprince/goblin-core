@@ -41,6 +41,14 @@ REDIS72="${REDIS72:-$HOME/bench/redis-7.2.4/src/redis-server}"
 VALKEY="${VALKEY:-$HOME/bench/valkey-9.1.0/src/valkey-server}"
 DRAGONFLY="${DRAGONFLY:-/usr/local/bin/dragonfly}"
 
+# Active defragmentation for redis/valkey -- reclaims jemalloc fragmentation, which
+# is what an operator runs for a long-lived set (so we compare each engine at its
+# best). Thresholds are aggressive because the defaults ignore <100 MB of
+# fragmentation and would never engage at our scale. Requires a jemalloc build
+# (confirmed jemalloc-5.3.0). Dragonfly manages its own memory, so it's untouched.
+DEFRAG=(--activedefrag yes --active-defrag-ignore-bytes 1mb
+        --active-defrag-threshold-lower 5 --active-defrag-cycle-max 75)
+
 # Servers to run, in order (all in parallel). Names become <name>.output.
 # Override with e.g. SERVERS="goblin redis-8.8" to run a subset.
 read -ra SERVERS <<< "${SERVERS:-goblin redis-8.8 redis-7.2.4 valkey-9.1 dragonfly}"
@@ -53,9 +61,9 @@ launch_cmd() {  # $1=name  $2=socket  -> fills global CMD[]
   local sock="$2"
   case "$1" in
     goblin)      CMD=("$GOBLIN" --unixsocket "$sock") ;;
-    redis-8.8)   CMD=("$REDIS88" --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp) ;;
-    redis-7.2.4) CMD=("$REDIS72" --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp) ;;
-    valkey-9.1)  CMD=("$VALKEY"  --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp) ;;
+    redis-8.8)   CMD=("$REDIS88" --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp "${DEFRAG[@]}") ;;
+    redis-7.2.4) CMD=("$REDIS72" --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp "${DEFRAG[@]}") ;;
+    valkey-9.1)  CMD=("$VALKEY"  --unixsocket "$sock" --port 0 --save '' --appendonly no --dir /tmp "${DEFRAG[@]}") ;;
     dragonfly)   CMD=("$DRAGONFLY" "--unixsocket=$sock" --port 16399 --proactor_threads=1 --maxmemory=0 --dir /tmp) ;;
     *) return 1 ;;
   esac
