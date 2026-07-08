@@ -87,6 +87,7 @@ struct Fixture {
   std::vector<goblin::core::ZSetScoreEntry> sorted_score_entries;
   goblin::core::ZSetMemberStorage member_storage;
   goblin::core::ZSetScoreIndex score_index;
+  goblin::core::ZSetOptions zset_opts;
   goblin::core::ZSet zset;
   goblin::core::Store store;
   goblin::core::Store write_store;
@@ -590,11 +591,11 @@ void append_member_score_range_direct(
 }
 
 [[nodiscard]] Fixture build_fixture(const Options& options) {
-  Fixture fixture{
-      .zset = goblin::core::ZSet(zset_options(options)),
-      .store = goblin::core::Store(store_options(options)),
-      .write_store = goblin::core::Store(store_options(options)),
-  };
+  Fixture fixture;
+  fixture.zset_opts = zset_options(options);
+  fixture.zset = goblin::core::ZSet(&fixture.zset_opts);
+  fixture.store = goblin::core::Store(store_options(options));
+  fixture.write_store = goblin::core::Store(store_options(options));
   fixture.members.reserve(options.members);
   fixture.scores.reserve(options.members);
   fixture.score_texts.reserve(options.members);
@@ -849,6 +850,8 @@ void list_benchmark_catalog(std::ostream& out) {
       {"resp_parse", "dispatch"},
       {"resp_parse", "tokenize_inline"},
       {"resp_parse", "inline_full"},
+      {"resp_parse", "multibulk_zadd"},
+      {"resp_parse", "multibulk_zadd_full"},
       {"parse_command_string", "zscore"},
       {"parse_command_string", "zrank"},
       {"parse_command_string", "zrevrank"},
@@ -1461,6 +1464,56 @@ void list_benchmark_catalog(std::ostream& out) {
       }
       return checksum;
     });
+
+    // Pipelined RESP arrays (redis-benchmark -P style): *3 ZADD key score member.
+    std::string multibulk_wire;
+    multibulk_wire.reserve(batch * 96);
+    for (std::size_t j = 0; j < batch; ++j) {
+      const auto& member = fixture.members[fixture.lookup_ids[j]];
+      multibulk_wire += "*4\r\n$4\r\nZADD\r\n$";
+      multibulk_wire += std::to_string(Fixture::key.size());
+      multibulk_wire += "\r\n";
+      multibulk_wire += Fixture::key;
+      multibulk_wire += "\r\n$2\r\n10\r\n$";
+      multibulk_wire += std::to_string(member.size());
+      multibulk_wire += "\r\n";
+      multibulk_wire += member;
+      multibulk_wire += "\r\n";
+    }
+
+    maybe_bench("resp_parse", "multibulk_zadd", total_ops, [&, multibulk_wire, reps] {
+      goblin::core::RespParser parser;
+      std::vector<std::string_view> fields;
+      std::uint64_t checksum = 0;
+      for (std::size_t r = 0; r < reps; ++r) {
+        parser.clear();
+        parser.append(multibulk_wire);
+        while (parser.pop_into(fields)) {
+          checksum = mix(checksum, static_cast<std::uint64_t>(fields.size()));
+        }
+      }
+      return checksum;
+    });
+
+    maybe_bench("resp_parse", "multibulk_zadd_full", total_ops,
+                [&, multibulk_wire, reps] {
+                  goblin::core::RespParser parser;
+                  std::vector<std::string_view> fields;
+                  std::uint64_t checksum = 0;
+                  for (std::size_t r = 0; r < reps; ++r) {
+                    parser.clear();
+                    parser.append(multibulk_wire);
+                    while (parser.pop_into(fields)) {
+                      const auto parsed = goblin::core::parse_command(fields);
+                      checksum = mix(
+                          checksum, static_cast<std::uint64_t>(
+                                        parsed.ok()
+                                            ? static_cast<int>(parsed.command->type)
+                                            : -1));
+                    }
+                  }
+                  return checksum;
+                });
   }
 
   maybe_bench("parse_command_string", "zscore", options.ops, [&] {
@@ -1701,7 +1754,8 @@ void list_benchmark_catalog(std::ostream& out) {
   };
 
   const auto reset_zset = [&] {
-    fixture.zset = goblin::core::ZSet(zset_options(options));
+    fixture.zset_opts = zset_options(options);
+    fixture.zset = goblin::core::ZSet(&fixture.zset_opts);
     for (const auto member_id : fixture.load_ids) {
       (void)fixture.zset.add(fixture.scores[member_id], fixture.members[member_id]);
     }
@@ -1775,7 +1829,8 @@ void list_benchmark_catalog(std::ostream& out) {
   });
 
   maybe_bench_setup("write_path", "raw_zset_add_new", options.ops, [&] {
-    fixture.zset = goblin::core::ZSet(zset_options(options));
+    fixture.zset_opts = zset_options(options);
+    fixture.zset = goblin::core::ZSet(&fixture.zset_opts);
   }, [&] {
     std::uint64_t checksum = 0;
     for (std::size_t i = 0; i < options.ops; ++i) {

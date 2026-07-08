@@ -12,12 +12,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__SSE2__)
-#include <emmintrin.h>
-#elif defined(__aarch64__)
-#include <arm_neon.h>
-#endif
-
+#include "goblin/core/simd_ops.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 
@@ -356,34 +351,8 @@ class MemberIndex {
   // AArch64, and a scalar loop everywhere else.
   [[nodiscard]] static std::uint64_t match_byte(const std::uint8_t* group,
                                                 std::uint8_t needle) noexcept {
-#if defined(__SSE2__)
-    static_assert(kGroupWidth == 16, "SSE2 group probe expects a 16-byte group");
-    const __m128i control =
-        _mm_loadu_si128(reinterpret_cast<const __m128i*>(group));
-    const __m128i equal =
-        _mm_cmpeq_epi8(control, _mm_set1_epi8(static_cast<char>(needle)));
-    return static_cast<std::uint64_t>(
-        static_cast<unsigned>(_mm_movemask_epi8(equal)) & 0xFFFFU);
-#elif defined(__aarch64__)
-    static_assert(kGroupWidth == 16, "NEON group probe expects a 16-byte group");
-    // AArch64 NEON has no pmovmskb; AND each 0x00/0xFF compare lane with its
-    // slot bit and horizontally add per 8-byte half to build a 16-bit, one-bit-
-    // per-slot mask matching the SSE2 result.
-    static constexpr std::uint8_t kSlotBits[16] = {
-        1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
-    const uint8x16_t control = vld1q_u8(group);
-    const uint8x16_t equal = vceqq_u8(control, vdupq_n_u8(needle));
-    const uint8x16_t masked = vandq_u8(equal, vld1q_u8(kSlotBits));
-    const std::uint32_t low = vaddv_u8(vget_low_u8(masked));
-    const std::uint32_t high = vaddv_u8(vget_high_u8(masked));
-    return static_cast<std::uint64_t>(low | (high << 8));
-#else
-    std::uint64_t mask = 0;
-    for (size_type i = 0; i < kGroupWidth; ++i) {
-      mask |= static_cast<std::uint64_t>(group[i] == needle) << i;
-    }
-    return mask;
-#endif
+    static_assert(kGroupWidth == 16, "group probe expects a 16-byte group");
+    return simd::match_control_group_16(group, needle);
   }
 
   [[nodiscard]] static size_type max_usable(size_type capacity) noexcept {
@@ -494,7 +463,7 @@ class MemberIndex {
           index -= capacity_;
         }
 
-        if (member_view(slots_[index].meta.member_id) == member) {
+        if (simd::bytes_equal(member_view(slots_[index].meta.member_id), member)) {
           return index;
         }
         matches &= matches - 1;

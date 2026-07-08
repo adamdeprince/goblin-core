@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "goblin/core/page_arena.hpp"
+#include "goblin/core/simd_ops.hpp"
 
 namespace goblin::core {
 
@@ -37,7 +38,7 @@ struct StringTableEqual {
     requires std::constructible_from<std::string_view, const Lhs&> &&
              std::constructible_from<std::string_view, const Rhs&>
   [[nodiscard]] bool operator()(const Lhs& lhs, const Rhs& rhs) const noexcept {
-    return std::string_view(lhs) == std::string_view(rhs);
+    return simd::bytes_equal(std::string_view(lhs), std::string_view(rhs));
   }
 };
 
@@ -342,9 +343,13 @@ class SwissTable {
     return static_cast<size_type>(std::countr_zero(mask));
   }
 
+  // Swiss-table group probe. Compile-time ISA dispatch via simd_ops (no runtime
+  // CPU feature checks); scalar loop when GroupWidth != 16.
   [[nodiscard]] static std::uint64_t match_byte(const std::uint8_t* group,
                                                 std::uint8_t needle) noexcept {
-    // Fixed-width, branch-light byte comparison intended to auto-vectorize.
+    if constexpr (GroupWidth == 16) {
+      return simd::match_control_group_16(group, needle);
+    }
     std::uint64_t mask = 0;
     for (size_type i = 0; i < GroupWidth; ++i) {
       mask |= static_cast<std::uint64_t>(group[i] == needle) << i;

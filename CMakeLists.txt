@@ -7,6 +7,11 @@ project(goblin-core
 
 include(GNUInstallDirs)
 
+set(GOBLIN_CORE_ARCH "" CACHE STRING
+    "ISA tuning for the build host: native, avx2, avx512, lsx, or lasx")
+set_property(CACHE GOBLIN_CORE_ARCH PROPERTY STRINGS
+    "" native avx2 avx512 lsx lasx)
+
 option(GOBLIN_CORE_BUILD_TESTS "Build Goblin Core tests" ON)
 option(GOBLIN_CORE_BUILD_BENCHMARKS "Build Goblin Core benchmark executables" ON)
 option(GOBLIN_CORE_BUILD_HTML_DOCS "Build HTML documentation from Markdown" ON)
@@ -90,6 +95,20 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
   if(GOBLIN_HAS_SSE42)
     target_compile_options(goblin_core PUBLIC -msse4.2)
   endif()
+endif()
+
+if(GOBLIN_CORE_ARCH STREQUAL "native")
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(goblin_core PUBLIC -march=native)
+  endif()
+elseif(GOBLIN_CORE_ARCH STREQUAL "avx2")
+  target_compile_options(goblin_core PUBLIC -mavx2)
+elseif(GOBLIN_CORE_ARCH STREQUAL "avx512")
+  target_compile_options(goblin_core PUBLIC -mavx512f -mavx512bw -mavx512vl)
+elseif(GOBLIN_CORE_ARCH STREQUAL "lsx")
+  target_compile_options(goblin_core PUBLIC -mlsx)
+elseif(GOBLIN_CORE_ARCH STREQUAL "lasx")
+  target_compile_options(goblin_core PUBLIC -mlasx)
 endif()
 
 # Optional maintainer target: regenerate the checked-in command-dispatch perfect

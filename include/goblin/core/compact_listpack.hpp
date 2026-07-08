@@ -19,6 +19,7 @@
 
 #include "goblin/core/blob_pool.hpp"
 #include "goblin/core/score_width.hpp"
+#include "goblin/core/simd_ops.hpp"
 
 namespace goblin::core {
 
@@ -146,8 +147,8 @@ class CompactListpack {
     for (std::size_t i = 0; i < hdr.count; ++i) {
       const auto [len_bytes, member_len] = decode_len(e + off);
       const std::size_t member_off = off + len_bytes + sb;
-      if (member_len == member.size() &&
-          std::memcmp(e + member_off, member.data(), member_len) == 0) {
+      if (simd::bytes_equal(std::string_view(e + member_off, member_len),
+                            member)) {
         return i;
       }
       off = member_off + member_len + len_bytes;
@@ -400,8 +401,8 @@ class CompactListpack {
         insert_placed = true;
       }
 
-      if (member_len == member.size() &&
-          std::memcmp(e + member_off, member.data(), member_len) == 0) {
+      if (simd::bytes_equal(std::string_view(e + member_off, member_len),
+                            member)) {
         result.found = true;
         result.off = off;
         result.old_score = s;
@@ -503,8 +504,8 @@ class CompactListpack {
     for (std::size_t i = 0; i < hdr.count; ++i) {
       const auto [len_bytes, member_len] = decode_len(e + off);
       const std::size_t member_off = off + len_bytes + sb;
-      if (member_len == member.size() &&
-          std::memcmp(e + member_off, member.data(), member_len) == 0) {
+      if (simd::bytes_equal(std::string_view(e + member_off, member_len),
+                            member)) {
         return off;
       }
       off = member_off + member_len + len_bytes;

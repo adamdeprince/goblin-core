@@ -1,5 +1,8 @@
 #pragma once
 
+// Compile-time SIMD flags for startup logging. Goblin is built for the target
+// hardware; hot paths use #ifdef in simd_ops.hpp, not runtime CPU dispatch.
+
 namespace goblin::core::simd {
 
 struct Capabilities {

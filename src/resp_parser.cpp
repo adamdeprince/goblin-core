@@ -1,5 +1,7 @@
 #include "goblin/core/resp_parser.hpp"
 
+#include "goblin/core/simd_ops.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
@@ -33,11 +35,7 @@ constexpr std::size_t kMaxInlineBytes = 1024U * 1024U;
 
 [[nodiscard]] std::optional<std::size_t> find_crlf(std::string_view buffer,
                                                    std::size_t offset) {
-  const auto pos = buffer.find("\r\n", offset);
-  if (pos == std::string_view::npos) {
-    return std::nullopt;
-  }
-  return pos;
+  return simd::find_crlf(buffer, offset);
 }
 
 [[nodiscard]] RespParser::ParseResult incomplete() {
@@ -205,15 +203,15 @@ RespParser::ParseResult RespParser::parse_resp_array(
 RespParser::ParseResult RespParser::parse_inline(
     std::size_t offset,
     std::vector<FieldRange>& out_fields) const {
-  const auto line_end = buffer_.find("\r\n", offset);
-  if (line_end == std::string::npos) {
+  const auto line_end = simd::find_crlf(buffer_, offset);
+  if (!line_end) {
     if (buffer_.size() - offset > kMaxInlineBytes) {
       return parse_error("ERR Protocol error: inline command is too large");
     }
     return incomplete();
   }
 
-  std::string_view line(buffer_.data() + offset, line_end - offset);
+  std::string_view line(buffer_.data() + offset, *line_end - offset);
 
   std::size_t cursor = 0;
   while (cursor < line.size()) {
@@ -234,7 +232,7 @@ RespParser::ParseResult RespParser::parse_inline(
 
   return {
       .state = ParseState::complete,
-      .consumed = line_end + 2,
+      .consumed = *line_end + 2,
   };
 }
 
