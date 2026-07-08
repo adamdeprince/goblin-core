@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import os
 import random
@@ -41,8 +42,14 @@ def encode_command(parts: Sequence[object]) -> bytes:
 
 
 class RespClient:
-    def __init__(self, host: str, port: int, timeout: float = 10.0) -> None:
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+    def __init__(self, host: str, port: int, timeout: float = 10.0,
+                 unix_socket: str | None = None) -> None:
+        if unix_socket is not None:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
+            self.sock.connect(unix_socket)
+        else:
+            self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(timeout)
         self.buffer = bytearray()
 
@@ -129,6 +136,7 @@ class ServerProcess:
     process: subprocess.Popen[bytes]
     port: int
     temp_dir: Path | None = None
+    unix_socket: str | None = None
 
     def stop(self) -> None:
         if self.process.poll() is None:
@@ -178,12 +186,22 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def wait_for_server(port: int, timeout: float = 10.0) -> None:
+_unix_counter = itertools.count()
+
+
+def free_unix_path() -> str:
+    # Short path under /tmp to stay within sockaddr_un.sun_path (~108 bytes).
+    return f"/tmp/gbench-{os.getpid()}-{next(_unix_counter)}.sock"
+
+
+def wait_for_server(port: int, timeout: float = 10.0,
+                    unix_socket: str | None = None) -> None:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            client = RespClient("127.0.0.1", port, timeout=1.0)
+            client = RespClient("127.0.0.1", port, timeout=1.0,
+                                unix_socket=unix_socket)
             try:
                 if client.command("PING") in ("PONG", b"PONG"):
                     return
@@ -209,12 +227,15 @@ def start_goblin(binary: Path,
                  rank_cache_mode: str | None = None,
                  max_output_buffer_mib: int | None = None,
                  score_string_cache: bool = False,
-                 initial_output_buffer_kib: int | None = None) -> ServerProcess:
+                 initial_output_buffer_kib: int | None = None,
+                 unix_socket: str | None = None) -> ServerProcess:
     binary = resolve_executable(binary, "Goblin Core binary")
     port = free_port()
     if rank_cache_mode is None:
         rank_cache_mode = "exact" if rank_cache else "off"
     command = [str(binary), "--port", str(port)]
+    if unix_socket:
+        command.extend(["--unixsocket", unix_socket])
     if rank_cache_mode != "off":
         command.extend(["--rank-cache-mode", rank_cache_mode])
     if score_string_cache:
@@ -228,16 +249,16 @@ def start_goblin(binary: Path,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    server = ServerProcess("goblin", process, port)
+    server = ServerProcess("goblin", process, port, unix_socket=unix_socket)
     try:
-        wait_for_server(port)
+        wait_for_server(port, unix_socket=unix_socket)
     except Exception:
         server.stop()
         raise
     return server
 
 
-def start_redis(binary: Path) -> ServerProcess:
+def start_redis(binary: Path, unix_socket: str | None = None) -> ServerProcess:
     binary = resolve_executable(binary, "Redis server")
     port = free_port()
     temp_dir = Path(tempfile.mkdtemp(prefix="goblin-redis-bench-"))
@@ -262,21 +283,23 @@ def start_redis(binary: Path) -> ServerProcess:
         "--dir",
         str(temp_dir),
     ]
+    if unix_socket:
+        command += ["--unixsocket", unix_socket]
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    server = ServerProcess("redis", process, port, temp_dir)
+    server = ServerProcess("redis", process, port, temp_dir, unix_socket=unix_socket)
     try:
-        wait_for_server(port)
+        wait_for_server(port, unix_socket=unix_socket)
     except Exception:
         server.stop()
         raise
     return server
 
 
-def start_dragonfly(binary: Path) -> ServerProcess:
+def start_dragonfly(binary: Path, unix_socket: str | None = None) -> ServerProcess:
     binary = resolve_executable(binary, "Dragonfly server")
     port = free_port()
     temp_dir = Path(tempfile.mkdtemp(prefix="goblin-dragonfly-bench-"))
@@ -296,14 +319,17 @@ def start_dragonfly(binary: Path) -> ServerProcess:
         "--dir",
         str(temp_dir),
     ]
+    if unix_socket:
+        command.append(f"--unixsocket={unix_socket}")
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    server = ServerProcess("dragonfly", process, port, temp_dir)
+    server = ServerProcess("dragonfly", process, port, temp_dir,
+                           unix_socket=unix_socket)
     try:
-        wait_for_server(port)
+        wait_for_server(port, unix_socket=unix_socket)
     except Exception:
         server.stop()
         raise
@@ -599,15 +625,18 @@ def redis_benchmark_rps(rb_bin: Path,
                         requests: int,
                         pipeline: int,
                         keyspace: int,
-                        timeout: float) -> float:
+                        timeout: float,
+                        unix_socket: str | None = None) -> float:
     """Drive `command` with redis-benchmark and return requests/sec.
 
     A C load generator is used for single-member read throughput because a
     single Python pipelined connection is client-bound near ~350K ops/sec and
     would measure the client rather than the server.
     """
+    endpoint = ["-s", unix_socket] if unix_socket else ["-h", "127.0.0.1",
+                                                        "-p", str(port)]
     cmd = [
-        str(rb_bin), "-h", "127.0.0.1", "-p", str(port),
+        str(rb_bin), *endpoint,
         "-n", str(requests), "-P", str(pipeline), "-c", "1", "-q",
         "-r", str(max(1, keyspace)),
     ] + [str(part) for part in command]

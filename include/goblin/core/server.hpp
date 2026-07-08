@@ -12,6 +12,9 @@ class Store;
 struct ServerConfig {
   std::string bind_address{"127.0.0.1"};
   std::uint16_t port{6379};
+  // When non-empty, listen on this AF_UNIX path instead of TCP -- no network
+  // stack, so the per-round-trip cost of a synchronous client drops sharply.
+  std::string unix_socket_path{};
   int backlog{128};
   std::size_t max_output_buffer_bytes{1024U * 1024U};
   std::size_t resume_output_buffer_bytes{256U * 1024U};

@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -118,7 +119,50 @@ void set_tcp_nodelay(int fd) {
   }
 }
 
+[[nodiscard]] std::optional<int> create_unix_listener(const ServerConfig& config) {
+  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    std::cerr << "goblin-core: socket(AF_UNIX) failed: " << std::strerror(errno)
+              << '\n';
+    return std::nullopt;
+  }
+  set_no_sigpipe(fd);
+
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  if (config.unix_socket_path.size() >= sizeof(address.sun_path)) {
+    std::cerr << "goblin-core: unix socket path too long: "
+              << config.unix_socket_path << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  std::memcpy(address.sun_path, config.unix_socket_path.c_str(),
+              config.unix_socket_path.size() + 1);
+  ::unlink(config.unix_socket_path.c_str());  // clear any stale socket file
+
+  if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+    std::cerr << "goblin-core: bind(unix) failed: " << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  if (::listen(fd, config.backlog) != 0) {
+    std::cerr << "goblin-core: listen failed: " << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  if (!set_nonblocking(fd)) {
+    std::cerr << "goblin-core: failed to set listener nonblocking: "
+              << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  return fd;
+}
+
 [[nodiscard]] std::optional<int> create_listener(const ServerConfig& config) {
+  if (!config.unix_socket_path.empty()) {
+    return create_unix_listener(config);
+  }
   const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     std::cerr << "goblin-core: socket failed: " << std::strerror(errno) << '\n';
@@ -191,7 +235,9 @@ void accept_clients(int listener,
       continue;
     }
     set_no_sigpipe(client_fd);
-    set_tcp_nodelay(client_fd);
+    if (config.unix_socket_path.empty()) {
+      set_tcp_nodelay(client_fd);  // no-op / warning on AF_UNIX
+    }
 
     Client client{.fd = client_fd};
     if (config.initial_output_buffer_bytes > 0) {

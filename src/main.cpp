@@ -98,7 +98,7 @@ namespace {
 
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
-            << " [--bind ADDRESS] [--port PORT]\n"
+            << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
             << "       [--rank-cache|--no-rank-cache]\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
@@ -143,6 +143,15 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.port = *port;
+      continue;
+    }
+
+    if (arg == "--unixsocket") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      config.unix_socket_path = argv[++i];
       continue;
     }
 
