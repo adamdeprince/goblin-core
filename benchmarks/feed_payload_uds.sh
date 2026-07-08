@@ -32,7 +32,10 @@ REDIS_CLI="${REDIS_CLI:-$HOME/bench/redis-8.8.0/src/redis-cli}"
 OUTDIR="${OUTDIR:-$PWD}"
 FILTER='^(used_memory_rss:|20..-)'
 
-GOBLIN="${GOBLIN:-$HOME/dev/packrat/build-rel/goblin-core}"
+# A clobber-safe copy outside the build tree, so a goblin rebuild during the run
+# can't replace it mid-benchmark. Refresh it with: cp build-rel/goblin-core \
+#   ~/goblin-bench/goblin-core  (or set GOBLIN= to point elsewhere).
+GOBLIN="${GOBLIN:-$HOME/goblin-bench/goblin-core}"
 REDIS88="${REDIS88:-$HOME/bench/redis-8.8.0/src/redis-server}"
 REDIS72="${REDIS72:-$HOME/bench/redis-7.2.4/src/redis-server}"
 VALKEY="${VALKEY:-$HOME/bench/valkey-9.1.0/src/valkey-server}"
