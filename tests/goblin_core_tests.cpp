@@ -1333,9 +1333,9 @@ void test_zset_listpack_mode() {
   // Options must outlive the zsets that point at them; one stable object here.
   const ZSetOptions opts8{.listpack_max_entries = 8};
   ZSet zset(&opts8);
-  assert(zset.add(3.0, "c") == 1);
-  assert(zset.add(1.0, "a") == 1);
-  assert(zset.add(2.0, "b") == 1);
+  assert(zset.add(3.0, "c", &opts8) == 1);
+  assert(zset.add(1.0, "a", &opts8) == 1);
+  assert(zset.add(2.0, "b", &opts8) == 1);
   assert(zset.size() == 3);
   assert(zset.score("a") == 1.0 && zset.score("c") == 3.0 &&
          !zset.score("z").has_value());
@@ -1348,11 +1348,12 @@ void test_zset_listpack_mode() {
   assert(rev.size() == 3 && rev[0].member == "c" && rev[2].member == "a");
 
   assert(zset.remove("b") && zset.size() == 2);
-  assert(zset.add(1.0, "a") == 0);  // same score -> no-op
+  assert(zset.add(1.0, "a", &opts8) == 0);  // same score -> no-op
 
   // Grow past the limit -> promotes to full; every op stays correct.
   for (int i = 0; i < 20; ++i) {
-    (void)zset.add(static_cast<double>(100 + i), "big-" + std::to_string(i));
+    (void)zset.add(static_cast<double>(100 + i), "big-" + std::to_string(i),
+                   &opts8);
   }
   assert(zset.size() == 22);
   assert(zset.score("a") == 1.0 && zset.score("big-10") == 110.0);
@@ -1362,17 +1363,17 @@ void test_zset_listpack_mode() {
   // An empty member has no listpack length encoding -> it promotes to full and
   // every member (including the empty one) stays correct.
   ZSet emptymem(&opts8);
-  assert(emptymem.add(1.0, "a") == 1);
-  assert(emptymem.add(2.0, "") == 1);  // empty member -> promote to full
+  assert(emptymem.add(1.0, "a", &opts8) == 1);
+  assert(emptymem.add(2.0, "", &opts8) == 1);  // empty member -> promote to full
   assert(emptymem.size() == 2 && emptymem.score("") == 2.0 &&
          emptymem.score("a") == 1.0);
 
   // save/load round-trips a small (listpack) zset through the canonical format.
   ZSet small(&opts8);
-  assert(small.add(5.0, "x") == 1 && small.add(-2.0, "y") == 1);
+  assert(small.add(5.0, "x", &opts8) == 1 && small.add(-2.0, "y", &opts8) == 1);
   std::string buffer;
   goblin::core::snapshot::Writer writer(buffer);
-  small.save(writer, /*with_accelerator=*/false);
+  small.save(writer, /*with_accelerator=*/false, &opts8);
   goblin::core::snapshot::Reader reader(buffer);
   ZSet loaded = ZSet::load(reader, /*use_accelerator=*/false, &opts8);
   assert(loaded.size() == 2 && loaded.score("x") == 5.0 &&
@@ -1821,7 +1822,8 @@ void test_configurable_chunk_size() {
   const goblin::core::ZSetOptions zopts{.member_chunk_bytes = std::size_t{1} << 16};  // 64 KiB
   goblin::core::ZSet z(&zopts);
   for (int i = 0; i < 5000; ++i) {
-    assert(z.add(static_cast<double>(i), "member-" + std::to_string(i)) == 1);
+    assert(z.add(static_cast<double>(i), "member-" + std::to_string(i),
+                 &zopts) == 1);
   }
   assert(z.size() == 5000);
   assert(z.score("member-1234") == 1234.0);

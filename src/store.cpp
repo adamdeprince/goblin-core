@@ -159,15 +159,15 @@ std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone_shallow(
 // Build a fresh empty representation into rep_: a listpack when the option is on,
 // else the full arena-shaped structure. Used by construction and by move (to leave
 // the moved-from source valid).
-void ZSet::init_empty() {
-  if (options_->listpack_max_entries == 0) {
+void ZSet::init_empty(const ZSetOptions* options) {
+  if (options->listpack_max_entries == 0) {
     auto member_layer = std::make_shared<ZSetMemberLayer>(
-        options_->score_string_cache, options_->member_chunk_bytes,
-        options_->member_index_growth);
+        options->score_string_cache, options->member_chunk_bytes,
+        options->member_index_growth);
     auto score_index = std::make_shared<ZSetScoreIndex>(
-        member_layer->storage.get(), options_->rank_cache_mode);
+        member_layer->storage.get(), options->rank_cache_mode);
     rep_ = std::make_unique<FullState>(
-        FullState{std::move(member_layer), std::move(score_index)});
+        FullState{std::move(member_layer), std::move(score_index), options});
     rebind_indexes();
   } else {
     // Empty listpack; max_entries is a store-global passed to add(), not stored.
@@ -181,27 +181,23 @@ namespace {
 const ZSetOptions kDefaultZSetOptions{};
 }  // namespace
 
-ZSet::ZSet() : options_(&kDefaultZSetOptions) { init_empty(); }
-
-ZSet::ZSet(const ZSetOptions* options) : options_(options) { init_empty(); }
-
-ZSet::ZSet(ZSet&& other) noexcept
-    : rep_(std::move(other.rep_)), options_(other.options_) {
-  other.init_empty();  // leave the moved-from source a valid empty zset
-  if (!is_small()) {
-    rebind_indexes();  // re-point the indexes at the moved member storage
-  }
+const ZSetOptions* ZSet::default_options() noexcept {
+  return &kDefaultZSetOptions;
 }
 
+ZSet::ZSet() { init_empty(&kDefaultZSetOptions); }
+
+ZSet::ZSet(const ZSetOptions* options) { init_empty(options); }
+
+// The full state lives behind a unique_ptr, so moving a zset just moves the
+// pointer -- the FullState object (and every index pointer into it) stays put,
+// so no rebind is needed, and the moved-from is left an empty (null) rep that
+// is only ever destroyed.
+ZSet::ZSet(ZSet&& other) noexcept : rep_(std::move(other.rep_)) {}
+
 ZSet& ZSet::operator=(ZSet&& other) noexcept {
-  if (this == &other) {
-    return *this;
-  }
-  rep_ = std::move(other.rep_);
-  options_ = other.options_;
-  other.init_empty();
-  if (!is_small()) {
-    rebind_indexes();
+  if (this != &other) {
+    rep_ = std::move(other.rep_);
   }
   return *this;
 }
@@ -229,14 +225,15 @@ const ZSetScoreIndex& ZSet::entries() const noexcept {
 void ZSet::ensure_unique_mutable_state(WriteKind kind) {
   auto& fs = full();
   if (fs.member_layer.use_count() > 1) {
-    fs.member_layer = fs.member_layer->clone_shallow(options_->member_index_growth);
+    fs.member_layer =
+        fs.member_layer->clone_shallow(fs.options->member_index_growth);
   }
   if (kind == WriteKind::Structural) {
     member_storage()->ensure_unique_arena();
   }
   if (fs.score_index.use_count() > 1) {
     auto cloned = std::make_shared<ZSetScoreIndex>(member_storage(),
-                                                   options_->rank_cache_mode);
+                                                   fs.options->rank_cache_mode);
     cloned->copy_blocks_from(entries());
     fs.score_index = std::move(cloned);
   }
@@ -245,12 +242,13 @@ void ZSet::ensure_unique_mutable_state(WriteKind kind) {
 
 void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
   // Adopting a shared full member layer makes this a full zset.
+  const ZSetOptions* options = source.full().options;
   auto member_layer = source.full().member_layer;
   auto copied = std::make_shared<ZSetScoreIndex>(member_layer->storage.get(),
-                                                 options_->rank_cache_mode);
+                                                 options->rank_cache_mode);
   copied->copy_blocks_from(source.entries());
   rep_ = std::make_unique<FullState>(
-      FullState{std::move(member_layer), std::move(copied)});
+      FullState{std::move(member_layer), std::move(copied), options});
   rebind_indexes();
 }
 
@@ -295,19 +293,19 @@ void ZSet::rebind_indexes() noexcept {
 
 // Convert the listpack blob into the full arena-shaped structure (member layer +
 // swiss index + score index), replaying its entries in sorted order.
-void ZSet::ensure_full() {
+void ZSet::ensure_full(const ZSetOptions* options) {
   auto* small = small_ptr();
   if (small == nullptr) {
     return;
   }
   CompactListpack lp = std::move(*small);
   auto member_layer = std::make_shared<ZSetMemberLayer>(
-      options_->score_string_cache, options_->member_chunk_bytes,
-      options_->member_index_growth);
+      options->score_string_cache, options->member_chunk_bytes,
+      options->member_index_growth);
   auto score_index = std::make_shared<ZSetScoreIndex>(
-      member_layer->storage.get(), options_->rank_cache_mode);
+      member_layer->storage.get(), options->rank_cache_mode);
   rep_ = std::make_unique<FullState>(
-      FullState{std::move(member_layer), std::move(score_index)});
+      FullState{std::move(member_layer), std::move(score_index), options});
   rebind_indexes();
   lp.for_each([this](double score, std::string_view member) {
     const auto member_id = allocate_member_id(member, score);
@@ -325,18 +323,19 @@ void ZSet::ensure_full() {
 // the width rebuild (2*O(n) and transient extra memory), a latency/memory spike a
 // single fractional or out-of-range score can trigger. Widening is one-way;
 // GOBLIN.OPTIMIZE reclaims it by scanning and demoting to the narrowest fit.
-int ZSet::add(double score, std::string_view member) {
+int ZSet::add(double score, std::string_view member,
+              const ZSetOptions* options) {
   if (!std::isfinite(score)) {
     return 0;
   }
 
   if (auto* lp = small_ptr()) {
     const bool existed = lp->score(member).has_value();
-    const auto result = lp->add(score, member, options_->listpack_max_entries);
+    const auto result = lp->add(score, member, options->listpack_max_entries);
     if (!result.needs_full) {
       return (result.changed && !existed) ? 1 : 0;
     }
-    ensure_full();  // outgrew the listpack; fall through to the full add path
+    ensure_full(options);  // outgrew the listpack; fall to the full add path
   }
 
   auto* meta = members().find(member);
@@ -569,11 +568,11 @@ bool ZSet::check_invariants() const {
   return ok;
 }
 
-ZSetMemoryStats ZSet::memory_stats() const noexcept {
+ZSetMemoryStats ZSet::memory_stats(const ZSetOptions* options) const noexcept {
   ZSetMemoryStats stats;
   stats.member_count = size();
   if (const auto* lp = small_ptr()) {
-    stats.rank_cache_mode = options_->rank_cache_mode;
+    stats.rank_cache_mode = options->rank_cache_mode;
     stats.score_width = lp->score_width();
     stats.member_storage_bytes = lp->blob_bytes();
     stats.member_storage_allocated_bytes = lp->allocated_bytes();
@@ -620,6 +619,7 @@ void ZSet::compact(double member_index_density) {
     lp->optimize();  // re-derive the narrowest score width (demote)
     return;          // the blob is already structurally compact
   }
+  const ZSetOptions* options = full().options;  // capture before rep_ is rebuilt
   const auto old_entries = entries().range(0, entries().size());
 
   std::size_t member_bytes = 0;
@@ -628,11 +628,11 @@ void ZSet::compact(double member_index_density) {
   }
 
   auto new_layer = std::make_shared<ZSetMemberLayer>(
-      options_->score_string_cache, options_->member_chunk_bytes,
-      options_->member_index_growth);
+      options->score_string_cache, options->member_chunk_bytes,
+      options->member_index_growth);
   new_layer->storage->reserve(old_entries.size());
   new_layer->storage->reserve_bytes(member_bytes);
-  if (options_->score_string_cache) {
+  if (options->score_string_cache) {
     std::size_t score_text_bytes = 0;
     for (const auto& old_entry : old_entries) {
       score_text_bytes += score_format::format(old_entry.score).size();
@@ -652,12 +652,12 @@ void ZSet::compact(double member_index_density) {
     new_entries.push_back(ZSetScoreEntry{.score = old_entry.score, .member_id = new_id});
   }
 
-  ZSetScoreIndex new_score_index(new_layer->storage.get(), options_->rank_cache_mode);
+  ZSetScoreIndex new_score_index(new_layer->storage.get(), options->rank_cache_mode);
   new_score_index.assign_sorted(new_entries);
 
   rep_ = std::make_unique<FullState>(FullState{
       std::move(new_layer),
-      std::make_shared<ZSetScoreIndex>(std::move(new_score_index))});
+      std::make_shared<ZSetScoreIndex>(std::move(new_score_index)), options});
   rebind_indexes();
   release_unused_heap_pages();
 }
@@ -741,7 +741,7 @@ bool Store::inline_zset_slots_full() const noexcept {
   return inline_zsets_.size() >= options_.inline_zset_limit;
 }
 
-const ZSetOptions* Store::zset_options() {
+const ZSetOptions* Store::zset_options() const {
   if (!zset_options_ready_) {
     zset_options_ = ZSetOptions{
         .rank_cache_mode = options_.rank_cache_mode,
@@ -902,7 +902,7 @@ long long Store::zadd(std::string_view key, double score, std::string_view membe
       }
     }
   }
-  return zset.add(score, member);
+  return zset.add(score, member, zset_options());
 }
 
 long long Store::zrem(std::string_view key, std::span<const std::string_view> members) {
@@ -1163,15 +1163,15 @@ std::optional<ZSetMemoryStats> Store::zset_memory_stats(std::string_view key) co
     return std::nullopt;
   }
 
-  return zset->memory_stats();
+  return zset->memory_stats(zset_options());
 }
 
 std::optional<std::size_t> Store::optimize(std::string_view key,
                                            double member_index_density) {
   if (auto* zset = find_zset(key); zset != nullptr) {
-    const auto before = zset->memory_stats().total_allocated_bytes;
+    const auto before = zset->memory_stats(zset_options()).total_allocated_bytes;
     zset->compact(member_index_density);
-    const auto after = zset->memory_stats().total_allocated_bytes;
+    const auto after = zset->memory_stats(zset_options()).total_allocated_bytes;
     return before > after ? before - after : 0;
   }
   if (auto* hash = find_hash(key); hash != nullptr) {
@@ -1219,10 +1219,11 @@ void write_zset_score(snapshot::Writer& writer, ScoreWidth width, double score) 
 
 }  // namespace
 
-void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
-  writer.u8(static_cast<std::uint8_t>(options_->rank_cache_mode));
-  writer.u8(options_->score_string_cache ? 1 : 0);
-  writer.f64(options_->member_index_growth);
+void ZSet::save(snapshot::Writer& writer, bool with_accelerator,
+                const ZSetOptions* options) const {
+  writer.u8(static_cast<std::uint8_t>(options->rank_cache_mode));
+  writer.u8(options->score_string_cache ? 1 : 0);
+  writer.f64(options->member_index_growth);
 
   if (const auto* lp = small_ptr()) {
     // Listpack mode: the same canonical (width, per-member score+bytes) format,
@@ -1275,7 +1276,7 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
   const auto width = static_cast<ScoreWidth>(reader.u8());
 
   ZSet zset(options);
-  zset.ensure_full();  // loaded zsets rebuild into the full arena-shaped structure
+  zset.ensure_full(options);  // loaded zsets rebuild into the full arena structure
   const auto member_count = static_cast<std::uint32_t>(reader.u64());
   zset.member_storage()->reserve(member_count);
 
@@ -1343,12 +1344,13 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
 
   // ZSET section body: a stream of OP_ZSET instructions, then OP_END.
   std::string operands;
-  auto emit_zset = [&out, &operands, with_accelerator](std::string_view key,
-                                                       const ZSet& zset) {
+  const ZSetOptions* zopts = zset_options();
+  auto emit_zset = [&out, &operands, with_accelerator, zopts](
+                       std::string_view key, const ZSet& zset) {
     operands.clear();
     snapshot::Writer operand_writer(operands);
     operand_writer.str(key);
-    zset.save(operand_writer, with_accelerator);
+    zset.save(operand_writer, with_accelerator, zopts);
 
     std::string instruction;
     snapshot::Writer instruction_writer(instruction);
@@ -1626,13 +1628,14 @@ StoreMemoryStats Store::memory_stats() const noexcept {
   stats.overflow_table_allocated_bytes =
       overflow_zsets_.allocated_bytes() + zset_key_arena_.allocated_bytes();
   stats.inline_zset_index_allocated_bytes = inline_zset_index_.allocated_bytes();
+  const ZSetOptions* zopts = zset_options();
   for (const auto& slot : inline_zsets_) {
     stats.inline_zset_allocated_bytes +=
-        slot.zset.memory_stats().total_allocated_bytes;
+        slot.zset.memory_stats(zopts).total_allocated_bytes;
   }
-  overflow_zsets_.for_each([&stats](const auto& entry) {
+  overflow_zsets_.for_each([&stats, zopts](const auto& entry) {
     stats.overflow_zset_allocated_bytes +=
-        entry.second.memory_stats().total_allocated_bytes;
+        entry.second.memory_stats(zopts).total_allocated_bytes;
   });
   stats.total_allocated_bytes = stats.overflow_table_allocated_bytes +
                                 stats.inline_zset_index_allocated_bytes +

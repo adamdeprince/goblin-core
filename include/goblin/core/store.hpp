@@ -105,7 +105,8 @@ class ZSet {
   [[nodiscard]] bool empty() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] std::size_t block_count() const noexcept;
-  [[nodiscard]] int add(double score, std::string_view member);
+  [[nodiscard]] int add(double score, std::string_view member,
+                        const ZSetOptions* options = default_options());
   [[nodiscard]] bool remove(std::string_view member);
   [[nodiscard]] std::optional<double> score(std::string_view member) const;
   [[nodiscard]] std::optional<std::size_t> rank(std::string_view member) const;
@@ -314,12 +315,14 @@ class ZSet {
         });
   }
   [[nodiscard]] bool check_invariants() const;
-  [[nodiscard]] ZSetMemoryStats memory_stats() const noexcept;
+  [[nodiscard]] ZSetMemoryStats memory_stats(
+      const ZSetOptions* options = default_options()) const noexcept;
   void compact(double member_index_density = kDefaultMemberIndexDensity);
 
   // Serialize this zset as the operands of an OP_ZSET instruction: options,
   // canonical members, and (when with_accelerator) the index accelerator.
-  void save(snapshot::Writer& writer, bool with_accelerator) const;
+  void save(snapshot::Writer& writer, bool with_accelerator,
+            const ZSetOptions* options = default_options()) const;
   // Reconstruct from OP_ZSET operands. use_accelerator says to trust a present
   // accelerator (version matched) rather than rebuild from the canonical layer.
   [[nodiscard]] static ZSet load(snapshot::Reader& reader, bool use_accelerator,
@@ -359,7 +362,10 @@ class ZSet {
   struct FullState {
     std::shared_ptr<ZSetMemberLayer> member_layer;
     std::shared_ptr<ZSetScoreIndex> score_index;
+    const ZSetOptions* options;  // the store-global config for this full zset
   };
+  // Options for standalone / default-constructed zsets; the store passes its own.
+  static const ZSetOptions* default_options() noexcept;
   [[nodiscard]] bool is_small() const noexcept {
     return std::holds_alternative<CompactListpack>(rep_);
   }
@@ -375,8 +381,8 @@ class ZSet {
   [[nodiscard]] const FullState& full() const noexcept {
     return *std::get<std::unique_ptr<FullState>>(rep_);
   }
-  void init_empty();  // set rep_ to a fresh empty listpack-or-full per options_
-  void ensure_full();
+  void init_empty(const ZSetOptions* options);  // fresh empty listpack-or-full
+  void ensure_full(const ZSetOptions* options);
 
   // The one iteration primitive the range templates funnel through: emit positions
   // [bounds.first, +count) (forward or reverse) as (member, score, score_text).
@@ -411,7 +417,6 @@ class ZSet {
   [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
   std::variant<CompactListpack, std::unique_ptr<FullState>> rep_;
-  const ZSetOptions* options_;
 };
 
 struct StoreOptions {
@@ -788,7 +793,7 @@ class Store {
   // The one options object every zset in this store shares (built lazily from
   // options_). All store zsets have identical options, so they hold a shared_ptr
   // to this rather than each copying a ZSetOptions.
-  [[nodiscard]] const ZSetOptions* zset_options();
+  [[nodiscard]] const ZSetOptions* zset_options() const;
   [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
   // Rebuild the zset key arena + overflow table once deleted keys dominate it.
@@ -822,8 +827,10 @@ class Store {
   std::string inline_hash_key_;
   SwissTable<std::string, Hash, StringTableHash, StringTableEqual> overflow_hashes_;
   StoreOptions options_;
-  ZSetOptions zset_options_;  // the one options object every store zset points at
-  bool zset_options_ready_ = false;
+  // Lazily built on first use; mutable so the const accessors (save/memory_stats)
+  // can materialize it. Every store zset points at this one object.
+  mutable ZSetOptions zset_options_;
+  mutable bool zset_options_ready_ = false;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
 };
