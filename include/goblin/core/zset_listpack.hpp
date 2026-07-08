@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 
+#include "goblin/core/blob_pool.hpp"
 #include "goblin/core/score_width.hpp"
 
 namespace goblin::core {
@@ -369,7 +370,7 @@ class ZSetListpack {
     w += member_len;
     w += encode_backlen(&element[w], member_len);
     (void)lb;
-    data_.insert(off, element);
+    data_.insert(off, element.data(), element.size());
     data_.shrink_to_fit();
     ++count_;
   }
@@ -378,7 +379,7 @@ class ZSetListpack {
   void rewiden(ScoreWidth target) {
     const std::size_t old_score_bytes = score_width_bytes(width_);
     const std::size_t new_score_bytes = score_width_bytes(target);
-    std::string out;
+    BlobString out;
     // Written so narrowing (new < old) can't underflow the unsigned subtraction.
     out.reserve(data_.size() + count_ * new_score_bytes - count_ * old_score_bytes);
     std::size_t off = 0;
@@ -400,7 +401,7 @@ class ZSetListpack {
     width_ = target;
   }
 
-  std::string data_;  // entries only; the 4-byte header is synthesized on save
+  BlobString data_;  // pooled; entries only, the 4-byte header synthesized on save
   std::uint16_t max_entries_{kDefaultListpackMaxEntries};
   std::uint16_t count_{0};
   ScoreWidth width_{ScoreWidth::I16};
