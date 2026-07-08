@@ -53,7 +53,9 @@ def main() -> int:
     p.add_argument("--bench", required=True, type=Path,
                    help="compiled zadd_bench binary")
     p.add_argument("--threads", default="1,8,32,64",
-                   help="comma-separated connection counts to sweep")
+                   help="connection counts to sweep (fixed count if --pipelines)")
+    p.add_argument("--pipelines", default=None,
+                   help="if set, sweep these pipeline depths at a fixed --threads")
     p.add_argument("--keyspace", type=int, default=200_000)
     p.add_argument("--pipeline", type=int, default=1)
     p.add_argument("--duration", type=float, default=5.0)
@@ -61,33 +63,55 @@ def main() -> int:
     p.add_argument("--unix", action="store_true")
     args = p.parse_args()
 
-    thread_list = [int(x) for x in args.threads.split(",")]
+    if args.pipelines:  # sweep pipeline depth at a fixed connection count
+        conns = int(args.threads.split(",")[0])
+        values = [int(x) for x in args.pipelines.split(",")]
+        col = lambda v: f"pipe {v}"
+        title = f"ZADD/s vs pipeline depth ({conns} conn)"
+
+        def measure(server, v):
+            return run_bench(args.bench, server, conns, args.keyspace, v,
+                             args.duration)
+
+        def warmup(server):
+            run_bench(args.bench, server, conns, args.keyspace, max(values),
+                      args.warmup)
+    else:  # sweep connection count at a fixed pipeline depth
+        values = [int(x) for x in args.threads.split(",")]
+        col = lambda v: f"{v} conn"
+        title = f"ZADD/s vs connections (pipeline={args.pipeline})"
+
+        def measure(server, v):
+            return run_bench(args.bench, server, v, args.keyspace,
+                             args.pipeline, args.duration)
+
+        def warmup(server):
+            run_bench(args.bench, server, max(values), args.keyspace,
+                      args.pipeline, args.warmup)
+
     rows = []
     for spec in args.engine:
         label, kind, path = spec.split(":", 2)
         unix_socket = free_unix_path() if args.unix else None
         server = start_engine(kind, Path(path), unix_socket)
         try:
-            if args.warmup > 0:  # populate so every point measures a warm keyspace
-                run_bench(args.bench, server, max(thread_list), args.keyspace,
-                          args.pipeline, args.warmup)
+            if args.warmup > 0:  # warm the keyspace so every point is steady state
+                warmup(server)
             res = {}
-            for t in thread_list:
-                res[t] = run_bench(args.bench, server, t, args.keyspace,
-                                   args.pipeline, args.duration)
-                print(f"  {label:>12} {t:>3} conn: {res[t]:>12,.0f} zadd/s",
+            for v in values:
+                res[v] = measure(server, v)
+                print(f"  {label:>12} {col(v):>9}: {res[v]:>12,.0f} zadd/s",
                       file=sys.stderr)
             rows.append((label, res))
         finally:
             server.stop()
 
     transport = "UDS" if args.unix else "TCP"
-    print(f"\n**ZADD/s vs connections (C++ client, pipeline={args.pipeline}, "
-          f"{transport}):**\n")
-    print("| engine | " + " | ".join(f"{t} conn" for t in thread_list) + " |")
-    print("| --- | " + " | ".join("---:" for _ in thread_list) + " |")
+    print(f"\n**{title}, C++ client, {transport}:**\n")
+    print("| engine | " + " | ".join(col(v) for v in values) + " |")
+    print("| --- | " + " | ".join("---:" for _ in values) + " |")
     for label, res in rows:
-        cells = " | ".join(f"`{res[t]:,.0f}`" for t in thread_list)
+        cells = " | ".join(f"`{res[v]:,.0f}`" for v in values)
         print(f"| {label} | {cells} |")
     return 0
 
