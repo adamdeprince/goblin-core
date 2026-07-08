@@ -902,7 +902,9 @@ const ZSet* Store::find_member_layer_template() const noexcept {
 
 long long Store::zadd(std::string_view key, double score, std::string_view member) {
   auto& zset = get_or_create_zset(key);
-  if (zset.empty()) {
+  // Small (listpack) zsets are standalone blobs -- they never adopt a shared
+  // member layer, so skip the template scan entirely (it is O(number of zsets)).
+  if (!zset.is_small() && zset.empty()) {
     if (const ZSet* tmpl = find_member_layer_template(); tmpl != nullptr && tmpl != &zset) {
       if (const auto tmpl_score = tmpl->score(member);
           tmpl_score.has_value() && *tmpl_score == score) {

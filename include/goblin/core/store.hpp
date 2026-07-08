@@ -394,9 +394,11 @@ struct StoreOptions {
   std::size_t zset_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
   std::size_t hash_chunk_bytes{HashStorage::kDefaultChunkBytes};
   // Max entries a zset keeps as a compact listpack before promoting to the full
-  // arena-shaped structure (0 disables the listpack). Tiny zsets live as one
-  // blob -- ~7x leaner than the full machinery -- and promote on growth.
-  std::size_t zset_listpack_max_entries{128};
+  // arena-shaped structure (0 disables the listpack). Tiny zsets live as one blob
+  // (~1.5x leaner per zset with distinct members). 32 is the CPU knee: memory
+  // saving is ~flat with size, but the O(n) blob scan makes ZSCORE ~2.5x at 32
+  // and perverse (>6x) by 128, so we promote to the O(log n) structure there.
+  std::size_t zset_listpack_max_entries{32};
   // Zsets created before the overflow table are kept in a small inline table
   // for fast key resolution on multi-key workloads.
   std::size_t inline_zset_limit{32};
