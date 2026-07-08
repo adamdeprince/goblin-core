@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 #
-# Feed a payload to goblin + each incumbent over a UNIX DOMAIN SOCKET, ALL SERVERS
-# IN PARALLEL, via redis-cli. For each server it:
+# Feed the first HEAD_LINES of a payload to goblin + each incumbent over a UNIX
+# DOMAIN SOCKET, ALL SERVERS IN PARALLEL, via redis-cli. For each server it:
 #   1. launches the server listening ONLY on a UDS,
-#   2. runs `redis-cli -s <sock> < $PAYLOAD` and TIMES just that call,
+#   2. feeds `head -n HEAD_LINES $PAYLOAD` through redis-cli, TIMING just that call,
 #   3. filters redis-cli's output to lines matching $FILTER into <name>.output,
 #   4. records the server's OS process RSS after the load,
-#   5. shuts the server down.
-# All of that happens concurrently, one background job per server.
+#   5. snapshots the $CMP_KEY sorted set, then shuts the server down.
+# Afterwards it cross-checks goblin's sorted set against redis-8.8's (ZRANGE
+# WITHSCORES) to confirm goblin produced identical data. One job per server.
 #
 # It only starts/stops servers and reads a payload -- nothing destructive.
 # Edit the paths/flags below and run it ON naamah:  bash feed_payload_uds.sh
 #
-# PARALLEL COST: every server reads the FULL payload at the same time and holds
-# its own copy in RAM. ~/payload-128.txt is ~187 GB, so 5 servers means ~5x the
-# disk reads and RAM at once (fine on a 1 TB / 64-core box; trim SERVERS to run
-# fewer). Normal (reply-per-command) mode is required because `redis-cli --pipe`
-# is faster but discards replies, so your used_memory_rss:/20..- lines would
-# never appear. (Needs GNU date's %N, i.e. Linux -- fine on naamah.)
+# HEAD_LINES defaults to 10000 (a quick run); the payload (~/payload-128.txt) is
+# ~187 GB and head stops after N lines, so it never reads the whole file -- raise
+# HEAD_LINES for a bigger load. Normal (reply-per-command) mode is required:
+# `redis-cli --pipe` is faster but discards replies, so your used_memory_rss:/
+# 20..- lines would never appear. (Needs GNU date's %N, i.e. Linux -- fine on naamah.)
 #
-# GOBLIN + used_memory_rss: goblin has no INFO, so an `INFO memory` in the payload
-# errors on goblin and goblin.output has NO `used_memory_rss:` line -- use the
-# os_rss column. The incumbents' used_memory_rss: comes from your payload's INFO;
-# os_rss is the OS-measured cross-check for all of them.
+# used_memory_rss: comes from each server's INFO (goblin implements INFO now, so
+# its line is present); the os_rss column is the OS-measured RSS for all engines.
 
 set -u
 
@@ -31,6 +29,8 @@ PAYLOAD="${PAYLOAD:-$HOME/payload-128.txt}"
 REDIS_CLI="${REDIS_CLI:-$HOME/bench/redis-8.8.0/src/redis-cli}"
 OUTDIR="${OUTDIR:-$PWD}"
 FILTER='^(used_memory_rss:|20..-)'
+HEAD_LINES="${HEAD_LINES:-10000}"   # feed only the first N payload lines (quick run)
+CMP_KEY="${CMP_KEY:-leaderboard}"   # zset cross-checked afterwards: goblin vs redis-8.8
 
 # A clobber-safe copy outside the build tree, so a goblin rebuild during the run
 # can't replace it mid-benchmark. Refresh it with: cp build-rel/goblin-core \
@@ -89,17 +89,22 @@ run_one() {  # $1=name
     return
   fi
 
-  # Feed the payload, streaming redis-cli's replies straight through the filter;
-  # time ONLY the redis-cli call.
+  # Feed the first HEAD_LINES of the payload, streaming redis-cli's replies
+  # straight through the filter; time ONLY the redis-cli call. (head stops after
+  # N lines, so it never reads the whole 187 GB file.)
   local start end elapsed rss_kb rss_mb
   start=$(date +%s.%N)
-  "$REDIS_CLI" -s "$sock" < "$PAYLOAD" 2>&1 | grep -E "$FILTER" > "$OUTDIR/$name.output"
+  head -n "$HEAD_LINES" "$PAYLOAD" | "$REDIS_CLI" -s "$sock" 2>&1 | grep -E "$FILTER" > "$OUTDIR/$name.output"
   end=$(date +%s.%N)
 
   rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
   rss_mb=$(awk "BEGIN{printf \"%.1f\", ${rss_kb:-0}/1024}")
   elapsed=$(awk "BEGIN{printf \"%.3f\", $end - $start}")
   printf '%-14s %13s %12s   %s\n' "$name" "$elapsed" "$rss_mb" "$OUTDIR/$name.output" > "$RESULT_DIR/$name"
+
+  # Snapshot the sorted set (members in sorted order + scores) before shutdown,
+  # for the goblin-vs-redis-8.8 correctness check after all servers finish.
+  "$REDIS_CLI" -s "$sock" ZRANGE "$CMP_KEY" 0 -1 WITHSCORES > "$RESULT_DIR/$name.zset" 2>/dev/null
 
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -f "$sock"
 }
@@ -121,4 +126,21 @@ printf '%-14s %13s %12s   %s\n' "------" "------------" "----------" "------"
 for name in "${SERVERS[@]}"; do
   cat "$RESULT_DIR/$name" 2>/dev/null
 done
+
+# Correctness: goblin's sorted set must match redis-8.8's exactly -- same members,
+# same scores, same order (redis-cli formats both, so any diff is real data). A
+# mismatch means goblin got the leaderboard wrong.
+echo
+gz="$RESULT_DIR/goblin.zset"; rz="$RESULT_DIR/redis-8.8.zset"
+if [ -s "$gz" ] && [ -s "$rz" ]; then
+  if diff -q "$gz" "$rz" >/dev/null; then
+    echo "zset check: goblin '$CMP_KEY' MATCHES redis-8.8  ($(( $(wc -l < "$gz") / 2 )) members)"
+  else
+    echo "zset check: MISMATCH -- goblin '$CMP_KEY' differs from redis-8.8"
+    echo "  goblin $(( $(wc -l < "$gz") / 2 )) members vs redis-8.8 $(( $(wc -l < "$rz") / 2 )); first diffs:"
+    diff "$gz" "$rz" | head -20
+  fi
+else
+  echo "zset check: skipped (need both goblin and redis-8.8 in SERVERS)"
+fi
 rm -rf "$RESULT_DIR"
