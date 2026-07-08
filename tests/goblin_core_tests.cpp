@@ -1220,6 +1220,52 @@ void test_zset_listpack_promotes_to_full() {
   assert(!huge.changed && huge.needs_full && lp2.empty());
 }
 
+// A ZSet with the listpack enabled dispatches every op to the blob while small,
+// then transparently promotes to the full structure once it outgrows the limit --
+// results are identical throughout, and it save/loads through the canonical format.
+void test_zset_listpack_mode() {
+  using goblin::core::ZSet;
+  using goblin::core::ZSetOptions;
+
+  ZSet zset(ZSetOptions{.listpack_max_entries = 8});
+  assert(zset.add(3.0, "c") == 1);
+  assert(zset.add(1.0, "a") == 1);
+  assert(zset.add(2.0, "b") == 1);
+  assert(zset.size() == 3);
+  assert(zset.score("a") == 1.0 && zset.score("c") == 3.0 &&
+         !zset.score("z").has_value());
+  assert(zset.rank("a") == 0U && zset.rank("c") == 2U);
+  assert(zset.reverse_rank("c") == 0U);
+
+  auto range = zset.range(0, -1);
+  assert(range.size() == 3 && range[0].member == "a" && range[2].member == "c");
+  auto rev = zset.reverse_range(0, -1);
+  assert(rev.size() == 3 && rev[0].member == "c" && rev[2].member == "a");
+
+  assert(zset.remove("b") && zset.size() == 2);
+  assert(zset.add(1.0, "a") == 0);  // same score -> no-op
+
+  // Grow past the limit -> promotes to full; every op stays correct.
+  for (int i = 0; i < 20; ++i) {
+    (void)zset.add(static_cast<double>(100 + i), "big-" + std::to_string(i));
+  }
+  assert(zset.size() == 22);
+  assert(zset.score("a") == 1.0 && zset.score("big-10") == 110.0);
+  assert(zset.rank("a") == 0U);  // still the minimum
+  assert(zset.check_invariants());
+
+  // save/load round-trips a small (listpack) zset through the canonical format.
+  ZSet small(ZSetOptions{.listpack_max_entries = 8});
+  assert(small.add(5.0, "x") == 1 && small.add(-2.0, "y") == 1);
+  std::string buffer;
+  goblin::core::snapshot::Writer writer(buffer);
+  small.save(writer, /*with_accelerator=*/false);
+  goblin::core::snapshot::Reader reader(buffer);
+  ZSet loaded = ZSet::load(reader, /*use_accelerator=*/false);
+  assert(loaded.size() == 2 && loaded.score("x") == 5.0 &&
+         loaded.score("y") == -2.0);
+}
+
 void test_block_hint_rank_cache_lazy_offset_repair() {
   goblin::core::ZSetMemberStorage storage;
   goblin::core::ZSetScoreIndex index(
@@ -1994,6 +2040,7 @@ int main() {
   test_zset_listpack_width_promotes();
   test_zset_listpack_i16_to_f64_direct();
   test_zset_listpack_promotes_to_full();
+  test_zset_listpack_mode();
   test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();

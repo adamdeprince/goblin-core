@@ -156,14 +156,21 @@ std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone_shallow(
   return cloned;
 }
 
-ZSet::ZSet(ZSetOptions options)
-    : member_layer_(std::make_shared<ZSetMemberLayer>(
-          options.score_string_cache,
-          options.member_chunk_bytes,
-          options.member_index_growth)),
-      score_index_(std::make_shared<ZSetScoreIndex>(member_storage(),
-                                                    options.rank_cache_mode)),
-      options_(options) {}
+ZSet::ZSet(ZSetOptions options) : options_(options) {
+  if (options_.listpack_max_entries == 0) {
+    // Listpack disabled: start in the full arena-shaped structure.
+    member_layer_ = std::make_shared<ZSetMemberLayer>(
+        options_.score_string_cache, options_.member_chunk_bytes,
+        options_.member_index_growth);
+    score_index_ = std::make_shared<ZSetScoreIndex>(member_storage(),
+                                                    options_.rank_cache_mode);
+  } else {
+    // Start as a compact listpack; ensure_full() promotes it when it outgrows
+    // options_.listpack_max_entries (or a member/blob exceeds the limits).
+    small_.emplace();
+    small_->set_max_entries(options_.listpack_max_entries);
+  }
+}
 
 ZSet::ZSet(ZSet&& other) noexcept
     : small_(std::move(other.small_)),
@@ -280,6 +287,7 @@ void ZSet::ensure_unique_mutable_state(WriteKind kind) {
 }
 
 void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
+  small_.reset();  // adopting a shared full member layer makes this a full zset
   member_layer_ = source.member_layer_;
   auto copied = std::make_shared<ZSetScoreIndex>(member_storage(),
                                                  options_.rank_cache_mode);
@@ -289,15 +297,15 @@ void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
 }
 
 bool ZSet::empty() const noexcept {
-  return entries().empty();
+  return small_ ? small_->empty() : entries().empty();
 }
 
 std::size_t ZSet::size() const noexcept {
-  return entries().size();
+  return small_ ? small_->size() : entries().size();
 }
 
 std::size_t ZSet::block_count() const noexcept {
-  return entries().block_count();
+  return small_ ? 0 : entries().block_count();
 }
 
 std::uint32_t ZSet::allocate_member_id(std::string_view member, double score) {
@@ -356,6 +364,15 @@ int ZSet::add(double score, std::string_view member) {
     return 0;
   }
 
+  if (small_) {
+    const bool existed = small_->score(member).has_value();
+    const auto result = small_->add(score, member);
+    if (!result.needs_full) {
+      return (result.changed && !existed) ? 1 : 0;
+    }
+    ensure_full();  // outgrew the listpack; fall through to the full add path
+  }
+
   auto* meta = members().find(member);
   if (meta != nullptr) {
     const auto member_id = meta->member_id;
@@ -389,6 +406,9 @@ int ZSet::add(double score, std::string_view member) {
 }
 
 bool ZSet::remove(std::string_view member) {
+  if (small_) {
+    return small_->remove(member);
+  }
   const auto slot = members().find_slot(member);
   if (!slot) {
     return false;
@@ -465,6 +485,9 @@ bool ZSet::remove(std::string_view member) {
 }
 
 std::optional<double> ZSet::score(std::string_view member) const {
+  if (small_) {
+    return small_->score(member);
+  }
   const auto* meta = members().find(member);
   if (meta == nullptr) {
     return std::nullopt;
@@ -474,6 +497,9 @@ std::optional<double> ZSet::score(std::string_view member) const {
 }
 
 std::optional<std::size_t> ZSet::rank(std::string_view member) const {
+  if (small_) {
+    return small_->rank(member);
+  }
   const auto* meta = members().find(member);
   if (meta == nullptr) {
     return std::nullopt;
@@ -494,7 +520,7 @@ std::optional<std::size_t> ZSet::reverse_rank(std::string_view member) const {
 
 std::optional<ZSetRangeBounds> ZSet::range_bounds(long long start,
                                                   long long stop) const noexcept {
-  const auto size = entries().size();
+  const auto size = small_ ? small_->size() : entries().size();
   if (size == 0) {
     return std::nullopt;
   }
@@ -524,12 +550,13 @@ std::vector<ZSetEntry> ZSet::range(long long start, long long stop) const {
   }
 
   out.reserve(bounds->count);
-  auto append = [this, &out](double score, std::uint32_t member_id) {
-    out.push_back(ZSetEntry{.member = member_view(member_id),
-                            .score = score,
-                            .score_text = score_text_view(member_id)});
-  };
-  entries().for_range(bounds->first, bounds->count, append);
+  for_position_range(*bounds, false,
+                     [&out](std::string_view member, double score,
+                            std::string_view score_text) {
+                       out.push_back(ZSetEntry{.member = member,
+                                               .score = score,
+                                               .score_text = score_text});
+                     });
   return out;
 }
 
@@ -541,16 +568,20 @@ std::vector<ZSetEntry> ZSet::reverse_range(long long start, long long stop) cons
   }
 
   out.reserve(bounds->count);
-  auto append = [this, &out](double score, std::uint32_t member_id) {
-    out.push_back(ZSetEntry{.member = member_view(member_id),
-                            .score = score,
-                            .score_text = score_text_view(member_id)});
-  };
-  entries().for_reverse_range(bounds->first, bounds->count, append);
+  for_position_range(*bounds, true,
+                     [&out](std::string_view member, double score,
+                            std::string_view score_text) {
+                       out.push_back(ZSetEntry{.member = member,
+                                               .score = score,
+                                               .score_text = score_text});
+                     });
   return out;
 }
 
 bool ZSet::check_invariants() const {
+  if (small_) {
+    return true;
+  }
   if (members().size() != entries().size()) {
     return false;
   }
@@ -575,6 +606,16 @@ bool ZSet::check_invariants() const {
 ZSetMemoryStats ZSet::memory_stats() const noexcept {
   ZSetMemoryStats stats;
   stats.member_count = size();
+  if (small_) {
+    stats.rank_cache_mode = options_.rank_cache_mode;
+    stats.score_width = small_->score_width();
+    stats.member_storage_bytes = small_->blob_bytes();
+    stats.member_storage_allocated_bytes = small_->allocated_bytes();
+    stats.member_layer_share_count = 1;
+    stats.score_index_share_count = 1;
+    stats.total_allocated_bytes = small_->allocated_bytes();
+    return stats;
+  }
   stats.rank_cache_mode = entries().rank_cache_mode();
   const auto layer_shares =
       member_layer_ == nullptr ? std::size_t{1} : member_layer_.use_count();
@@ -611,6 +652,9 @@ ZSetMemoryStats ZSet::memory_stats() const noexcept {
 }
 
 void ZSet::compact(double member_index_density) {
+  if (small_) {
+    return;  // a listpack is already compact
+  }
   const auto old_entries = entries().range(0, entries().size());
 
   std::size_t member_bytes = 0;
@@ -653,6 +697,9 @@ void ZSet::compact(double member_index_density) {
 }
 
 std::size_t ZSet::allocated_member_slots() const noexcept {
+  if (small_) {
+    return 0;
+  }
   return member_storage() == nullptr ? 0 : member_storage()->size();
 }
 
@@ -661,15 +708,15 @@ std::size_t ZSet::free_member_slots() const noexcept {
 }
 
 std::size_t ZSet::member_index_capacity() const noexcept {
-  return members().capacity();
+  return small_ ? 0 : members().capacity();
 }
 
 std::size_t ZSet::member_index_tombstones() const noexcept {
-  return members().tombstone_count();
+  return small_ ? 0 : members().tombstone_count();
 }
 
 bool ZSet::should_compact_after_removal(std::size_t removed_count) const noexcept {
-  if (removed_count == 0 || empty()) {
+  if (small_ || removed_count == 0 || empty()) {
     return false;
   }
 
@@ -683,11 +730,12 @@ bool ZSet::should_compact_after_removal(std::size_t removed_count) const noexcep
 }
 
 bool ZSet::cleanup_member_index_after_removal_if_needed(std::size_t removed_count) {
-  return members().cleanup_after_removal_if_needed(removed_count);
+  return small_ ? false
+                : members().cleanup_after_removal_if_needed(removed_count);
 }
 
 bool ZSet::rehash_member_index_same_capacity() {
-  return members().rehash_same_capacity();
+  return small_ ? false : members().rehash_same_capacity();
 }
 
 bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
@@ -825,13 +873,14 @@ void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
 
 const ZSet* Store::find_member_layer_template() const noexcept {
   for (const auto& slot : inline_zsets_) {
-    if (!slot.zset.empty()) {
+    if (!slot.zset.empty() && !slot.zset.is_small()) {
       return &slot.zset;
     }
   }
   const ZSet* template_zset = nullptr;
   overflow_zsets_.for_each([&template_zset](const auto& entry) {
-    if (template_zset == nullptr && !entry.second.empty()) {
+    if (template_zset == nullptr && !entry.second.empty() &&
+        !entry.second.is_small()) {
       template_zset = &entry.second;
     }
   });
@@ -1170,6 +1219,20 @@ void ZSet::save(snapshot::Writer& writer, bool with_accelerator) const {
   writer.u8(options_.score_string_cache ? 1 : 0);
   writer.f64(options_.member_index_growth);
 
+  if (small_) {
+    // Listpack mode: the same canonical (width, per-member score+bytes) format,
+    // read straight from the blob; a listpack carries no accelerator.
+    const auto width = small_->score_width();
+    writer.u8(static_cast<std::uint8_t>(width));
+    writer.u64(static_cast<std::uint64_t>(small_->size()));
+    small_->for_each([&writer, width](double score, std::string_view member) {
+      write_zset_score(writer, width, score);
+      writer.str(member);
+    });
+    writer.u8(0);  // no accelerator
+    return;
+  }
+
   const auto width = member_storage()->score_width();
   writer.u8(static_cast<std::uint8_t>(width));
 
@@ -1208,6 +1271,7 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
   const auto width = static_cast<ScoreWidth>(reader.u8());
 
   ZSet zset(options);
+  zset.ensure_full();  // loaded zsets rebuild into the full arena-shaped structure
   const auto member_count = static_cast<std::uint32_t>(reader.u64());
   zset.member_storage()->reserve(member_count);
 

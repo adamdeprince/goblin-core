@@ -51,6 +51,11 @@ struct ZSetOptions {
   bool score_string_cache{false};
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t member_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
+  // Max entries a zset keeps in the compact listpack before promoting to the full
+  // arena-shaped structure. 0 disables the listpack (always full) -- the current
+  // default, until the full-structure tests and the shared-member-layer
+  // optimization are reconciled with small mode.
+  std::size_t listpack_max_entries{0};
 };
 
 struct ZSetMemoryStats {
