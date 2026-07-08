@@ -88,6 +88,10 @@ class Store;
 class ZSet {
  public:
   explicit ZSet(ZSetOptions options = {});
+  // Store path: share one options object across every zset (all zsets in a store
+  // have identical options), so each carries a 16 B shared_ptr instead of a 32 B
+  // copy. Standalone/test zsets use the ZSetOptions ctor and own their own.
+  explicit ZSet(std::shared_ptr<const ZSetOptions> options);
 
   ZSet(const ZSet&) = delete;
   ZSet& operator=(const ZSet&) = delete;
@@ -401,7 +405,7 @@ class ZSet {
   [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
   std::variant<ZSetListpack, FullState> rep_;
-  ZSetOptions options_;
+  std::shared_ptr<const ZSetOptions> options_;
 };
 
 struct StoreOptions {
@@ -775,6 +779,10 @@ class Store {
   [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;
   [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept;
   [[nodiscard]] ZSet& get_or_create_zset(std::string_view key);
+  // The one options object every zset in this store shares (built lazily from
+  // options_). All store zsets have identical options, so they hold a shared_ptr
+  // to this rather than each copying a ZSetOptions.
+  [[nodiscard]] const std::shared_ptr<const ZSetOptions>& zset_options();
   [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
 
@@ -803,6 +811,7 @@ class Store {
   std::string inline_hash_key_;
   SwissTable<std::string, Hash, StringTableHash, StringTableEqual> overflow_hashes_;
   StoreOptions options_;
+  std::shared_ptr<const ZSetOptions> zset_options_;  // shared by every store zset
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
 };
