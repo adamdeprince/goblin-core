@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "goblin/core/hash.hpp"
+#include "goblin/core/key_arena.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
@@ -785,6 +786,8 @@ class Store {
   [[nodiscard]] const ZSetOptions* zset_options();
   [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
+  // Rebuild the zset key arena + overflow table once deleted keys dominate it.
+  void compact_zset_keys_if_needed();
 
   void place_loaded_hash(std::string key, Hash&& hash);
   [[nodiscard]] Hash* find_hash(std::string_view key) noexcept;
@@ -806,7 +809,10 @@ class Store {
   std::vector<InlineZsetSlot> inline_zsets_;
   SwissTable<std::string, std::size_t, StringTableHash, StringTableEqual>
       inline_zset_index_;
-  SwissTable<std::string, ZSet, StringTableHash, StringTableEqual> overflow_zsets_;
+  // Overflow zset keys live packed in this arena; the swiss keys are bare uint64
+  // offsets into it (fixed-size slots, no per-key std::string / malloc churn).
+  KeyArena zset_key_arena_;
+  SwissTable<std::uint64_t, ZSet, KeyArenaHash, KeyArenaEqual> overflow_zsets_;
   std::optional<Hash> inline_hash_;
   std::string inline_hash_key_;
   SwissTable<std::string, Hash, StringTableHash, StringTableEqual> overflow_hashes_;

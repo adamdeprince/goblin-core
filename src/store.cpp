@@ -714,7 +714,10 @@ bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
   return true;
 }
 
-Store::Store(StoreOptions options) : options_(options) {}
+Store::Store(StoreOptions options)
+    : overflow_zsets_(KeyArenaHash{&zset_key_arena_},
+                      KeyArenaEqual{&zset_key_arena_}),
+      options_(options) {}
 
 ZSet* Store::find_inline_zset(std::string_view key) noexcept {
   const auto* index = inline_zset_index_.find(key);
@@ -824,7 +827,10 @@ ZSet& Store::get_or_create_zset(std::string_view key) {
     return emplace_inline_zset(key);
   }
 
-  auto [zset, inserted] = overflow_zsets_.try_emplace(key, zset_options());
+  // Reached only when the key is absent from the overflow table (checked above),
+  // so pack its bytes into the arena and key the slot by that offset.
+  const auto key_offset = zset_key_arena_.append(key);
+  auto [zset, inserted] = overflow_zsets_.try_emplace(key_offset, zset_options());
   (void)inserted;
   return *zset;
 }
@@ -835,7 +841,35 @@ void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   }
 
   erase_inline_zset_if(key, zset);
-  overflow_zsets_.erase(key);
+  if (const auto* entry = overflow_zsets_.find_entry(key)) {
+    const auto key_offset = entry->first;
+    overflow_zsets_.erase(key);
+    zset_key_arena_.mark_dead(key_offset);
+    compact_zset_keys_if_needed();
+  }
+}
+
+// Rebuild the zset key arena (dropping dead key bytes) and re-key the overflow
+// table against the fresh offsets. The table's hash/eq reference the arena member
+// by address, which is stable across the content move, so we clear + refill it in
+// place rather than reconstructing it.
+void Store::compact_zset_keys_if_needed() {
+  if (!zset_key_arena_.should_compact()) {
+    return;
+  }
+  KeyArena fresh;
+  std::vector<std::pair<std::uint64_t, ZSet>> survivors;
+  survivors.reserve(overflow_zsets_.size());
+  overflow_zsets_.for_each([&](auto& entry) {
+    survivors.emplace_back(fresh.append(zset_key_arena_.bytes(entry.first)),
+                           std::move(entry.second));
+  });
+  overflow_zsets_.clear();
+  zset_key_arena_ = std::move(fresh);
+  overflow_zsets_.reserve(survivors.size());
+  for (auto& [offset, zset] : survivors) {
+    overflow_zsets_.try_emplace(offset, std::move(zset));
+  }
 }
 
 const ZSet* Store::find_member_layer_template() const noexcept {
@@ -1326,8 +1360,8 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   for (const auto& slot : inline_zsets_) {
     emit_zset(slot.key, slot.zset);
   }
-  overflow_zsets_.for_each([&emit_zset](const std::pair<std::string, ZSet>& entry) {
-    emit_zset(entry.first, entry.second);
+  overflow_zsets_.for_each([&](const auto& entry) {
+    emit_zset(zset_key_arena_.bytes(entry.first), entry.second);
   });
 
   const char end = static_cast<char>(snapshot::kOpEnd);
@@ -1578,7 +1612,8 @@ void Store::place_loaded_zset(std::string key, ZSet&& zset) {
     return;
   }
 
-  overflow_zsets_.try_emplace(std::move(key), std::move(zset));
+  const auto key_offset = zset_key_arena_.append(key);
+  overflow_zsets_.try_emplace(key_offset, std::move(zset));
 }
 
 StoreMemoryStats Store::memory_stats() const noexcept {
@@ -1586,7 +1621,8 @@ StoreMemoryStats Store::memory_stats() const noexcept {
   stats.inline_zset_count = inline_zsets_.size();
   stats.overflow_zset_count = overflow_zsets_.size();
   stats.overflow_zset_capacity = overflow_zsets_.capacity();
-  stats.overflow_table_allocated_bytes = overflow_zsets_.allocated_bytes();
+  stats.overflow_table_allocated_bytes =
+      overflow_zsets_.allocated_bytes() + zset_key_arena_.allocated_bytes();
   stats.inline_zset_index_allocated_bytes = inline_zset_index_.allocated_bytes();
   for (const auto& slot : inline_zsets_) {
     stats.inline_zset_allocated_bytes +=
