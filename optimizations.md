@@ -90,7 +90,7 @@ where a listpack is one. That motivates the next item. Benchmark:
 
 ---
 
-## 3. Compact small-collection representation — *queued (design agreed)*
+## 3. Compact small-collection representation — *shipped, this cycle*
 
 Goal: beat the incumbents on *small*-collection memory too, so goblin wins at both
 ends — the small/large duality Redis gets from listpack↔skiplist, done our own way.
@@ -119,19 +119,47 @@ count/size threshold). The same pattern applies to small hashes. Persistence sta
 unchanged — the canonical layer rebuilds into the right representation, at the
 right score width, on load.
 
-### Update — implementation in progress
+### Score-width narrowing — shipped
 
-The score-width narrowing is landing **signed** (i16 ±32,767 / i32 ±2.147G / f64).
-Done so far: the member SoA stores scores at the narrowest fitting width and widens
-one-way on a value that doesn't fit (`-0.0`/NaN/±inf stay f64); snapshots record the
-width and write scores at it (format **v2**), so integer-scored snapshots shrink.
-In progress: `GOBLIN.OPTIMIZE` demote-by-rescan, the sorted-index score arrays, and
-a three-variant (i16/i32/f64) listpack for tiny zsets (our own format).
+Signed **i16 (±32,767) / i32 (±2.147G) / f64**, chosen at the narrowest width that
+holds every score exactly. It lives in the member SoA *and* the sorted score index
+(decode-to-`double` at the comparator, so the index algorithm is untouched); widens
+one-way on a value that doesn't fit (`-0.0`/NaN/±inf stay f64), including a direct
+i16→f64 jump; snapshots record the width and write scores at it (format **v2**), so
+integer-scored snapshots shrink; and `GOBLIN.OPTIMIZE` rescans and **demotes** to the
+narrowest fitting width. Measured **~12.4 B/member leaner** for a large i16 zset.
+
+### Listpack (tiny-zset blob) — shipped, on by default, with caveats
+
+Our own format: entries sorted by `(score, member)`, each `[enc][score][member][backlen]`
+— `enc` a member-length varint, `score` inline at the zset's narrow width, `backlen`
+the same varint reversed so a reverse walk is O(1). A tiny zset lives in one blob (no
+swiss index / score index / SoA / CoW layers) and promotes to the full structure when
+it outgrows the limit, a member is empty (no length encoding) or too long, or the blob
+would exceed 64 KiB. `GOBLIN.OPTIMIZE` demotes the blob's width too.
+
+**Measured reality (be honest about it).** With *distinct* members (the realistic
+case — identical members let the full zsets share one member layer and look
+artificially lean), the blob saves a **flat ~1.5× per zset** across sizes. The blob
+*structure* is ~7× leaner than the full machinery, but at the store level that dilutes
+to ~1.5× because the per-zset **`ZSet` handle + key string + swiss slot (~220 B)** are
+the same either way — so goblin narrows but does **not yet beat** Redis's ~150 B
+tiny-zset total. Shrinking that overhead (store holds the blob directly, or share
+`ZSetOptions` + `variant` the representation so the handle isn't ~120 B carrying both
+reps) is the real lever, and is queued.
+
+**CPU knee → threshold 32.** The blob is an O(n) scan, so the promotion threshold is a
+memory-vs-CPU dial. Memory saving is ~flat with size, but `ZSCORE` goes ~2.5× at 32
+entries and **perverse (>6×) by 128**; build stays ≤1.2× to 32. So the default is
+**32** (`StoreOptions::zset_listpack_max_entries`), not 128. Enabling the score-string
+cache (exact-text preservation, which the numeric blob can't do) keeps zsets full.
+Validated on x86_64/4K, LoongArch/16K, arm64/16K + ASan.
 
 **Danger — promotion during a copy-on-write write.** Widening the score width
-rebuilds the score array O(n). When a zset is CoW-shared (many keys with identical
-members + scores share one member layer), the write that promotes it *first forks*
-that layer O(n), then rebuilds the width O(n) — so a single `ZADD` of a fractional
-or out-of-range score to a large shared set is a latency and transient-memory spike.
-Widening never happens on the read path and is one-way; `GOBLIN.OPTIMIZE` reclaims
-an over-wide width by demoting.
+rebuilds the score array O(n). When a *full* zset is CoW-shared (many keys with
+identical members + scores share one member layer), the write that promotes it *first
+forks* that layer O(n), then rebuilds the width O(n) — so a single `ZADD` of a
+fractional or out-of-range score to a large shared set is a latency and
+transient-memory spike. (Listpack zsets are standalone blobs and never share, so this
+applies only after promotion to full.) Widening never happens on the read path and is
+one-way; `GOBLIN.OPTIMIZE` reclaims an over-wide width by demoting.
