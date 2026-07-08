@@ -1,6 +1,7 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/chunked_sorted_list.hpp"
 #include "goblin/core/hash.hpp"
+#include "goblin/core/key_arena.hpp"
 #include "goblin/core/zset_listpack.hpp"
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
@@ -1224,6 +1225,40 @@ void test_zset_listpack_promotes_to_full() {
   assert(!huge.changed && huge.needs_full && lp2.empty());
 }
 
+// The keyspace-key arena: keys packed + length-prefixed, resolved by uint64
+// offset, with a swiss table keyed by offset but looked up by string_view.
+void test_key_arena() {
+  using goblin::core::KeyArena;
+  using goblin::core::KeyArenaEqual;
+  using goblin::core::KeyArenaHash;
+
+  KeyArena arena;
+  const auto o1 = arena.append("user:1");
+  const auto o2 = arena.append("user:22");
+  const std::string long_key(200, 'k');  // 2-byte LEB128 length
+  const auto o3 = arena.append(long_key);
+  assert(arena.bytes(o1) == "user:1");
+  assert(arena.bytes(o2) == "user:22");
+  assert(arena.bytes(o3) == long_key);
+  assert(arena.live_count() == 3);
+
+  // Swiss table keyed by arena offset, looked up heterogeneously by string_view.
+  goblin::core::SwissTable<std::uint64_t, int, KeyArenaHash, KeyArenaEqual> table(
+      KeyArenaHash{&arena}, KeyArenaEqual{&arena});
+  (void)table.try_emplace(o1, 1);
+  (void)table.try_emplace(o2, 2);
+  (void)table.try_emplace(o3, 3);
+  assert(*table.find(std::string_view("user:1")) == 1);
+  assert(*table.find(std::string_view("user:22")) == 2);
+  assert(*table.find(std::string_view(long_key)) == 3);
+  assert(table.find(std::string_view("user:2")) == nullptr);
+  assert(table.find(std::string_view("nope")) == nullptr);
+
+  const auto dead_before = arena.dead_bytes();
+  arena.mark_dead(o2);
+  assert(arena.live_count() == 2 && arena.dead_bytes() > dead_before);
+}
+
 // A ZSet with the listpack enabled dispatches every op to the blob while small,
 // then transparently promotes to the full structure once it outgrows the limit --
 // results are identical throughout, and it save/loads through the canonical format.
@@ -2054,6 +2089,7 @@ int main() {
   test_zset_listpack_width_promotes();
   test_zset_listpack_i16_to_f64_direct();
   test_zset_listpack_promotes_to_full();
+  test_key_arena();
   test_zset_listpack_mode();
   test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
