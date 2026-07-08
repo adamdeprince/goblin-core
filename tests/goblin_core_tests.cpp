@@ -3,7 +3,7 @@
 #include "goblin/core/hash.hpp"
 #include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/key_arena.hpp"
-#include "goblin/core/zset_listpack.hpp"
+
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
@@ -1142,91 +1142,7 @@ void test_zset_arena_id_stable_reclaim() {
   }
 }
 
-void test_zset_listpack_basic() {
-  using goblin::core::ScoreWidth;
-  using goblin::core::ZSetListpack;
-  ZSetListpack lp;
-
-  assert(lp.add(3.0, "c").changed);
-  assert(lp.add(1.0, "a").changed);
-  assert(lp.add(2.0, "b").changed);
-  assert(lp.size() == 3);
-  assert(lp.score_width() == ScoreWidth::I16);
-  assert(lp.score("a") == 1.0 && lp.score("b") == 2.0 && lp.score("c") == 3.0);
-  assert(!lp.score("z").has_value());
-
-  std::vector<std::string> order;  // sorted by (score, member)
-  lp.for_each([&](double, std::string_view m) { order.emplace_back(m); });
-  assert((order == std::vector<std::string>{"a", "b", "c"}));
-  assert(lp.rank("a") == 0 && lp.rank("b") == 1 && lp.rank("c") == 2);
-
-  assert(lp.add(5.0, "b").changed);  // update: b moves to the end
-  assert(lp.size() == 3 && lp.score("b") == 5.0);
-  assert(lp.rank("c") == 1 && lp.rank("b") == 2);
-
-  assert(lp.add(1.0, "aa").changed);          // equal score, tie-break by bytes
-  assert(lp.rank("a") == 0 && lp.rank("aa") == 1);
-  assert(!lp.add(1.0, "a").changed);          // no-op: same member + score
-
-  assert(lp.remove("a") && !lp.score("a").has_value() && lp.size() == 3);
-  assert(!lp.remove("a"));
-
-  ZSetListpack big;  // two-byte length encoding (member > 128 bytes)
-  const std::string long_member(200, 'q');
-  (void)big.add(7.0, long_member);
-  assert(big.score(long_member) == 7.0 && big.size() == 1);
-}
-
-void test_zset_listpack_width_promotes() {
-  using goblin::core::ScoreWidth;
-  using goblin::core::ZSetListpack;
-  ZSetListpack lp;
-  (void)lp.add(10.0, "a");
-  (void)lp.add(-20.0, "b");
-  assert(lp.score_width() == ScoreWidth::I16);
-  (void)lp.add(100000.0, "big");  // beyond i16 -> i32
-  assert(lp.score_width() == ScoreWidth::I32);
-  assert(lp.score("a") == 10.0 && lp.score("b") == -20.0 &&
-         lp.score("big") == 100000.0);
-  (void)lp.add(1.5, "frac");  // fractional -> f64
-  assert(lp.score_width() == ScoreWidth::F64);
-  assert(lp.score("a") == 10.0 && lp.score("frac") == 1.5 &&
-         lp.score("big") == 100000.0);
-}
-
-// A fractional score added to an i16 listpack must promote straight to f64 in one
-// re-encode, skipping i32 -- the scores round-trip exactly through the jump.
-void test_zset_listpack_i16_to_f64_direct() {
-  using goblin::core::ScoreWidth;
-  using goblin::core::ZSetListpack;
-  ZSetListpack lp;
-  (void)lp.add(5.0, "a");
-  (void)lp.add(-3.0, "b");
-  assert(lp.score_width() == ScoreWidth::I16);
-
-  const auto r = lp.add(0.5, "c");  // fractional -> f64 directly, never i32
-  assert(r.changed && lp.score_width() == ScoreWidth::F64);
-  assert(lp.score("a") == 5.0 && lp.score("b") == -3.0 && lp.score("c") == 0.5);
-}
-
-void test_zset_listpack_promotes_to_full() {
-  using goblin::core::ZSetListpack;
-  ZSetListpack lp;
-  lp.set_max_entries(8);
-  for (int i = 0; i < 8; ++i) {
-    const auto r = lp.add(static_cast<double>(i), "m" + std::to_string(i));
-    assert(r.changed && !r.needs_full);
-  }
-  const auto overflow = lp.add(99.0, "overflow");  // 9th member exceeds max
-  assert(!overflow.changed && overflow.needs_full);
-  assert(lp.size() == 8 && !lp.score("overflow").has_value());
-
-  ZSetListpack lp2;  // a too-long member also needs the full zset
-  const auto huge = lp2.add(1.0, std::string(40000, 'x'));
-  assert(!huge.changed && huge.needs_full && lp2.empty());
-}
-
-// CompactListpack: same listpack encoding, but one pooled [header][entries]
+// CompactListpack: one pooled [header][entries]
 // allocation so the object is a single pointer (sizeof == 8).
 void test_compact_listpack() {
   using goblin::core::CompactListpack;
@@ -1256,6 +1172,13 @@ void test_compact_listpack() {
   assert(!lp.add(1.0, "a", kMax).changed);  // same score -> no-op
   assert(lp.add(5.0, "a", kMax).changed);   // move a to the end
   assert(lp.rank("a") == 2U && lp.score("a") == 5.0);
+
+  CompactListpack inplace;
+  (void)inplace.add(1.0, "a", kMax);
+  (void)inplace.add(2.0, "b", kMax);
+  (void)inplace.add(3.0, "c", kMax);
+  assert(inplace.add(2.5, "b", kMax).changed);  // score update, same rank slot
+  assert(inplace.score("b") == 2.5 && inplace.rank("b") == 1U);
   assert(lp.remove("b") && lp.size() == 2 && !lp.score("b").has_value());
 
   // width promotion incl. a direct i16 -> f64 jump on a fraction
@@ -1371,13 +1294,27 @@ void test_zset_listpack_mode() {
   // save/load round-trips a small (listpack) zset through the canonical format.
   ZSet small(&opts8);
   assert(small.add(5.0, "x", &opts8) == 1 && small.add(-2.0, "y", &opts8) == 1);
+  assert(small.member_index_capacity() == 0);  // listpack has no swiss index
   std::string buffer;
   goblin::core::snapshot::Writer writer(buffer);
   small.save(writer, /*with_accelerator=*/false, &opts8);
   goblin::core::snapshot::Reader reader(buffer);
   ZSet loaded = ZSet::load(reader, /*use_accelerator=*/false, &opts8);
+  assert(loaded.member_index_capacity() == 0);
   assert(loaded.size() == 2 && loaded.score("x") == 5.0 &&
          loaded.score("y") == -2.0);
+
+  // Promote past the limit, then shrink back -- demotes to listpack again.
+  ZSet shrink(&opts8);
+  for (int i = 0; i < 12; ++i) {
+    (void)shrink.add(static_cast<double>(i), "m" + std::to_string(i), &opts8);
+  }
+  assert(shrink.member_index_capacity() > 0 && shrink.size() == 12);
+  for (int i = 0; i < 4; ++i) {
+    assert(shrink.remove("m" + std::to_string(i)));
+  }
+  assert(shrink.member_index_capacity() == 0 && shrink.size() == 8);
+  assert(shrink.score("m11") == 11.0);
 }
 
 void test_block_hint_rank_cache_lazy_offset_repair() {
@@ -2151,10 +2088,6 @@ int main() {
   test_zset_optimize_demotes_score_width();
   test_zset_score_index_width_ordering();
   test_zset_arena_id_stable_reclaim();
-  test_zset_listpack_basic();
-  test_zset_listpack_width_promotes();
-  test_zset_listpack_i16_to_f64_direct();
-  test_zset_listpack_promotes_to_full();
   test_compact_listpack();
   test_key_arena();
   test_zset_listpack_mode();

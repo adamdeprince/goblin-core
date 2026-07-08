@@ -315,6 +315,32 @@ void ZSet::ensure_full(const ZSetOptions* options) {
   });
 }
 
+void ZSet::maybe_demote_to_small() {
+  if (is_small()) {
+    return;
+  }
+  const ZSetOptions* options = full().options;
+  if (options->listpack_max_entries == 0 || options->score_string_cache) {
+    return;
+  }
+  const auto member_count = static_cast<std::size_t>(member_storage()->size());
+  if (member_count > options->listpack_max_entries) {
+    return;
+  }
+
+  CompactListpack lp;
+  const auto ordered = entries().range(0, entries().size());
+  for (const auto& entry : ordered) {
+    const auto member = member_storage()->view(entry.member_id);
+    const auto result =
+        lp.add(entry.score, member, options->listpack_max_entries);
+    if (result.needs_full) {
+      return;
+    }
+  }
+  rep_ = std::move(lp);
+}
+
 // A ZADD whose score falls outside the zset's current score width auto-promotes
 // it (i16->i32->f64) inside the member storage, which rebuilds the score array
 // O(n). DANGER: when the zset is copy-on-write shared (see
@@ -330,10 +356,9 @@ int ZSet::add(double score, std::string_view member,
   }
 
   if (auto* lp = small_ptr()) {
-    const bool existed = lp->score(member).has_value();
     const auto result = lp->add(score, member, options->listpack_max_entries);
     if (!result.needs_full) {
-      return (result.changed && !existed) ? 1 : 0;
+      return (result.changed && !result.existed) ? 1 : 0;
     }
     ensure_full(options);  // outgrew the listpack; fall to the full add path
   }
@@ -398,6 +423,7 @@ bool ZSet::remove(std::string_view member) {
     assert(erased);
     member_storage()->orphan(member_id);
     member_storage()->pop_back();
+    maybe_demote_to_small();
     return erased;
   }
 
@@ -446,6 +472,7 @@ bool ZSet::remove(std::string_view member) {
   }
 
   member_storage()->pop_back();
+  maybe_demote_to_small();
   return erased;
 }
 
@@ -1275,22 +1302,53 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
 
   const auto width = static_cast<ScoreWidth>(reader.u8());
 
-  ZSet zset(options);
-  zset.ensure_full(options);  // loaded zsets rebuild into the full arena structure
   const auto member_count = static_cast<std::uint32_t>(reader.u64());
+  struct LoadedMember {
+    double score;
+    std::string member;
+  };
+  std::vector<LoadedMember> loaded;
+  loaded.reserve(member_count);
+  for (std::uint32_t id = 0; id < member_count; ++id) {
+    loaded.push_back(LoadedMember{read_zset_score(reader, width),
+                                 std::string(reader.str())});
+  }
+
+  const bool accelerator_present = reader.u8() != 0;
+  const bool can_keep_listpack =
+      !accelerator_present && options->listpack_max_entries > 0 &&
+      !options->score_string_cache &&
+      member_count <= options->listpack_max_entries;
+  if (can_keep_listpack) {
+    CompactListpack lp;
+    bool fits = true;
+    for (const auto& entry : loaded) {
+      const auto result =
+          lp.add(entry.score, entry.member, options->listpack_max_entries);
+      if (result.needs_full) {
+        fits = false;
+        break;
+      }
+    }
+    if (fits) {
+      ZSet zset(options);
+      zset.rep_ = std::move(lp);
+      return zset;
+    }
+  }
+
+  ZSet zset(options);
+  zset.ensure_full(options);
   zset.member_storage()->reserve(member_count);
 
   // Canonical rebuild: push_back assigns member ids 0..N-1 in the same order
   // they were written, so accelerator member ids stay valid. Scores are read at
   // the persisted width; push_back re-derives the narrowest width that fits (so a
   // set saved wide but now all-integer loads back narrow). Dead bytes are dropped.
-  for (std::uint32_t id = 0; id < member_count; ++id) {
-    const double score = read_zset_score(reader, width);
-    const auto member = reader.str();
-    (void)zset.member_storage()->push_back(member, score);
+  for (const auto& entry : loaded) {
+    (void)zset.member_storage()->push_back(entry.member, entry.score);
   }
 
-  const bool accelerator_present = reader.u8() != 0;
   if (accelerator_present && use_accelerator) {
     zset.members().read_accelerator(reader, zset.member_storage());
     if (zset.members().size() != member_count) {

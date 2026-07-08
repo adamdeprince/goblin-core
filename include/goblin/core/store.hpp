@@ -19,7 +19,6 @@
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
 #include "goblin/core/zset_member_layer.hpp"
-#include "goblin/core/zset_listpack.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 #include "goblin/core/zset_score_index.hpp"
 
@@ -383,6 +382,7 @@ class ZSet {
   }
   void init_empty(const ZSetOptions* options);  // fresh empty listpack-or-full
   void ensure_full(const ZSetOptions* options);
+  void maybe_demote_to_small();
 
   // The one iteration primitive the range templates funnel through: emit positions
   // [bounds.first, +count) (forward or reverse) as (member, score, score_text).
