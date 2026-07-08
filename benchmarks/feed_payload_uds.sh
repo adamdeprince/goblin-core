@@ -39,7 +39,8 @@ VALKEY="${VALKEY:-$HOME/bench/valkey-9.1.0/src/valkey-server}"
 DRAGONFLY="${DRAGONFLY:-/usr/local/bin/dragonfly}"
 
 # Servers to run, in order (all in parallel). Names become <name>.output.
-SERVERS=(goblin redis-8.8 redis-7.2.4 valkey-9.1 dragonfly)
+# Override with e.g. SERVERS="goblin redis-8.8" to run a subset.
+read -ra SERVERS <<< "${SERVERS:-goblin redis-8.8 redis-7.2.4 valkey-9.1 dragonfly}"
 
 # Per-engine launch command -> UDS only (edit flags here). A bash array keeps
 # quoting exact (e.g. --save '' stays an empty arg, no eval). redis/valkey use
