@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "goblin/core/hash.hpp"
@@ -111,9 +112,9 @@ class ZSet {
       long long stop) const noexcept;
   template <class Fn>
   std::size_t for_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
-    if (small_) {
-      small_->for_range(bounds.first, bounds.count, false,
-                        [&fn](double, std::string_view member) { fn(member); });
+    if (const auto* lp = small_ptr()) {
+      lp->for_range(bounds.first, bounds.count, false,
+                    [&fn](double, std::string_view member) { fn(member); });
       return bounds.count;
     }
     // Range iteration walks member ids in score order, which is scattered
@@ -215,9 +216,9 @@ class ZSet {
   }
   template <class Fn>
   std::size_t for_reverse_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
-    if (small_) {
-      small_->for_range(bounds.first, bounds.count, true,
-                        [&fn](double, std::string_view member) { fn(member); });
+    if (const auto* lp = small_ptr()) {
+      lp->for_range(bounds.first, bounds.count, true,
+                    [&fn](double, std::string_view member) { fn(member); });
       return bounds.count;
     }
     auto callback = [this, &fn](std::uint32_t member_id) {
@@ -344,9 +345,27 @@ class ZSet {
   void ensure_unique_mutable_state(WriteKind kind);
   void adopt_shared_member_layer_from(const ZSet& source);
 
-  // Listpack (small) mode: a tiny zset is one blob (member_layer_/score_index_
-  // null) until it outgrows the listpack limits; ensure_full() then converts it.
-  [[nodiscard]] bool is_small() const noexcept { return small_.has_value(); }
+  // A zset is EITHER a compact listpack blob (tiny) OR the full arena-shaped
+  // structure -- never both. A variant instead of an optional listpack + two
+  // (null-in-small-mode) shared_ptrs saves 32 B per zset (the dead alternative).
+  struct FullState {
+    std::shared_ptr<ZSetMemberLayer> member_layer;
+    std::shared_ptr<ZSetScoreIndex> score_index;
+  };
+  [[nodiscard]] bool is_small() const noexcept {
+    return std::holds_alternative<ZSetListpack>(rep_);
+  }
+  [[nodiscard]] ZSetListpack* small_ptr() noexcept {
+    return std::get_if<ZSetListpack>(&rep_);
+  }
+  [[nodiscard]] const ZSetListpack* small_ptr() const noexcept {
+    return std::get_if<ZSetListpack>(&rep_);
+  }
+  [[nodiscard]] FullState& full() noexcept { return std::get<FullState>(rep_); }
+  [[nodiscard]] const FullState& full() const noexcept {
+    return std::get<FullState>(rep_);
+  }
+  void init_empty();  // set rep_ to a fresh empty listpack-or-full per options_
   void ensure_full();
 
   // The one iteration primitive the range templates funnel through: emit positions
@@ -356,11 +375,11 @@ class ZSet {
   template <class Fn>
   std::size_t for_position_range(ZSetRangeBounds bounds, bool reverse,
                                  Fn&& fn) const {
-    if (small_) {
-      small_->for_range(bounds.first, bounds.count, reverse,
-                        [&fn](double score, std::string_view member) {
-                          fn(member, score, std::string_view{});
-                        });
+    if (const auto* lp = small_ptr()) {
+      lp->for_range(bounds.first, bounds.count, reverse,
+                    [&fn](double score, std::string_view member) {
+                      fn(member, score, std::string_view{});
+                    });
       return bounds.count;
     }
     auto callback = [this, &fn](double score, std::uint32_t member_id) {
@@ -381,9 +400,7 @@ class ZSet {
   [[nodiscard]] ZSetScoreIndex& entries() noexcept;
   [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
-  std::optional<ZSetListpack> small_;
-  std::shared_ptr<ZSetMemberLayer> member_layer_;
-  std::shared_ptr<ZSetScoreIndex> score_index_;
+  std::variant<ZSetListpack, FullState> rep_;
   ZSetOptions options_;
 };
 
