@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "goblin/core/page_arena.hpp"
+
 namespace goblin::core {
 
 // Transparent functors for SwissTable<std::string, T>: hash and compare keys
@@ -324,8 +326,16 @@ class SwissTable {
   }
 
   [[nodiscard]] static std::uint8_t fingerprint(size_type hash) noexcept {
-    constexpr auto bits = std::numeric_limits<size_type>::digits;
-    return static_cast<std::uint8_t>((hash >> (bits - 7U)) & 0x7FU);
+    // Low 7 bits: the group index comes from fastrange (the high bits), so the
+    // fingerprint must use disjoint bits or every key in a group would share it.
+    return static_cast<std::uint8_t>(hash & 0x7FU);
+  }
+
+  // Map a hash to a group start in [0, capacity) for ANY capacity (fastrange:
+  // hash * capacity >> 64), so capacities need not be powers of two.
+  [[nodiscard]] size_type group_start_for(size_type hash) const noexcept {
+    return static_cast<size_type>(
+        (static_cast<unsigned __int128>(hash) * capacity_) >> 64);
   }
 
   [[nodiscard]] static size_type first_set_bit(std::uint64_t mask) noexcept {
@@ -342,31 +352,62 @@ class SwissTable {
     return mask;
   }
 
+  // Swiss tables stay fast at high density, and the OS hands out whole pages
+  // anyway, so the keystore table packs to kMaxDensity and sizes its slot array
+  // to a whole number of pages (grown by ~kGrowthFactor, never power-of-two
+  // doubling). Both defaults are tunable here.
+  static constexpr double kGrowthFactor = 1.2574334296829355;  // 2^(1/3)
+  static constexpr double kMaxDensity = 0.92;
+
   [[nodiscard]] static size_type max_usable(size_type capacity) noexcept {
-    return capacity - (capacity / 8);
+    return static_cast<size_type>(static_cast<double>(capacity) * kMaxDensity);
+  }
+
+  // Fewest slots (a GroupWidth multiple) whose slot array is a whole number of
+  // pages and holds >= target_slots, at least `min_pages` pages -- min_pages is
+  // the strict-grow floor so a tiny table can't round factor*cap back to the same
+  // page count and stall one-page-to-one-page.
+  [[nodiscard]] static size_type page_aligned_capacity(
+      size_type target_slots, std::uint64_t min_pages = 1) {
+    const auto page = static_cast<std::uint64_t>(page_bytes());
+    const auto slot = static_cast<std::uint64_t>(sizeof(value_type));
+    std::uint64_t pages =
+        (static_cast<std::uint64_t>(target_slots) * slot + page - 1) / page;
+    if (pages < min_pages) {
+      pages = min_pages;
+    }
+    std::uint64_t cap = (pages * page) / slot;
+    cap -= cap % GroupWidth;
+    if (cap < GroupWidth) {
+      cap = GroupWidth;
+    }
+    return static_cast<size_type>(cap);
+  }
+
+  [[nodiscard]] size_type current_pages() const noexcept {
+    const auto page = static_cast<std::uint64_t>(page_bytes());
+    return (static_cast<std::uint64_t>(capacity_) * sizeof(value_type) + page - 1) /
+           page;
   }
 
   [[nodiscard]] static size_type capacity_for_size(size_type expected_size) {
     if (expected_size == 0) {
       return 0;
     }
-
-    const auto min_capacity = GroupWidth;
-    auto required = (expected_size * 8 + 6) / 7;
-    if (required < min_capacity) {
-      required = min_capacity;
-    }
-    return std::bit_ceil(required);
+    return page_aligned_capacity(
+        static_cast<size_type>(static_cast<double>(expected_size) / kMaxDensity) + 1);
   }
 
   void ensure_capacity_for_insert() {
     if (capacity_ == 0) {
-      rehash(GroupWidth);
+      rehash(page_aligned_capacity(GroupWidth));
       return;
     }
 
     if (size_ + tombstones_ + 1 > max_usable(capacity_)) {
-      rehash(capacity_ * 2);
+      const auto target =
+          static_cast<size_type>(static_cast<double>(capacity_) * kGrowthFactor);
+      rehash(page_aligned_capacity(target, current_pages() + 1));
     }
   }
 
@@ -375,8 +416,8 @@ class SwissTable {
       return;
     }
 
-    capacity_ = std::bit_ceil(requested_capacity < GroupWidth ? GroupWidth
-                                                             : requested_capacity);
+    capacity_ = requested_capacity < GroupWidth ? GroupWidth : requested_capacity;
+    capacity_ -= capacity_ % GroupWidth;
     slots_ = alloc_traits::allocate(allocator_, capacity_);
     control_.assign(capacity_ + GroupWidth, kEmpty);
   }
@@ -419,8 +460,7 @@ class SwissTable {
     }
 
     const auto needle = fingerprint(hash);
-    const auto mask = capacity_ - 1;
-    auto group_start = hash & mask;
+    auto group_start = group_start_for(hash);
 
     for (size_type probed = 0; probed < capacity_; probed += GroupWidth) {
       const auto* group = control_.data() + group_start;
@@ -442,15 +482,17 @@ class SwissTable {
         return npos;
       }
 
-      group_start = (group_start + GroupWidth) & mask;
+      group_start += GroupWidth;
+      if (group_start >= capacity_) {
+        group_start -= capacity_;
+      }
     }
 
     return npos;
   }
 
   [[nodiscard]] size_type find_insert_index(size_type hash) const {
-    const auto mask = capacity_ - 1;
-    auto group_start = hash & mask;
+    auto group_start = group_start_for(hash);
     auto first_deleted = npos;
 
     for (size_type probed = 0; probed < capacity_; probed += GroupWidth) {
@@ -475,7 +517,10 @@ class SwissTable {
         return first_deleted == npos ? index : first_deleted;
       }
 
-      group_start = (group_start + GroupWidth) & mask;
+      group_start += GroupWidth;
+      if (group_start >= capacity_) {
+        group_start -= capacity_;
+      }
     }
 
     return first_deleted;
