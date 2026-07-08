@@ -166,12 +166,12 @@ void ZSet::init_empty() {
         options_->member_index_growth);
     auto score_index = std::make_shared<ZSetScoreIndex>(
         member_layer->storage.get(), options_->rank_cache_mode);
-    rep_ = FullState{std::move(member_layer), std::move(score_index)};
+    rep_ = std::make_unique<FullState>(
+        FullState{std::move(member_layer), std::move(score_index)});
     rebind_indexes();
   } else {
-    ZSetListpack lp;
-    lp.set_max_entries(options_->listpack_max_entries);
-    rep_ = std::move(lp);
+    // Empty listpack; max_entries is a store-global passed to add(), not stored.
+    rep_ = CompactListpack{};
   }
 }
 
@@ -249,7 +249,8 @@ void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
   auto copied = std::make_shared<ZSetScoreIndex>(member_layer->storage.get(),
                                                  options_->rank_cache_mode);
   copied->copy_blocks_from(source.entries());
-  rep_ = FullState{std::move(member_layer), std::move(copied)};
+  rep_ = std::make_unique<FullState>(
+      FullState{std::move(member_layer), std::move(copied)});
   rebind_indexes();
 }
 
@@ -299,13 +300,14 @@ void ZSet::ensure_full() {
   if (small == nullptr) {
     return;
   }
-  ZSetListpack lp = std::move(*small);
+  CompactListpack lp = std::move(*small);
   auto member_layer = std::make_shared<ZSetMemberLayer>(
       options_->score_string_cache, options_->member_chunk_bytes,
       options_->member_index_growth);
   auto score_index = std::make_shared<ZSetScoreIndex>(
       member_layer->storage.get(), options_->rank_cache_mode);
-  rep_ = FullState{std::move(member_layer), std::move(score_index)};
+  rep_ = std::make_unique<FullState>(
+      FullState{std::move(member_layer), std::move(score_index)});
   rebind_indexes();
   lp.for_each([this](double score, std::string_view member) {
     const auto member_id = allocate_member_id(member, score);
@@ -330,7 +332,7 @@ int ZSet::add(double score, std::string_view member) {
 
   if (auto* lp = small_ptr()) {
     const bool existed = lp->score(member).has_value();
-    const auto result = lp->add(score, member);
+    const auto result = lp->add(score, member, options_->listpack_max_entries);
     if (!result.needs_full) {
       return (result.changed && !existed) ? 1 : 0;
     }
@@ -653,9 +655,9 @@ void ZSet::compact(double member_index_density) {
   ZSetScoreIndex new_score_index(new_layer->storage.get(), options_->rank_cache_mode);
   new_score_index.assign_sorted(new_entries);
 
-  rep_ = FullState{
+  rep_ = std::make_unique<FullState>(FullState{
       std::move(new_layer),
-      std::make_shared<ZSetScoreIndex>(std::move(new_score_index))};
+      std::make_shared<ZSetScoreIndex>(std::move(new_score_index))});
   rebind_indexes();
   release_unused_heap_pages();
 }

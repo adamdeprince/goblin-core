@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/hash.hpp"
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/snapshot.hpp"
@@ -350,25 +351,29 @@ class ZSet {
   void ensure_unique_mutable_state(WriteKind kind);
   void adopt_shared_member_layer_from(const ZSet& source);
 
-  // A zset is EITHER a compact listpack blob (tiny) OR the full arena-shaped
-  // structure -- never both. A variant instead of an optional listpack + two
-  // (null-in-small-mode) shared_ptrs saves 32 B per zset (the dead alternative).
+  // A zset is EITHER a compact listpack (tiny) OR the full arena-shaped structure
+  // (heap-allocated). Both alternatives are a single pointer, so sizeof(ZSet) is
+  // tiny -- the store keeps it by value in the swiss slot as (key + pointer),
+  // not a 48 B inline handle. The full state lives behind a unique_ptr so a tiny
+  // zset costs nothing for it.
   struct FullState {
     std::shared_ptr<ZSetMemberLayer> member_layer;
     std::shared_ptr<ZSetScoreIndex> score_index;
   };
   [[nodiscard]] bool is_small() const noexcept {
-    return std::holds_alternative<ZSetListpack>(rep_);
+    return std::holds_alternative<CompactListpack>(rep_);
   }
-  [[nodiscard]] ZSetListpack* small_ptr() noexcept {
-    return std::get_if<ZSetListpack>(&rep_);
+  [[nodiscard]] CompactListpack* small_ptr() noexcept {
+    return std::get_if<CompactListpack>(&rep_);
   }
-  [[nodiscard]] const ZSetListpack* small_ptr() const noexcept {
-    return std::get_if<ZSetListpack>(&rep_);
+  [[nodiscard]] const CompactListpack* small_ptr() const noexcept {
+    return std::get_if<CompactListpack>(&rep_);
   }
-  [[nodiscard]] FullState& full() noexcept { return std::get<FullState>(rep_); }
+  [[nodiscard]] FullState& full() noexcept {
+    return *std::get<std::unique_ptr<FullState>>(rep_);
+  }
   [[nodiscard]] const FullState& full() const noexcept {
-    return std::get<FullState>(rep_);
+    return *std::get<std::unique_ptr<FullState>>(rep_);
   }
   void init_empty();  // set rep_ to a fresh empty listpack-or-full per options_
   void ensure_full();
@@ -405,7 +410,7 @@ class ZSet {
   [[nodiscard]] ZSetScoreIndex& entries() noexcept;
   [[nodiscard]] const ZSetScoreIndex& entries() const noexcept;
 
-  std::variant<ZSetListpack, FullState> rep_;
+  std::variant<CompactListpack, std::unique_ptr<FullState>> rep_;
   const ZSetOptions* options_;
 };
 
