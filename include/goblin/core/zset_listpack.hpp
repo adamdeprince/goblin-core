@@ -183,9 +183,11 @@ class ZSetListpack {
   }
 
   // Re-derive the narrowest width that holds every score and re-encode if it
-  // narrowed -- GOBLIN.OPTIMIZE's demote, mirroring the full zset's rebuild.
+  // narrowed -- GOBLIN.OPTIMIZE's demote, mirroring the full zset's rebuild --
+  // then return the blob's geometric-growth slack to the allocator.
   void optimize() {
     if (count_ == 0) {
+      data_.shrink_to_fit();
       return;
     }
     ScoreWidth narrowest = ScoreWidth::I16;
@@ -195,6 +197,7 @@ class ZSetListpack {
     if (narrowest != width_) {
       rewiden(narrowest);
     }
+    data_.shrink_to_fit();
   }
 
  private:
@@ -334,6 +337,7 @@ class ZSetListpack {
     const auto [len_bytes, member_len] = decode_len(&data_[off]);
     const std::size_t elem = 2 * len_bytes + score_width_bytes(width_) + member_len;
     data_.erase(off, elem);
+    data_.shrink_to_fit();
     --count_;
   }
 
@@ -364,6 +368,7 @@ class ZSetListpack {
     w += encode_backlen(&element[w], member_len);
     (void)lb;
     data_.insert(off, element);
+    data_.shrink_to_fit();
     ++count_;
   }
 
