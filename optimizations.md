@@ -144,9 +144,13 @@ artificially lean), the blob saves a **flat ~1.5× per zset** across sizes. The 
 *structure* is ~7× leaner than the full machinery, but at the store level that dilutes
 to ~1.5× because the per-zset **`ZSet` handle + key string + swiss slot (~220 B)** are
 the same either way — so goblin narrows but does **not yet beat** Redis's ~150 B
-tiny-zset total. Shrinking that overhead (store holds the blob directly, or share
-`ZSetOptions` + `variant` the representation so the handle isn't ~120 B carrying both
-reps) is the real lever, and is queued.
+tiny-zset total. **First lever pulled:** `ZSet` now holds a `variant<listpack, full>`
+instead of an `optional` listpack + two shared_ptrs (only one rep is ever live), so
+`sizeof(ZSet)` **112 → 80 B** and every zset — stored by value in the swiss table —
+shrinks; store-level per-zset dropped ~50 B (4-member listpack 319 → **266 B**).
+Remaining levers to close on Redis: share `ZSetOptions` (a 32 B per-zset copy), and the
+big one — store the blob directly / pointer-indirect the slot so a tiny zset's slot
+isn't sized for the full alternative.
 
 **CPU knee → threshold 32.** The blob is an O(n) scan, so the promotion threshold is a
 memory-vs-CPU dial. Memory saving is ~flat with size, but `ZSCORE` goes ~2.5× at 32
