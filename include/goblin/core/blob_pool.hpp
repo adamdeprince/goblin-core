@@ -14,7 +14,12 @@ namespace goblin::core {
 // fastest: it carves fixed-size cells out of larger chunks, amortizing the header
 // over a whole chunk and reusing freed cells. Blocks larger than the cap fall
 // through to malloc (rare -- only a listpack with a very large single member).
-inline std::pmr::unsynchronized_pool_resource& blob_pool() noexcept {
+inline std::pmr::memory_resource& blob_pool() noexcept {
+#if defined(__SANITIZE_ADDRESS__)
+  // Under ASan, hand every blob its own redzoned malloc so buffer overruns are
+  // caught -- a pool carves cells out of one chunk, hiding intra-chunk overruns.
+  return *std::pmr::new_delete_resource();
+#else
   // Small chunks so a size class over-allocates at most one chunk's worth (the
   // default lets chunks grow geometrically, over-allocating enough to eat the
   // header amortization at these scales).
@@ -22,6 +27,7 @@ inline std::pmr::unsynchronized_pool_resource& blob_pool() noexcept {
       std::pmr::pool_options{.max_blocks_per_chunk = 64,
                              .largest_required_pool_block = 4096});
   return pool;
+#endif
 }
 
 // Stateless allocator over the shared blob pool, so a BlobString stays the exact

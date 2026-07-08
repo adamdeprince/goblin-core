@@ -1,6 +1,7 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/chunked_sorted_list.hpp"
 #include "goblin/core/hash.hpp"
+#include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/zset_listpack.hpp"
 #include "goblin/core/rdb.hpp"
@@ -1225,6 +1226,69 @@ void test_zset_listpack_promotes_to_full() {
   assert(!huge.changed && huge.needs_full && lp2.empty());
 }
 
+// CompactListpack: same listpack encoding, but one pooled [header][entries]
+// allocation so the object is a single pointer (sizeof == 8).
+void test_compact_listpack() {
+  using goblin::core::CompactListpack;
+  using goblin::core::ScoreWidth;
+  static_assert(sizeof(CompactListpack) == sizeof(void*));
+  constexpr std::size_t kMax = 512;
+
+  CompactListpack lp;
+  assert(lp.empty() && lp.size() == 0 && lp.allocated_bytes() == 0);
+  assert(lp.add(3.0, "c", kMax).changed);
+  assert(lp.add(1.0, "a", kMax).changed);
+  assert(lp.add(2.0, "b", kMax).changed);
+  assert(lp.size() == 3);
+  assert(lp.score("a") == 1.0 && lp.score("b") == 2.0 && lp.score("c") == 3.0);
+  assert(!lp.score("z").has_value());
+  assert(lp.rank("a") == 0U && lp.rank("c") == 2U);
+
+  std::vector<std::string> fwd, rev;
+  lp.for_each([&](double, std::string_view m) { fwd.emplace_back(m); });
+  assert(fwd.size() == 3 && fwd[0] == "a" && fwd[2] == "c");
+  lp.for_range(0, 3, true, [&](double, std::string_view m) { rev.emplace_back(m); });
+  assert(rev[0] == "c" && rev[2] == "a");
+  fwd.clear();
+  lp.for_range(1, 2, false, [&](double, std::string_view m) { fwd.emplace_back(m); });
+  assert(fwd.size() == 2 && fwd[0] == "b" && fwd[1] == "c");
+
+  assert(!lp.add(1.0, "a", kMax).changed);  // same score -> no-op
+  assert(lp.add(5.0, "a", kMax).changed);   // move a to the end
+  assert(lp.rank("a") == 2U && lp.score("a") == 5.0);
+  assert(lp.remove("b") && lp.size() == 2 && !lp.score("b").has_value());
+
+  // width promotion incl. a direct i16 -> f64 jump on a fraction
+  CompactListpack w;
+  (void)w.add(10.0, "x", kMax);
+  assert(w.score_width() == ScoreWidth::I16);
+  (void)w.add(100000.0, "big", kMax);
+  assert(w.score_width() == ScoreWidth::I32 && w.score("big") == 100000.0);
+  (void)w.add(0.5, "frac", kMax);
+  assert(w.score_width() == ScoreWidth::F64 && w.score("frac") == 0.5 &&
+         w.score("x") == 10.0);
+
+  CompactListpack big;  // 2-byte member length encoding
+  const std::string longm(200, 'q');
+  assert(big.add(7.0, longm, kMax).changed && big.score(longm) == 7.0);
+
+  CompactListpack limit;  // promotion signals
+  for (int i = 0; i < 4; ++i) (void)limit.add(i, "m" + std::to_string(i), 4);
+  assert(limit.add(9.0, "over", 4).needs_full);  // count would exceed max
+  assert(limit.add(9.0, "", kMax).needs_full);   // empty member has no encoding
+
+  CompactListpack demo;  // OPTIMIZE demotes the width
+  for (int i = 0; i < 5; ++i) (void)demo.add(i, "d" + std::to_string(i), kMax);
+  (void)demo.add(0.5, "f", kMax);
+  assert(demo.score_width() == ScoreWidth::F64);
+  demo.remove("f");
+  demo.optimize();
+  assert(demo.score_width() == ScoreWidth::I16 && demo.score("d3") == 3.0);
+
+  CompactListpack mv = std::move(demo);  // move transfers ownership
+  assert(mv.size() == 5 && mv.score("d3") == 3.0);
+}
+
 // The keyspace-key arena: keys packed + length-prefixed, resolved by uint64
 // offset, with a swiss table keyed by offset but looked up by string_view.
 void test_key_arena() {
@@ -2089,6 +2153,7 @@ int main() {
   test_zset_listpack_width_promotes();
   test_zset_listpack_i16_to_f64_direct();
   test_zset_listpack_promotes_to_full();
+  test_compact_listpack();
   test_key_arena();
   test_zset_listpack_mode();
   test_block_hint_rank_cache_lazy_offset_repair();
