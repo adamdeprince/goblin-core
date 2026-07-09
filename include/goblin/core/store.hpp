@@ -53,6 +53,8 @@ struct ZSetOptions {
   bool score_string_cache{false};
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t member_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
+  // SortedList (score index) sublist target size / load factor, runtime-tunable.
+  std::size_t score_index_load{ZSetScoreIndex::kDefaultLoad};
   // Max entries a zset keeps in the compact listpack before promoting to the full
   // arena-shaped structure. 0 disables the listpack (always full) -- the current
   // default, until the full-structure tests and the shared-member-layer
@@ -425,6 +427,10 @@ struct StoreOptions {
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t zset_chunk_bytes{ZSetMemberStorage::kDefaultChunkBytes};
   std::size_t hash_chunk_bytes{HashStorage::kDefaultChunkBytes};
+  // SortedList (score index) load factor -- sublist target size. Bigger = fewer,
+  // larger sublists (less block overhead, more memmove per mutation); smaller =
+  // the reverse. Runtime-tunable via --load-factor to sweep the large-zset knee.
+  std::size_t zset_score_index_load{ZSetScoreIndex::kDefaultLoad};
   // Max entries a zset keeps as a compact listpack before promoting to the full
   // arena-shaped structure (0 disables the listpack). Tiny zsets live as one blob
   // (~1.5x leaner per zset with distinct members). 32 is the CPU knee: memory

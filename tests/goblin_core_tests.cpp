@@ -7,6 +7,7 @@
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/server.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
 
@@ -111,6 +112,23 @@ void test_resp_parser_pipeline_and_pop_into() {
   assert((fields == std::vector<std::string_view>{"ZSCORE", ""}));
   assert(!parser.pop_into(fields));
   assert(!parser.has_error());
+}
+
+void test_io_backend_selection() {
+  using goblin::core::IoBackend;
+
+  assert(goblin::core::parse_io_backend("poll") == IoBackend::poll);
+  assert(!goblin::core::parse_io_backend("not-a-backend").has_value());
+  assert(goblin::core::io_backend_name(IoBackend::poll) == "poll");
+  assert(goblin::core::io_backend_name(IoBackend::io_uring) == "io_uring");
+  assert(goblin::core::supported_io_backends_text().find("poll") != std::string::npos);
+#ifdef GOBLIN_CORE_HAVE_IO_URING
+  assert(goblin::core::parse_io_backend("io_uring") == IoBackend::io_uring);
+  assert(goblin::core::supported_io_backends_text().find("io_uring") !=
+         std::string::npos);
+#else
+  assert(!goblin::core::parse_io_backend("io_uring").has_value());
+#endif
 }
 
 void test_command_perfect_hash() {
@@ -1429,7 +1447,7 @@ void test_goblin_optimize_reclaims_slack() {
   assert(after->total_allocated_bytes < before->total_allocated_bytes);
   // Compaction packs blocks: no more than the final partial block is slack.
   assert(after->score_block_capacity_sum - after->score_entry_count <
-         goblin::core::ZSetScoreIndex::kLoad);
+         goblin::core::ZSetScoreIndex::kDefaultLoad);
 
   // Data is intact after compaction.
   assert(execute_fields(store, {"ZCARD", "k"}) == ":6000\r\n");
@@ -2122,6 +2140,7 @@ int main() {
   test_inline_parser();
   test_protocol_error();
   test_resp_parser_pipeline_and_pop_into();
+  test_io_backend_selection();
   test_command_perfect_hash();
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();

@@ -45,7 +45,7 @@ class ZSetScoreIndex {
  public:
   using size_type = std::size_t;
 
-  static constexpr size_type kLoad = 256;
+  static constexpr size_type kDefaultLoad = 256;
   static constexpr std::uint32_t kDefaultBlockHintNarrowLimit =
       std::numeric_limits<std::uint16_t>::max();
 
@@ -54,11 +54,13 @@ class ZSetScoreIndex {
   explicit ZSetScoreIndex(const ZSetMemberStorage* members,
                           RankCacheMode rank_cache_mode = RankCacheMode::Off,
                           std::uint32_t block_hint_narrow_limit =
-                              kDefaultBlockHintNarrowLimit)
+                              kDefaultBlockHintNarrowLimit,
+                          size_type load = kDefaultLoad)
       : members_(members),
         block_hint_narrow_limit_(
             std::min(block_hint_narrow_limit, kDefaultBlockHintNarrowLimit)),
-        rank_cache_mode_(rank_cache_mode) {}
+        rank_cache_mode_(rank_cache_mode),
+        load_(load == 0 ? kDefaultLoad : load) {}
 
   void set_members(const ZSetMemberStorage* members) noexcept {
     members_ = members;
@@ -130,6 +132,7 @@ class ZSetScoreIndex {
   void copy_blocks_from(const ZSetScoreIndex& source) {
     members_ = source.members_;
     rank_cache_mode_ = source.rank_cache_mode_;
+    load_ = source.load_;
     block_hint_narrow_limit_ = source.block_hint_narrow_limit_;
     size_ = source.size_;
     score_width_ = source.score_width_;
@@ -166,13 +169,14 @@ class ZSetScoreIndex {
     score_width_ = width;
 
     size_ = values.size();
-    blocks_.reserve((values.size() + kLoad - 1) / kLoad);
+    blocks_.reserve((values.size() + load_ - 1) / load_);
     maxes_.reserve(blocks_.capacity());
 
-    for (size_type start = 0; start < values.size(); start += kLoad) {
-      const auto count = std::min(kLoad, values.size() - start);
+    for (size_type start = 0; start < values.size(); start += load_) {
+      const auto count = std::min(load_, values.size() - start);
       Block block;
       block.score_width_ = score_width_;
+      block.load_ = load_;
       assign_block_id(block);
       block.reserve(count);
       for (size_type i = 0; i < count; ++i) {
@@ -193,6 +197,7 @@ class ZSetScoreIndex {
     if (blocks_.empty()) {
       blocks_.push_back(Block{});
       blocks_.back().score_width_ = score_width_;
+      blocks_.back().load_ = load_;
       assign_block_id(blocks_.back());
       blocks_.back().push_back(value);
       maxes_.push_back(value);
@@ -209,7 +214,7 @@ class ZSetScoreIndex {
     const auto block_index = position.first;
     ++size_;
 
-    if (block.size() > kLoad * 2) {
+    if (block.size() > load_ * 2) {
       split_block(block_index);
       refresh_block_indices_from(block_index + 1);
       refresh_block_locations(block_index);
@@ -812,6 +817,7 @@ class ZSetScoreIndex {
     [[nodiscard]] Block split_off(size_type split_at) {
       Block right;
       right.score_width_ = score_width_;
+      right.load_ = load_;
       const auto right_size = size_ - split_at;
       right.reserve(right_size);
       const auto sb = score_bytes();
@@ -838,6 +844,7 @@ class ZSetScoreIndex {
       copy.size_ = size_;
       copy.capacity_ = capacity_;
       copy.id_ = id_;
+      copy.load_ = load_;
       if (capacity_ > 0) {
         const auto sb = score_bytes();
         copy.scores_ = std::make_unique_for_overwrite<std::byte[]>(
@@ -884,33 +891,33 @@ class ZSetScoreIndex {
 
     [[nodiscard]] bool validate() const noexcept {
       return size_ <= capacity_ &&
-             static_cast<size_type>(capacity_) <= kLoad * 2 + 1 &&
+             static_cast<size_type>(capacity_) <= load_ * 2 + 1 &&
              (size_ == 0 || (scores_ != nullptr && member_ids_ != nullptr));
     }
 
-    [[nodiscard]] static size_type allocation_capacity(size_type required) noexcept {
+    [[nodiscard]] size_type allocation_capacity(size_type required) const noexcept {
       if (required <= 16) {
         return 16;
       }
       if (required <= 64) {
         return 64;
       }
-      if (required <= kLoad) {
-        return kLoad;
+      if (required <= load_) {
+        return load_;
       }
-      if (required > kLoad * 2 + 1) {
-        // A block's steady-state maximum is 2*kLoad+1, but merge_with_next
+      if (required > load_ * 2 + 1) {
+        // A block's steady-state maximum is 2*load_+1, but merge_with_next
         // transiently appends two adjacent blocks into one before splitting it
         // back. Allocate the exact size so that append does not overflow; the
         // split_block + trim that immediately follow restore the normal bound.
         return required;
       }
-      if (required >= kLoad * 2) {
-        return kLoad * 2 + 1;
+      if (required >= load_ * 2) {
+        return load_ * 2 + 1;
       }
-      // A block spends its life oscillating in (kLoad, 2*kLoad] before it
+      // A block spends its life oscillating in (load_, 2*load_] before it
       // splits. Rounding to a coarse step here (instead of jumping straight to
-      // 2*kLoad) keeps most of that range's capacity slack out of the score
+      // 2*load_) keeps most of that range's capacity slack out of the score
       // index while bounding the number of growth reallocations.
       constexpr size_type kStep = 64;
       return ((required + kStep - 1) / kStep) * kStep;
@@ -927,15 +934,20 @@ class ZSetScoreIndex {
       }
       scores_ = std::move(scores);
       member_ids_ = std::move(member_ids);
-      capacity_ = static_cast<std::uint16_t>(new_capacity);
+      capacity_ = static_cast<std::uint32_t>(new_capacity);
     }
 
     std::unique_ptr<std::byte[]> scores_;
     std::unique_ptr<std::uint32_t[]> member_ids_;
     ScoreWidth score_width_{ScoreWidth::I16};
-    std::uint16_t size_{0};
-    std::uint16_t capacity_{0};
+    // 32-bit so the sublist can hold a large runtime load factor; the extra 4 B
+    // fall in existing alignment padding, so sizeof(Block) is unchanged (32 B).
+    std::uint32_t size_{0};
+    std::uint32_t capacity_{0};
     std::uint32_t id_{kInvalidBlockIndex};
+    // The index's load factor, copied in on creation so this sublist's capacity
+    // sizing (allocation_capacity/validate) is self-contained.
+    size_type load_{kDefaultLoad};
   };
 
   [[nodiscard]] static std::uint32_t pack_location(std::uint32_t block_id,
@@ -1615,7 +1627,7 @@ class ZSetScoreIndex {
                           EraseRebalancePolicy policy) {
     const auto& block = blocks_[block_index];
     const auto rebalance_threshold =
-        policy == EraseRebalancePolicy::Remove ? (kLoad / 4) : (kLoad / 2);
+        policy == EraseRebalancePolicy::Remove ? (load_ / 4) : (load_ / 2);
 
     if (block.size() < rebalance_threshold && blocks_.size() > 1) {
       rebalance_after_erase(block_index);
@@ -1662,7 +1674,7 @@ class ZSetScoreIndex {
     refresh_block_indices_from(block_index + 1);
     maxes_[block_index] = left.back();
 
-    if (left.size() > kLoad * 2) {
+    if (left.size() > load_ * 2) {
       split_block(block_index);
       refresh_block_indices_from(block_index + 1);
       refresh_block_locations(block_index);
@@ -1767,6 +1779,7 @@ class ZSetScoreIndex {
   std::uint32_t block_hint_narrow_limit_{kDefaultBlockHintNarrowLimit};
   bool block_hints_wide_{false};
   RankCacheMode rank_cache_mode_{RankCacheMode::Off};
+  size_type load_{kDefaultLoad};  // SortedList sublist target size (runtime-tunable)
 };
 
 inline ZSetScoreIndex::size_type ZSetScoreIndex::allocated_bytes() const noexcept {

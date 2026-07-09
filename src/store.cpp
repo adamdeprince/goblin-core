@@ -165,7 +165,8 @@ void ZSet::init_empty(const ZSetOptions* options) {
         options->score_string_cache, options->member_chunk_bytes,
         options->member_index_growth);
     auto score_index = std::make_shared<ZSetScoreIndex>(
-        member_layer->storage.get(), options->rank_cache_mode);
+        member_layer->storage.get(), options->rank_cache_mode,
+        ZSetScoreIndex::kDefaultBlockHintNarrowLimit, options->score_index_load);
     rep_ = std::make_unique<FullState>(
         FullState{std::move(member_layer), std::move(score_index), options});
     rebind_indexes();
@@ -232,8 +233,9 @@ void ZSet::ensure_unique_mutable_state(WriteKind kind) {
     member_storage()->ensure_unique_arena();
   }
   if (fs.score_index.use_count() > 1) {
-    auto cloned = std::make_shared<ZSetScoreIndex>(member_storage(),
-                                                   fs.options->rank_cache_mode);
+    auto cloned = std::make_shared<ZSetScoreIndex>(
+        member_storage(), fs.options->rank_cache_mode,
+        ZSetScoreIndex::kDefaultBlockHintNarrowLimit, fs.options->score_index_load);
     cloned->copy_blocks_from(entries());
     fs.score_index = std::move(cloned);
   }
@@ -244,8 +246,9 @@ void ZSet::adopt_shared_member_layer_from(const ZSet& source) {
   // Adopting a shared full member layer makes this a full zset.
   const ZSetOptions* options = source.full().options;
   auto member_layer = source.full().member_layer;
-  auto copied = std::make_shared<ZSetScoreIndex>(member_layer->storage.get(),
-                                                 options->rank_cache_mode);
+  auto copied = std::make_shared<ZSetScoreIndex>(
+      member_layer->storage.get(), options->rank_cache_mode,
+      ZSetScoreIndex::kDefaultBlockHintNarrowLimit, options->score_index_load);
   copied->copy_blocks_from(source.entries());
   rep_ = std::make_unique<FullState>(
       FullState{std::move(member_layer), std::move(copied), options});
@@ -303,7 +306,8 @@ void ZSet::ensure_full(const ZSetOptions* options) {
       options->score_string_cache, options->member_chunk_bytes,
       options->member_index_growth);
   auto score_index = std::make_shared<ZSetScoreIndex>(
-      member_layer->storage.get(), options->rank_cache_mode);
+      member_layer->storage.get(), options->rank_cache_mode,
+      ZSetScoreIndex::kDefaultBlockHintNarrowLimit, options->score_index_load);
   rep_ = std::make_unique<FullState>(
       FullState{std::move(member_layer), std::move(score_index), options});
   rebind_indexes();
@@ -679,7 +683,9 @@ void ZSet::compact(double member_index_density) {
     new_entries.push_back(ZSetScoreEntry{.score = old_entry.score, .member_id = new_id});
   }
 
-  ZSetScoreIndex new_score_index(new_layer->storage.get(), options->rank_cache_mode);
+  ZSetScoreIndex new_score_index(new_layer->storage.get(), options->rank_cache_mode,
+                                 ZSetScoreIndex::kDefaultBlockHintNarrowLimit,
+                                 options->score_index_load);
   new_score_index.assign_sorted(new_entries);
 
   rep_ = std::make_unique<FullState>(FullState{
@@ -775,6 +781,7 @@ const ZSetOptions* Store::zset_options() const {
         .score_string_cache = options_.score_string_cache,
         .member_index_growth = options_.member_index_growth,
         .member_chunk_bytes = options_.zset_chunk_bytes,
+        .score_index_load = options_.zset_score_index_load,
         // The score-string cache preserves exact input text, which the numeric
         // listpack can't -- so enabling it keeps zsets in the full structure.
         .listpack_max_entries = options_.score_string_cache
