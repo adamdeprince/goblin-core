@@ -90,7 +90,7 @@ class ZSetScoreIndex {
   [[nodiscard]] size_type block_capacity_sum() const noexcept;
 
   [[nodiscard]] size_type location_cache_allocated_bytes() const noexcept {
-    return locations_.capacity() * sizeof(std::uint32_t) +
+    return locations_.capacity() * sizeof(std::uint64_t) +
            block_hints16_.capacity() * sizeof(std::uint16_t) +
            block_hints32_.capacity() * sizeof(std::uint32_t) +
            block_hint_offsets16_.capacity() * sizeof(std::uint16_t) +
@@ -559,18 +559,12 @@ class ZSetScoreIndex {
  private:
   static constexpr std::uint32_t kInvalidBlockIndex =
       std::numeric_limits<std::uint32_t>::max();
-  static constexpr std::uint32_t kInvalidLocation =
-      std::numeric_limits<std::uint32_t>::max();
-  // Location word (rank cache) = [block_id | offset]. The offset holds a member's
-  // index within its block, which reaches ~2*load after a split (transiently more
-  // mid-merge). 12 bits (<=4095) covers the default load 562 (->1124) with margin;
-  // block_id keeps the other 20 bits (<=1M blocks/zset). A rank cache with load
-  // >~2000 would exceed this -- large-load workloads run rank-cache-off.
-  static constexpr std::uint32_t kLocationOffsetBits = 12;
-  static constexpr std::uint32_t kLocationOffsetMask =
-      (std::uint32_t{1} << kLocationOffsetBits) - 1;
-  static constexpr std::uint32_t kMaxLocationBlockId =
-      kInvalidLocation >> kLocationOffsetBits;
+  static constexpr std::uint64_t kInvalidLocation =
+      std::numeric_limits<std::uint64_t>::max();
+  // Location word (rank cache) = [block_id : high 32 | offset : low 32], a full
+  // uint64. Each field gets a full 32 bits, so the offset never caps the load
+  // factor and block_id never caps zset size -- no packing tension to tune.
+  static constexpr std::uint32_t kMaxLocationBlockId = kInvalidBlockIndex;
   static constexpr std::uint16_t kInvalidBlockHint16 =
       std::numeric_limits<std::uint16_t>::max();
   static constexpr std::uint32_t kInvalidBlockHint32 =
@@ -962,19 +956,19 @@ class ZSetScoreIndex {
     size_type load_{kDefaultLoad};
   };
 
-  [[nodiscard]] static std::uint32_t pack_location(std::uint32_t block_id,
+  [[nodiscard]] static std::uint64_t pack_location(std::uint32_t block_id,
                                                    size_type offset) noexcept {
-    return (block_id << kLocationOffsetBits) |
+    return (static_cast<std::uint64_t>(block_id) << 32) |
            static_cast<std::uint32_t>(offset);
   }
 
   [[nodiscard]] static std::uint32_t location_block_id(
-      std::uint32_t location) noexcept {
-    return location >> kLocationOffsetBits;
+      std::uint64_t location) noexcept {
+    return static_cast<std::uint32_t>(location >> 32);
   }
 
-  [[nodiscard]] static size_type location_offset(std::uint32_t location) noexcept {
-    return static_cast<size_type>(location & kLocationOffsetMask);
+  [[nodiscard]] static size_type location_offset(std::uint64_t location) noexcept {
+    return static_cast<size_type>(location & 0xFFFFFFFFu);
   }
 
   void clear_location_cache() {
@@ -1161,7 +1155,7 @@ class ZSetScoreIndex {
 
     assert(block_index < blocks_.size());
     assign_block_id(blocks_[block_index]);
-    assert(offset <= kLocationOffsetMask);
+    assert(offset <= std::numeric_limits<std::uint32_t>::max());
     if (rank_cache_mode_ == RankCacheMode::Exact) {
       ensure_location_capacity(member_id);
       locations_[member_id] = pack_location(blocks_[block_index].id_, offset);
@@ -1205,7 +1199,7 @@ class ZSetScoreIndex {
     auto& block = blocks_[block_index];
     assign_block_id(block);
     const auto block_id = block.id_;
-    assert(block.size() <= kLocationOffsetMask);
+    assert(block.size() <= std::numeric_limits<std::uint32_t>::max());
     for (size_type offset = first_offset; offset < block.size(); ++offset) {
       const auto member_id = block.member_id_at(offset);
       if (rank_cache_mode_ == RankCacheMode::Exact) {
@@ -1781,7 +1775,7 @@ class ZSetScoreIndex {
   std::vector<Block> blocks_;
   std::vector<ZSetScoreEntry> maxes_;
   mutable std::vector<size_type> index_;
-  std::vector<std::uint32_t> locations_;
+  std::vector<std::uint64_t> locations_;
   std::vector<std::uint16_t> block_hints16_;
   std::vector<std::uint32_t> block_hints32_;
   mutable std::vector<std::uint16_t> block_hint_offsets16_;
