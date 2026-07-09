@@ -138,6 +138,20 @@ less RAM than Redis or Valkey to hold, that is money, not a benchmark curiosity.
 Goblin Core spends the cheap resource — an occasional rehash pause — to save the
 expensive one, memory.
 
+That memory win comes with one string attached, and it is worth stating plainly.
+Sorted-set members that share a score sort by name, and Goblin Core makes that
+tie-break cheap by keeping each member's first four bytes inline, so the common
+comparison never chases a pointer into the member arena. Think of it as a magic
+memory fountain: free water in the desert. Just do not fill a swimming pool with
+it. A *fixed shared prefix* — `user:1000001`, `user:1000002`, … — makes those four
+bytes identical for every member, so the accelerator cannot tell them apart and
+every same-score comparison falls back to the full-name scan. Worse, you have
+stored that constant `user:` verbatim a million times. You pay twice — in memory
+for the redundant bytes, and in speed for an accelerator that cannot help — for a
+namespace that belongs in the key, not the member. Strip the shared part (store
+`1000001`, and key by namespace) and the fountain works. If you came to Goblin Core
+for the memory win, your UUIDs are already binary and your prefixes already gone.
+
 Single-op latency is a smaller, honest win of the same design. Goblin Core writes
 each reply the instant it is ready; Redis and Valkey defer to the event-loop
 boundary. On a depth-1 connection that one saved hop makes a single `ZSCORE` or
@@ -292,6 +306,11 @@ redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn NOACCEL  # upgrade/migra
 range output benchmarking. It is off by default because it adds a packed side
 arena and an 8-byte score-text reference per member; measured default workloads
 prefer direct stack-buffer score serialization.
+
+`--io-backend` selects the server I/O driver. The binary accepts only backends
+compiled into that build and prints the supported list in `--help`. Current
+non-Linux builds support `poll`; Linux builds with the io_uring UAPI headers add
+`io_uring` behind the same flag.
 
 `--max-output-buffer-mib` bounds per-client queued response bytes before the
 server pauses reads from that socket. The default is `1`; `0` disables the
