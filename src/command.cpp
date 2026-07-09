@@ -4,6 +4,7 @@
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
+#include "goblin/core/tcl_script.hpp"
 #include "goblin/core/wren_script.hpp"
 
 #include <algorithm>
@@ -493,6 +494,24 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::wren_script;
       return {.command = std::move(command)};
+    case CommandType::tcl_eval:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("tcl.eval"));
+      }
+      command.type = CommandType::tcl_eval;
+      return {.command = std::move(command)};
+    case CommandType::tcl_evalsha:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("tcl.evalsha"));
+      }
+      command.type = CommandType::tcl_evalsha;
+      return {.command = std::move(command)};
+    case CommandType::tcl_script:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("tcl.script"));
+      }
+      command.type = CommandType::tcl_script;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -766,6 +785,30 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR This Redis command is not available");
       } else {
         options.wren_engine->script(command.args, out);
+      }
+      return;
+
+    case CommandType::tcl_eval:
+      if (options.tcl_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.tcl_engine->eval(command.args, out);
+      }
+      return;
+
+    case CommandType::tcl_evalsha:
+      if (options.tcl_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.tcl_engine->eval_sha(command.args, out);
+      }
+      return;
+
+    case CommandType::tcl_script:
+      if (options.tcl_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.tcl_engine->script(command.args, out);
       }
       return;
 

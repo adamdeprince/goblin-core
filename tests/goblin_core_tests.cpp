@@ -10,6 +10,7 @@
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
+#include "goblin/core/tcl_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
@@ -2474,6 +2475,114 @@ void test_wren_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// --- Tcl scripting (TCL.EVAL / TCL.EVALSHA / TCL.SCRIPT) ---------------------
+
+std::string run_tcl(goblin::core::Store& store,
+                    goblin::core::TclEngine& engine,
+                    std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.tcl_engine = &engine});
+  return out;
+}
+
+void test_tcl_type_conversions() {
+  goblin::core::Store store;
+  goblin::core::TclEngine engine(store);
+
+  // A canonical integer replies as an integer; anything else as a bulk string.
+  assert(run_tcl(store, engine, {"TCL.EVAL", "expr {1 + 2}", "0"}) == ":3\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "return hello", "0"}) == "$5\r\nhello\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "return 5.5", "0"}) == "$3\r\n5.5\r\n");
+  // KEYS / ARGV are Tcl lists (indexed with lindex, 0-based).
+  assert(run_tcl(store, engine, {"TCL.EVAL", "lindex $KEYS 0", "1", "k1"}) ==
+         "$2\r\nk1\r\n");
+  assert(run_tcl(store, engine,
+                 {"TCL.EVAL", "set s 0; foreach n $ARGV { incr s $n }; return $s", "0",
+                  "10", "20", "12"}) == ":42\r\n");
+  // The redis reply builders.
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis status GOOD", "0"}) == "+GOOD\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis error {My Error}", "0"}) ==
+         "-My Error\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis integer 42", "0"}) == ":42\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis nil", "0"}) == "$-1\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis array {a b c}", "0"}) ==
+         "*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n");
+  assert(run_tcl(store, engine, {"TCL.EVAL", "redis sha1hex {}", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+}
+
+void test_tcl_redis_call() {
+  goblin::core::Store store;
+  goblin::core::TclEngine engine(store);
+
+  assert(run_tcl(store, engine,
+                 {"TCL.EVAL", "redis call zadd [lindex $KEYS 0] 1 a", "1", "z"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  // An uncaught command error becomes a RESP error; catch recovers it.
+  const auto raised =
+      run_tcl(store, engine, {"TCL.EVAL", "redis call zscore", "0"});
+  assert(!raised.empty() && raised.front() == '-');
+  assert(run_tcl(store, engine,
+                 {"TCL.EVAL", "if {[catch {redis call zscore} e]} {return caught}",
+                  "0"}) == "$6\r\ncaught\r\n");
+  // A script cannot re-enter any interpreter.
+  const auto nested = run_tcl(
+      store, engine, {"TCL.EVAL", "redis call tcl.eval {return 1} 0", "0"});
+  assert(!nested.empty() && nested.front() == '-');
+  // The sandbox removes process/host commands.
+  assert(run_tcl(store, engine, {"TCL.EVAL", "exit", "0"}).front() == '-');
+  assert(run_tcl(store, engine, {"TCL.EVAL", "source /etc/passwd", "0"}).front() == '-');
+}
+
+void test_tcl_script_load_and_evalsha() {
+  goblin::core::Store store;
+  goblin::core::TclEngine engine(store);
+
+  const auto load = run_tcl(store, engine, {"TCL.SCRIPT", "LOAD", "return 42"});
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+  assert(run_tcl(store, engine, {"TCL.EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_tcl(store, engine, {"TCL.SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  assert(run_tcl(store, engine,
+                 {"TCL.EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+  assert(run_tcl(store, engine, {"TCL.SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_tcl(store, engine, {"TCL.SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+  // LOAD rejects an unbalanced script (via `info complete`).
+  assert(run_tcl(store, engine, {"TCL.SCRIPT", "LOAD", "set x {"}).front() == '-');
+}
+
+void test_tcl_is_a_distinct_interpreter() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine puc(store);
+  goblin::core::TclEngine tcl(store);
+
+  // A Tcl one-liner runs under TCL.EVAL but is a syntax error under PUC-Lua.
+  assert(run_tcl(store, tcl, {"TCL.EVAL", "return [string toupper hello]", "0"}) ==
+         "$5\r\nHELLO\r\n");
+  const auto puc_tcl =
+      run_script(store, puc, {"EVAL", "return [string toupper hello]", "0"});
+  assert(!puc_tcl.empty() && puc_tcl.front() == '-');
+
+  // Independent caches.
+  const auto load = run_tcl(store, tcl, {"TCL.SCRIPT", "LOAD", "return 5"});
+  const std::string sha = load.substr(5, 40);
+  assert(run_tcl(store, tcl, {"TCL.EVALSHA", sha, "0"}) == ":5\r\n");
+  assert(run_script(store, puc, {"EVALSHA", sha, "0"}).rfind("-NOSCRIPT", 0) == 0);
+}
+
+void test_tcl_without_engine_is_unavailable() {
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"TCL.EVAL", "return 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -2558,5 +2667,10 @@ int main() {
   test_wren_script_load_and_evalsha();
   test_wren_is_a_distinct_interpreter();
   test_wren_without_engine_is_unavailable();
+  test_tcl_type_conversions();
+  test_tcl_redis_call();
+  test_tcl_script_load_and_evalsha();
+  test_tcl_is_a_distinct_interpreter();
+  test_tcl_without_engine_is_unavailable();
   return 0;
 }

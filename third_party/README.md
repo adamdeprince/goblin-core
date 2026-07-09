@@ -56,6 +56,25 @@ arguments are passed as a List), `Redis.error` / `Redis.status` / `Redis.sha1hex
 VM's `initialHeapSize` is lowered from Wren's 10 MB default to keep the scripting
 footprint small.
 
+## Jim Tcl (fourth interpreter, `TCL.*` commands)
+
+`jimtcl/` holds a minimal subset of [Jim Tcl](https://jim.tcl.tk), a small
+embeddable Tcl: the interpreter core (`jim.c`) plus `format`, `regexp`, `subcmd`,
+`iocompat`, and `package`, and the generated `_stdlib.c` / `_tclcompat.c`
+Tcl-library sources. No I/O, exec, socket, event-loop, child-interp, oo, or tree
+extensions are compiled in. `jimautoconf.h` is **hand-written** (portable, only
+the features the subset references) so the copy builds identically on Linux and
+macOS with no autosetup step, and `_load-static-exts.c` is a hand-written loader
+that initializes only stdlib and tclcompat. It builds as its own C static library
+(`goblin_jim`); its symbols are `Jim_`-prefixed and collide with nothing else.
+
+Tcl is string-centric, so `TCL.EVAL` maps the script result to the reply as: a
+canonical integer replies as an integer, everything else as a bulk string; the
+`redis` command provides `redis call`/`pcall` plus explicit reply builders
+(`redis error`/`status`/`integer`/`array`/`nil`). KEYS/ARGV are Tcl lists. The
+engine deletes process- and host-touching commands (`exit`, `source`, `popen`,
+`puts`) and unsets `env` at startup.
+
 ## What is *not* vendored
 
 The `EVAL` / `EVALSHA` / `SCRIPT` commands, the `redis` / `server` Lua API table

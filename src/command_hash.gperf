@@ -28,6 +28,9 @@ LUAU.SCRIPT, goblin::core::CommandType::luau_script
 WREN.EVAL, goblin::core::CommandType::wren_eval
 WREN.EVALSHA, goblin::core::CommandType::wren_evalsha
 WREN.SCRIPT, goblin::core::CommandType::wren_script
+TCL.EVAL, goblin::core::CommandType::tcl_eval
+TCL.EVALSHA, goblin::core::CommandType::tcl_evalsha
+TCL.SCRIPT, goblin::core::CommandType::tcl_script
 ZADD, goblin::core::CommandType::zadd
 ZCARD, goblin::core::CommandType::zcard
 ZRANGE, goblin::core::CommandType::zrange

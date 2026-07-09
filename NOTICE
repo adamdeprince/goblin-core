@@ -69,3 +69,18 @@ third_party/wren/ from its own public upstream:
 The WREN.* command handlers, the foreign `Redis` class binding, and the
 Wren<->RESP value conversion (src/wren_script.cpp) were written from the public
 Wren embedding documentation.
+
+A fourth interpreter powers the TCL.EVAL / TCL.EVALSHA / TCL.SCRIPT command
+family, embedding Jim Tcl (a small, embeddable Tcl), vendored under
+third_party/jimtcl/ from its own public upstream:
+
+  Jim Tcl              Copyright (c) 2005-2025 Salvatore Sanfilippo, Steve Bennett,
+                       and other Jim Tcl contributors (BSD-2-Clause)
+                       https://jim.tcl.tk  https://github.com/msteveb/jimtcl
+                       third_party/jimtcl/LICENSE
+
+Only the interpreter core plus the stdlib and tclcompat Tcl libraries are
+vendored; third_party/jimtcl/jimautoconf.h is a hand-written portable config so
+the subset builds without Jim's autosetup step. The TCL.* command handlers, the
+`redis` Tcl command, and the Tcl<->RESP conversion (src/tcl_script.cpp) were
+written from the public Jim Tcl embedding API.

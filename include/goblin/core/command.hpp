@@ -12,6 +12,7 @@ class Store;
 class ScriptEngine;
 class LuauEngine;
 class WrenEngine;
+class TclEngine;
 
 enum class CommandType {
   ping,
@@ -24,6 +25,9 @@ enum class CommandType {
   wren_eval,
   wren_evalsha,
   wren_script,
+  tcl_eval,
+  tcl_evalsha,
+  tcl_script,
   zadd,
   zcard,
   zrange,
@@ -81,6 +85,8 @@ struct CommandExecutionOptions {
   LuauEngine* luau_engine{nullptr};
   // The Wren counterpart, for WREN.EVAL / WREN.EVALSHA / WREN.SCRIPT.
   WrenEngine* wren_engine{nullptr};
+  // The Tcl counterpart, for TCL.EVAL / TCL.EVALSHA / TCL.SCRIPT.
+  TclEngine* tcl_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);
