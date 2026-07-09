@@ -1601,7 +1601,18 @@ class ZSetScoreIndex {
       }
 
       const auto& block = blocks_[block_index];
-      return {block_index, locate_insert_offset(block, value)};
+      const auto offset = locate_insert_offset(block, value);
+      // lower_bound == block.size() means this entry sorts after every member here;
+      // the same score may continue in the next block (load splits mid-run).
+      if (offset < block.size()) {
+        return {block_index, offset};
+      }
+
+      ++block_index;
+      if (block_index >= blocks_.size()) {
+        const auto last = blocks_.size() - 1;
+        return {last, blocks_[last].size()};
+      }
     }
   }
 
