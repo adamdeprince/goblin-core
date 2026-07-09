@@ -1,0 +1,82 @@
+# LUAU.EVAL
+
+```
+LUAU.EVAL script numkeys [key ...] [arg ...]
+```
+
+Run a script on **[Luau](https://luau.org)** — Roblox's typed, sandboxed Lua
+dialect. This is a *different interpreter* from [`EVAL`](EVAL.md): `EVAL` stays on
+PUC-Lua 5.1 for bug-for-bug Redis compatibility, and `LUAU.EVAL` opts into Luau.
+The two share the key space but nothing else — separate VMs, separate
+[script caches](LUAU.SCRIPT.md), separate standard libraries.
+
+Argument handling is the same as `EVAL`: `numkeys` splits keys from args, exposed
+as the **1-based** `KEYS` and `ARGV` tables.
+
+## Same `redis` API, same conversions
+
+The host binding is identical to [`EVAL`](EVAL.md): `redis.call`, `redis.pcall`,
+`redis.error_reply`, `redis.status_reply`, `redis.sha1hex`, `redis.log`,
+`redis.setresp`, `redis.replicate_commands`, `redis.set_repl`, the `REPL_*` /
+`LOG_*` constants, and the `server` alias. The Lua↔RESP conversion tables are the
+same as [`EVAL`](EVAL.md#return-value-lua--resp).
+
+```
+> LUAU.EVAL "return 1" 0
+(integer) 1
+
+> LUAU.EVAL "return {KEYS[1], ARGV[1]}" 1 k1 v1
+1) "k1"
+2) "v1"
+
+> LUAU.EVAL "return redis.call('zadd', KEYS[1], 5, 'x')" 1 board
+(integer) 1
+```
+
+## What is different from EVAL
+
+**Language dialect.** Luau is a superset of Lua with type annotations, `continue`,
+string interpolation (`` `value = {x}` ``), and more. These parse under
+`LUAU.EVAL` but are a syntax error under `EVAL`:
+
+```
+> LUAU.EVAL "local x: number = 40 + 2 return x" 0
+(integer) 42
+
+> EVAL "local x: number = 40 + 2 return x" 0
+(error) ERR Error compiling script ...     # PUC-Lua 5.1 has no type annotations
+```
+
+**Standard library.** Luau ships its own libraries — `bit32`, `buffer`, `utf8`,
+`vector`, plus the usual `string`/`table`/`math`/`os`. It does **not** have the
+`bit`, `cjson`, `cmsgpack`, or `struct` libraries that `EVAL` bundles:
+
+```
+> LUAU.EVAL "return bit32.band(6, 3)" 0
+(integer) 2
+
+> LUAU.EVAL "return bit.band(6, 3)" 0
+(error) ...                                 # no `bit` in Luau — use bit32
+```
+
+**Isolation.** Luau's sandbox is stronger than the PUC engine's. The base globals
+are frozen (`luaL_sandbox`), and every script runs on its own sandboxed thread
+(`luaL_sandboxthread`), so one script can never observe or corrupt another's
+globals. Unlike `EVAL`, a script *may* create globals — but only on its own
+throw-away thread, so they never leak.
+
+**Wire protocol.** The server speaks RESP2, so `redis.setresp(3)` is accepted but
+has no effect.
+
+## Sandbox
+
+Luau's standard library is sandbox-safe by construction: there is no `io`, no
+`package`/`require`, and `os` is limited to `time`/`clock`/`date`. Host modules
+cannot be loaded.
+
+## See also
+
+- [`LUAU.EVALSHA`](LUAU.EVALSHA.md) — run a cached Luau script by digest.
+- [`LUAU.SCRIPT`](LUAU.SCRIPT.md) — manage the Luau script cache.
+- [`EVAL`](EVAL.md) — the compatibility (PUC-Lua) engine and full conversion tables.
+- [`WREN.EVAL`](WREN.EVAL.md) — the Wren interpreter.
