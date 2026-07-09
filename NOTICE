@@ -42,3 +42,17 @@ table, and the RESP<->Lua value conversion were written independently from the
 public Redis scripting specification. No Redis (or Valkey/Dragonfly) source code
 was consulted or copied; the helper libraries above are the same independent
 upstream projects that other engines also bundle.
+
+A second, independent interpreter powers the LUAU.EVAL / LUAU.EVALSHA /
+LUAU.SCRIPT command family. It embeds the Luau runtime (the minimal Common + Ast
++ Bytecode + Compiler + VM subset, without the CodeGen JIT or the Analysis type
+checker), vendored under third_party/luau/ from its own public upstream:
+
+  Luau                 Copyright (C) 2019-2024 Roblox Corporation
+                       Copyright (C) 1994-2019 Lua.org, PUC-Rio (MIT)
+                       https://github.com/luau-lang/luau
+                       third_party/luau/LICENSE.txt (and lua_LICENSE.txt)
+
+The LUAU.* command handlers and their `redis` API binding (src/luau_script.cpp)
+were likewise written from the public scripting specification, not from any other
+engine's source.

@@ -5,6 +5,7 @@
 #include "goblin/core/key_arena.hpp"
 
 #include "goblin/core/rdb.hpp"
+#include "goblin/core/luau_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
@@ -2248,6 +2249,123 @@ void test_eval_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// --- Luau scripting (LUAU.EVAL / LUAU.EVALSHA / LUAU.SCRIPT) -----------------
+
+std::string run_luau(goblin::core::Store& store,
+                     goblin::core::LuauEngine& engine,
+                     std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.luau_engine = &engine});
+  return out;
+}
+
+void test_luau_type_conversions() {
+  goblin::core::Store store;
+  goblin::core::LuauEngine engine(store);
+
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return 1", "0"}) == ":1\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return 'hi'", "0"}) == "$2\r\nhi\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return 3.9", "0"}) == ":3\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return true", "0"}) == ":1\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return false", "0"}) == "$-1\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return {1,2,3}", "0"}) ==
+         "*3\r\n:1\r\n:2\r\n:3\r\n");
+  assert(run_luau(store, engine,
+                  {"LUAU.EVAL", "return {KEYS[1], ARGV[1]}", "1", "k1", "a1"}) ==
+         "*2\r\n$2\r\nk1\r\n$2\r\na1\r\n");
+  assert(run_luau(store, engine,
+                  {"LUAU.EVAL", "return redis.status_reply('GOOD')", "0"}) ==
+         "+GOOD\r\n");
+  assert(run_luau(store, engine,
+                  {"LUAU.EVAL", "return redis.error_reply('My Error')", "0"}) ==
+         "-My Error\r\n");
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return redis.sha1hex('')", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+}
+
+void test_luau_redis_call() {
+  goblin::core::Store store;
+  goblin::core::LuauEngine engine(store);
+
+  assert(run_luau(store, engine, {"LUAU.EVAL", "return redis.call('ping')", "0"}) ==
+         "+PONG\r\n");
+  assert(run_luau(store, engine,
+                  {"LUAU.EVAL", "return redis.call('zadd', KEYS[1], 1, 'a')", "1",
+                   "z"}) == ":1\r\n");
+  // A Luau script's write is visible to a plain command (one shared store).
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  // An uncaught redis.call error propagates; redis.pcall hands back the table.
+  const auto raised =
+      run_luau(store, engine, {"LUAU.EVAL", "return redis.call('zscore')", "0"});
+  assert(!raised.empty() && raised.front() == '-');
+  assert(run_luau(store, engine,
+                  {"LUAU.EVAL",
+                   "local r = redis.pcall('zscore') if r.err then return 'caught' end",
+                   "0"}) == "$6\r\ncaught\r\n");
+  // A Luau script cannot re-enter either interpreter.
+  const auto nested =
+      run_luau(store, engine,
+               {"LUAU.EVAL", "return redis.call('luau.eval', 'return 1', '0')", "0"});
+  assert(!nested.empty() && nested.front() == '-');
+}
+
+void test_luau_script_load_and_evalsha() {
+  goblin::core::Store store;
+  goblin::core::LuauEngine engine(store);
+
+  const auto load = run_luau(store, engine, {"LUAU.SCRIPT", "LOAD", "return 42"});
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+  assert(run_luau(store, engine, {"LUAU.EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_luau(store, engine, {"LUAU.SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  assert(run_luau(store, engine,
+                  {"LUAU.EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+  assert(run_luau(store, engine, {"LUAU.SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_luau(store, engine, {"LUAU.SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+}
+
+void test_luau_is_a_distinct_interpreter() {
+  // The two engines share the store but nothing else -- different language
+  // dialect, different standard library, and independent script caches.
+  goblin::core::Store store;
+  goblin::core::ScriptEngine puc(store);
+  goblin::core::LuauEngine luau(store);
+
+  // Luau type annotations parse under Luau but are a syntax error under PUC 5.1.
+  assert(run_luau(store, luau, {"LUAU.EVAL", "local x: number = 7 return x", "0"}) ==
+         ":7\r\n");
+  const auto puc_typed =
+      run_script(store, puc, {"EVAL", "local x: number = 7 return x", "0"});
+  assert(!puc_typed.empty() && puc_typed.front() == '-');
+
+  // Luau ships bit32; the PUC engine ships bit. Each is absent in the other.
+  assert(run_luau(store, luau, {"LUAU.EVAL", "return bit32.band(6,3)", "0"}) ==
+         ":2\r\n");
+  assert(run_script(store, puc, {"EVAL", "return bit.band(6,3)", "0"}) == ":2\r\n");
+  assert(run_luau(store, luau, {"LUAU.EVAL", "return bit.band(6,3)", "0"}).front() ==
+         '-');
+  assert(run_script(store, puc, {"EVAL", "return bit32.band(6,3)", "0"}).front() ==
+         '-');
+
+  // Caches are independent: a script loaded into one is unknown to the other.
+  const auto load = run_luau(store, luau, {"LUAU.SCRIPT", "LOAD", "return 5"});
+  const std::string sha = load.substr(5, 40);
+  assert(run_luau(store, luau, {"LUAU.EVALSHA", sha, "0"}) == ":5\r\n");
+  assert(run_script(store, puc, {"EVALSHA", sha, "0"}).rfind("-NOSCRIPT", 0) == 0);
+}
+
+void test_luau_without_engine_is_unavailable() {
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"LUAU.EVAL", "return 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -2322,5 +2440,10 @@ int main() {
   test_script_load_and_evalsha();
   test_eval_helper_libraries();
   test_eval_without_engine_is_unavailable();
+  test_luau_type_conversions();
+  test_luau_redis_call();
+  test_luau_script_load_and_evalsha();
+  test_luau_is_a_distinct_interpreter();
+  test_luau_without_engine_is_unavailable();
   return 0;
 }

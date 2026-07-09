@@ -10,12 +10,16 @@ namespace goblin::core {
 
 class Store;
 class ScriptEngine;
+class LuauEngine;
 
 enum class CommandType {
   ping,
   eval,
   evalsha,
   script,
+  luau_eval,
+  luau_evalsha,
+  luau_script,
   zadd,
   zcard,
   zrange,
@@ -68,6 +72,9 @@ struct CommandExecutionOptions {
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
   // that do not enable scripting; those see the "not available" error instead.
   ScriptEngine* script_engine{nullptr};
+  // The Luau counterpart, for LUAU.EVAL / LUAU.EVALSHA / LUAU.SCRIPT. Kept
+  // separate so the two interpreters never share a cache or a VM.
+  LuauEngine* luau_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);

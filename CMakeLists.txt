@@ -81,9 +81,12 @@ add_library(goblin_lua STATIC
   third_party/lua-cmsgpack/lua_cmsgpack.c
   third_party/lua-struct/struct.c
   third_party/lua-bitop/bit.c)
-target_include_directories(goblin_lua
-  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua>
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-cjson)
+# PRIVATE: goblin_core reaches the PUC-Lua headers through a per-source include on
+# src/script.cpp (see below), NOT through this library's interface -- otherwise its
+# "lua.h" would collide on goblin_core's include path with Luau's own "lua.h".
+target_include_directories(goblin_lua PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-cjson)
 set_target_properties(goblin_lua PROPERTIES
   C_STANDARD 99
   POSITION_INDEPENDENT_CODE ON)
@@ -93,8 +96,50 @@ if(NOT MSVC)
   target_compile_options(goblin_lua PRIVATE -w)
 endif()
 
+# Vendored Luau runtime (Roblox's typed, sandboxed Lua dialect) -- the minimal
+# Common + Ast + Bytecode + Compiler + VM subset needed to compile and run source
+# (no CodeGen JIT, no Analysis type-checker). Built as its own C++17 static library
+# with warnings off. Its public API has C++ linkage, so its symbols do not collide
+# with the C-linkage PUC-Lua symbols in goblin_lua even though both derive from Lua.
+file(GLOB GOBLIN_LUAU_SOURCES CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Common/src/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Ast/src/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Bytecode/src/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Compiler/src/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/VM/src/*.cpp)
+add_library(goblin_luau_vm STATIC ${GOBLIN_LUAU_SOURCES})
+# All PRIVATE: goblin_core reaches Luau's public C API (lua.h / lualib.h /
+# luacode.h) through a per-source include on src/luau_script.cpp (see below), so
+# Luau's "lua.h" never lands on the same include path as PUC-Lua's.
+target_include_directories(goblin_luau_vm PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/VM/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Compiler/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Common/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Ast/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Bytecode/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Compiler/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/VM/src)
+set_target_properties(goblin_luau_vm PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  target_compile_options(goblin_luau_vm PRIVATE -w)
+endif()
+# PUC-Lua (goblin_lua) and Luau (goblin_luau_vm) both derive from Lua, so a few
+# internal global *data* symbols share a name (C++ mangles functions apart, but
+# not file-scope variables). Rename Luau's copies -- they are internal, not part
+# of the public API goblin_core calls -- so the two static libraries link cleanly
+# into one binary.
+target_compile_definitions(goblin_luau_vm PRIVATE
+  lua_ident=luau_lua_ident
+  luaO_nilobject_=luau_luaO_nilobject_
+  luaT_typenames=luau_luaT_typenames)
+
 add_library(goblin_core
   src/command.cpp
+  src/luau_script.cpp
   src/rdb.cpp
   src/resp_parser.cpp
   src/resp_writer.cpp
@@ -117,7 +162,16 @@ target_include_directories(goblin_core
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
-target_link_libraries(goblin_core PRIVATE goblin_lua)
+target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm)
+
+# The two runtimes each ship a "lua.h" (both derive from Lua). Keep them off the
+# shared target include path and hand each engine source only its own runtime's
+# headers, so neither can accidentally pick up the other's.
+set_source_files_properties(src/script.cpp PROPERTIES
+  INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua)
+set_source_files_properties(src/luau_script.cpp PROPERTIES
+  INCLUDE_DIRECTORIES
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/VM/include;${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Compiler/include")
 
 # Enable the CRC32C hardware instruction used by the snapshot checksum on x86
 # (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
@@ -213,6 +267,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
   set_tests_properties(goblin_core_scripting
     PROPERTIES TIMEOUT 60)
 
+  # End-to-end Luau scripting (LUAU.EVAL / LUAU.EVALSHA / LUAU.SCRIPT), including
+  # that it is a distinct interpreter from EVAL sharing the same key space.
+  add_test(
+    NAME goblin_core_luau_scripting
+    COMMAND
+      ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/luau_scripting.py
+      --goblin-bin $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_luau_scripting
+    PROPERTIES TIMEOUT 60)
+
   if(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS)
     find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server)
     if(REDIS_SERVER_EXECUTABLE)
@@ -246,7 +311,7 @@ endif()
 include(CMakePackageConfigHelpers)
 
 install(
-  TARGETS goblin_core goblin_core_server goblin_lua
+  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm
   EXPORT goblinCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
