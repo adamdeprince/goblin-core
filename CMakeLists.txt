@@ -137,6 +137,26 @@ target_compile_definitions(goblin_luau_vm PRIVATE
   luaO_nilobject_=luau_luaO_nilobject_
   luaT_typenames=luau_luaT_typenames)
 
+# Vendored Wren runtime (https://wren.io) -- a small class-based scripting
+# language, powering the WREN.* command family. Pure C, built as its own static
+# library with warnings off. Its symbols are wren-prefixed C symbols, so they do
+# not collide with either Lua runtime.
+file(GLOB GOBLIN_WREN_SOURCES CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/vm/*.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/optional/*.c)
+add_library(goblin_wren STATIC ${GOBLIN_WREN_SOURCES})
+target_include_directories(goblin_wren PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/vm
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/optional)
+target_compile_definitions(goblin_wren PRIVATE WREN_OPT_META=1 WREN_OPT_RANDOM=1)
+set_target_properties(goblin_wren PROPERTIES
+  C_STANDARD 99
+  POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  target_compile_options(goblin_wren PRIVATE -w)
+endif()
+
 add_library(goblin_core
   src/command.cpp
   src/luau_script.cpp
@@ -146,7 +166,8 @@ add_library(goblin_core
   src/script.cpp
   src/server.cpp
   src/simd.cpp
-  src/store.cpp)
+  src/store.cpp
+  src/wren_script.cpp)
 
 target_compile_features(goblin_core PUBLIC cxx_std_23)
 set_target_properties(goblin_core PROPERTIES
@@ -162,16 +183,18 @@ target_include_directories(goblin_core
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
-target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm)
+target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren)
 
-# The two runtimes each ship a "lua.h" (both derive from Lua). Keep them off the
-# shared target include path and hand each engine source only its own runtime's
-# headers, so neither can accidentally pick up the other's.
+# The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
+# vendored runtime's headers off the shared target include path and hand each
+# engine source only its own runtime's headers, so none can pick up another's.
 set_source_files_properties(src/script.cpp PROPERTIES
   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua)
 set_source_files_properties(src/luau_script.cpp PROPERTIES
   INCLUDE_DIRECTORIES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/VM/include;${CMAKE_CURRENT_SOURCE_DIR}/third_party/luau/Compiler/include")
+set_source_files_properties(src/wren_script.cpp PROPERTIES
+  INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wren/include)
 
 # Enable the CRC32C hardware instruction used by the snapshot checksum on x86
 # (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
@@ -278,6 +301,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
   set_tests_properties(goblin_core_luau_scripting
     PROPERTIES TIMEOUT 60)
 
+  # End-to-end Wren scripting (WREN.EVAL / WREN.EVALSHA / WREN.SCRIPT), including
+  # that it is a distinct interpreter from the Lua engines sharing the key space.
+  add_test(
+    NAME goblin_core_wren_scripting
+    COMMAND
+      ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/wren_scripting.py
+      --goblin-bin $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_wren_scripting
+    PROPERTIES TIMEOUT 60)
+
   if(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS)
     find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server)
     if(REDIS_SERVER_EXECUTABLE)
@@ -311,7 +345,7 @@ endif()
 include(CMakePackageConfigHelpers)
 
 install(
-  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm
+  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm goblin_wren
   EXPORT goblinCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

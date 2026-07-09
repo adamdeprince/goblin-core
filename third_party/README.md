@@ -39,6 +39,23 @@ ships Luau's standard library (`bit32`, `buffer`, `utf8`, `vector`) rather than
 the PUC helper libraries above. The PUC engine stays behind `EVAL` for bug-for-bug
 compatibility with other Redis implementations.
 
+## Wren (third interpreter, `WREN.*` commands)
+
+`wren/` holds the [Wren](https://wren.io) runtime (the `src/vm`, `src/optional`,
+and `src/include` trees, including the checked-in `*.wren.inc` generated core
+sources). It builds as its own C static library (`goblin_wren`) with the meta and
+random optional modules enabled. Wren's symbols are `wren`-prefixed C symbols, so
+they collide with neither Lua runtime.
+
+Wren is class-based with no top-level `return` and no in-language `eval`, so
+`WREN.EVAL` runs the script body inside a function and captures its result
+through a foreign `Redis.setReply_`. The host bindings live on a foreign `Redis`
+class: `Redis.call(list)` / `Redis.pcall(list)` (Wren has no varargs, so
+arguments are passed as a List), `Redis.error` / `Redis.status` / `Redis.sha1hex`
+/ `Redis.log`, and `KEYS` / `ARGV` as **0-based** Lists (Wren is 0-indexed). The
+VM's `initialHeapSize` is lowered from Wren's 10 MB default to keep the scripting
+footprint small.
+
 ## What is *not* vendored
 
 The `EVAL` / `EVALSHA` / `SCRIPT` commands, the `redis` / `server` Lua API table

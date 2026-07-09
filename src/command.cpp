@@ -4,6 +4,7 @@
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
+#include "goblin/core/wren_script.hpp"
 
 #include <algorithm>
 #include <array>
@@ -474,6 +475,24 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::luau_script;
       return {.command = std::move(command)};
+    case CommandType::wren_eval:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("wren.eval"));
+      }
+      command.type = CommandType::wren_eval;
+      return {.command = std::move(command)};
+    case CommandType::wren_evalsha:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("wren.evalsha"));
+      }
+      command.type = CommandType::wren_evalsha;
+      return {.command = std::move(command)};
+    case CommandType::wren_script:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("wren.script"));
+      }
+      command.type = CommandType::wren_script;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -723,6 +742,30 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR This Redis command is not available");
       } else {
         options.luau_engine->script(command.args, out);
+      }
+      return;
+
+    case CommandType::wren_eval:
+      if (options.wren_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.wren_engine->eval(command.args, out);
+      }
+      return;
+
+    case CommandType::wren_evalsha:
+      if (options.wren_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.wren_engine->eval_sha(command.args, out);
+      }
+      return;
+
+    case CommandType::wren_script:
+      if (options.wren_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.wren_engine->script(command.args, out);
       }
       return;
 

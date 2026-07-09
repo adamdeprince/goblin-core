@@ -11,6 +11,7 @@ namespace goblin::core {
 class Store;
 class ScriptEngine;
 class LuauEngine;
+class WrenEngine;
 
 enum class CommandType {
   ping,
@@ -20,6 +21,9 @@ enum class CommandType {
   luau_eval,
   luau_evalsha,
   luau_script,
+  wren_eval,
+  wren_evalsha,
+  wren_script,
   zadd,
   zcard,
   zrange,
@@ -75,6 +79,8 @@ struct CommandExecutionOptions {
   // The Luau counterpart, for LUAU.EVAL / LUAU.EVALSHA / LUAU.SCRIPT. Kept
   // separate so the two interpreters never share a cache or a VM.
   LuauEngine* luau_engine{nullptr};
+  // The Wren counterpart, for WREN.EVAL / WREN.EVALSHA / WREN.SCRIPT.
+  WrenEngine* wren_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);

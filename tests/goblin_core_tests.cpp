@@ -10,6 +10,7 @@
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
+#include "goblin/core/wren_script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
 
@@ -2366,6 +2367,113 @@ void test_luau_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// --- Wren scripting (WREN.EVAL / WREN.EVALSHA / WREN.SCRIPT) -----------------
+
+std::string run_wren(goblin::core::Store& store,
+                     goblin::core::WrenEngine& engine,
+                     std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.wren_engine = &engine});
+  return out;
+}
+
+void test_wren_type_conversions() {
+  goblin::core::Store store;
+  goblin::core::WrenEngine engine(store);
+
+  assert(run_wren(store, engine, {"WREN.EVAL", "return 1", "0"}) == ":1\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return \"hi\"", "0"}) == "$2\r\nhi\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return 3.9", "0"}) == ":3\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "var x = 5", "0"}) == "$-1\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return true", "0"}) == ":1\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return false", "0"}) == "$-1\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return [1,2,3]", "0"}) ==
+         "*3\r\n:1\r\n:2\r\n:3\r\n");
+  // KEYS/ARGV are 0-based Lists (Wren indexing).
+  assert(run_wren(store, engine,
+                  {"WREN.EVAL", "return [KEYS[0], ARGV[0]]", "1", "k1", "a1"}) ==
+         "*2\r\n$2\r\nk1\r\n$2\r\na1\r\n");
+  assert(run_wren(store, engine,
+                  {"WREN.EVAL", "return Redis.status(\"GOOD\")", "0"}) == "+GOOD\r\n");
+  assert(run_wren(store, engine,
+                  {"WREN.EVAL", "return Redis.error(\"My Error\")", "0"}) ==
+         "-My Error\r\n");
+  assert(run_wren(store, engine, {"WREN.EVAL", "return Redis.sha1hex(\"\")", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+}
+
+void test_wren_redis_call() {
+  goblin::core::Store store;
+  goblin::core::WrenEngine engine(store);
+
+  assert(run_wren(store, engine, {"WREN.EVAL", "return Redis.call([\"ping\"])", "0"}) ==
+         "+PONG\r\n");
+  assert(run_wren(store, engine,
+                  {"WREN.EVAL", "return Redis.call([\"zadd\", KEYS[0], 1, \"a\"])",
+                   "1", "z"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  const auto raised =
+      run_wren(store, engine, {"WREN.EVAL", "return Redis.call([\"zscore\"])", "0"});
+  assert(!raised.empty() && raised.front() == '-');
+  assert(run_wren(store, engine,
+                  {"WREN.EVAL",
+                   "var r = Redis.pcall([\"zscore\"])\nif (r[\"err\"] != null) return "
+                   "\"caught\"",
+                   "0"}) == "$6\r\ncaught\r\n");
+  const auto nested = run_wren(
+      store, engine,
+      {"WREN.EVAL", "return Redis.call([\"wren.eval\", \"return 1\", \"0\"])", "0"});
+  assert(!nested.empty() && nested.front() == '-');
+}
+
+void test_wren_script_load_and_evalsha() {
+  goblin::core::Store store;
+  goblin::core::WrenEngine engine(store);
+
+  const auto load = run_wren(store, engine, {"WREN.SCRIPT", "LOAD", "return 42"});
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+  assert(run_wren(store, engine, {"WREN.EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_wren(store, engine, {"WREN.SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  assert(run_wren(store, engine,
+                  {"WREN.EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+  assert(run_wren(store, engine, {"WREN.SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_wren(store, engine, {"WREN.SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+}
+
+void test_wren_is_a_distinct_interpreter() {
+  // Wren shares the store but is neither PUC-Lua nor Luau: a Wren list-filter
+  // chain runs under WREN.EVAL but is a syntax error under either Lua engine, and
+  // the caches are independent.
+  goblin::core::Store store;
+  goblin::core::ScriptEngine puc(store);
+  goblin::core::WrenEngine wren(store);
+
+  assert(run_wren(store, wren,
+                  {"WREN.EVAL", "return [1,2,3,4].where{|x| x % 2 == 0}.toList", "0"}) ==
+         "*2\r\n:2\r\n:4\r\n");
+  const auto puc_wren =
+      run_script(store, puc, {"EVAL", "return [1,2,3,4].where{|x| x % 2 == 0}.toList", "0"});
+  assert(!puc_wren.empty() && puc_wren.front() == '-');
+
+  const auto load = run_wren(store, wren, {"WREN.SCRIPT", "LOAD", "return 5"});
+  const std::string sha = load.substr(5, 40);
+  assert(run_wren(store, wren, {"WREN.EVALSHA", sha, "0"}) == ":5\r\n");
+  assert(run_script(store, puc, {"EVALSHA", sha, "0"}).rfind("-NOSCRIPT", 0) == 0);
+}
+
+void test_wren_without_engine_is_unavailable() {
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"WREN.EVAL", "return 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -2445,5 +2553,10 @@ int main() {
   test_luau_script_load_and_evalsha();
   test_luau_is_a_distinct_interpreter();
   test_luau_without_engine_is_unavailable();
+  test_wren_type_conversions();
+  test_wren_redis_call();
+  test_wren_script_load_and_evalsha();
+  test_wren_is_a_distinct_interpreter();
+  test_wren_without_engine_is_unavailable();
   return 0;
 }

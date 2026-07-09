@@ -161,8 +161,10 @@ inline void sha1_hex_into(std::string_view data, char* out40) {
   return equals_upper(name, "EVAL") || equals_upper(name, "EVALSHA") ||
          equals_upper(name, "SCRIPT") || equals_upper(name, "LUAU.EVAL") ||
          equals_upper(name, "LUAU.EVALSHA") || equals_upper(name, "LUAU.SCRIPT") ||
-         equals_upper(name, "MULTI") || equals_upper(name, "EXEC") ||
-         equals_upper(name, "WATCH") || equals_upper(name, "SUBSCRIBE");
+         equals_upper(name, "WREN.EVAL") || equals_upper(name, "WREN.EVALSHA") ||
+         equals_upper(name, "WREN.SCRIPT") || equals_upper(name, "MULTI") ||
+         equals_upper(name, "EXEC") || equals_upper(name, "WATCH") ||
+         equals_upper(name, "SUBSCRIBE");
 }
 
 // Strip CRLF so a would-be RESP error/status line keeps the framing intact.

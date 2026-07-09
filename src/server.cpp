@@ -6,6 +6,7 @@
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
+#include "goblin/core/wren_script.hpp"
 
 #include <cerrno>
 #include <csignal>
@@ -253,6 +254,7 @@ void accept_clients(int listener,
                                              Store& store,
                                              ScriptEngine& script_engine,
                                              LuauEngine& luau_engine,
+                                             WrenEngine& wren_engine,
                                              const ServerConfig& config) {
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
@@ -269,7 +271,8 @@ void accept_clients(int listener,
         CommandExecutionOptions{
             .output_reserve_limit = config.max_output_buffer_bytes,
             .script_engine = &script_engine,
-            .luau_engine = &luau_engine});
+            .luau_engine = &luau_engine,
+            .wren_engine = &wren_engine});
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
@@ -288,6 +291,7 @@ void accept_clients(int listener,
 [[nodiscard]] bool read_client(Client& client, Store& store,
                                ScriptEngine& script_engine,
                                LuauEngine& luau_engine,
+                               WrenEngine& wren_engine,
                                const ServerConfig& config) {
   char buffer[16 * 1024];
 
@@ -300,7 +304,8 @@ void accept_clients(int listener,
     if (received > 0) {
       client.parser.append(std::string_view(buffer, static_cast<std::size_t>(received)));
 
-      if (!process_buffered_commands(client, store, script_engine, luau_engine, config)) {
+      if (!process_buffered_commands(client, store, script_engine, luau_engine,
+                                     wren_engine, config)) {
         return false;
       }
       continue;
@@ -383,10 +388,11 @@ int Server::run() {
   running_ = true;
 
   // One engine per interpreter for the process. Each holds its own script cache
-  // and, lazily, its own VM -- no VM is created until the first EVAL / LUAU.EVAL,
-  // so a server that never runs a script pays nothing here.
+  // and, lazily, its own VM -- no VM is created until the first script of that
+  // kind runs, so a server that never scripts pays nothing here.
   ScriptEngine script_engine(store_);
   LuauEngine luau_engine(store_);
+  WrenEngine wren_engine(store_);
 
   std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
             << '\n';
@@ -438,11 +444,12 @@ int Server::run() {
 
       if (keep && !clients[i].read_backpressured) {
         keep = process_buffered_commands(clients[i], store_, script_engine,
-                                         luau_engine, config_);
+                                         luau_engine, wren_engine, config_);
       }
 
       if (keep && (revents & POLLIN) != 0 && !clients[i].read_backpressured) {
-        keep = read_client(clients[i], store_, script_engine, luau_engine, config_);
+        keep = read_client(clients[i], store_, script_engine, luau_engine,
+                           wren_engine, config_);
       }
 
       if (keep && has_pending_output(clients[i])) {
@@ -452,7 +459,7 @@ int Server::run() {
       while (keep && !clients[i].read_backpressured &&
              clients[i].parser.has_queued_frames()) {
         keep = process_buffered_commands(clients[i], store_, script_engine,
-                                         luau_engine, config_);
+                                         luau_engine, wren_engine, config_);
         if (keep && has_pending_output(clients[i])) {
           keep = write_client(clients[i], config_);
         }

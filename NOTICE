@@ -56,3 +56,16 @@ checker), vendored under third_party/luau/ from its own public upstream:
 The LUAU.* command handlers and their `redis` API binding (src/luau_script.cpp)
 were likewise written from the public scripting specification, not from any other
 engine's source.
+
+A third, independent interpreter powers the WREN.EVAL / WREN.EVALSHA /
+WREN.SCRIPT command family, embedding the Wren scripting language, vendored under
+third_party/wren/ from its own public upstream:
+
+  Wren                 Copyright (C) 2013-2021 Robert Nystrom and Wren
+                       Contributors (MIT)
+                       https://wren.io  https://github.com/wren-lang/wren
+                       third_party/wren/LICENSE
+
+The WREN.* command handlers, the foreign `Redis` class binding, and the
+Wren<->RESP value conversion (src/wren_script.cpp) were written from the public
+Wren embedding documentation.
