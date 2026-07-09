@@ -147,6 +147,7 @@ class ZSetScoreIndex {
   void clear() {
     blocks_.clear();
     maxes_.clear();
+    mins_.clear();
     index_.clear();
     index_offset_ = 0;
     clear_location_cache();
@@ -173,6 +174,7 @@ class ZSetScoreIndex {
       blocks_.push_back(source_block.clone());
     }
     maxes_ = source.maxes_;
+    mins_ = source.mins_;
     locations_ = source.locations_;
     block_hints16_ = source.block_hints16_;
     block_hints32_ = source.block_hints32_;
@@ -199,6 +201,7 @@ class ZSetScoreIndex {
     size_ = values.size();
     blocks_.reserve((values.size() + load_ - 1) / load_);
     maxes_.reserve(blocks_.capacity());
+    mins_.reserve(blocks_.capacity());
 
     for (size_type start = 0; start < values.size(); start += load_) {
       const auto count = std::min(load_, values.size() - start);
@@ -213,6 +216,7 @@ class ZSetScoreIndex {
         block.push_back(entry);
       }
       maxes_.push_back(block.back());
+      mins_.push_back(block.front());
       blocks_.push_back(std::move(block));
     }
     rebuild_location_cache();
@@ -234,6 +238,7 @@ class ZSetScoreIndex {
       assign_block_id(blocks_.back());
       blocks_.back().push_back(value);
       maxes_.push_back(value);
+      mins_.push_back(value);
       size_ = 1;
       set_location(value.member_id, 0, 0);
       invalidate_index();
@@ -256,7 +261,7 @@ class ZSetScoreIndex {
       return;
     }
 
-    maxes_[block_index] = block.back();
+    refresh_block_metadata(block_index);
     update_index(block_index, 1);
     if (rank_cache_mode_ == RankCacheMode::BlockHint) {
       set_location(value.member_id, block_index, offset);
@@ -300,7 +305,7 @@ class ZSetScoreIndex {
         --target_offset;
       }
       blocks_[block_index].move_entry(old_offset, target_offset, new_entry);
-      maxes_[block_index] = blocks_[block_index].back();
+      refresh_block_metadata(block_index);
       if (location_cache_enabled()) {
         set_location(new_entry.member_id, block_index, target_offset);
       }
@@ -410,7 +415,7 @@ class ZSetScoreIndex {
           if (order_valid_at(block_index, offset)) {
             clear_location(old_member_id);
             set_location(new_member_id, block_index, offset);
-            maxes_[block_index] = block.back();
+            refresh_block_metadata(block_index);
             return true;
           }
 
@@ -607,7 +612,7 @@ class ZSetScoreIndex {
   }
 
   [[nodiscard]] bool validate() const {
-    if (blocks_.size() != maxes_.size()) {
+    if (blocks_.size() != maxes_.size() || blocks_.size() != mins_.size()) {
       return false;
     }
     if (blocks_.empty()) {
@@ -620,7 +625,8 @@ class ZSetScoreIndex {
       if (!block.validate()) {
         return false;
       }
-      if (!equivalent(block.back(), maxes_[block_index])) {
+      if (!equivalent(block.back(), maxes_[block_index]) ||
+          !equivalent(block.front(), mins_[block_index])) {
         return false;
       }
       for (size_type i = 1; i < block.size(); ++i) {
@@ -1539,15 +1545,15 @@ class ZSetScoreIndex {
 
     auto block_index = lower_block_by_score(value.score);
     while (block_index < blocks_.size()) {
-      const auto& block = blocks_[block_index];
-      if (block.score_greater_than(0, value.score)) {
+      if (mins_[block_index].score > value.score) {
         return std::nullopt;
       }
-      if (block.score_less_than(block.size() - 1, value.score)) {
+      if (maxes_[block_index].score < value.score) {
         ++block_index;
         continue;
       }
 
+      const auto& block = blocks_[block_index];
       if (const auto offset = locate_entry_offset(block, value)) {
         return std::pair<size_type, size_type>{block_index, *offset};
       }
@@ -1582,11 +1588,10 @@ class ZSetScoreIndex {
     }
 
     while (true) {
-      const auto& block = blocks_[block_index];
-      if (block.score_greater_than(0, value.score)) {
+      if (mins_[block_index].score > value.score) {
         return {block_index, 0};
       }
-      if (block.score_less_than(block.size() - 1, value.score)) {
+      if (maxes_[block_index].score < value.score) {
         ++block_index;
         if (block_index >= blocks_.size()) {
           const auto last = blocks_.size() - 1;
@@ -1595,16 +1600,8 @@ class ZSetScoreIndex {
         continue;
       }
 
-      const auto offset = locate_insert_offset(block, value);
-      if (offset < block.size()) {
-        return {block_index, offset};
-      }
-
-      ++block_index;
-      if (block_index >= blocks_.size()) {
-        const auto last = blocks_.size() - 1;
-        return {last, blocks_[last].size()};
-      }
+      const auto& block = blocks_[block_index];
+      return {block_index, locate_insert_offset(block, value)};
     }
   }
 
@@ -1612,6 +1609,12 @@ class ZSetScoreIndex {
   [[nodiscard]] size_type locate_insert_offset(BlockRef&& block,
                                                ZSetScoreEntry value) const noexcept {
     return block.lower_bound(*this, value);
+  }
+
+  void refresh_block_metadata(size_type block_index) {
+    const auto& block = blocks_[block_index];
+    maxes_[block_index] = block.back();
+    mins_[block_index] = block.front();
   }
 
   [[nodiscard]] bool less(ZSetScoreEntry lhs, ZSetScoreEntry rhs) const noexcept {
@@ -1747,7 +1750,7 @@ class ZSetScoreIndex {
 
     clear_location(old_member_id);
     set_location(new_member_id, block_index, offset);
-    maxes_[block_index] = block.back();
+    refresh_block_metadata(block_index);
     return true;
   }
 
@@ -1796,7 +1799,7 @@ class ZSetScoreIndex {
     }
 
     set_location(new_member_id, block_index, adj_l);
-    maxes_[block_index] = block.back();
+    refresh_block_metadata(block_index);
     update_index(block_index, -1);
     finish_erase_block(block_index, std::min(r_offset, adj_l),
                        EraseRebalancePolicy::Remove);
@@ -1816,12 +1819,13 @@ class ZSetScoreIndex {
       invalidate_block_id(block.id_);
       blocks_.erase(blocks_.begin() + static_cast<long>(block_index));
       maxes_.erase(maxes_.begin() + static_cast<long>(block_index));
+      mins_.erase(mins_.begin() + static_cast<long>(block_index));
       refresh_block_indices_from(block_index);
       invalidate_index();
       return;
     }
 
-    maxes_[block_index] = block.back();
+    refresh_block_metadata(block_index);
     update_index(block_index, -1);
     finish_erase_block(block_index, offset, policy);
   }
@@ -1855,9 +1859,11 @@ class ZSetScoreIndex {
 
     blocks_.insert(blocks_.begin() + static_cast<long>(block_index + 1),
                    std::move(right));
-    maxes_[block_index] = blocks_[block_index].back();
+    refresh_block_metadata(block_index);
     maxes_.insert(maxes_.begin() + static_cast<long>(block_index + 1),
                   blocks_[block_index + 1].back());
+    mins_.insert(mins_.begin() + static_cast<long>(block_index + 1),
+                 blocks_[block_index + 1].front());
   }
 
   void rebalance_after_erase(size_type block_index) {
@@ -1876,9 +1882,10 @@ class ZSetScoreIndex {
 
     blocks_.erase(blocks_.begin() + static_cast<long>(block_index + 1));
     maxes_.erase(maxes_.begin() + static_cast<long>(block_index + 1));
+    mins_.erase(mins_.begin() + static_cast<long>(block_index + 1));
     invalidate_block_id(removed_block_id);
     refresh_block_indices_from(block_index + 1);
-    maxes_[block_index] = left.back();
+    refresh_block_metadata(block_index);
 
     if (left.size() > load_ * 2) {
       split_block(block_index);
@@ -1972,6 +1979,7 @@ class ZSetScoreIndex {
   const ZSetMemberStorage* members_{nullptr};
   std::vector<Block> blocks_;
   std::vector<ZSetScoreEntry> maxes_;
+  std::vector<ZSetScoreEntry> mins_;
   mutable std::vector<size_type> index_;
   std::vector<std::uint64_t> locations_;
   std::vector<std::uint16_t> block_hints16_;
@@ -1991,6 +1999,7 @@ class ZSetScoreIndex {
 inline ZSetScoreIndex::size_type ZSetScoreIndex::allocated_bytes() const noexcept {
   size_type total = blocks_.capacity() * sizeof(Block) +
                     maxes_.capacity() * sizeof(ZSetScoreEntry) +
+                    mins_.capacity() * sizeof(ZSetScoreEntry) +
                     index_.capacity() * sizeof(size_type) +
                     location_cache_allocated_bytes();
   for (const auto& block : blocks_) {
