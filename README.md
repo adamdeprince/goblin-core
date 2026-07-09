@@ -28,19 +28,19 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   holds a sorted set in about `51` bytes per member — flat from 250K to 4M
   members — versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for
   Redis 7.2.4: **roughly half** of legacy Redis and ~`35%` under the modern
-  engines. Every engine on the same jemalloc `5.3.0` and shared config, one quiet
-  dedicated host.
+  Redis-family engines; it is also about `6–7%` leaner than Dragonfly. Every
+  engine is measured under allocator/config parity on one quiet dedicated host.
 - Hashes get the same memory treatment: built on the same tuned Swiss table and
   packed arena as the zset but with no scores and no ordering, a hash holds a
   field in about `45` bytes — flat across sizes (16-byte field plus 16-byte
   value), a constant `~13.4` bytes of it per-field overhead. That is **roughly
   half** of Redis `7.2.4`, but the lead over modern engines is smaller — about
   `20%` leaner than Redis `8.8` and `29%` leaner than Valkey `9.1`, and smaller
-  values widen it — with every engine on the same jemalloc `5.3.0` and shared
-  config.
-- Sorted-set throughput leads across the board: `ZADD` `+64%`, `ZRANK` `+41–46%`,
-  `ZSCORE` `+19–22%`, `ZRANGE` `+24–29%` over the Redis-family engines on pipelined
-  `redis-benchmark`.
+  values widen it — measured under the same allocator/config parity as the zset
+  benchmarks.
+- Sorted-set throughput leads across the board: `ZADD` `+67–69%`, `ZRANK`
+  `+35–43%`, `ZSCORE` `+20–24%`, `ZRANGE` `+19–28%` over the Redis-family engines
+  on pipelined `redis-benchmark`.
 - Hashes lead too: `HSET` `+13–26%`, `HGET` `+18–22%`, `HGETALL` `+30–58%`, with
   depth-1 `HGET` latency a near-tie (~`21` µs). See BENCHMARKS.md.
 - Latency too: writing each reply immediately makes a depth-1 `ZSCORE`/`ZADD`
@@ -307,11 +307,6 @@ range output benchmarking. It is off by default because it adds a packed side
 arena and an 8-byte score-text reference per member; measured default workloads
 prefer direct stack-buffer score serialization.
 
-`--io-backend` selects the server I/O driver. The binary accepts only backends
-compiled into that build and prints the supported list in `--help`. Current
-non-Linux builds support `poll`; Linux builds with the io_uring UAPI headers add
-`io_uring` behind the same flag.
-
 `--max-output-buffer-mib` bounds per-client queued response bytes before the
 server pauses reads from that socket. The default is `1`; `0` disables the
 limit for comparison runs. Reads resume after queued output drains below one
@@ -357,11 +352,11 @@ subsequent restarts use the faster native `--load`.
 Memory is the headline: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin
 Core stores a sorted set in about `51` RSS bytes per member versus about `80` for
 Redis 8.8, `84` for Valkey 9.1, and `110` for Redis 7.2.4 — **roughly half** of
-legacy Redis and ~`35%` under the modern engines, consistently from 250K to 4M
-members and even just past a power of two, with every engine measured on the same
-jemalloc `5.3.0`. See BENCHMARKS.md. Throughput leads too: on pipelined
-`redis-benchmark`, `ZADD` `+64%`, `ZRANK` `+41–46%`, `ZSCORE` `+19–22%`, and
-`ZRANGE` `+24–29%` over the Redis-family engines.
+legacy Redis and ~`35%` under Redis 8.8, consistently from 250K to 4M members.
+Dragonfly is closest at ~`55` RSS bytes/member, with Goblin still about `6–7%`
+lower. See BENCHMARKS.md. Throughput leads too: on pipelined `redis-benchmark`,
+`ZADD` `+67–69%`, `ZRANK` `+35–43%`, `ZSCORE` `+20–24%`, and `ZRANGE` `+19–28%`
+over the Redis-family engines.
 
 Hashes tell the same story in miniature: about `45` RSS bytes per field, flat
 across sizes — **roughly half** of Redis 7.2.4, but a narrower `20–29%` lead over

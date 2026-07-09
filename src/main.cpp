@@ -99,7 +99,6 @@ namespace {
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
-            << "       [--io-backend BACKEND]\n"
             << "       [--rank-cache|--no-rank-cache]\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
@@ -108,9 +107,7 @@ void print_usage(std::string_view program) {
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
-            << "       [--initial-output-buffer-kib KIB]\n"
-            << "supported IO backends: "
-            << goblin::core::supported_io_backends_text() << '\n';
+            << "       [--initial-output-buffer-kib KIB]\n";
 }
 
 }  // namespace
@@ -156,23 +153,6 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.unix_socket_path = argv[++i];
-      continue;
-    }
-
-    if (arg == "--io-backend") {
-      if (i + 1 >= argc) {
-        print_usage(argv[0]);
-        return 2;
-      }
-      const std::string_view backend_name(argv[++i]);
-      const auto backend = goblin::core::parse_io_backend(backend_name);
-      if (!backend) {
-        std::cerr << "goblin-core: unsupported IO backend '" << backend_name
-                  << "' (compiled support: "
-                  << goblin::core::supported_io_backends_text() << ")\n";
-        return 2;
-      }
-      config.io_backend = *backend;
       continue;
     }
 

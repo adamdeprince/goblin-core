@@ -6,11 +6,14 @@ source.
 
 ## Scope
 
-- Supported Redis subset: `PING`, `ZCARD`, `ZADD`, `ZRANGE`, `ZRANK`,
-  `ZREVRANGE`, `ZREVRANK`, `ZREM`, and `ZSCORE`.
-- Goblin-specific admin commands: `GOBLIN.MEMORY key` (per-zset allocation
-  introspection) and `GOBLIN.OPTIMIZE key [density]` (in-place compaction and
-  member-index repack). These are extensions, not part of the Redis subset.
+- Supported Redis subset: `PING`, `ECHO`, `INFO`, sorted-set commands (`ZCARD`,
+  `ZADD`, `ZRANGE`, `ZRANK`, `ZREVRANGE`, `ZREVRANK`, `ZREM`, `ZSCORE`), and hash
+  commands (`HSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HGETALL`, `HKEYS`,
+  `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, `HINCRBY`).
+- Goblin-specific admin commands: `GOBLIN.MEMORY key` (per-key allocation
+  introspection), `GOBLIN.OPTIMIZE key [density]` (in-place compaction and index
+  repack), and `GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots. These are extensions, not
+  part of the Redis subset.
 - Unsupported Redis features are not compatibility bugs unless they affect the
   command subset above.
 - `--rank-cache-mode off` is the default release configuration. `exact` and

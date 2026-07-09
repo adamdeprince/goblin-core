@@ -101,69 +101,63 @@ whole table — reserve it for read-only sets queried only for present members.
 ## Current Benchmark Snapshot
 
 **Memory is the story.** After a load-then-`GOBLIN.OPTIMIZE` sequence (the
-deployment path), Goblin Core holds a sorted set in roughly `49` bytes per
-member versus about `80` for Redis 8.8, `84` for Valkey 9.1, and `110` for Redis
-7.2.4 — **roughly half** the resident set, every engine measured on the same
-jemalloc `5.3.0`, flat from 250K to 4M members, and flat even at counts just past
-a power of two (the non-pow2 member index removes the boundary blowup). Throughput is a secondary benefit; Goblin Core also
-happens to be faster than Redis on the supported operations.
+deployment path), Goblin Core holds a sorted set in roughly `51` RSS bytes per
+member versus about `78–83` for Redis 8.8, `84–85` for Valkey 9.1, and `103–110`
+for Redis 7.2.4 — **roughly half** the resident set of legacy Redis. Dragonfly is
+the nearest competitor at ~`55` B/member, with Goblin Core still about `6–7%`
+lower. Throughput is a secondary benefit; Goblin Core also leads the supported
+sorted-set operations on one core.
 
-Snapshot host (the deployment-relevant environment):
+Snapshot host:
 
-- Host: Ubuntu 26.04 LTS, kernel `7.0.0-1004-aws`, Intel Xeon 6975P-C, 4 vCPU (AWS).
-- Redis: `8.0.5` with jemalloc `5.3.0`. Python: `3.14.4`.
+- Host: AMD Ryzen Threadripper PRO 5995WX, Ubuntu Linux, GCC 16.1.0.
+- Engine set: Goblin Core, Redis 7.2.4, Redis 8.8, Valkey 9.1, Dragonfly v1.39.4.
 - Build: `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release`.
 
 ### Memory (the headline)
 
-Resident-set (RSS) delta over baseline, with exact loaded member counts:
+Resident-set (RSS) delta over baseline:
 
-| Members | Goblin Core B/member | Redis B/member | Goblin Core / Redis |
-| ---: | ---: | ---: | ---: |
-| 250K | `49.5` | `131.0` | `37.8%` |
-| 1M | `49.1` | `133.2` | `36.9%` |
-| 1.08M (just past 2^20) | `49.1` | `147.8` | `33.2%` |
-| 4M | `48.8` | `128.8` | `37.9%` |
+| Members | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 250K | `52.9` | `103.8` | `79.2` | `85.0` | `56.8` |
+| 500K | `52.0` | `107.7` | `82.8` | `84.9` | `55.5` |
+| 1M | `51.4` | `109.7` | `82.7` | `84.5` | `55.1` |
+| 2M | `51.2` | `106.5` | `80.4` | `84.4` | `54.8` |
+| 4M | `51.0` | `103.2` | `78.2` | `84.3` | `54.6` |
 
-Goblin Core's internally tracked zset allocation (`~49` B/member via
-`GOBLIN.MEMORY`) is within ~2% of its RSS delta — almost no allocator slack. At
-4M members Goblin Core's resident set is about `305` MiB smaller than Redis's,
-and the gap grows linearly with member count. Members are stored in a packed
-arena referenced by a 14-byte struct-of-arrays entry (`u32` offset + `u16`
-length + `f64` score), which caps a single member at 64 KiB — far above any
-realistic sorted-set member.
+Goblin Core's internally tracked zset allocation is `48.4` B/member via
+`GOBLIN.MEMORY`; the remaining RSS gap is allocator and process overhead. Members
+are stored in a packed arena referenced by a struct-of-arrays entry
+(`u32` offset + `u16` length + score), which caps a single member at 64 KiB —
+far above any realistic sorted-set member.
 
-These figures are post-`GOBLIN.OPTIMIZE` (the benchmark repacks at density
-`0.97` before measuring, matching load-then-serve). The member index is `5.2`
-B/member at every size measured here, including the 1.08M count just past `2^20`
-(a power-of-two-sized table would have been ~9.7 there) — the win compaction
-alone could not deliver before the non-pow2 index, since it rebuilt at the same
-power of two.
+The memory sweep uses the scattered 32-bit integer score generator from
+`benchmarks/zset_memory.py`: values are in `[0, 2^32)`, and roughly half exceed
+signed i32, so Goblin Core stores this dataset at `f64` score width. These are
+not narrow-score-only numbers.
 
 ### Throughput (secondary)
 
-Measured with `redis-benchmark` (a C load generator; see the methodology note)
-against a loaded 1M-member set after `GOBLIN.OPTIMIZE` (the deployment path),
-pinned server/client, `-c 1 -P 256`, median of 3 rounds. Absolute throughput is
-host-dependent; the ratio is the stable takeaway:
+Measured with `redis-benchmark` (a C load generator), one connection, pipeline
+depth 16, 1M-member keyspace. The score field is `__rand_int__` with `-r 1000000`,
+so this sweep exercises Goblin Core's signed `i32` score width.
 
-| Operation | Goblin Core ops/sec | Redis ops/sec | Goblin Core / Redis |
-| --- | ---: | ---: | ---: |
-| `ZSCORE` | `2,083,467` | `1,602,667` | `1.30x` |
-| `ZRANK` | `1,362,485` | `671,635` | `2.03x` |
-| `ZREVRANK` | `1,354,183` | `675,035` | `2.01x` |
-| `ZADD` (score update) | `840,743` | `376,388` | `2.23x` |
-| `ZRANGE` (16) | `1,004,080` | `686,621` | `1.46x` |
-| `ZRANGE WITHSCORES` (16) | `607,757` | `455,506` | `1.33x` |
+| Operation | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ZADD` | `392K` | `235K` | `232K` | `235K` | `251K` |
+| `ZSCORE` | `581K` | `480K` | `470K` | `485K` | `406K` |
+| `ZRANK` | `476K` | `332K` | `340K` | `353K` | `320K` |
+| `ZRANGE` (16) | `433K` | `360K` | `365K` | `339K` | `257K` |
+| `ZSCORE` depth-1 latency | `21.3µs` | `21.9µs` | `23.0µs` | `22.4µs` | `22.9µs` |
 
 Methodology note on read throughput: single-member read throughput must be
 driven by a C load generator. A single Python pipelined connection is
 client-bound near `~350K` ops/sec, so the Python harness measures the client,
 not the server, and reports both systems as roughly equal. That is why an
 earlier snapshot showed `ZSCORE` at `0.95x` — a client-bound artifact, not a
-server result. `benchmarks/zset_benchmark.py` now drives `ZSCORE`/`ZRANK`/
-`ZREVRANK` through `redis-benchmark`; memory is measured from process RSS and
-was never affected.
+server result. The current sorted-set speed harness uses `redis-benchmark`;
+memory is measured from process RSS and was never affected.
 
 The in-process microbench report was generated on the local macOS arm64
 development machine. Treat these values as local baselines, not cross-machine

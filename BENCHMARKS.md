@@ -7,7 +7,7 @@ the engine — and, for Goblin Core, the data structure.
 
 | Engine | Version | Serving threads | Allocator |
 | --- | --- | ---: | --- |
-| Goblin Core | `0.4.1` | 1 | glibc + `malloc_trim` |
+| Goblin Core | `0.4.2` | 1 | glibc + `malloc_trim` |
 | Redis | `7.2.4` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
 | Redis | `8.8.0` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
 | Valkey | `9.1.0` | 1 (`io-threads 1`) | jemalloc `5.3.0` |
@@ -43,33 +43,37 @@ cores.
 ## Memory (the headline)
 
 RSS per member after a load-then-`GOBLIN.OPTIMIZE` sequence, across a size sweep.
-Goblin Core is flat and holds a sorted set in **roughly half** the resident set
-of legacy Redis, and comfortably under every modern engine.
+Goblin Core is flat at ~`51` bytes/member and holds a sorted set in
+**roughly half** the resident set of legacy Redis, and under every modern engine.
+The score generator is the scattered 32-bit integer shape used by
+`benchmarks/zset_memory.py`; because roughly half the values exceed signed i32,
+Goblin Core stores these sets at `f64` score width. Narrower `i16`/`i32` score
+workloads are not required for the result below.
 
 **RSS bytes/member:**
 
 | members | Goblin (glibc) | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 250K | `52.2` | `103.8` | `79.1` | `85.0` | `56.8` |
-| 500K | `51.4` | `107.6` | `82.8` | `84.9` | `55.5` |
-| 1M | `51.0` | `109.7` | `82.6` | `84.5` | `55.0` |
-| 2M | `50.8` | `106.5` | `80.4` | `84.3` | `54.8` |
-| 4M | `50.9` | `103.2` | `78.2` | `84.3` | `54.6` |
+| 250K | `52.9` | `103.8` | `79.2` | `85.0` | `56.8` |
+| 500K | `52.0` | `107.7` | `82.8` | `84.9` | `55.5` |
+| 1M | `51.4` | `109.7` | `82.7` | `84.5` | `55.1` |
+| 2M | `51.2` | `106.5` | `80.4` | `84.4` | `54.8` |
+| 4M | `51.0` | `103.2` | `78.2` | `84.3` | `54.6` |
 
-**Goblin Core RSS as a fraction of each engine:** ~`48%` of Redis 7.2.4, ~`63%`
-of Redis 8.8, ~`61%` of Valkey 9.1, and ~`93%` of Dragonfly — stable at every
-size. So Goblin Core is **roughly half** of legacy Redis and ~`37%` leaner than
-Redis 8.8. Dragonfly is the closest competitor: its dashtable holds a sorted set
-in ~`55` B/member — well under the Redis family — but still a step (~`7%`) behind
-Goblin Core's ~`51`.
+**Goblin Core RSS as a fraction of each engine:** ~`47–49%` of Redis 7.2.4,
+~`62–67%` of Redis 8.8, ~`60–62%` of Valkey 9.1, and ~`93–94%` of Dragonfly —
+stable at every size. So Goblin Core is **roughly half** of legacy Redis,
+~`35%` leaner than Redis 8.8 at 4M, and ~`39%` leaner than Valkey 9.1. Dragonfly
+is the closest competitor: its dashtable holds a sorted set in ~`55` B/member —
+well under the Redis family — but Goblin Core is still about `6–7%` lower RSS.
 
-**Fragmentation (RSS / used_memory):** Goblin Core `1.1–1.3`, Redis/Valkey
+**Fragmentation (RSS / used_memory):** Goblin Core `1.0–1.4`, Redis/Valkey
 `1.0–1.5`, both tightening toward `1.0` at scale. Dragonfly's ratio is inflated at
 small N by mimalloc's pre-reserved arenas (~`2.7` at 250K) but amortizes to ~`1.1`
 by 4M — which is why the per-member table above, measured as an RSS *delta* over
 the empty-server baseline, is the fair read of its footprint. Goblin Core's
-`used_memory` — its actual structure bytes — holds at ~`49` B/member; `malloc_trim`
-after `OPTIMIZE` keeps the resident set a hair behind.
+`used_memory` — its actual structure bytes — holds at ~`48.4` B/member; `malloc_trim`
+after `OPTIMIZE` keeps the resident set within a hair of it.
 
 The advantage is structural — a handful of big contiguous allocations (the
 member-bytes arena, the Swiss index, the score-index blocks, the struct-of-arrays
@@ -87,32 +91,35 @@ engine on the allocator it ships with and is tuned for.
 That tuning matters: `GOBLIN.OPTIMIZE` frees and reallocates the packed indexes
 and hands the freed pages back to the OS with `malloc_trim`, so Goblin Core's RSS
 (~`51` B/member) tracks the bytes its structures actually request (`used_memory`
-~`49`). The footprint is Goblin Core's own, not the allocator's: `used_memory` is
-allocator-independent, and it is the number that halves Redis's.
+~`48.4`). The footprint is Goblin Core's own, not the allocator's: `used_memory` is
+allocator-independent, and it is the structural number behind Goblin Core's
+roughly-half footprint.
 
 ## Throughput
 
 Pipelined `redis-benchmark -P 16 -c 1` on the x86 host —
 best of three runs, all Redis-family engines on jemalloc 5.3.0 under the shared
 parity config, Goblin Core on its default config (rank cache off, so `ZRANK` is
-O(log n) on both sides). Goblin Core leads every sorted-set operation:
+O(log n) on both sides). The score field is `__rand_int__` with `-r 1000000`,
+so this throughput sweep exercises Goblin Core's signed `i32` score width.
+Goblin Core leads every sorted-set operation:
 
 | operation | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ZADD (write) | `398K` | `239K` | `242K` | `242K` | `262K` |
-| ZSCORE (point read) | `587K` | `504K` | `488K` | `495K` | `419K` |
-| ZRANK | `491K` | `331K` | `342K` | `354K` | `329K` |
-| ZRANGE (16 elems) | `456K` | `365K` | `368K` | `346K` | `268K` |
-| ZSCORE depth-1 latency (µs) | `21.3` | `22.2` | `23.0` | `22.4` | `22.4` |
+| ZADD (write) | `392K` | `235K` | `232K` | `235K` | `251K` |
+| ZSCORE (point read) | `581K` | `480K` | `470K` | `485K` | `406K` |
+| ZRANK | `476K` | `332K` | `340K` | `353K` | `320K` |
+| ZRANGE (16 elems) | `433K` | `360K` | `365K` | `339K` | `257K` |
+| ZSCORE depth-1 latency (µs) | `21.3` | `21.9` | `23.0` | `22.4` | `22.9` |
 
-The standout is `ZADD` at **~`+52–67%`** over the field (`398K` vs `239–262K`) —
+The standout is `ZADD` at **~`+56–69%`** over the field (`392K` vs `232–251K`) —
 the immediate per-reply `write()` plus the packed Swiss member index make inserts
-cheap — and `ZRANK` at **`+39–49%`**. Point reads (`ZSCORE`) lead by `+16–40%` and
-16-element `ZRANGE` by `+24–70%`. Depth-1 latency is a near-tie at ~`21–23` µs
+cheap — and `ZRANK` at **`+35–49%`**. Point reads (`ZSCORE`) lead by `+20–43%` and
+16-element `ZRANGE` by `+19–68%`. Depth-1 latency is a near-tie at ~`21–23` µs
 (redis-benchmark's own round-trip floor).
 
-At one core Dragonfly is the fastest of the rest on `ZADD` (`262K`, above the Redis
-family's ~`242K`) but the slowest on reads — `ZSCORE` `419K` and `ZRANGE` `268K`
+At one core Dragonfly is the fastest of the rest on `ZADD` (`251K`, above the Redis
+family's ~`232–235K`) but the slowest on reads — `ZSCORE` `406K` and `ZRANGE` `257K`
 are the lowest here. That is the expected profile of an engine built to shard
 across many proactor threads, measured on one.
 
@@ -216,16 +223,16 @@ hashtable encoding (the fair comparison). Fields and values are 16 bytes each.
 
 | fields | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 250K | `46.2` | `85.9` | `55.6` | `64.8` | `77.9` |
+| 250K | `46.1` | `85.9` | `55.6` | `64.7` | `78.3` |
 | 500K | `45.6` | `87.8` | `59.3` | `64.6` | `77.1` |
-| 1M | `45.4` | `88.9` | `59.2` | `64.2` | `76.7` |
+| 1M | `45.4` | `87.8` | `59.2` | `64.2` | `76.8` |
 | 2M | `45.3` | `85.1` | `56.9` | `64.0` | `76.5` |
 | 4M | `45.2` | `82.4` | `55.7` | `63.9` | `76.4` |
 
-Goblin Core is flat at ~`45` bytes/field and leanest at every size: ~`51%` of
-Redis 7.2.4 (**roughly half**), ~`20%` leaner than Redis 8.8, ~`29%` leaner than
+Goblin Core is flat at ~`45` bytes/field and leanest at every size: ~`53%` of
+Redis 7.2.4 (**roughly half**), ~`21%` leaner than Redis 8.8, ~`29%` leaner than
 Valkey 9.1, ~`41%` leaner than Dragonfly. Engine-reported `used_memory`
-corroborates RSS (Goblin `45.4`, Redis 7.2.4 `80.6`, Redis 8.8 `54.3`, Valkey
+corroborates RSS (Goblin `45.2`, Redis 7.2.4 `80.6`, Redis 8.8 `54.3`, Valkey
 `67.1`, Dragonfly `76.1` at 4M), so the advantage is structural, not an allocator
 artifact.
 
@@ -268,16 +275,16 @@ fields, 16-byte field, varying the value:
 
 | value | Goblin | Redis 7.2.4 | Redis 8.8 | Valkey 9.1 | Dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 8 B | `37.4` | `80.0` | `55.6` | `56.9` | `60.7` |
-| 16 B | `45.4` | `88.9` | `59.2` | `64.2` | `76.7` |
-| 64 B | `93.4` | `144.1` | `119.2` | `121.1` | `126.7` |
+| 8 B | `37.4` | `80.0` | `55.6` | `56.9` | `60.8` |
+| 16 B | `45.4` | `87.8` | `59.2` | `64.2` | `76.8` |
+| 64 B | `93.4` | `144.1` | `119.2` | `121.1` | `124.9` |
 
 Subtract the content (field + value) and Goblin Core's overhead is a flat
 ~`13.4` bytes/field at every value size — the 8-byte reference plus an amortized
-Swiss slot — versus Redis 8.8's ~`27–38` and Dragonfly's ~`37–47` (both grow with
+Swiss slot — versus Redis 8.8's ~`27–38` and Dragonfly's ~`37–45` (both grow with
 the value: a dict/dashtable entry, string headers, and allocator rounding). So the
 lead is widest on small values (~`32%` leaner than Redis 8.8, ~`38%` than Dragonfly
-at 8 B) and narrows as the shared content dominates (~`21%` and ~`26%` at 64 B).
+at 8 B) and narrows as the shared content dominates (~`22%` and ~`25%` at 64 B).
 Goblin Core stays ahead of every engine at every size.
 
 ## Command parsing
@@ -314,6 +321,15 @@ command's former position in the chain.
 - **RSS** via `ps -o rss`, measured after load and `GOBLIN.OPTIMIZE`;
   `used_memory` via `INFO memory` (Redis/Valkey) and `GOBLIN.MEMORY` (Goblin
   Core).
+- **Cross-engine RSS parity.** The RSS above is the external `ps -o rss`
+  (`VmRSS`) for every engine; the engines' *own* self-reporting is aligned to it
+  too. Redis normally reads its own RSS from field 24 of `/proc/self/stat`, a
+  value the Linux `proc(5)` documentation flags as inaccurate and redirects
+  readers away from in favor of `/proc/self/statm`. For these benchmarks the
+  Redis and Valkey builds were patched to read field 2 of `/proc/self/statm`
+  instead: the same resident-memory counter that `ps` prints and that
+  `/proc/<pid>/status` reports as `VmRSS`, matching Dragonfly and Goblin Core so
+  every engine reports the same kernel figure.
 
 **Reproduce** — every driver takes repeatable `--engine LABEL:KIND:PATH`, where
 KIND is `goblin` | `redis` | `dragonfly` (`redis` covers both Redis and Valkey,
