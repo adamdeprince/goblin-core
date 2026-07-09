@@ -377,15 +377,16 @@ int ZSet::add(double score, std::string_view member,
 
     ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
-    const bool removed =
-        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id, .prefix = zset_member_prefix(member)});
-    assert(removed);
-    if (!removed) {
+    member_storage()->set_score(member_id, score);
+    const bool rescored = entries().rescore(
+        ZSetScoreEntry{.score = old_score, .member_id = member_id,
+                       .prefix = zset_member_prefix(member)},
+        ZSetScoreEntry{.score = score, .member_id = member_id,
+                       .prefix = zset_member_prefix(member)});
+    assert(rescored);
+    if (!rescored) {
       return 0;
     }
-
-    member_storage()->set_score(member_id, score);
-    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id, .prefix = zset_member_prefix(member)});
     return 0;
   }
 
