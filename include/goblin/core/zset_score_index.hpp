@@ -45,7 +45,14 @@ class ZSetScoreIndex {
  public:
   using size_type = std::size_t;
 
-  static constexpr size_type kDefaultLoad = 256;
+  // Feed-time minimum from the large-zset load-factor sweep (100..56234 on a
+  // 116k-member leaderboard); larger loads regress on O(load) in-block memmove.
+  static constexpr size_type kDefaultLoad = 562;
+
+  // A/B knob (--block-shrink off): when false, split_block skips the post-split
+  // trim() that returns the left half's capacity to ~load. Global, set once at
+  // startup; default true = shrink (the shipped, leaner path).
+  static inline bool trim_enabled_{true};
   static constexpr std::uint32_t kDefaultBlockHintNarrowLimit =
       std::numeric_limits<std::uint16_t>::max();
 
@@ -554,7 +561,12 @@ class ZSetScoreIndex {
       std::numeric_limits<std::uint32_t>::max();
   static constexpr std::uint32_t kInvalidLocation =
       std::numeric_limits<std::uint32_t>::max();
-  static constexpr std::uint32_t kLocationOffsetBits = 10;
+  // Location word (rank cache) = [block_id | offset]. The offset holds a member's
+  // index within its block, which reaches ~2*load after a split (transiently more
+  // mid-merge). 12 bits (<=4095) covers the default load 562 (->1124) with margin;
+  // block_id keeps the other 20 bits (<=1M blocks/zset). A rank cache with load
+  // >~2000 would exceed this -- large-load workloads run rank-cache-off.
+  static constexpr std::uint32_t kLocationOffsetBits = 12;
   static constexpr std::uint32_t kLocationOffsetMask =
       (std::uint32_t{1} << kLocationOffsetBits) - 1;
   static constexpr std::uint32_t kMaxLocationBlockId =
@@ -1644,7 +1656,9 @@ class ZSetScoreIndex {
     auto& block = blocks_[block_index];
     const auto split_at = block.size() / 2;
     auto right = block.split_off(split_at);
-    block.trim();
+    if (trim_enabled_) {
+      block.trim();
+    }
     assign_block_id(right);
 
     blocks_.insert(blocks_.begin() + static_cast<long>(block_index + 1),

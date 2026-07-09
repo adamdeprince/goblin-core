@@ -503,11 +503,15 @@ void test_chunked_sorted_list_erase_rebalances() {
 void test_zset_uses_chunked_ordering() {
   goblin::core::ZSet zset;
 
-  for (int i = 1023; i >= 0; --i) {
+  // Enough entries to force at least one block split at the default load factor
+  // (a block splits past 2*load), so block_count() > 1 regardless of the default.
+  const int kN =
+      static_cast<int>(2 * goblin::core::ZSetScoreIndex::kDefaultLoad + 8);
+  for (int i = kN - 1; i >= 0; --i) {
     assert(zset.add(static_cast<double>(i), "member-" + std::to_string(i)) == 1);
   }
 
-  assert(zset.size() == 1024);
+  assert(zset.size() == static_cast<std::size_t>(kN));
   assert(zset.block_count() > 1);
 
   auto range = zset.range(510, 514);
@@ -1383,10 +1387,13 @@ void test_block_hint_rank_cache_lazy_offset_repair() {
 
 void test_block_hint_rank_cache_promotes_to_wide_storage() {
   goblin::core::ZSetMemberStorage forced_storage;
+  // Pin the load factor so the 600->1200 member growth crosses the 2-block
+  // narrow-hint threshold regardless of the (tunable) default load factor.
   goblin::core::ZSetScoreIndex forced_index(
       &forced_storage,
       goblin::core::RankCacheMode::BlockHint,
-      2);
+      2,
+      256);
 
   for (std::uint32_t i = 0; i < 600; ++i) {
     add_score_index_member(forced_storage, forced_index, i);

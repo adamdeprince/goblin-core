@@ -104,6 +104,7 @@ void print_usage(std::string_view program) {
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--member-index-growth FACTOR] [--load-factor N]\n"
+            << "       [--block-shrink on|off]\n"
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
@@ -227,6 +228,23 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.zset_score_index_load = load;
+      continue;
+    }
+
+    if (arg == "--block-shrink") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const std::string_view v(argv[++i]);
+      if (v == "on" || v == "1" || v == "true") {
+        goblin::core::ZSetScoreIndex::trim_enabled_ = true;
+      } else if (v == "off" || v == "0" || v == "false") {
+        goblin::core::ZSetScoreIndex::trim_enabled_ = false;
+      } else {
+        std::cerr << "goblin-core: --block-shrink must be on or off\n";
+        return 2;
+      }
       continue;
     }
 
