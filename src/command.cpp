@@ -1,6 +1,7 @@
 #include "goblin/core/command.hpp"
 
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 
 #include <algorithm>
@@ -436,6 +437,24 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::info;
       return {.command = std::move(command)};
+    case CommandType::eval:
+      if (command.args.size() < 2) {  // script numkeys [key ...] [arg ...]
+        return parse_error(wrong_arity("eval"));
+      }
+      command.type = CommandType::eval;
+      return {.command = std::move(command)};
+    case CommandType::evalsha:
+      if (command.args.size() < 2) {  // sha1 numkeys [key ...] [arg ...]
+        return parse_error(wrong_arity("evalsha"));
+      }
+      command.type = CommandType::evalsha;
+      return {.command = std::move(command)};
+    case CommandType::script:
+      if (command.args.empty()) {  // LOAD | EXISTS | FLUSH ...
+        return parse_error(wrong_arity("script"));
+      }
+      command.type = CommandType::script;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -638,6 +657,30 @@ void execute_command_into(Store& store,
       return;
     case CommandType::info:
       resp::append_bulk_string(out, build_info_string());
+      return;
+
+    case CommandType::eval:
+      if (options.script_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.script_engine->eval(command.args, out);
+      }
+      return;
+
+    case CommandType::evalsha:
+      if (options.script_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.script_engine->eval_sha(command.args, out);
+      }
+      return;
+
+    case CommandType::script:
+      if (options.script_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.script_engine->script(command.args, out);
+      }
       return;
 
     case CommandType::zadd: {

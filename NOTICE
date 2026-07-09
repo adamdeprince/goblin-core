@@ -15,3 +15,30 @@ informed by Sorted Containers:
 Goblin Core does not vendor Sorted Containers source code. The C++ implementation
 is an independent implementation of the documented design approach: sorted
 blocks, per-block maximum values, and a compact rank index.
+
+--------------------------------------------------------------------------------
+
+Scripting (EVAL / EVALSHA / SCRIPT)
+
+Goblin Core embeds the Lua runtime and the standard Lua scripting helper
+libraries. Each is vendored from its own public upstream under third_party/ and
+retains its original copyright notice and permissive (MIT / BSD-style) license:
+
+  Lua 5.1.5            Copyright (C) 1994-2012 Lua.org, PUC-Rio (MIT)
+                       https://www.lua.org/            third_party/lua/COPYRIGHT
+  lua-cjson 2.1.0      Copyright (C) 2010-2012 Mark Pulford (MIT)
+                       https://github.com/mpx/lua-cjson third_party/lua-cjson/LICENSE
+  lua-cmsgpack         Copyright (C) 2012 Salvatore Sanfilippo (BSD-2-Clause)
+                       https://github.com/antirez/lua-cmsgpack
+  Lua struct           Copyright (C) 2010-2012 Lua.org, PUC-Rio (MIT)
+                       https://www.inf.puc-rio.br/~roberto/struct/
+  LuaBitOp             Copyright (C) 2008-2012 Mike Pall (MIT)
+                       https://bitop.luajit.org/
+
+The two-clause BSD / MIT notices are carried in the respective source files.
+
+The EVAL / EVALSHA / SCRIPT command family, the `redis` (and `server`) Lua API
+table, and the RESP<->Lua value conversion were written independently from the
+public Redis scripting specification. No Redis (or Valkey/Dragonfly) source code
+was consulted or copied; the helper libraries above are the same independent
+upstream projects that other engines also bundle.

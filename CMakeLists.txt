@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(goblin-core
   VERSION 0.4.2
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
-  LANGUAGES CXX)
+  LANGUAGES CXX C)
 
 include(GNUInstallDirs)
 
@@ -64,11 +64,41 @@ if(GOBLIN_CORE_BUILD_HTML_DOCS)
     DEPENDS ${GOBLIN_CORE_HTML_DOCS})
 endif()
 
+# Vendored Lua 5.1.5 runtime plus the standard scripting helper libraries
+# (cjson, cmsgpack, struct, bit), each taken from its own public upstream -- see
+# third_party/README.md. Built as a separate static library so its C sources are
+# compiled as plain C and are NOT subject to goblin_core's strict warning flags.
+# The public API is reached from src/script.cpp via extern "C"; errors stay on the
+# Lua longjmp path, so the trampolines in script.cpp hold no C++ destructors across
+# a Lua API call (their scratch buffers live on the ScriptEngine, not the stack).
+file(GLOB GOBLIN_LUA_CORE_SOURCES CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua/*.c)
+add_library(goblin_lua STATIC
+  ${GOBLIN_LUA_CORE_SOURCES}
+  third_party/lua-cjson/lua_cjson.c
+  third_party/lua-cjson/strbuf.c
+  third_party/lua-cjson/fpconv.c
+  third_party/lua-cmsgpack/lua_cmsgpack.c
+  third_party/lua-struct/struct.c
+  third_party/lua-bitop/bit.c)
+target_include_directories(goblin_lua
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lua-cjson)
+set_target_properties(goblin_lua PROPERTIES
+  C_STANDARD 99
+  POSITION_INDEPENDENT_CODE ON)
+# Keep the vendored C quiet under the project's -Werror-adjacent flags without
+# touching upstream source; these are third-party files we do not lint.
+if(NOT MSVC)
+  target_compile_options(goblin_lua PRIVATE -w)
+endif()
+
 add_library(goblin_core
   src/command.cpp
   src/rdb.cpp
   src/resp_parser.cpp
   src/resp_writer.cpp
+  src/script.cpp
   src/server.cpp
   src/simd.cpp
   src/store.cpp)
@@ -83,6 +113,11 @@ target_include_directories(goblin_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+# src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
+# implementation detail (script.hpp forward-declares lua_State), so consumers of
+# goblin_core neither see nor link Lua directly.
+target_link_libraries(goblin_core PRIVATE goblin_lua)
 
 # Enable the CRC32C hardware instruction used by the snapshot checksum on x86
 # (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
@@ -167,6 +202,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
   set_tests_properties(goblin_core_output_backpressure
     PROPERTIES TIMEOUT 60)
 
+  # End-to-end scripting over a real socket (EVAL / EVALSHA / SCRIPT), exercising
+  # the server's dispatch path in addition to the direct-engine unit tests.
+  add_test(
+    NAME goblin_core_scripting
+    COMMAND
+      ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/scripting.py
+      --goblin-bin $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_scripting
+    PROPERTIES TIMEOUT 60)
+
   if(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS)
     find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server)
     if(REDIS_SERVER_EXECUTABLE)
@@ -200,7 +246,7 @@ endif()
 include(CMakePackageConfigHelpers)
 
 install(
-  TARGETS goblin_core goblin_core_server
+  TARGETS goblin_core goblin_core_server goblin_lua
   EXPORT goblinCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

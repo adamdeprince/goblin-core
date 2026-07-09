@@ -42,3 +42,6 @@ html/**/*.webp filter=lfs diff=lfs merge=lfs -text
 html/**/*.woff filter=lfs diff=lfs merge=lfs -text
 html/**/*.woff2 filter=lfs diff=lfs merge=lfs -text
 html/**/*.zip filter=lfs diff=lfs merge=lfs -text
+
+# Vendored third-party sources (Lua runtime + scripting helper libs).
+third_party/** linguist-vendored

@@ -9,9 +9,13 @@
 namespace goblin::core {
 
 class Store;
+class ScriptEngine;
 
 enum class CommandType {
   ping,
+  eval,
+  evalsha,
+  script,
   zadd,
   zcard,
   zrange,
@@ -60,6 +64,10 @@ struct CommandParseResult {
 
 struct CommandExecutionOptions {
   std::size_t output_reserve_limit{0};
+  // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
+  // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
+  // that do not enable scripting; those see the "not available" error instead.
+  ScriptEngine* script_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);

@@ -7,6 +7,7 @@
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
@@ -2089,6 +2090,164 @@ void test_rdb_import() {
 
 }  // namespace
 
+// --- Scripting (EVAL / EVALSHA / SCRIPT) -----------------------------------
+
+std::string run_script(goblin::core::Store& store,
+                       goblin::core::ScriptEngine& engine,
+                       std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.script_engine = &engine});
+  return out;
+}
+
+void test_eval_type_conversions() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine engine(store);
+
+  assert(run_script(store, engine, {"EVAL", "return 1", "0"}) == ":1\r\n");
+  assert(run_script(store, engine, {"EVAL", "return 'hello'", "0"}) ==
+         "$5\r\nhello\r\n");
+  assert(run_script(store, engine, {"EVAL", "return 3.99", "0"}) == ":3\r\n");
+  assert(run_script(store, engine, {"EVAL", "return true", "0"}) == ":1\r\n");
+  assert(run_script(store, engine, {"EVAL", "return false", "0"}) == "$-1\r\n");
+  assert(run_script(store, engine, {"EVAL", "return", "0"}) == "$-1\r\n");
+  assert(run_script(store, engine, {"EVAL", "return {1,2,3}", "0"}) ==
+         "*3\r\n:1\r\n:2\r\n:3\r\n");
+  // An array stops at the first nil hole.
+  assert(run_script(store, engine, {"EVAL", "return {1,2,nil,4}", "0"}) ==
+         "*2\r\n:1\r\n:2\r\n");
+  // KEYS / ARGV are 1-based and carry the split from numkeys.
+  assert(run_script(store, engine,
+                    {"EVAL", "return {KEYS[1], ARGV[1]}", "1", "k1", "a1"}) ==
+         "*2\r\n$2\r\nk1\r\n$2\r\na1\r\n");
+  // status_reply / error_reply shape the RESP framing.
+  assert(run_script(store, engine,
+                    {"EVAL", "return redis.status_reply('GOOD')", "0"}) ==
+         "+GOOD\r\n");
+  assert(run_script(store, engine,
+                    {"EVAL", "return redis.error_reply('My Error')", "0"}) ==
+         "-My Error\r\n");
+  // sha1hex matches the published empty-string digest.
+  assert(run_script(store, engine, {"EVAL", "return redis.sha1hex('')", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+}
+
+void test_eval_redis_call() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine engine(store);
+
+  assert(run_script(store, engine, {"EVAL", "return redis.call('ping')", "0"}) ==
+         "+PONG\r\n");
+  // A write through redis.call mutates the real store...
+  assert(run_script(store, engine,
+                    {"EVAL", "return redis.call('zadd', KEYS[1], 1, 'a')", "1",
+                     "z"}) == ":1\r\n");
+  // ...and is visible both to a later script and to a plain command.
+  assert(run_script(store, engine,
+                    {"EVAL", "return redis.call('zscore', KEYS[1], 'a')", "1",
+                     "z"}) == "$1\r\n1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  // A multi-bulk reply becomes a Lua table and can round-trip back out.
+  assert(run_script(store, engine,
+                    {"EVAL", "return redis.call('zrange', KEYS[1], 0, -1)", "1",
+                     "z"}) == "*1\r\n$1\r\na\r\n");
+}
+
+void test_eval_error_paths() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine engine(store);
+
+  // An uncaught redis.call error propagates as a RESP error reply...
+  const auto raised =
+      run_script(store, engine, {"EVAL", "return redis.call('zscore')", "0"});
+  assert(!raised.empty() && raised.front() == '-');
+  // ...but redis.pcall hands the script the { err = ... } table instead.
+  assert(run_script(store, engine,
+                    {"EVAL",
+                     "local r = redis.pcall('zscore'); if r.err then return "
+                     "'caught' end",
+                     "0"}) == "$6\r\ncaught\r\n");
+  // Compile failures are reported, not crashed on.
+  const auto compile = run_script(store, engine, {"EVAL", "this is not lua", "0"});
+  assert(!compile.empty() && compile.front() == '-');
+  // The sandbox forbids creating globals.
+  const auto global = run_script(store, engine, {"EVAL", "x = 1", "0"});
+  assert(!global.empty() && global.front() == '-' &&
+         global.find("global") != std::string::npos);
+  // A script cannot re-enter EVAL through redis.call.
+  const auto nested = run_script(
+      store, engine, {"EVAL", "return redis.call('eval', 'return 1', '0')", "0"});
+  assert(!nested.empty() && nested.front() == '-');
+  // Bad numkeys is a clean error, not a crash.
+  const auto badkeys =
+      run_script(store, engine, {"EVAL", "return 1", "-1"});
+  assert(!badkeys.empty() && badkeys.front() == '-');
+}
+
+void test_script_load_and_evalsha() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine engine(store);
+
+  const auto load = run_script(store, engine, {"SCRIPT", "LOAD", "return 42"});
+  // "$40\r\n<40 hex>\r\n"
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+
+  assert(run_script(store, engine, {"EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_script(store, engine, {"SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  // An unknown digest is NOSCRIPT, not a crash.
+  assert(run_script(store, engine,
+                    {"EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+
+  // EVAL also populates the cache, so the same body is immediately EVALSHA-able.
+  (void)run_script(store, engine, {"EVAL", "return 7", "0"});
+  const auto digest =
+      run_script(store, engine, {"EVAL", "return redis.sha1hex('return 7')", "0"});
+  const std::string sha7 = digest.substr(5, 40);  // "$40\r\n<hex>\r\n"
+  assert(run_script(store, engine, {"EVALSHA", sha7, "0"}) == ":7\r\n");
+
+  // FLUSH clears the cache.
+  assert(run_script(store, engine, {"SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_script(store, engine, {"SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+  assert(run_script(store, engine, {"EVALSHA", sha, "0"}).rfind("-NOSCRIPT", 0) ==
+         0);
+}
+
+void test_eval_helper_libraries() {
+  goblin::core::Store store;
+  goblin::core::ScriptEngine engine(store);
+
+  assert(run_script(store, engine,
+                    {"EVAL", "return cjson.encode({1,2,3})", "0"}) ==
+         "$7\r\n[1,2,3]\r\n");
+  assert(run_script(store, engine,
+                    {"EVAL", "return cjson.decode('[10,20,30]')[2]", "0"}) ==
+         ":20\r\n");
+  assert(run_script(store, engine,
+                    {"EVAL", "return cmsgpack.unpack(cmsgpack.pack('hi'))", "0"}) ==
+         "$2\r\nhi\r\n");
+  assert(run_script(store, engine, {"EVAL", "return bit.band(6,3)", "0"}) ==
+         ":2\r\n");
+  assert(run_script(store, engine,
+                    {"EVAL",
+                     "return struct.unpack('>I2', struct.pack('>I2', 258))",
+                     "0"}) == ":258\r\n");
+}
+
+void test_eval_without_engine_is_unavailable() {
+  // A caller that does not wire up a ScriptEngine gets a clean error, never a
+  // crash -- execute_command's default options carry no engine.
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"EVAL", "return 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -2157,5 +2316,11 @@ int main() {
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
   test_score_string_cache_updates_with_scores();
+  test_eval_type_conversions();
+  test_eval_redis_call();
+  test_eval_error_paths();
+  test_script_load_and_evalsha();
+  test_eval_helper_libraries();
+  test_eval_without_engine_is_unavailable();
   return 0;
 }

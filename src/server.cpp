@@ -3,6 +3,7 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 
 #include <cerrno>
@@ -249,6 +250,7 @@ void accept_clients(int listener,
 
 [[nodiscard]] bool process_buffered_commands(Client& client,
                                              Store& store,
+                                             ScriptEngine& script_engine,
                                              const ServerConfig& config) {
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
@@ -262,7 +264,9 @@ void accept_clients(int listener,
         store,
         client.fields,
         client.output,
-        CommandExecutionOptions{.output_reserve_limit = config.max_output_buffer_bytes});
+        CommandExecutionOptions{
+            .output_reserve_limit = config.max_output_buffer_bytes,
+            .script_engine = &script_engine});
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
@@ -278,7 +282,9 @@ void accept_clients(int listener,
   return true;
 }
 
-[[nodiscard]] bool read_client(Client& client, Store& store, const ServerConfig& config) {
+[[nodiscard]] bool read_client(Client& client, Store& store,
+                               ScriptEngine& script_engine,
+                               const ServerConfig& config) {
   char buffer[16 * 1024];
 
   for (;;) {
@@ -290,7 +296,7 @@ void accept_clients(int listener,
     if (received > 0) {
       client.parser.append(std::string_view(buffer, static_cast<std::size_t>(received)));
 
-      if (!process_buffered_commands(client, store, config)) {
+      if (!process_buffered_commands(client, store, script_engine, config)) {
         return false;
       }
       continue;
@@ -372,6 +378,11 @@ int Server::run() {
   std::vector<Client> clients;
   running_ = true;
 
+  // One scripting engine for the process. It holds the script cache and, lazily,
+  // the Lua VM -- no VM is created until the first EVAL, so a server that never
+  // runs a script pays nothing here.
+  ScriptEngine script_engine(store_);
+
   std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
             << '\n';
 
@@ -421,11 +432,11 @@ int Server::run() {
       }
 
       if (keep && !clients[i].read_backpressured) {
-        keep = process_buffered_commands(clients[i], store_, config_);
+        keep = process_buffered_commands(clients[i], store_, script_engine, config_);
       }
 
       if (keep && (revents & POLLIN) != 0 && !clients[i].read_backpressured) {
-        keep = read_client(clients[i], store_, config_);
+        keep = read_client(clients[i], store_, script_engine, config_);
       }
 
       if (keep && has_pending_output(clients[i])) {
@@ -434,7 +445,7 @@ int Server::run() {
 
       while (keep && !clients[i].read_backpressured &&
              clients[i].parser.has_queued_frames()) {
-        keep = process_buffered_commands(clients[i], store_, config_);
+        keep = process_buffered_commands(clients[i], store_, script_engine, config_);
         if (keep && has_pending_output(clients[i])) {
           keep = write_client(clients[i], config_);
         }

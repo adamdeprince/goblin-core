@@ -19,6 +19,9 @@ struct CommandEntry { const char* name; goblin::core::CommandType type; };
 PING, goblin::core::CommandType::ping
 ECHO, goblin::core::CommandType::echo
 INFO, goblin::core::CommandType::info
+EVAL, goblin::core::CommandType::eval
+EVALSHA, goblin::core::CommandType::evalsha
+SCRIPT, goblin::core::CommandType::script
 ZADD, goblin::core::CommandType::zadd
 ZCARD, goblin::core::CommandType::zcard
 ZRANGE, goblin::core::CommandType::zrange
