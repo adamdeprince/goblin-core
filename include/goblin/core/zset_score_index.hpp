@@ -494,9 +494,8 @@ class ZSetScoreIndex {
     }
   }
 
-  // Hand each block's contiguous run of member ids to `fn(const uint32_t*,
-  // count)`. Member ids are laid out sequentially within a block, so a caller
-  // can walk the span and prefetch the (scattered) member storage ahead.
+  // Walk member ids in score order block-by-block. Fused block records no longer
+  // expose a contiguous member-id span; callers prefetch via per-entry access.
   template <class Fn>
   void for_member_id_spans(size_type start, size_type count, Fn& fn) const {
     if (count == 0 || start >= size_) {
@@ -509,7 +508,7 @@ class ZSetScoreIndex {
     while (count > 0 && block_index < blocks_.size()) {
       const auto& block = blocks_[block_index];
       const auto take = std::min(count, block.size() - offset);
-      fn(block.member_ids_ptr(offset), take);
+      block.for_member_ids(offset, take, fn);
       count -= take;
       ++block_index;
       offset = 0;
@@ -606,6 +605,8 @@ class ZSetScoreIndex {
       std::numeric_limits<std::uint32_t>::max();
 
   struct Block {
+    static constexpr std::size_t kTailBytes = 2 * sizeof(std::uint32_t);
+
     [[nodiscard]] bool empty() const noexcept {
       return size_ == 0;
     }
@@ -624,11 +625,30 @@ class ZSetScoreIndex {
       return score_width_bytes(score_width_);
     }
 
-    // Scores are stored at the index's runtime width (i16/i32/f64) in a raw byte
-    // buffer; read/write decode/encode to double via memcpy (alignment-safe). The
-    // comparators stay double-based (decode-on-read), so the SortedList is intact.
+    [[nodiscard]] size_type entry_stride() const noexcept {
+      return score_bytes() + kTailBytes;
+    }
+
+    [[nodiscard]] const std::byte* entry_ptr(size_type index) const noexcept {
+      return entries_.get() + index * entry_stride();
+    }
+
+    [[nodiscard]] std::byte* entry_ptr(size_type index) noexcept {
+      return entries_.get() + index * entry_stride();
+    }
+
+    [[nodiscard]] static std::size_t member_id_offset(ScoreWidth width) noexcept {
+      return score_width_bytes(width);
+    }
+
+    [[nodiscard]] static std::size_t prefix_offset(ScoreWidth width) noexcept {
+      return score_width_bytes(width) + sizeof(std::uint32_t);
+    }
+
+    // Fused [score | member_id | prefix] records: one memmove per insert/erase
+    // instead of three parallel-array shifts.
     [[nodiscard]] double read_score(size_type index) const noexcept {
-      const std::byte* p = scores_.get() + index * score_bytes();
+      const std::byte* p = entry_ptr(index);
       switch (score_width_) {
         case ScoreWidth::I16: {
           std::int16_t v;
@@ -650,7 +670,7 @@ class ZSetScoreIndex {
     }
 
     void write_score(size_type index, double value) noexcept {
-      std::byte* p = scores_.get() + index * score_bytes();
+      std::byte* p = entry_ptr(index);
       switch (score_width_) {
         case ScoreWidth::I16: {
           const auto v = static_cast<std::int16_t>(value);
@@ -668,15 +688,27 @@ class ZSetScoreIndex {
       }
     }
 
+    void write_entry(size_type index, ZSetScoreEntry value) noexcept {
+      write_score(index, value.score);
+      const auto base = entry_ptr(index);
+      const auto id_off = member_id_offset(score_width_);
+      std::memcpy(base + id_off, &value.member_id, sizeof(value.member_id));
+      std::memcpy(base + id_off + sizeof(std::uint32_t), &value.prefix,
+                  sizeof(value.prefix));
+    }
+
     [[nodiscard]] size_type allocated_bytes() const noexcept {
-      return static_cast<size_type>(capacity_) *
-             (score_bytes() + sizeof(std::uint32_t));
+      return static_cast<size_type>(capacity_) * entry_stride();
     }
 
     [[nodiscard]] ZSetScoreEntry at(size_type index) const noexcept {
-      return ZSetScoreEntry{.score = read_score(index),
-                            .member_id = member_ids_[index],
-                            .prefix = prefixes_[index]};
+      const auto base = entry_ptr(index);
+      const auto id_off = member_id_offset(score_width_);
+      ZSetScoreEntry out{.score = read_score(index)};
+      std::memcpy(&out.member_id, base + id_off, sizeof(out.member_id));
+      std::memcpy(&out.prefix, base + id_off + sizeof(std::uint32_t),
+                  sizeof(out.prefix));
+      return out;
     }
 
     [[nodiscard]] ZSetScoreEntry front() const noexcept {
@@ -694,7 +726,7 @@ class ZSetScoreIndex {
       while (count > 0) {
         const auto step = count / 2;
         const auto mid = first + step;
-        if (owner.less_parts(read_score(mid), prefixes_[mid], member_ids_[mid],
+        if (owner.less_parts(read_score(mid), prefix_at(mid), member_id_at(mid),
                              value.score, value.prefix, value.member_id)) {
           first = mid + 1;
           count -= step + 1;
@@ -713,7 +745,7 @@ class ZSetScoreIndex {
         const auto step = count / 2;
         const auto mid = first + step;
         if (!owner.less_parts(value.score, value.prefix, value.member_id,
-                              read_score(mid), prefixes_[mid], member_ids_[mid])) {
+                              read_score(mid), prefix_at(mid), member_id_at(mid))) {
           first = mid + 1;
           count -= step + 1;
         } else {
@@ -743,29 +775,32 @@ class ZSetScoreIndex {
       return read_score(index);
     }
 
+    [[nodiscard]] std::uint64_t tail_at(size_type index) const noexcept {
+      std::uint64_t tail = 0;
+      std::memcpy(&tail, entry_ptr(index) + member_id_offset(score_width_),
+                  kTailBytes);
+      return tail;
+    }
+
     [[nodiscard]] std::uint32_t member_id_at(size_type index) const noexcept {
-      return member_ids_[index];
+      return static_cast<std::uint32_t>(tail_at(index));
     }
 
     [[nodiscard]] std::uint32_t prefix_at(size_type index) const noexcept {
-      return prefixes_[index];
-    }
-
-    [[nodiscard]] const std::uint32_t* member_ids_ptr(size_type offset) const noexcept {
-      return member_ids_.get() + offset;
+      return static_cast<std::uint32_t>(tail_at(index) >> 32);
     }
 
     void set_member_id(size_type index, std::uint32_t member_id,
                        std::uint32_t prefix) noexcept {
-      member_ids_[index] = member_id;
-      prefixes_[index] = prefix;
+      const auto base = entry_ptr(index);
+      const auto id_off = member_id_offset(score_width_);
+      std::memcpy(base + id_off, &member_id, sizeof(member_id));
+      std::memcpy(base + id_off + sizeof(std::uint32_t), &prefix, sizeof(prefix));
     }
 
     void push_back(ZSetScoreEntry value) {
       reserve(size_ + 1);
-      write_score(size_, value.score);
-      member_ids_[size_] = value.member_id;
-      prefixes_[size_] = value.prefix;
+      write_entry(size_, value);
       ++size_;
     }
 
@@ -790,38 +825,43 @@ class ZSetScoreIndex {
       reserve(size_ + 1);
       const auto move_count = size_ - offset;
       if (move_count > 0) {
-        const auto sb = score_bytes();
-        std::memmove(scores_.get() + (offset + 1) * sb,
-                     scores_.get() + offset * sb,
-                     move_count * sb);
-        std::memmove(member_ids_.get() + offset + 1,
-                     member_ids_.get() + offset,
-                     move_count * sizeof(std::uint32_t));
-        std::memmove(prefixes_.get() + offset + 1,
-                     prefixes_.get() + offset,
-                     move_count * sizeof(std::uint32_t));
+        const auto stride = entry_stride();
+        std::memmove(entry_ptr(offset + 1), entry_ptr(offset), move_count * stride);
       }
-      write_score(offset, value.score);
-      member_ids_[offset] = value.member_id;
-      prefixes_[offset] = value.prefix;
+      write_entry(offset, value);
       ++size_;
     }
 
     void erase(size_type offset) {
       const auto move_count = size_ - offset - 1;
       if (move_count > 0) {
-        const auto sb = score_bytes();
-        std::memmove(scores_.get() + offset * sb,
-                     scores_.get() + (offset + 1) * sb,
-                     move_count * sb);
-        std::memmove(member_ids_.get() + offset,
-                     member_ids_.get() + offset + 1,
-                     move_count * sizeof(std::uint32_t));
-        std::memmove(prefixes_.get() + offset,
-                     prefixes_.get() + offset + 1,
-                     move_count * sizeof(std::uint32_t));
+        const auto stride = entry_stride();
+        std::memmove(entry_ptr(offset), entry_ptr(offset + 1), move_count * stride);
       }
       --size_;
+    }
+
+    // Move one entry to a new offset in the same block and update its score.
+    // `to` is the target index in the array *after* the entry at `from` is removed.
+    void move_entry(size_type from, size_type to, ZSetScoreEntry value) {
+      assert(from < size_);
+      assert(to <= size_);
+      if (from == to) {
+        write_score(from, value.score);
+        return;
+      }
+
+      const auto saved = at(from);
+      const auto stride = entry_stride();
+      if (from < to) {
+        std::memmove(entry_ptr(from), entry_ptr(from + 1), (to - from) * stride);
+      } else {
+        std::memmove(entry_ptr(to + 1), entry_ptr(to), (from - to) * stride);
+      }
+      write_score(to, value.score);
+      set_member_id(to, saved.member_id, saved.prefix);
+      (void)value.member_id;
+      (void)value.prefix;
     }
 
     void append_range(size_type offset,
@@ -844,14 +884,14 @@ class ZSetScoreIndex {
     void for_range(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
         const auto index = offset + i;
-        fn(read_score(index), member_ids_[index]);
+        fn(read_score(index), member_id_at(index));
       }
     }
 
     template <class Fn>
     void for_member_ids(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
-        fn(member_ids_[offset + i]);
+        fn(member_id_at(offset + i));
       }
     }
 
@@ -859,14 +899,14 @@ class ZSetScoreIndex {
     void for_reverse_range(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
         const auto index = offset - i;
-        fn(read_score(index), member_ids_[index]);
+        fn(read_score(index), member_id_at(index));
       }
     }
 
     template <class Fn>
     void for_reverse_member_ids(size_type offset, size_type count, Fn& fn) const {
       for (size_type i = 0; i < count; ++i) {
-        fn(member_ids_[offset - i]);
+        fn(member_id_at(offset - i));
       }
     }
 
@@ -876,11 +916,8 @@ class ZSetScoreIndex {
       right.load_ = load_;
       const auto right_size = size_ - split_at;
       right.reserve(right_size);
-      const auto sb = score_bytes();
-      std::memcpy(right.scores_.get(), scores_.get() + split_at * sb,
-                  right_size * sb);
-      std::copy_n(member_ids_.get() + split_at, right_size, right.member_ids_.get());
-      std::copy_n(prefixes_.get() + split_at, right_size, right.prefixes_.get());
+      const auto stride = entry_stride();
+      std::memcpy(right.entries_.get(), entry_ptr(split_at), right_size * stride);
       right.size_ = right_size;
       size_ = split_at;
       return right;
@@ -888,11 +925,8 @@ class ZSetScoreIndex {
 
     void append(Block&& right) {
       reserve(size_ + right.size_);
-      const auto sb = score_bytes();
-      std::memcpy(scores_.get() + size_ * sb, right.scores_.get(),
-                  right.size_ * sb);
-      std::copy_n(right.member_ids_.get(), right.size_, member_ids_.get() + size_);
-      std::copy_n(right.prefixes_.get(), right.size_, prefixes_.get() + size_);
+      const auto stride = entry_stride();
+      std::memcpy(entry_ptr(size_), right.entries_.get(), right.size_ * stride);
       size_ += right.size_;
     }
 
@@ -904,15 +938,11 @@ class ZSetScoreIndex {
       copy.id_ = id_;
       copy.load_ = load_;
       if (capacity_ > 0) {
-        const auto sb = score_bytes();
-        copy.scores_ = std::make_unique_for_overwrite<std::byte[]>(
-            static_cast<size_type>(capacity_) * sb);
-        copy.member_ids_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
-        copy.prefixes_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
+        const auto stride = entry_stride();
+        copy.entries_ = std::make_unique_for_overwrite<std::byte[]>(
+            static_cast<size_type>(capacity_) * stride);
         if (size_ > 0) {
-          std::memcpy(copy.scores_.get(), scores_.get(), size_ * sb);
-          std::copy_n(member_ids_.get(), size_, copy.member_ids_.get());
-          std::copy_n(prefixes_.get(), size_, copy.prefixes_.get());
+          std::memcpy(copy.entries_.get(), entries_.get(), size_ * stride);
         }
       }
       return copy;
@@ -923,36 +953,39 @@ class ZSetScoreIndex {
       if (target == score_width_) {
         return;
       }
-      const auto new_bytes = score_width_bytes(target);
+      const auto new_stride = score_width_bytes(target) + kTailBytes;
       auto fresh = std::make_unique_for_overwrite<std::byte[]>(
-          static_cast<size_type>(capacity_) * new_bytes);
+          static_cast<size_type>(capacity_) * new_stride);
+      const auto id_off = member_id_offset(target);
       for (size_type i = 0; i < size_; ++i) {
-        const double value = read_score(i);  // decodes at the old width
-        std::byte* p = fresh.get() + i * new_bytes;
+        const auto* src = entry_ptr(i);
+        std::byte* dst = fresh.get() + i * new_stride;
+        const double value = read_score(i);
         switch (target) {
           case ScoreWidth::I16: {
             const auto v = static_cast<std::int16_t>(value);
-            std::memcpy(p, &v, sizeof(v));
+            std::memcpy(dst, &v, sizeof(v));
             break;
           }
           case ScoreWidth::I32: {
             const auto v = static_cast<std::int32_t>(value);
-            std::memcpy(p, &v, sizeof(v));
+            std::memcpy(dst, &v, sizeof(v));
             break;
           }
           case ScoreWidth::F64:
-            std::memcpy(p, &value, sizeof(value));
+            std::memcpy(dst, &value, sizeof(value));
             break;
         }
+        std::memcpy(dst + id_off, src + member_id_offset(score_width_), kTailBytes);
       }
-      scores_ = std::move(fresh);
+      entries_ = std::move(fresh);
       score_width_ = target;
     }
 
     [[nodiscard]] bool validate() const noexcept {
       return size_ <= capacity_ &&
              static_cast<size_type>(capacity_) <= load_ * 2 + 1 &&
-             (size_ == 0 || (scores_ != nullptr && member_ids_ != nullptr));
+             (size_ == 0 || entries_ != nullptr);
     }
 
     [[nodiscard]] size_type allocation_capacity(size_type required) const noexcept {
@@ -985,27 +1018,17 @@ class ZSetScoreIndex {
 
     void reallocate(size_type required) {
       const auto new_capacity = allocation_capacity(required);
-      const auto sb = score_bytes();
-      auto scores = std::make_unique_for_overwrite<std::byte[]>(new_capacity * sb);
-      auto member_ids = std::make_unique_for_overwrite<std::uint32_t[]>(new_capacity);
-      auto prefixes = std::make_unique_for_overwrite<std::uint32_t[]>(new_capacity);
+      const auto stride = entry_stride();
+      auto entries = std::make_unique_for_overwrite<std::byte[]>(
+          new_capacity * stride);
       if (size_ > 0) {
-        std::memcpy(scores.get(), scores_.get(), size_ * sb);
-        std::copy_n(member_ids_.get(), size_, member_ids.get());
-        std::copy_n(prefixes_.get(), size_, prefixes.get());
+        std::memcpy(entries.get(), entries_.get(), size_ * stride);
       }
-      scores_ = std::move(scores);
-      member_ids_ = std::move(member_ids);
-      prefixes_ = std::move(prefixes);
+      entries_ = std::move(entries);
       capacity_ = static_cast<std::uint32_t>(new_capacity);
     }
 
-    std::unique_ptr<std::byte[]> scores_;
-    std::unique_ptr<std::uint32_t[]> member_ids_;
-    // Parallel to member_ids_: the big-endian 4-byte name prefix per entry. Kept
-    // separate (not packed into member_id) so member_id stays a plain 32-bit id
-    // and the tie-break scan stays cache-dense (16 prefixes per line).
-    std::unique_ptr<std::uint32_t[]> prefixes_;
+    std::unique_ptr<std::byte[]> entries_;
     ScoreWidth score_width_{ScoreWidth::I16};
     // 32-bit so the sublist can hold a large runtime load factor; the extra 4 B
     // fall in existing alignment padding, so sizeof(Block) is unchanged (32 B).

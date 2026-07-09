@@ -126,26 +126,9 @@ class ZSet {
                     [&fn](double, std::string_view member) { fn(member); });
       return bounds.count;
     }
-    // Range iteration walks member ids in score order, which is scattered
-    // relative to member storage id order. Software-prefetch the pointer chase
-    // id -> location -> bytes two stages deep (location further ahead than the
-    // packed bytes, so the byte prefetch reads a resident offset). Neutral for
-    // small ranges, ~4% for large ones.
     const auto* storage = member_storage();
-    auto span = [storage, &fn](const std::uint32_t* ids, std::size_t count) {
-      constexpr std::size_t kLocationAhead = 10;
-      constexpr std::size_t kBytesAhead = 5;
-      for (std::size_t i = 0; i < count; ++i) {
-        if (i + kLocationAhead < count) {
-          storage->prefetch_location(ids[i + kLocationAhead]);
-        }
-        if (i + kBytesAhead < count) {
-          storage->prefetch_bytes(ids[i + kBytesAhead]);
-        }
-        fn(storage->view(ids[i]));
-      }
-    };
-    entries().for_member_id_spans(bounds.first, bounds.count, span);
+    auto walk = [storage, &fn](std::uint32_t id) { fn(storage->view(id)); };
+    entries().for_member_ids(bounds.first, bounds.count, walk);
     return bounds.count;
   }
   template <class Fn>
