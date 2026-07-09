@@ -265,6 +265,53 @@ class ZSetScoreIndex {
     }
   }
 
+  // Re-score an existing member: one bisect when the old and new positions share a
+  // block (one memmove instead of erase+insert), otherwise erase+insert.
+  [[nodiscard]] bool rescore(ZSetScoreEntry old_entry, ZSetScoreEntry new_entry) {
+    if (blocks_.empty()) {
+      return false;
+    }
+    if (old_entry.prefix == 0) {
+      old_entry.prefix = compute_prefix(old_entry.member_id);
+    }
+    if (new_entry.prefix == 0) {
+      new_entry.prefix = old_entry.prefix;
+    }
+    assert(old_entry.member_id == new_entry.member_id);
+
+    ensure_score_width(new_entry.score);
+
+    const auto old_loc = cached_entry_location(old_entry);
+    std::optional<std::pair<size_type, size_type>> located = old_loc;
+    if (!located) {
+      located = locate_entry(old_entry);
+    }
+    if (!located) {
+      return false;
+    }
+
+    const auto block_index = located->first;
+    const auto old_offset = located->second;
+    const auto new_pos = locate_insert_position(new_entry);
+
+    if (new_pos.first == block_index) {
+      auto target_offset = new_pos.second;
+      if (target_offset > old_offset) {
+        --target_offset;
+      }
+      blocks_[block_index].move_entry(old_offset, target_offset, new_entry);
+      maxes_[block_index] = blocks_[block_index].back();
+      if (location_cache_enabled()) {
+        set_location(new_entry.member_id, block_index, target_offset);
+      }
+      return true;
+    }
+
+    erase_at(block_index, old_offset);
+    insert(new_entry);
+    return true;
+  }
+
   [[nodiscard]] bool erase_one(ZSetScoreEntry value) {
     if (blocks_.empty()) {
       return false;
@@ -713,37 +760,6 @@ class ZSetScoreIndex {
       return false;
     }
 
-    // End of the [start, size_) run whose scores equal `score`.
-    [[nodiscard]] size_type score_run_end(size_type start,
-                                          double score) const noexcept {
-      switch (score_width_) {
-        case ScoreWidth::I16: {
-          const auto q = static_cast<std::int16_t>(score);
-          auto end = start;
-          while (end < size_ && load_i16(end) == q) {
-            ++end;
-          }
-          return end;
-        }
-        case ScoreWidth::I32: {
-          const auto q = static_cast<std::int32_t>(score);
-          auto end = start;
-          while (end < size_ && load_i32(end) == q) {
-            ++end;
-          }
-          return end;
-        }
-        case ScoreWidth::F64: {
-          auto end = start;
-          while (end < size_ && load_f64(end) == score) {
-            ++end;
-          }
-          return end;
-        }
-      }
-      return start;
-    }
-
     void write_score(size_type index, double value) noexcept {
       std::byte* p = entry_ptr(index);
       switch (score_width_) {
@@ -794,15 +810,51 @@ class ZSetScoreIndex {
       return at(size() - 1);
     }
 
+    // True when the entry at `index` sorts before `value` (integer score + tie-break).
+    [[nodiscard]] bool entry_less_than(size_type index,
+                                       const ZSetScoreIndex& owner,
+                                       ZSetScoreEntry value) const noexcept {
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          const auto q = static_cast<std::int16_t>(value.score);
+          const auto s = load_i16(index);
+          if (s != q) {
+            return s < q;
+          }
+          break;
+        }
+        case ScoreWidth::I32: {
+          const auto q = static_cast<std::int32_t>(value.score);
+          const auto s = load_i32(index);
+          if (s != q) {
+            return s < q;
+          }
+          break;
+        }
+        case ScoreWidth::F64: {
+          const auto s = load_f64(index);
+          if (s != value.score) {
+            return s < value.score;
+          }
+          break;
+        }
+      }
+      const auto tail = tail_at(index);
+      return owner.less_tiebreak(static_cast<std::uint32_t>(tail >> 32),
+                                 static_cast<std::uint32_t>(tail),
+                                 value.prefix, value.member_id);
+    }
+
+    // Single bisect on (score, prefix, member) — replaces score bisect + run scan
+    // + tie-break bisect on the hot locate paths.
     [[nodiscard]] size_type lower_bound(const ZSetScoreIndex& owner,
                                         ZSetScoreEntry value) const noexcept {
       size_type first = 0;
-      size_type count = size();
+      size_type count = size_;
       while (count > 0) {
         const auto step = count / 2;
         const auto mid = first + step;
-        if (owner.less_parts(read_score(mid), prefix_at(mid), member_id_at(mid),
-                             value.score, value.prefix, value.member_id)) {
+        if (entry_less_than(mid, owner, value)) {
           first = mid + 1;
           count -= step + 1;
         } else {
@@ -1510,40 +1562,13 @@ class ZSetScoreIndex {
   [[nodiscard]] std::optional<size_type> locate_entry_offset(
       BlockRef&& block,
       ZSetScoreEntry value) const noexcept {
-    const auto score_start = block.lower_bound_score(value.score);
-    if (score_start == block.size() ||
-        !block.score_equals(score_start, value.score)) {
+    const auto offset = block.lower_bound(*this, value);
+    if (offset >= block.size() ||
+        !block.score_equals(offset, value.score) ||
+        block.member_id_at(offset) != value.member_id) {
       return std::nullopt;
     }
-
-    const auto score_end = block.score_run_end(score_start, value.score);
-    const auto run_length = score_end - score_start;
-    if (run_length == 1) {
-      if (block.member_id_at(score_start) == value.member_id) {
-        return score_start;
-      }
-      return std::nullopt;
-    }
-
-    size_type first = score_start;
-    size_type count = run_length;
-    while (count > 0) {
-      const auto step = count / 2;
-      const auto mid = first + step;
-      if (less_tiebreak(block.prefix_at(mid), block.member_id_at(mid),
-                        value.prefix, value.member_id)) {
-        first = mid + 1;
-        count -= step + 1;
-      } else {
-        count = step;
-      }
-    }
-
-    if (first >= score_end || block.member_id_at(first) != value.member_id) {
-      return std::nullopt;
-    }
-
-    return first;
+    return offset;
   }
 
   [[nodiscard]] std::pair<size_type, size_type> locate_insert_position(
@@ -1586,39 +1611,7 @@ class ZSetScoreIndex {
   template <class BlockRef>
   [[nodiscard]] size_type locate_insert_offset(BlockRef&& block,
                                                ZSetScoreEntry value) const noexcept {
-    const auto score_start = block.lower_bound_score(value.score);
-    if (score_start == block.size()) {
-      return block.size();
-    }
-    if (block.score_greater_than(score_start, value.score)) {
-      return score_start;
-    }
-
-    const auto score_end = block.score_run_end(score_start, value.score);
-    const auto run_length = score_end - score_start;
-    if (run_length == 1) {
-      if (less_tiebreak(value.prefix, value.member_id,
-                        block.prefix_at(score_start),
-                        block.member_id_at(score_start))) {
-        return score_start;
-      }
-      return score_start + 1;
-    }
-
-    size_type first = score_start;
-    size_type count = run_length;
-    while (count > 0) {
-      const auto step = count / 2;
-      const auto mid = first + step;
-      if (less_tiebreak(value.prefix, value.member_id, block.prefix_at(mid),
-                        block.member_id_at(mid))) {
-        count = step;
-      } else {
-        first = mid + 1;
-        count -= step + 1;
-      }
-    }
-    return first;
+    return block.lower_bound(*this, value);
   }
 
   [[nodiscard]] bool less(ZSetScoreEntry lhs, ZSetScoreEntry rhs) const noexcept {
