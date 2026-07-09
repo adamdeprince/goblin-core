@@ -20,6 +20,10 @@ namespace goblin::core {
 struct ZSetScoreEntry {
   double score{0.0};
   std::uint32_t member_id{0};
+  // First 4 bytes of the member name, big-endian, as a tie-break accelerator for
+  // the score index. Fills the struct's alignment padding, so sizeof is unchanged
+  // at 16. Big-endian => a uint32 compare is exactly lexicographic on those bytes.
+  std::uint32_t prefix{0};
 };
 
 enum class RankCacheMode : std::uint8_t {
@@ -187,7 +191,9 @@ class ZSetScoreIndex {
       assign_block_id(block);
       block.reserve(count);
       for (size_type i = 0; i < count; ++i) {
-        block.push_back(values[start + i]);
+        ZSetScoreEntry entry = values[start + i];
+        entry.prefix = compute_prefix(entry.member_id);
+        block.push_back(entry);
       }
       maxes_.push_back(block.back());
       blocks_.push_back(std::move(block));
@@ -200,6 +206,7 @@ class ZSetScoreIndex {
   }
 
   void insert(ZSetScoreEntry value) {
+    value.prefix = compute_prefix(value.member_id);
     ensure_score_width(value.score);
     if (blocks_.empty()) {
       blocks_.push_back(Block{});
@@ -243,6 +250,7 @@ class ZSetScoreIndex {
     if (blocks_.empty()) {
       return false;
     }
+    value.prefix = compute_prefix(value.member_id);
 
     if (const auto located = cached_entry_location(value)) {
       erase_at(located->first, located->second);
@@ -260,6 +268,7 @@ class ZSetScoreIndex {
 
   [[nodiscard]] std::optional<std::pair<size_type, size_type>> find_entry_location(
       ZSetScoreEntry value) const {
+    value.prefix = compute_prefix(value.member_id);
     if (const auto located = cached_entry_location(value)) {
       return located;
     }
@@ -326,7 +335,7 @@ class ZSetScoreIndex {
       auto offset = block.lower_bound_score(score);
       while (offset < block.size() && block.score_at(offset) == score) {
         if (block.member_id_at(offset) == old_member_id) {
-          block.set_member_id(offset, new_member_id);
+          block.set_member_id(offset, new_member_id, compute_prefix(new_member_id));
 
           if (order_valid_at(block_index, offset)) {
             clear_location(old_member_id);
@@ -356,6 +365,7 @@ class ZSetScoreIndex {
     if (blocks_.empty()) {
       return std::nullopt;
     }
+    value.prefix = compute_prefix(value.member_id);
 
     if (const auto cached = cached_rank(value)) {
       return cached;
@@ -640,7 +650,8 @@ class ZSetScoreIndex {
 
     [[nodiscard]] ZSetScoreEntry at(size_type index) const noexcept {
       return ZSetScoreEntry{.score = read_score(index),
-                            .member_id = member_ids_[index]};
+                            .member_id = member_ids_[index],
+                            .prefix = prefixes_[index]};
     }
 
     [[nodiscard]] ZSetScoreEntry front() const noexcept {
@@ -658,8 +669,8 @@ class ZSetScoreIndex {
       while (count > 0) {
         const auto step = count / 2;
         const auto mid = first + step;
-        if (owner.less_parts(read_score(mid), member_ids_[mid],
-                             value.score, value.member_id)) {
+        if (owner.less_parts(read_score(mid), prefixes_[mid], member_ids_[mid],
+                             value.score, value.prefix, value.member_id)) {
           first = mid + 1;
           count -= step + 1;
         } else {
@@ -676,8 +687,8 @@ class ZSetScoreIndex {
       while (count > 0) {
         const auto step = count / 2;
         const auto mid = first + step;
-        if (!owner.less_parts(value.score, value.member_id,
-                              read_score(mid), member_ids_[mid])) {
+        if (!owner.less_parts(value.score, value.prefix, value.member_id,
+                              read_score(mid), prefixes_[mid], member_ids_[mid])) {
           first = mid + 1;
           count -= step + 1;
         } else {
@@ -711,18 +722,25 @@ class ZSetScoreIndex {
       return member_ids_[index];
     }
 
+    [[nodiscard]] std::uint32_t prefix_at(size_type index) const noexcept {
+      return prefixes_[index];
+    }
+
     [[nodiscard]] const std::uint32_t* member_ids_ptr(size_type offset) const noexcept {
       return member_ids_.get() + offset;
     }
 
-    void set_member_id(size_type index, std::uint32_t member_id) noexcept {
+    void set_member_id(size_type index, std::uint32_t member_id,
+                       std::uint32_t prefix) noexcept {
       member_ids_[index] = member_id;
+      prefixes_[index] = prefix;
     }
 
     void push_back(ZSetScoreEntry value) {
       reserve(size_ + 1);
       write_score(size_, value.score);
       member_ids_[size_] = value.member_id;
+      prefixes_[size_] = value.prefix;
       ++size_;
     }
 
@@ -754,9 +772,13 @@ class ZSetScoreIndex {
         std::memmove(member_ids_.get() + offset + 1,
                      member_ids_.get() + offset,
                      move_count * sizeof(std::uint32_t));
+        std::memmove(prefixes_.get() + offset + 1,
+                     prefixes_.get() + offset,
+                     move_count * sizeof(std::uint32_t));
       }
       write_score(offset, value.score);
       member_ids_[offset] = value.member_id;
+      prefixes_[offset] = value.prefix;
       ++size_;
     }
 
@@ -769,6 +791,9 @@ class ZSetScoreIndex {
                      move_count * sb);
         std::memmove(member_ids_.get() + offset,
                      member_ids_.get() + offset + 1,
+                     move_count * sizeof(std::uint32_t));
+        std::memmove(prefixes_.get() + offset,
+                     prefixes_.get() + offset + 1,
                      move_count * sizeof(std::uint32_t));
       }
       --size_;
@@ -830,6 +855,7 @@ class ZSetScoreIndex {
       std::memcpy(right.scores_.get(), scores_.get() + split_at * sb,
                   right_size * sb);
       std::copy_n(member_ids_.get() + split_at, right_size, right.member_ids_.get());
+      std::copy_n(prefixes_.get() + split_at, right_size, right.prefixes_.get());
       right.size_ = right_size;
       size_ = split_at;
       return right;
@@ -841,6 +867,7 @@ class ZSetScoreIndex {
       std::memcpy(scores_.get() + size_ * sb, right.scores_.get(),
                   right.size_ * sb);
       std::copy_n(right.member_ids_.get(), right.size_, member_ids_.get() + size_);
+      std::copy_n(right.prefixes_.get(), right.size_, prefixes_.get() + size_);
       size_ += right.size_;
     }
 
@@ -856,9 +883,11 @@ class ZSetScoreIndex {
         copy.scores_ = std::make_unique_for_overwrite<std::byte[]>(
             static_cast<size_type>(capacity_) * sb);
         copy.member_ids_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
+        copy.prefixes_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
         if (size_ > 0) {
           std::memcpy(copy.scores_.get(), scores_.get(), size_ * sb);
           std::copy_n(member_ids_.get(), size_, copy.member_ids_.get());
+          std::copy_n(prefixes_.get(), size_, copy.prefixes_.get());
         }
       }
       return copy;
@@ -934,17 +963,24 @@ class ZSetScoreIndex {
       const auto sb = score_bytes();
       auto scores = std::make_unique_for_overwrite<std::byte[]>(new_capacity * sb);
       auto member_ids = std::make_unique_for_overwrite<std::uint32_t[]>(new_capacity);
+      auto prefixes = std::make_unique_for_overwrite<std::uint32_t[]>(new_capacity);
       if (size_ > 0) {
         std::memcpy(scores.get(), scores_.get(), size_ * sb);
         std::copy_n(member_ids_.get(), size_, member_ids.get());
+        std::copy_n(prefixes_.get(), size_, prefixes.get());
       }
       scores_ = std::move(scores);
       member_ids_ = std::move(member_ids);
+      prefixes_ = std::move(prefixes);
       capacity_ = static_cast<std::uint32_t>(new_capacity);
     }
 
     std::unique_ptr<std::byte[]> scores_;
     std::unique_ptr<std::uint32_t[]> member_ids_;
+    // Parallel to member_ids_: the big-endian 4-byte name prefix per entry. Kept
+    // separate (not packed into member_id) so member_id stays a plain 32-bit id
+    // and the tie-break scan stays cache-dense (16 prefixes per line).
+    std::unique_ptr<std::uint32_t[]> prefixes_;
     ScoreWidth score_width_{ScoreWidth::I16};
     // 32-bit so the sublist can hold a large runtime load factor; the extra 4 B
     // fall in existing alignment padding, so sizeof(Block) is unchanged (32 B).
@@ -1343,7 +1379,8 @@ class ZSetScoreIndex {
     while (count > 0) {
       const auto step = count / 2;
       const auto mid = first + step;
-      if (less_parts(block.score_at(mid), block.member_id_at(mid), value.score,
+      if (less_parts(block.score_at(mid), block.prefix_at(mid),
+                     block.member_id_at(mid), value.score, value.prefix,
                      value.member_id)) {
         first = mid + 1;
         count -= step + 1;
@@ -1415,8 +1452,9 @@ class ZSetScoreIndex {
 
     const auto run_length = score_end - score_start;
     if (run_length == 1) {
-      if (less_parts(value.score, value.member_id,
-                     block.score_at(score_start), block.member_id_at(score_start))) {
+      if (less_parts(value.score, value.prefix, value.member_id,
+                     block.score_at(score_start), block.prefix_at(score_start),
+                     block.member_id_at(score_start))) {
         return score_start;
       }
       return score_start + 1;
@@ -1427,8 +1465,9 @@ class ZSetScoreIndex {
     while (count > 0) {
       const auto step = count / 2;
       const auto mid = first + step;
-      if (less_parts(value.score, value.member_id,
-                     block.score_at(mid), block.member_id_at(mid))) {
+      if (less_parts(value.score, value.prefix, value.member_id,
+                     block.score_at(mid), block.prefix_at(mid),
+                     block.member_id_at(mid))) {
         count = step;
       } else {
         first = mid + 1;
@@ -1439,7 +1478,22 @@ class ZSetScoreIndex {
   }
 
   [[nodiscard]] bool less(ZSetScoreEntry lhs, ZSetScoreEntry rhs) const noexcept {
-    return less_parts(lhs.score, lhs.member_id, rhs.score, rhs.member_id);
+    return less_parts(lhs.score, lhs.prefix, lhs.member_id, rhs.score, rhs.prefix,
+                      rhs.member_id);
+  }
+
+  // The 4-byte big-endian prefix of a member's name, used as a tie-break fast
+  // path. See the "magic memory fountain" note: a fixed shared prefix (or names
+  // that collide in their first 4 bytes) simply falls through to the full compare.
+  [[nodiscard]] std::uint32_t compute_prefix(std::uint32_t member_id) const noexcept {
+    const auto view = members_->view(member_id);
+    const auto n = view.size();
+    std::uint32_t prefix = 0;
+    for (std::size_t i = 0; i < 4; ++i) {
+      prefix = (prefix << 8) |
+               (i < n ? static_cast<std::uint8_t>(view[i]) : std::uint32_t{0});
+    }
+    return prefix;
   }
 
   // One-way widen: if `score` doesn't fit the current width, re-encode every
@@ -1457,14 +1511,23 @@ class ZSetScoreIndex {
   }
 
   [[nodiscard]] bool less_parts(double lhs_score,
+                                std::uint32_t lhs_prefix,
                                 std::uint32_t lhs_member_id,
                                 double rhs_score,
+                                std::uint32_t rhs_prefix,
                                 std::uint32_t rhs_member_id) const noexcept {
     if (lhs_score < rhs_score) {
       return true;
     }
     if (lhs_score > rhs_score) {
       return false;
+    }
+
+    // Tie-break fast path: the big-endian 4-byte prefix is lexicographic, so a
+    // differing prefix settles the order without touching the member arena. Only
+    // an exact prefix collision falls through to the full byte compare.
+    if (lhs_prefix != rhs_prefix) {
+      return lhs_prefix < rhs_prefix;
     }
 
     assert(members_ != nullptr);
@@ -1541,9 +1604,9 @@ class ZSetScoreIndex {
       return false;
     }
 
-    block.set_member_id(offset, new_member_id);
+    block.set_member_id(offset, new_member_id, compute_prefix(new_member_id));
     if (!order_valid_at(block_index, offset)) {
-      block.set_member_id(offset, old_member_id);
+      block.set_member_id(offset, old_member_id, compute_prefix(old_member_id));
       return false;
     }
 
@@ -1592,7 +1655,7 @@ class ZSetScoreIndex {
       return false;
     }
 
-    block.set_member_id(adj_l, new_member_id);
+    block.set_member_id(adj_l, new_member_id, compute_prefix(new_member_id));
     if (!order_valid_at(block_index, adj_l)) {
       return false;
     }
