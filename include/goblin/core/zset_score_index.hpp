@@ -328,7 +328,7 @@ class ZSetScoreIndex {
     }
 
     if (adj_l_block < blocks_.size() && l_offset < blocks_[adj_l_block].size() &&
-        blocks_[adj_l_block].score_at(l_offset) == last_entry.score &&
+        blocks_[adj_l_block].score_equals(l_offset, last_entry.score) &&
         blocks_[adj_l_block].member_id_at(l_offset) == last_entry.member_id &&
         retarget_member_id_at(adj_l_block, l_offset, last_entry.member_id, new_member_id)) {
       return true;
@@ -351,12 +351,12 @@ class ZSetScoreIndex {
     auto block_index = lower_block_by_score(score);
     while (block_index < blocks_.size()) {
       auto& block = blocks_[block_index];
-      if (block.front().score > score) {
+      if (block.score_greater_than(0, score)) {
         return false;
       }
 
       auto offset = block.lower_bound_score(score);
-      while (offset < block.size() && block.score_at(offset) == score) {
+      while (offset < block.size() && block.score_equals(offset, score)) {
         if (block.member_id_at(offset) == old_member_id) {
           block.set_member_id(offset, new_member_id, compute_prefix(new_member_id));
 
@@ -375,7 +375,7 @@ class ZSetScoreIndex {
         ++offset;
       }
 
-      if (block.back().score > score) {
+      if (block.score_greater_than(block.size() - 1, score)) {
         return false;
       }
       ++block_index;
@@ -647,26 +647,101 @@ class ZSetScoreIndex {
 
     // Fused [score | member_id | prefix] records: one memmove per insert/erase
     // instead of three parallel-array shifts.
+    [[nodiscard]] std::int16_t load_i16(size_type index) const noexcept {
+      std::int16_t v;
+      std::memcpy(&v, entry_ptr(index), sizeof(v));
+      return v;
+    }
+
+    [[nodiscard]] std::int32_t load_i32(size_type index) const noexcept {
+      std::int32_t v;
+      std::memcpy(&v, entry_ptr(index), sizeof(v));
+      return v;
+    }
+
+    [[nodiscard]] double load_f64(size_type index) const noexcept {
+      double v;
+      std::memcpy(&v, entry_ptr(index), sizeof(v));
+      return v;
+    }
+
     [[nodiscard]] double read_score(size_type index) const noexcept {
-      const std::byte* p = entry_ptr(index);
       switch (score_width_) {
-        case ScoreWidth::I16: {
-          std::int16_t v;
-          std::memcpy(&v, p, sizeof(v));
-          return static_cast<double>(v);
-        }
-        case ScoreWidth::I32: {
-          std::int32_t v;
-          std::memcpy(&v, p, sizeof(v));
-          return static_cast<double>(v);
-        }
-        case ScoreWidth::F64: {
-          double v;
-          std::memcpy(&v, p, sizeof(v));
-          return v;
-        }
+        case ScoreWidth::I16:
+          return static_cast<double>(load_i16(index));
+        case ScoreWidth::I32:
+          return static_cast<double>(load_i32(index));
+        case ScoreWidth::F64:
+          return load_f64(index);
       }
       return 0.0;
+    }
+
+    [[nodiscard]] bool score_equals(size_type index, double score) const noexcept {
+      switch (score_width_) {
+        case ScoreWidth::I16:
+          return load_i16(index) == static_cast<std::int16_t>(score);
+        case ScoreWidth::I32:
+          return load_i32(index) == static_cast<std::int32_t>(score);
+        case ScoreWidth::F64:
+          return load_f64(index) == score;
+      }
+      return false;
+    }
+
+    [[nodiscard]] bool score_less_than(size_type index, double score) const noexcept {
+      switch (score_width_) {
+        case ScoreWidth::I16:
+          return load_i16(index) < static_cast<std::int16_t>(score);
+        case ScoreWidth::I32:
+          return load_i32(index) < static_cast<std::int32_t>(score);
+        case ScoreWidth::F64:
+          return load_f64(index) < score;
+      }
+      return false;
+    }
+
+    [[nodiscard]] bool score_greater_than(size_type index, double score) const noexcept {
+      switch (score_width_) {
+        case ScoreWidth::I16:
+          return load_i16(index) > static_cast<std::int16_t>(score);
+        case ScoreWidth::I32:
+          return load_i32(index) > static_cast<std::int32_t>(score);
+        case ScoreWidth::F64:
+          return load_f64(index) > score;
+      }
+      return false;
+    }
+
+    // End of the [start, size_) run whose scores equal `score`.
+    [[nodiscard]] size_type score_run_end(size_type start,
+                                          double score) const noexcept {
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          const auto q = static_cast<std::int16_t>(score);
+          auto end = start;
+          while (end < size_ && load_i16(end) == q) {
+            ++end;
+          }
+          return end;
+        }
+        case ScoreWidth::I32: {
+          const auto q = static_cast<std::int32_t>(score);
+          auto end = start;
+          while (end < size_ && load_i32(end) == q) {
+            ++end;
+          }
+          return end;
+        }
+        case ScoreWidth::F64: {
+          auto end = start;
+          while (end < size_ && load_f64(end) == score) {
+            ++end;
+          }
+          return end;
+        }
+      }
+      return start;
     }
 
     void write_score(size_type index, double value) noexcept {
@@ -755,18 +830,51 @@ class ZSetScoreIndex {
       return first;
     }
 
+    // Bisect by score without promoting stored integers to double each step.
     [[nodiscard]] size_type lower_bound_score(double score) const noexcept {
       size_type first = 0;
       size_type count = size_;
-      while (count > 0) {
-        const auto step = count / 2;
-        const auto mid = first + step;
-        if (read_score(mid) < score) {
-          first = mid + 1;
-          count -= step + 1;
-        } else {
-          count = step;
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          const auto q = static_cast<std::int16_t>(score);
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_i16(mid) < q) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
         }
+        case ScoreWidth::I32: {
+          const auto q = static_cast<std::int32_t>(score);
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_i32(mid) < q) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
+        }
+        case ScoreWidth::F64:
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_f64(mid) < score) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
       }
       return first;
     }
@@ -1346,7 +1454,7 @@ class ZSetScoreIndex {
     if (rank_cache_mode_ == RankCacheMode::Exact) {
       if (exact_offset >= block.size() ||
           block.member_id_at(exact_offset) != value.member_id ||
-          block.score_at(exact_offset) != value.score) {
+          !block.score_equals(exact_offset, value.score)) {
         return std::nullopt;
       }
 
@@ -1355,7 +1463,7 @@ class ZSetScoreIndex {
 
     if (exact_offset < block.size() &&
         block.member_id_at(exact_offset) == value.member_id &&
-        block.score_at(exact_offset) == value.score) {
+        block.score_equals(exact_offset, value.score)) {
       return std::pair<size_type, size_type>{block_index, exact_offset};
     }
 
@@ -1380,10 +1488,10 @@ class ZSetScoreIndex {
     auto block_index = lower_block_by_score(value.score);
     while (block_index < blocks_.size()) {
       const auto& block = blocks_[block_index];
-      if (block.front().score > value.score) {
+      if (block.score_greater_than(0, value.score)) {
         return std::nullopt;
       }
-      if (block.back().score < value.score) {
+      if (block.score_less_than(block.size() - 1, value.score)) {
         ++block_index;
         continue;
       }
@@ -1404,16 +1512,11 @@ class ZSetScoreIndex {
       ZSetScoreEntry value) const noexcept {
     const auto score_start = block.lower_bound_score(value.score);
     if (score_start == block.size() ||
-        block.score_at(score_start) != value.score) {
+        !block.score_equals(score_start, value.score)) {
       return std::nullopt;
     }
 
-    auto score_end = score_start;
-    while (score_end < block.size() &&
-           block.score_at(score_end) == value.score) {
-      ++score_end;
-    }
-
+    const auto score_end = block.score_run_end(score_start, value.score);
     const auto run_length = score_end - score_start;
     if (run_length == 1) {
       if (block.member_id_at(score_start) == value.member_id) {
@@ -1427,9 +1530,8 @@ class ZSetScoreIndex {
     while (count > 0) {
       const auto step = count / 2;
       const auto mid = first + step;
-      if (less_parts(block.score_at(mid), block.prefix_at(mid),
-                     block.member_id_at(mid), value.score, value.prefix,
-                     value.member_id)) {
+      if (less_tiebreak(block.prefix_at(mid), block.member_id_at(mid),
+                        value.prefix, value.member_id)) {
         first = mid + 1;
         count -= step + 1;
       } else {
@@ -1456,10 +1558,10 @@ class ZSetScoreIndex {
 
     while (true) {
       const auto& block = blocks_[block_index];
-      if (block.front().score > value.score) {
+      if (block.score_greater_than(0, value.score)) {
         return {block_index, 0};
       }
-      if (block.back().score < value.score) {
+      if (block.score_less_than(block.size() - 1, value.score)) {
         ++block_index;
         if (block_index >= blocks_.size()) {
           const auto last = blocks_.size() - 1;
@@ -1488,21 +1590,16 @@ class ZSetScoreIndex {
     if (score_start == block.size()) {
       return block.size();
     }
-    if (block.score_at(score_start) > value.score) {
+    if (block.score_greater_than(score_start, value.score)) {
       return score_start;
     }
 
-    auto score_end = score_start;
-    while (score_end < block.size() &&
-           block.score_at(score_end) == value.score) {
-      ++score_end;
-    }
-
+    const auto score_end = block.score_run_end(score_start, value.score);
     const auto run_length = score_end - score_start;
     if (run_length == 1) {
-      if (less_parts(value.score, value.prefix, value.member_id,
-                     block.score_at(score_start), block.prefix_at(score_start),
-                     block.member_id_at(score_start))) {
+      if (less_tiebreak(value.prefix, value.member_id,
+                        block.prefix_at(score_start),
+                        block.member_id_at(score_start))) {
         return score_start;
       }
       return score_start + 1;
@@ -1513,9 +1610,8 @@ class ZSetScoreIndex {
     while (count > 0) {
       const auto step = count / 2;
       const auto mid = first + step;
-      if (less_parts(value.score, value.prefix, value.member_id,
-                     block.score_at(mid), block.prefix_at(mid),
-                     block.member_id_at(mid))) {
+      if (less_tiebreak(value.prefix, value.member_id, block.prefix_at(mid),
+                        block.member_id_at(mid))) {
         count = step;
       } else {
         first = mid + 1;
@@ -1551,6 +1647,21 @@ class ZSetScoreIndex {
     score_width_ = target;
   }
 
+  // Prefix/member tie-break when scores are already known equal (same-score run).
+  [[nodiscard]] bool less_tiebreak(std::uint32_t lhs_prefix,
+                                   std::uint32_t lhs_member_id,
+                                   std::uint32_t rhs_prefix,
+                                   std::uint32_t rhs_member_id) const noexcept {
+    if (lhs_prefix != rhs_prefix) {
+      return lhs_prefix < rhs_prefix;
+    }
+
+    assert(members_ != nullptr);
+    assert(lhs_member_id < members_->size());
+    assert(rhs_member_id < members_->size());
+    return members_->view(lhs_member_id) < members_->view(rhs_member_id);
+  }
+
   [[nodiscard]] bool less_parts(double lhs_score,
                                 std::uint32_t lhs_prefix,
                                 std::uint32_t lhs_member_id,
@@ -1564,17 +1675,7 @@ class ZSetScoreIndex {
       return false;
     }
 
-    // Tie-break fast path: the big-endian 4-byte prefix is lexicographic, so a
-    // differing prefix settles the order without touching the member arena. Only
-    // an exact prefix collision falls through to the full byte compare.
-    if (lhs_prefix != rhs_prefix) {
-      return lhs_prefix < rhs_prefix;
-    }
-
-    assert(members_ != nullptr);
-    assert(lhs_member_id < members_->size());
-    assert(rhs_member_id < members_->size());
-    return members_->view(lhs_member_id) < members_->view(rhs_member_id);
+    return less_tiebreak(lhs_prefix, lhs_member_id, rhs_prefix, rhs_member_id);
   }
 
   [[nodiscard]] bool equivalent(ZSetScoreEntry lhs, ZSetScoreEntry rhs) const noexcept {
@@ -1678,7 +1779,7 @@ class ZSetScoreIndex {
 
     const auto removed_member_id = block.member_id_at(r_offset);
     if (block.member_id_at(l_offset) != last_entry.member_id ||
-        block.score_at(l_offset) != last_entry.score) {
+        !block.score_equals(l_offset, last_entry.score)) {
       return false;
     }
 
