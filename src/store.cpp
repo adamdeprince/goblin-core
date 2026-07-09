@@ -315,7 +315,7 @@ void ZSet::ensure_full(const ZSetOptions* options) {
     const auto member_id = allocate_member_id(member, score);
     members().insert(member_view(member_id),
                      ZSetMemberMeta{.member_id = member_id});
-    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id, .prefix = zset_member_prefix(member)});
   });
 }
 
@@ -378,14 +378,14 @@ int ZSet::add(double score, std::string_view member,
     ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
     const bool removed =
-        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
+        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id, .prefix = zset_member_prefix(member)});
     assert(removed);
     if (!removed) {
       return 0;
     }
 
     member_storage()->set_score(member_id, score);
-    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+    entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id, .prefix = zset_member_prefix(member)});
     return 0;
   }
 
@@ -394,7 +394,7 @@ int ZSet::add(double score, std::string_view member,
   const auto member_id = allocate_member_id(member, score);
   const auto view = member_view(member_id);
   members().insert(view, ZSetMemberMeta{.member_id = member_id});
-  entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id});
+  entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id, .prefix = zset_member_prefix(member)});
 
   return 1;
 }
@@ -417,7 +417,7 @@ bool ZSet::remove(std::string_view member) {
 
   if (member_id == last_member_id) {
     const bool removed =
-        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id});
+        entries().erase_one(ZSetScoreEntry{.score = old_score, .member_id = member_id, .prefix = zset_member_prefix(member)});
     assert(removed);
     if (!removed) {
       return false;

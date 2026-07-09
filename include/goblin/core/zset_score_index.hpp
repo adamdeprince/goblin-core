@@ -23,8 +23,25 @@ struct ZSetScoreEntry {
   // First 4 bytes of the member name, big-endian, as a tie-break accelerator for
   // the score index. Fills the struct's alignment padding, so sizeof is unchanged
   // at 16. Big-endian => a uint32 compare is exactly lexicographic on those bytes.
+  // Zero means "not provided": the index computes it from the arena. A caller that
+  // already holds the member bytes (ZSet, from the command) sets it to skip that
+  // lookup; a name that genuinely begins with 4 NUL bytes recomputes to 0 anyway.
   std::uint32_t prefix{0};
 };
+
+// The score-index tie-break prefix of a member name: its first 4 bytes packed
+// big-endian (missing bytes are 0), so a plain uint32 compare is exactly
+// lexicographic on them. Shared by ZSet (which has the bytes from the command)
+// and the index (which reads them from the member arena) so both agree.
+[[nodiscard]] inline std::uint32_t zset_member_prefix(std::string_view name) noexcept {
+  const auto n = name.size();
+  std::uint32_t prefix = 0;
+  for (std::size_t i = 0; i < 4; ++i) {
+    prefix = (prefix << 8) |
+             (i < n ? static_cast<std::uint8_t>(name[i]) : std::uint32_t{0});
+  }
+  return prefix;
+}
 
 enum class RankCacheMode : std::uint8_t {
   Off,
@@ -206,7 +223,9 @@ class ZSetScoreIndex {
   }
 
   void insert(ZSetScoreEntry value) {
-    value.prefix = compute_prefix(value.member_id);
+    if (value.prefix == 0) {
+      value.prefix = compute_prefix(value.member_id);
+    }
     ensure_score_width(value.score);
     if (blocks_.empty()) {
       blocks_.push_back(Block{});
@@ -250,7 +269,9 @@ class ZSetScoreIndex {
     if (blocks_.empty()) {
       return false;
     }
-    value.prefix = compute_prefix(value.member_id);
+    if (value.prefix == 0) {
+      value.prefix = compute_prefix(value.member_id);
+    }
 
     if (const auto located = cached_entry_location(value)) {
       erase_at(located->first, located->second);
@@ -268,7 +289,9 @@ class ZSetScoreIndex {
 
   [[nodiscard]] std::optional<std::pair<size_type, size_type>> find_entry_location(
       ZSetScoreEntry value) const {
-    value.prefix = compute_prefix(value.member_id);
+    if (value.prefix == 0) {
+      value.prefix = compute_prefix(value.member_id);
+    }
     if (const auto located = cached_entry_location(value)) {
       return located;
     }
@@ -365,7 +388,9 @@ class ZSetScoreIndex {
     if (blocks_.empty()) {
       return std::nullopt;
     }
-    value.prefix = compute_prefix(value.member_id);
+    if (value.prefix == 0) {
+      value.prefix = compute_prefix(value.member_id);
+    }
 
     if (const auto cached = cached_rank(value)) {
       return cached;
@@ -1486,14 +1511,7 @@ class ZSetScoreIndex {
   // path. See the "magic memory fountain" note: a fixed shared prefix (or names
   // that collide in their first 4 bytes) simply falls through to the full compare.
   [[nodiscard]] std::uint32_t compute_prefix(std::uint32_t member_id) const noexcept {
-    const auto view = members_->view(member_id);
-    const auto n = view.size();
-    std::uint32_t prefix = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-      prefix = (prefix << 8) |
-               (i < n ? static_cast<std::uint8_t>(view[i]) : std::uint32_t{0});
-    }
-    return prefix;
+    return zset_member_prefix(members_->view(member_id));
   }
 
   // One-way widen: if `score` doesn't fit the current width, re-encode every
