@@ -341,18 +341,59 @@ void UPythonEngine::ensure_vm() {
   store_attr(redis_mod, "sha1hex", MP_OBJ_FROM_PTR(&upy_redis_sha1hex_obj));
   store_attr(redis_mod, "log", MP_OBJ_FROM_PTR(&upy_redis_log_obj));
   redis_module_ = MP_OBJ_TO_PTR(redis_mod);
+
+  // The shared globals dict that every compiled script binds to (mp_compile
+  // captures the current globals); run() clears and repopulates it per call, so
+  // scripts stay isolated. A list roots the compiled functions themselves. Both
+  // hang off the redis module, which is a GC root (in the loaded-modules dict),
+  // so neither the globals nor the cached functions are collected.
+  mp_obj_t run_globals = mp_obj_new_dict(8);
+  run_globals_ = MP_OBJ_TO_PTR(run_globals);
+  store_attr(redis_mod, "__globals__", run_globals);
+  mp_obj_t roots = mp_obj_new_list(0, nullptr);
+  compiled_roots_ = MP_OBJ_TO_PTR(roots);
+  store_attr(redis_mod, "__scripts__", roots);
 }
 
-void UPythonEngine::run(std::string_view body,
-                        std::span<const std::string_view> keys,
-                        std::span<const std::string_view> argv,
-                        std::string& out) {
+void* UPythonEngine::compile_body(std::string_view body, std::string& out) {
   ensure_vm();
   if (!vm_ready_) {
     resp::append_error(out, "ERR could not initialize scripting engine");
-    return;
+    return nullptr;
   }
 
+  volatile char stack_marker = 0;
+  mp_stack_set_top((void*)((char*)&stack_marker + 8192));
+  mp_stack_set_limit(512 * 1024);
+
+  void* result = nullptr;
+  nlr_buf_t nlr;
+  if (nlr_push(&nlr) == 0) {
+    // mp_compile binds the module function to the current globals, so point them
+    // at the shared run-globals dict that run() repopulates each call.
+    mp_obj_dict_t* g = static_cast<mp_obj_dict_t*>(run_globals_);
+    mp_globals_set(g);
+    mp_locals_set(g);
+    mp_lexer_t* lex = mp_lexer_new_from_str_len(qstr_from_str("<upython>"),
+                                                body.data(), body.size(), 0);
+    qstr source_name = lex->source_name;
+    mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
+    mp_obj_t fun = mp_compile(&parse_tree, source_name, false);
+    result = MP_OBJ_TO_PTR(fun);
+    nlr_pop();
+  } else {
+    resp::append_error(out, "ERR Error compiling script: " +
+                                sanitize_line(exception_message(
+                                    MP_OBJ_FROM_PTR(nlr.ret_val))));
+    return nullptr;
+  }
+  return result;
+}
+
+void UPythonEngine::run(void* module_fun,
+                        std::span<const std::string_view> keys,
+                        std::span<const std::string_view> argv,
+                        std::string& out) {
   volatile char stack_marker = 0;
   mp_stack_set_top((void*)((char*)&stack_marker + 8192));
   mp_stack_set_limit(512 * 1024);
@@ -363,10 +404,10 @@ void UPythonEngine::run(std::string_view body,
 
   nlr_buf_t nlr;
   if (nlr_push(&nlr) == 0) {
-    // Fresh globals per run for isolation; builtins are still reachable.
-    mp_obj_t gdict = mp_obj_new_dict(8);
-    mp_globals_set(static_cast<mp_obj_dict_t*>(MP_OBJ_TO_PTR(gdict)));
-    mp_locals_set(static_cast<mp_obj_dict_t*>(MP_OBJ_TO_PTR(gdict)));
+    // Reset the shared globals to a fresh namespace (isolation between scripts),
+    // then bind KEYS/ARGV/redis/reply. Builtins are still reachable via fallback.
+    mp_obj_t gdict = MP_OBJ_FROM_PTR(run_globals_);
+    mp_map_clear(mp_obj_dict_get_map(gdict));
 
     mp_obj_t keys_list = mp_obj_new_list(0, nullptr);
     for (const std::string_view k : keys) mp_obj_list_append(keys_list, new_str(k));
@@ -378,18 +419,13 @@ void UPythonEngine::run(std::string_view body,
                       MP_OBJ_FROM_PTR(redis_module_));
     mp_obj_dict_store(gdict, MP_OBJ_NEW_QSTR(qstr_from_str("reply")), mp_const_none);
 
-    mp_lexer_t* lex =
-        mp_lexer_new_from_str_len(qstr_from_str("<upython>"), body.data(),
-                                  body.size(), 0);
-    qstr source_name = lex->source_name;
-    mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
-    mp_obj_t module_fun = mp_compile(&parse_tree, source_name, false);
-    mp_call_function_0(module_fun);
+    mp_obj_dict_t* g = static_cast<mp_obj_dict_t*>(run_globals_);
+    mp_globals_set(g);
+    mp_locals_set(g);
+    mp_call_function_0(MP_OBJ_FROM_PTR(module_fun));  // precompiled -- no reparse
 
-    mp_map_elem_t* elem =
-        mp_map_lookup(mp_obj_dict_get_map(gdict),
-                      MP_OBJ_NEW_QSTR(qstr_from_str("reply")), MP_MAP_LOOKUP);
-    py_to_resp(elem != nullptr ? elem->value : mp_const_none, reply_scratch);
+    mp_obj_t reply = dict_get_or_null(gdict, "reply");
+    py_to_resp(reply != MP_OBJ_NULL ? reply : mp_const_none, reply_scratch);
     ok = true;
     nlr_pop();
   } else {
@@ -414,8 +450,18 @@ void UPythonEngine::eval(std::span<const std::string_view> args, std::string& ou
   if (!split_keys_and_args(args, &keys, &argv, out)) return;
 
   const std::string_view body = args[0];
-  scripts_.emplace(sha1_hex(body), std::string(body));
-  run(body, keys, argv, out);
+  const std::string sha = sha1_hex(body);
+  // Compile once and cache; a repeat EVAL of the same source then takes the same
+  // no-recompile path as EVALSHA (looked up by SHA1 before compiling).
+  if (const auto it = scripts_.find(sha); it != scripts_.end()) {
+    run(it->second, keys, argv, out);
+    return;
+  }
+  void* fun = compile_body(body, out);
+  if (fun == nullptr) return;
+  scripts_[sha] = fun;
+  mp_obj_list_append(MP_OBJ_FROM_PTR(compiled_roots_), MP_OBJ_FROM_PTR(fun));
+  run(fun, keys, argv, out);
 }
 
 void UPythonEngine::eval_sha(std::span<const std::string_view> args, std::string& out) {
@@ -433,8 +479,7 @@ void UPythonEngine::eval_sha(std::span<const std::string_view> args, std::string
     resp::append_error(out, "NOSCRIPT No matching script. Please use UPYTHON.EVAL.");
     return;
   }
-  const std::string body = it->second;
-  run(body, keys, argv, out);
+  run(it->second, keys, argv, out);  // cached compiled function -- no reparse
 }
 
 void UPythonEngine::script(std::span<const std::string_view> args, std::string& out) {
@@ -449,37 +494,17 @@ void UPythonEngine::script(std::span<const std::string_view> args, std::string& 
       resp::append_error(out, "ERR Unknown SCRIPT subcommand or wrong number of arguments");
       return;
     }
-    ensure_vm();
-    if (!vm_ready_) {
-      resp::append_error(out, "ERR could not initialize scripting engine");
-      return;
-    }
-    // Compile without executing to validate syntax (a SyntaxError is caught).
+    // Compile (validates syntax, catching a SyntaxError) and cache the compiled
+    // function, so a later EVALSHA skips the lex/parse/compile step.
     const std::string_view body = args[1];
-    volatile char stack_marker = 0;
-    mp_stack_set_top((void*)((char*)&stack_marker + 8192));
-    mp_stack_set_limit(512 * 1024);
-    bool compiled = false;
-    std::string error;
-    nlr_buf_t nlr;
-    if (nlr_push(&nlr) == 0) {
-      mp_lexer_t* lex =
-          mp_lexer_new_from_str_len(qstr_from_str("<upython>"), body.data(),
-                                    body.size(), 0);
-      qstr source_name = lex->source_name;
-      mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
-      (void)mp_compile(&parse_tree, source_name, false);
-      compiled = true;
-      nlr_pop();
-    } else {
-      error = exception_message(MP_OBJ_FROM_PTR(nlr.ret_val));
+    const std::string sha = sha1_hex(body);
+    if (scripts_.find(sha) == scripts_.end()) {
+      void* fun = compile_body(body, out);
+      if (fun == nullptr) return;  // error already written
+      scripts_[sha] = fun;
+      mp_obj_list_append(MP_OBJ_FROM_PTR(compiled_roots_), MP_OBJ_FROM_PTR(fun));
     }
-    if (!compiled) {
-      resp::append_error(out, "ERR Error compiling script: " + sanitize_line(error));
-      return;
-    }
-    scripts_.emplace(sha1_hex(body), std::string(body));
-    resp::append_bulk_string(out, sha1_hex(body));
+    resp::append_bulk_string(out, sha);
     return;
   }
 
@@ -493,6 +518,12 @@ void UPythonEngine::script(std::span<const std::string_view> args, std::string& 
 
   if (equals_upper(sub, "FLUSH")) {
     scripts_.clear();
+    // Drop the rooting list so the compiled functions become collectable.
+    if (compiled_roots_ != nullptr) {
+      mp_obj_t fresh = mp_obj_new_list(0, nullptr);
+      compiled_roots_ = MP_OBJ_TO_PTR(fresh);
+      store_attr(MP_OBJ_FROM_PTR(redis_module_), "__scripts__", fresh);
+    }
     resp::append_simple_string(out, "OK");
     return;
   }

@@ -45,7 +45,13 @@ class UPythonEngine {
 
  private:
   void ensure_vm();
-  void run(std::string_view body,
+  // Compile `body` to a MicroPython module function (bound to the shared run
+  // globals) and return it as an mp_obj_t pointer -- what the cache stores. A
+  // SyntaxError writes a RESP error to `out` and returns nullptr.
+  void* compile_body(std::string_view body, std::string& out);
+  // Call a cached compiled function with KEYS/ARGV bound, appending the RESP
+  // reply. No parse/compile on this path -- the EVALSHA / cached-EVAL fast path.
+  void run(void* module_fun,
            std::span<const std::string_view> keys,
            std::span<const std::string_view> argv,
            std::string& out);
@@ -54,7 +60,12 @@ class UPythonEngine {
   bool vm_ready_ = false;
   void* gc_heap_ = nullptr;
   void* redis_module_ = nullptr;  // mp_obj_t, kept alive by the loaded-modules root
-  std::unordered_map<std::string, std::string> scripts_;  // 40-hex SHA1 -> body
+  void* run_globals_ = nullptr;   // shared globals dict, cleared+filled per run
+  void* compiled_roots_ = nullptr;  // list rooting the cached compiled functions
+  // 40-hex SHA1 of the source -> compiled module function (mp_obj_t pointer, kept
+  // alive by compiled_roots_). Caching the compiled function is what lets EVALSHA
+  // skip the lex/parse/compile step.
+  std::unordered_map<std::string, void*> scripts_;
 
   // Reusable scratch for a redis.call (single-threaded; never aliased).
   std::vector<std::string> call_arg_storage_;
