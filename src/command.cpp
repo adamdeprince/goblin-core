@@ -277,8 +277,9 @@ constexpr std::string_view kValueTooLarge =
 
 // String commands that require the key to already hold a string (or be absent).
 // SET / SETNX / MSET clobber or create regardless of type, and MGET / DEL /
-// EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD is
-// gated too: it reads the value like GET, so a non-string key is WRONGTYPE.
+// EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD and
+// GOBLIN.CAEXPIRE are gated too: they read the value like GET, so a non-string
+// key is WRONGTYPE.
 [[nodiscard]] bool is_typed_string_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::get:
@@ -294,6 +295,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::getrange:
     case CommandType::setrange:
     case CommandType::goblin_cad:
+    case CommandType::goblin_caexpire:
       return true;
     default:
       return false;
@@ -959,6 +961,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::goblin_cad;
       return {.command = std::move(command)};
+    case CommandType::goblin_caexpire:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("goblin.caexpire"));
+      }
+      command.type = CommandType::goblin_caexpire;
+      return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
@@ -983,7 +991,7 @@ void execute_command_into(Store& store,
   // that operates on a specific type is rejected when the key already holds a
   // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
   // TYPE (type-agnostic), scripts, and the introspection GOBLIN.* commands are
-  // exempt; GOBLIN.CAD is not (it reads the value like GET).
+  // exempt; GOBLIN.CAD / GOBLIN.CAEXPIRE are not (they read the value like GET).
   if (!command.args.empty()) {
     if (const auto required = command_requires_type(command.type)) {
       if (const auto actual = store.key_type(command.args[0]);
@@ -1756,6 +1764,29 @@ void execute_command_into(Store& store,
       const bool deleted =
           store.compare_and_delete(command.args[0], command.args[1]);
       resp::append_integer(out, deleted ? 1 : 0);
+      return;
+    }
+
+    case CommandType::goblin_caexpire: {
+      // Compare-and-expire (renew): the Redlock/Redisson watchdog idiom (GET; if
+      // it equals the expected token, PEXPIRE by `ms`) as one native atomic op.
+      // Replies with the PEXPIRE result -- 1 when the TTL was (re)set, 0 when the
+      // token did not match -- so it is a drop-in for the script's
+      // `return redis.call("pexpire", KEYS[1], ARGV[2])` / `0`.
+      const auto ms = parse_ll(command.args[2]);
+      if (!ms) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, *ms, 1);
+      if (!when) {
+        resp::append_error(out, "ERR invalid expire time");
+        return;
+      }
+      const bool renewed =
+          store.compare_and_expire(command.args[0], command.args[1], *when, now);
+      resp::append_integer(out, renewed ? 1 : 0);
       return;
     }
 

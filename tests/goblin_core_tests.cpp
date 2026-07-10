@@ -1211,6 +1211,45 @@ void test_goblin_cad() {
   assert(!goblin::core::parse_command(too_many).ok());
 }
 
+void test_goblin_caexpire() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Deterministic TTL checks via the Store method (explicit now / when_ms).
+  store.set("lock", "tok");
+  const std::uint64_t now = 1000;
+  assert(store.compare_and_expire("lock", "tok", now + 30000, now));  // match -> set
+  assert(store.pttl_ms("lock", now) == 30000);
+  // A mismatched token leaves the TTL untouched.
+  assert(!store.compare_and_expire("lock", "nope", now + 5000, now));
+  assert(store.pttl_ms("lock", now) == 30000);
+  // Renewing again extends the lease.
+  assert(store.compare_and_expire("lock", "tok", now + 45000, now));
+  assert(store.pttl_ms("lock", now) == 45000);
+  // A missing key has nothing to renew.
+  assert(!store.compare_and_expire("absent", "tok", now + 1000, now));
+  // A when_ms already at/past now deletes the key (PEXPIRE with a non-positive
+  // TTL), and still counts as applied.
+  assert(store.compare_and_expire("lock", "tok", now, now));
+  assert(!store.exists("lock"));
+
+  // Command layer: reply values, WRONGTYPE, and a non-integer ms.
+  assert(execute_fields(store, {"SET", "k", "tok"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAEXPIRE", "k", "nope", "1000"}) == ":0\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAEXPIRE", "k", "tok", "1000"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAEXPIRE", "absent", "tok", "1000"}) == ":0\r\n");
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAEXPIRE", "z", "x", "1000"}) == wrongtype);
+  assert(execute_fields(store, {"GOBLIN.CAEXPIRE", "k", "tok", "abc"}).front() == '-');
+
+  // Arity: exactly key + expected + ms (checked at the parse layer).
+  std::vector<std::string_view> few = {"GOBLIN.CAEXPIRE", "k", "tok"};
+  assert(!goblin::core::parse_command(few).ok());
+  std::vector<std::string_view> many = {"GOBLIN.CAEXPIRE", "k", "tok", "1", "2"};
+  assert(!goblin::core::parse_command(many).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3531,6 +3570,7 @@ int main() {
   test_store_string_arena_compaction();
   test_string_commands();
   test_goblin_cad();
+  test_goblin_caexpire();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

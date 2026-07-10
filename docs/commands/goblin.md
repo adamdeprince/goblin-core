@@ -9,6 +9,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | Command | Summary |
 |---|---|
 | [`GOBLIN.CAD`](GOBLIN.CAD.md) | Compare-and-delete: delete a key only if it still holds the expected value. |
+| [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) | Compare-and-expire: renew a key's TTL only if it still holds the expected value. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -24,6 +25,18 @@ Compare-and-delete — the native form of the Redlock lock-release script. Delet
 `key` and replies `1` when it holds a string equal to `expected`, otherwise
 replies `0`; a non-string key is `WRONGTYPE`. See the full page:
 **[GOBLIN.CAD](GOBLIN.CAD.md)**.
+
+## GOBLIN.CAEXPIRE
+
+```
+GOBLIN.CAEXPIRE key expected ms
+```
+
+Compare-and-expire — the native form of the Redlock/Redisson lock-*renewal*
+watchdog script. Sets `key`'s TTL to `ms` from now and replies `1` when it holds a
+string equal to `expected`, otherwise replies `0`; a non-string key is
+`WRONGTYPE`. The renew counterpart of `GOBLIN.CAD`. See the full page:
+**[GOBLIN.CAEXPIRE](GOBLIN.CAEXPIRE.md)**.
 
 ## GOBLIN.MEMORY
 

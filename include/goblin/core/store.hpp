@@ -1167,6 +1167,14 @@ class Store {
   // key is rejected as WRONGTYPE by the command layer before this is reached.
   [[nodiscard]] bool compare_and_delete(std::string_view key,
                                         std::string_view expected);
+  // GOBLIN.CAEXPIRE compare-and-expire (renew): if the key holds a string equal
+  // to `expected`, set its absolute expiry to `when_ms` and return true;
+  // otherwise false. `when_ms` at/before `now` deletes the key (as PEXPIRE does
+  // with a non-positive TTL). A non-string key is rejected as WRONGTYPE by the
+  // command layer before this is reached.
+  [[nodiscard]] bool compare_and_expire(std::string_view key,
+                                        std::string_view expected,
+                                        std::uint64_t when_ms, std::uint64_t now);
   [[nodiscard]] std::optional<std::size_t> strlen(
       std::string_view key) const noexcept;
   [[nodiscard]] std::size_t append(std::string_view key, std::string_view value);

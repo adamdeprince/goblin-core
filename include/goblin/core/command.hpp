@@ -89,6 +89,7 @@ enum class CommandType {
   goblin_save,
   goblin_load,
   goblin_cad,
+  goblin_caexpire,
   echo,
   info,
   unknown,

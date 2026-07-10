@@ -103,9 +103,10 @@ share nothing but the key space:
 
 Each is a *distinct* interpreter: a script written for one is a syntax error under
 another. `SCRIPT LOAD` (or the first `EVAL`) compiles a script once and caches the
-compiled artifact, so `EVALSHA` runs it with no re-parse or re-compile. There is
-also a native `GOBLIN.CAD` compare-and-delete for the most-copied lock-release
-idiom. See [docs/commands](docs/commands/README.md) for the surface, and
+compiled artifact, so `EVALSHA` runs it with no re-parse or re-compile. There are
+also native `GOBLIN.CAD` (compare-and-delete) and `GOBLIN.CAEXPIRE`
+(compare-and-expire) commands for the Redlock lock release and watchdog-renewal
+idioms. See [docs/commands](docs/commands/README.md) for the surface, and
 **[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)** for how the six languages
 compare on a trivial op (compare-and-delete) and a heavy one (real-time leaderboard
 rescore) — the ranking flips between them.

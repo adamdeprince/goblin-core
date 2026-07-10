@@ -989,6 +989,15 @@ namespace {
   out.append(value.tail);
   return out;
 }
+
+// True when the (head, tail) split of a stored value equals `s`, compared in
+// place -- sizes first, then the inline head, then any spilled tail -- so no
+// allocation on the common small-value path.
+[[nodiscard]] bool view_equals(StringValueView value, std::string_view s) {
+  return value.size() == s.size() &&
+         s.substr(0, value.head.size()) == value.head &&
+         s.substr(value.head.size()) == value.tail;
+}
 }  // namespace
 
 std::optional<std::string> Store::get_set(std::string_view key,
@@ -1012,17 +1021,21 @@ std::optional<std::string> Store::get_del(std::string_view key) {
 
 bool Store::compare_and_delete(std::string_view key, std::string_view expected) {
   const auto current = keyspace_.get_string(key);
-  if (!current) {
-    return false;  // missing key -> nothing to compare (0)
-  }
-  // Compare the (head, tail) split against `expected` without materializing it:
-  // sizes first, then the inline head, then any spilled tail.
-  if (current->size() != expected.size() ||
-      expected.substr(0, current->head.size()) != current->head ||
-      expected.substr(current->head.size()) != current->tail) {
-    return false;
+  if (!current || !view_equals(*current, expected)) {
+    return false;  // missing key or mismatch -> nothing to delete (0)
   }
   return erase_key(key);
+}
+
+bool Store::compare_and_expire(std::string_view key, std::string_view expected,
+                               std::uint64_t when_ms, std::uint64_t now) {
+  const auto current = keyspace_.get_string(key);
+  if (!current || !view_equals(*current, expected)) {
+    return false;  // missing key or mismatch -> nothing to renew (0)
+  }
+  // The token matches, so the key exists: expire_at_ms sets its TTL (or deletes
+  // it when when_ms is already past) and returns true.
+  return expire_at_ms(key, when_ms, now);
 }
 
 std::optional<std::size_t> Store::strlen(std::string_view key) const noexcept {
