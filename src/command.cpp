@@ -233,6 +233,11 @@ namespace {
 constexpr std::string_view kWrongType =
     "WRONGTYPE Operation against a key holding the wrong kind of value";
 
+// Goblin Core caps a single string value at 64 KiB by design; larger blobs
+// belong in the object store, not the keyspace.
+constexpr std::string_view kValueTooLarge =
+    "ERR value is larger than the 64 KiB limit; use https://goblin-store.dev";
+
 [[nodiscard]] bool is_zset_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::zadd:
@@ -267,6 +272,57 @@ constexpr std::string_view kWrongType =
     default:
       return false;
   }
+}
+
+// String commands that require the key to already hold a string (or be absent).
+// SET / SETNX / MSET clobber or create regardless of type, and MGET / DEL /
+// EXISTS / TYPE are type-agnostic, so none of those are gated.
+[[nodiscard]] bool is_typed_string_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::get:
+    case CommandType::getset:
+    case CommandType::getdel:
+    case CommandType::strlen:
+    case CommandType::append:
+    case CommandType::incr:
+    case CommandType::decr:
+    case CommandType::incrby:
+    case CommandType::decrby:
+    case CommandType::incrbyfloat:
+    case CommandType::getrange:
+    case CommandType::setrange:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The type a command's first-key argument must already hold (or be absent) to
+// escape WRONGTYPE, or nullopt for type-agnostic / clobbering commands.
+[[nodiscard]] std::optional<KeyType> command_requires_type(
+    CommandType type) noexcept {
+  if (is_zset_command(type)) {
+    return KeyType::Zset;
+  }
+  if (is_hash_command(type)) {
+    return KeyType::Hash;
+  }
+  if (is_typed_string_command(type)) {
+    return KeyType::String;
+  }
+  return std::nullopt;
+}
+
+// INCR/DECR/INCRBY/DECRBY: apply the (possibly negative) delta and reply with the
+// new value, or the canonical integer error on a non-integer value or overflow.
+void append_incr(std::string& out, Store& store, std::string_view key,
+                 long long delta) {
+  const auto result = store.incr_by(key, delta);
+  if (!result) {
+    resp::append_error(out, integer_range_error());
+    return;
+  }
+  resp::append_integer(out, *result);
 }
 
 [[nodiscard]] std::optional<long long> parse_ll(std::string_view text) {
@@ -671,6 +727,120 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::hincrby;
       return {.command = std::move(command)};
+    case CommandType::set:
+      if (command.args.size() < 2) {  // options (NX) validated in the handler
+        return parse_error(wrong_arity("set"));
+      }
+      command.type = CommandType::set;
+      return {.command = std::move(command)};
+    case CommandType::get:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("get"));
+      }
+      command.type = CommandType::get;
+      return {.command = std::move(command)};
+    case CommandType::getset:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("getset"));
+      }
+      command.type = CommandType::getset;
+      return {.command = std::move(command)};
+    case CommandType::setnx:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("setnx"));
+      }
+      command.type = CommandType::setnx;
+      return {.command = std::move(command)};
+    case CommandType::getdel:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("getdel"));
+      }
+      command.type = CommandType::getdel;
+      return {.command = std::move(command)};
+    case CommandType::strlen:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("strlen"));
+      }
+      command.type = CommandType::strlen;
+      return {.command = std::move(command)};
+    case CommandType::append:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("append"));
+      }
+      command.type = CommandType::append;
+      return {.command = std::move(command)};
+    case CommandType::incr:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("incr"));
+      }
+      command.type = CommandType::incr;
+      return {.command = std::move(command)};
+    case CommandType::decr:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("decr"));
+      }
+      command.type = CommandType::decr;
+      return {.command = std::move(command)};
+    case CommandType::incrby:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("incrby"));
+      }
+      command.type = CommandType::incrby;
+      return {.command = std::move(command)};
+    case CommandType::decrby:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("decrby"));
+      }
+      command.type = CommandType::decrby;
+      return {.command = std::move(command)};
+    case CommandType::incrbyfloat:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("incrbyfloat"));
+      }
+      command.type = CommandType::incrbyfloat;
+      return {.command = std::move(command)};
+    case CommandType::getrange:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("getrange"));
+      }
+      command.type = CommandType::getrange;
+      return {.command = std::move(command)};
+    case CommandType::setrange:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("setrange"));
+      }
+      command.type = CommandType::setrange;
+      return {.command = std::move(command)};
+    case CommandType::mset:
+      if (command.args.size() < 2 || command.args.size() % 2 != 0) {
+        return parse_error(wrong_arity("mset"));
+      }
+      command.type = CommandType::mset;
+      return {.command = std::move(command)};
+    case CommandType::mget:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("mget"));
+      }
+      command.type = CommandType::mget;
+      return {.command = std::move(command)};
+    case CommandType::del:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("del"));
+      }
+      command.type = CommandType::del;
+      return {.command = std::move(command)};
+    case CommandType::exists:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("exists"));
+      }
+      command.type = CommandType::exists;
+      return {.command = std::move(command)};
+    case CommandType::key_type:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("type"));
+      }
+      command.type = CommandType::key_type;
+      return {.command = std::move(command)};
     case CommandType::goblin_memory:
       if (command.args.size() != 1) {
         return parse_error(wrong_arity("goblin.memory"));
@@ -706,17 +876,17 @@ void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,
                           CommandExecutionOptions options) {
-  // WRONGTYPE: a key holds at most one type. A zset command on a hash key (or a
-  // hash command on a zset key) is rejected before it operates. GOBLIN.* commands
-  // resolve the type themselves and are exempt.
+  // WRONGTYPE: a key holds at most one type (one unified namespace). A command
+  // that operates on a specific type is rejected when the key already holds a
+  // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
+  // TYPE (type-agnostic), and GOBLIN.* / scripts are exempt.
   if (!command.args.empty()) {
-    if (is_zset_command(command.type) && store.key_is_hash(command.args[0])) {
-      resp::append_error(out, kWrongType);
-      return;
-    }
-    if (is_hash_command(command.type) && store.key_is_zset(command.args[0])) {
-      resp::append_error(out, kWrongType);
-      return;
+    if (const auto required = command_requires_type(command.type)) {
+      if (const auto actual = store.key_type(command.args[0]);
+          actual.has_value() && *actual != *required) {
+        resp::append_error(out, kWrongType);
+        return;
+      }
     }
   }
 
@@ -1021,6 +1191,234 @@ void execute_command_into(Store& store,
       } else {
         resp::append_integer(out, *result);
       }
+      return;
+    }
+
+    case CommandType::set: {
+      // SET key value [NX]. Other options (EX/PX/XX/GET/KEEPTTL) are not yet
+      // supported; TTL is on the roadmap.
+      const auto& value = command.args[1];
+      if (value.size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      bool nx = false;
+      for (std::size_t i = 2; i < command.args.size(); ++i) {
+        if (equals_ci(command.args[i], "NX")) {
+          nx = true;
+        } else {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+      }
+      if (nx) {
+        if (store.set_nx(command.args[0], value)) {
+          resp::append_simple_string(out, "OK");
+        } else {
+          resp::append_null_bulk_string(out);
+        }
+      } else {
+        store.set(command.args[0], value);
+        resp::append_simple_string(out, "OK");
+      }
+      return;
+    }
+    case CommandType::get: {
+      const auto value = store.get(command.args[0]);
+      if (!value) {
+        resp::append_null_bulk_string(out);
+      } else if (value->tail.empty()) {  // fully inline -> zero-copy
+        resp::append_bulk_string(out, value->head);
+      } else {
+        std::string joined;
+        joined.reserve(value->size());
+        joined.append(value->head);
+        joined.append(value->tail);
+        resp::append_bulk_string(out, joined);
+      }
+      return;
+    }
+    case CommandType::getset: {
+      const auto& value = command.args[1];
+      if (value.size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      const auto previous = store.get_set(command.args[0], value);
+      if (previous) {
+        resp::append_bulk_string(out, *previous);
+      } else {
+        resp::append_null_bulk_string(out);
+      }
+      return;
+    }
+    case CommandType::setnx: {
+      const auto& value = command.args[1];
+      if (value.size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      resp::append_integer(out, store.set_nx(command.args[0], value) ? 1 : 0);
+      return;
+    }
+    case CommandType::getdel: {
+      const auto previous = store.get_del(command.args[0]);
+      if (previous) {
+        resp::append_bulk_string(out, *previous);
+      } else {
+        resp::append_null_bulk_string(out);
+      }
+      return;
+    }
+    case CommandType::strlen: {
+      const auto len = store.strlen(command.args[0]);
+      resp::append_integer(out, len ? static_cast<long long>(*len) : 0);
+      return;
+    }
+    case CommandType::append: {
+      const auto& value = command.args[1];
+      const auto current = store.strlen(command.args[0]).value_or(0);
+      if (current + value.size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      resp::append_integer(
+          out, static_cast<long long>(store.append(command.args[0], value)));
+      return;
+    }
+    case CommandType::incr:
+      append_incr(out, store, command.args[0], 1);
+      return;
+    case CommandType::decr:
+      append_incr(out, store, command.args[0], -1);
+      return;
+    case CommandType::incrby: {
+      const auto delta = parse_ll(command.args[1]);
+      if (!delta) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      append_incr(out, store, command.args[0], *delta);
+      return;
+    }
+    case CommandType::decrby: {
+      const auto delta = parse_ll(command.args[1]);
+      if (!delta || *delta == std::numeric_limits<long long>::min()) {
+        // Negating LLONG_MIN overflows, so DECRBY rejects it as out of range.
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      append_incr(out, store, command.args[0], -*delta);
+      return;
+    }
+    case CommandType::incrbyfloat: {
+      const auto delta = parse_score(command.args[1]);
+      if (!delta) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const auto result = store.incr_by_float(command.args[0], *delta);
+      if (!result) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      resp::append_bulk_string(out, *result);
+      return;
+    }
+    case CommandType::getrange: {
+      const auto start = parse_ll(command.args[1]);
+      const auto end = parse_ll(command.args[2]);
+      if (!start || !end) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_bulk_string(out,
+                               store.getrange(command.args[0], *start, *end));
+      return;
+    }
+    case CommandType::setrange: {
+      const auto offset = parse_ll(command.args[1]);
+      if (!offset) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*offset < 0) {
+        resp::append_error(out, "ERR offset is out of range");
+        return;
+      }
+      const auto len = store.setrange(
+          command.args[0], static_cast<std::size_t>(*offset), command.args[2]);
+      if (!len) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      resp::append_integer(out, static_cast<long long>(*len));
+      return;
+    }
+    case CommandType::mset: {
+      for (std::size_t i = 0; i + 1 < command.args.size(); i += 2) {
+        if (command.args[i + 1].size() > Store::max_value_bytes()) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
+      for (std::size_t i = 0; i + 1 < command.args.size(); i += 2) {
+        store.set(command.args[i], command.args[i + 1]);
+      }
+      resp::append_simple_string(out, "OK");
+      return;
+    }
+    case CommandType::mget: {
+      resp::append_array_header(out, command.args.size());
+      for (const auto& key : command.args) {
+        const auto value = store.get(key);  // nil for a missing or non-string key
+        if (!value) {
+          resp::append_null_bulk_string(out);
+        } else if (value->tail.empty()) {
+          resp::append_bulk_string(out, value->head);
+        } else {
+          std::string joined;
+          joined.reserve(value->size());
+          joined.append(value->head);
+          joined.append(value->tail);
+          resp::append_bulk_string(out, joined);
+        }
+      }
+      return;
+    }
+    case CommandType::del: {
+      long long removed = 0;
+      for (const auto& key : command.args) {
+        removed += store.del(key) ? 1 : 0;
+      }
+      resp::append_integer(out, removed);
+      return;
+    }
+    case CommandType::exists: {
+      long long count = 0;
+      for (const auto& key : command.args) {
+        count += store.exists(key) ? 1 : 0;
+      }
+      resp::append_integer(out, count);
+      return;
+    }
+    case CommandType::key_type: {
+      const auto type = store.key_type(command.args[0]);
+      std::string_view name = "none";
+      if (type) {
+        switch (*type) {
+          case KeyType::String:
+            name = "string";
+            break;
+          case KeyType::Zset:
+            name = "zset";
+            break;
+          case KeyType::Hash:
+            name = "hash";
+            break;
+        }
+      }
+      resp::append_simple_string(out, name);
       return;
     }
 

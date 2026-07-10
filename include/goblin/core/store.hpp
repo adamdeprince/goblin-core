@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <iosfwd>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -15,7 +18,9 @@
 #include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/hash.hpp"
 #include "goblin/core/key_arena.hpp"
+#include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/snapshot.hpp"
+#include "goblin/core/string_value.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
 #include "goblin/core/zset_member_layer.hpp"
@@ -404,6 +409,392 @@ class ZSet {
   std::variant<CompactListpack, std::unique_ptr<FullState>> rep_;
 };
 
+// The type stored at a key. Kept in a dense parallel byte array rather than inside
+// the object union, so the union stays 16 B (no discriminant, no padding around
+// one) and adding a type never costs a key or value a bit. Mapped to snapshot's
+// SectionType at save time.
+enum class KeyType : std::uint8_t {
+  String = 0,
+  Zset = 1,
+  Hash = 2,
+};
+
+// A string value as two views: an inline head (the whole value, or its 6-byte
+// prefix) and an arena tail (empty when the value fits inline). Two views so GET
+// never copies -- the RESP layer writes head then tail.
+struct StringValueView {
+  std::string_view head;
+  std::string_view tail;
+  [[nodiscard]] std::size_t size() const noexcept {
+    return head.size() + tail.size();
+  }
+};
+
+// One key's object: a small-string value, a zset (BY VALUE -- the hot path pays
+// no extra indirection or per-zset allocation), or a heap-owned hash (112 B, too
+// large to inline). A bare union whose active member is named by the parallel
+// KeyType array, so it carries no tag of its own; the Keyspace drives every
+// construct / destroy / relocate by hand.
+union KeyObjectSlot {
+  StringValue str;
+  ZSet zset;
+  Hash* hash;
+  KeyObjectSlot() noexcept {}
+  ~KeyObjectSlot() {}
+};
+static_assert(sizeof(KeyObjectSlot) == 16);
+
+// The unified keyspace: one namespace mapping every key of every type to its
+// object, so a name resolves to at most one object (SET over a zset clobbers it;
+// a wrong-type command is a structural error, not a second object). It is a
+// MemberIndex (key -> id) over a KeyspaceStorage (id -> key bytes + the shared
+// value arena), a parallel object union per id, and a parallel type byte per id.
+// Ids stay dense via swap-remove.
+class Keyspace {
+ public:
+  explicit Keyspace(HashOptions hash_options)
+      : index_(&storage_), hash_options_(hash_options) {}
+  ~Keyspace() { destroy_all(); }
+  Keyspace(const Keyspace&) = delete;
+  Keyspace& operator=(const Keyspace&) = delete;
+  // Movable (an empty store is move-assigned in a few places). The member index
+  // holds a back-pointer into our storage, so every move rebinds it; the deque
+  // move is O(1) and never relocates a live object.
+  Keyspace(Keyspace&& other) noexcept
+      : storage_(std::move(other.storage_)),
+        index_(std::move(other.index_)),
+        objects_(std::move(other.objects_)),
+        types_(std::move(other.types_)),
+        hash_options_(other.hash_options_) {
+    index_.set_members(&storage_);
+  }
+  Keyspace& operator=(Keyspace&& other) noexcept {
+    if (this != &other) {
+      destroy_all();
+      storage_ = std::move(other.storage_);
+      index_ = std::move(other.index_);
+      objects_ = std::move(other.objects_);
+      types_ = std::move(other.types_);
+      hash_options_ = other.hash_options_;
+      index_.set_members(&storage_);
+    }
+    return *this;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept { return types_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return types_.empty(); }
+
+  [[nodiscard]] std::optional<KeyType> type_of(
+      std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id) {
+      return std::nullopt;
+    }
+    return static_cast<KeyType>(types_[*id]);
+  }
+  [[nodiscard]] bool contains(std::string_view key) const noexcept {
+    return find_id(key).has_value();
+  }
+  [[nodiscard]] bool is_type(std::string_view key, KeyType type) const noexcept {
+    const auto id = find_id(key);
+    return id.has_value() && types_[*id] == static_cast<std::uint8_t>(type);
+  }
+
+  // ---- strings ----
+  [[nodiscard]] std::optional<StringValueView> get_string(
+      std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::String)) {
+      return std::nullopt;
+    }
+    return value_view(objects_[*id].str);
+  }
+  [[nodiscard]] std::optional<std::size_t> string_length(
+      std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::String)) {
+      return std::nullopt;
+    }
+    return objects_[*id].str.length;
+  }
+  // SET: clobbers any prior object at this name.
+  void set_string(std::string_view key, std::string_view value) {
+    if (const auto id = find_id(key)) {
+      store_string(*id, value);
+    } else {
+      write_string_value(objects_[create_key(key, KeyType::String)].str, value);
+    }
+    maybe_compact();
+  }
+  // SETNX-style: set only if the key is absent (of any type). true = stored.
+  [[nodiscard]] bool set_string_if_absent(std::string_view key,
+                                          std::string_view value) {
+    if (find_id(key)) {
+      return false;
+    }
+    write_string_value(objects_[create_key(key, KeyType::String)].str, value);
+    return true;
+  }
+
+  // ---- zset ----
+  [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Zset)) {
+      return nullptr;
+    }
+    return &objects_[*id].zset;
+  }
+  [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Zset)) {
+      return nullptr;
+    }
+    return &objects_[*id].zset;
+  }
+  [[nodiscard]] ZSet& get_or_create_zset(std::string_view key,
+                                         const ZSetOptions* zset_options) {
+    if (const auto id = find_id(key)) {
+      assert(types_[*id] == static_cast<std::uint8_t>(KeyType::Zset));
+      return objects_[*id].zset;
+    }
+    const auto id = create_key(key, KeyType::Zset);
+    return *::new (static_cast<void*>(&objects_[id].zset)) ZSet(zset_options);
+  }
+  [[nodiscard]] ZSet& place_loaded_zset(std::string_view key, ZSet&& zset) {
+    const auto id = create_key(key, KeyType::Zset);
+    return *::new (static_cast<void*>(&objects_[id].zset)) ZSet(std::move(zset));
+  }
+
+  // ---- hash ----
+  [[nodiscard]] Hash* find_hash(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Hash)) {
+      return nullptr;
+    }
+    return objects_[*id].hash;
+  }
+  [[nodiscard]] const Hash* find_hash(std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Hash)) {
+      return nullptr;
+    }
+    return objects_[*id].hash;
+  }
+  [[nodiscard]] Hash& get_or_create_hash(std::string_view key) {
+    if (const auto id = find_id(key)) {
+      assert(types_[*id] == static_cast<std::uint8_t>(KeyType::Hash));
+      return *objects_[*id].hash;
+    }
+    const auto id = create_key(key, KeyType::Hash);
+    objects_[id].hash = new Hash(hash_options_);
+    return *objects_[id].hash;
+  }
+  [[nodiscard]] Hash& place_loaded_hash(std::string_view key, Hash&& hash) {
+    const auto id = create_key(key, KeyType::Hash);
+    objects_[id].hash = new Hash(std::move(hash));
+    return *objects_[id].hash;
+  }
+
+  // ---- lifecycle ----
+  [[nodiscard]] bool erase(std::string_view key) {
+    const auto id = find_id(key);
+    if (!id) {
+      return false;
+    }
+    erase_id(*id);
+    maybe_compact();
+    return true;
+  }
+
+  template <class Fn>
+  void for_each_string(Fn&& fn) const {  // fn(std::string_view, StringValueView)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
+        fn(storage_.view(id), value_view(objects_[id].str));
+      }
+    }
+  }
+  template <class Fn>
+  void for_each_zset(Fn&& fn) const {  // fn(std::string_view, const ZSet&)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::Zset)) {
+        fn(storage_.view(id), objects_[id].zset);
+      }
+    }
+  }
+  template <class Fn>
+  void for_each_hash(Fn&& fn) const {  // fn(std::string_view, const Hash&)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::Hash)) {
+        fn(storage_.view(id), *objects_[id].hash);
+      }
+    }
+  }
+
+  void clear() noexcept {
+    destroy_all();
+    objects_.clear();
+    types_.clear();
+    storage_ = KeyspaceStorage(storage_.chunk_bytes());
+    index_ = MemberIndex<KeyspaceStorage, KeyMeta>(&storage_);
+  }
+
+  [[nodiscard]] std::size_t allocated_bytes() const noexcept {
+    return storage_.allocated_bytes() + index_.allocated_bytes() +
+           types_.capacity() + types_.size() * sizeof(KeyObjectSlot);
+  }
+  [[nodiscard]] std::size_t value_arena_used_bytes() const noexcept {
+    return storage_.used_bytes();
+  }
+
+ private:
+  [[nodiscard]] std::optional<std::uint64_t> find_id(
+      std::string_view key) const noexcept {
+    const auto* meta = index_.find(key);
+    if (meta == nullptr) {
+      return std::nullopt;
+    }
+    return meta->get();
+  }
+
+  // Append the key blob, a raw object slot, and its type; register key -> id.
+  [[nodiscard]] std::uint64_t create_key(std::string_view key, KeyType type) {
+    const auto id = storage_.push_back_key(key);
+    objects_.emplace_back();
+    types_.push_back(static_cast<std::uint8_t>(type));
+    KeyMeta meta;
+    meta.set(id);
+    index_.insert(key, meta);
+    return id;
+  }
+
+  // Overwrite id (a string, or another type being clobbered) with a string value.
+  void store_string(std::uint64_t id, std::string_view value) {
+    if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
+      auto& slot = objects_[id].str;
+      if (!slot.is_inline()) {
+        storage_.mark_tail_dead(slot.tail_length());
+      }
+      write_string_value(slot, value);
+      return;
+    }
+    destroy_object(id);
+    types_[id] = static_cast<std::uint8_t>(KeyType::String);
+    write_string_value(objects_[id].str, value);
+  }
+
+  void write_string_value(StringValue& slot, std::string_view value) {
+    slot.length = static_cast<std::uint16_t>(value.size());
+    if (slot.is_inline()) {
+      std::memcpy(slot.inline_bytes, value.data(), value.size());
+      return;
+    }
+    std::memcpy(slot.spill.prefix, value.data(), StringValue::kPrefixCap);
+    const auto loc = storage_.append_tail(value.substr(StringValue::kPrefixCap));
+    slot.set_tail(loc.block, loc.offset);
+  }
+
+  [[nodiscard]] StringValueView value_view(
+      const StringValue& slot) const noexcept {
+    if (slot.is_inline()) {
+      return {slot.head(), {}};
+    }
+    return {slot.head(),
+            storage_.tail_view({slot.tail_block(), slot.tail_offset()},
+                               slot.tail_length())};
+  }
+
+  void destroy_object(std::uint64_t id) noexcept {
+    switch (static_cast<KeyType>(types_[id])) {
+      case KeyType::String: {
+        auto& slot = objects_[id].str;
+        if (!slot.is_inline()) {
+          storage_.mark_tail_dead(slot.tail_length());
+        }
+        break;
+      }
+      case KeyType::Zset:
+        objects_[id].zset.~ZSet();
+        break;
+      case KeyType::Hash:
+        delete objects_[id].hash;
+        break;
+    }
+  }
+
+  // Move src's object into dst (raw storage) and leave src destroyed.
+  void relocate_object(std::uint64_t dst, std::uint64_t src) noexcept {
+    switch (static_cast<KeyType>(types_[src])) {
+      case KeyType::String:
+        objects_[dst].str = objects_[src].str;
+        break;
+      case KeyType::Zset:
+        ::new (static_cast<void*>(&objects_[dst].zset))
+            ZSet(std::move(objects_[src].zset));
+        objects_[src].zset.~ZSet();
+        break;
+      case KeyType::Hash:
+        objects_[dst].hash = objects_[src].hash;
+        break;
+    }
+  }
+
+  void erase_id(std::uint64_t id) {
+    const auto last = static_cast<std::uint64_t>(types_.size() - 1);
+    destroy_object(id);
+    storage_.mark_key_dead(id);
+    (void)index_.erase(storage_.view(id));  // key bytes at id still intact
+    if (id != last) {
+      (void)index_.move_member_id(last, id);  // last's key now maps to id
+      storage_.move_key_slot(id, last);
+      types_[id] = types_[last];
+      relocate_object(id, last);
+    }
+    storage_.pop_back_key();
+    objects_.pop_back();
+    types_.pop_back();
+  }
+
+  void destroy_all() noexcept {
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      destroy_object(id);
+    }
+  }
+
+  void maybe_compact() {
+    if (storage_.should_compact()) {
+      compact_arena();
+    }
+  }
+  // Rebuild the arena, dropping dead key/tail bytes. Ids are preserved (walked in
+  // order), so the index and object/type arrays stay valid -- only the arena and
+  // each spilled value's tail address change.
+  void compact_arena() {
+    KeyspaceStorage fresh(storage_.chunk_bytes());
+    fresh.reserve(types_.size());
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      (void)fresh.push_back_key(storage_.view(id));
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
+        auto& slot = objects_[id].str;
+        if (!slot.is_inline()) {
+          const auto tail = storage_.tail_view(
+              {slot.tail_block(), slot.tail_offset()}, slot.tail_length());
+          const auto loc = fresh.append_tail(tail);
+          slot.set_tail(loc.block, loc.offset);
+        }
+      }
+    }
+    storage_ = std::move(fresh);
+    index_.set_members(&storage_);
+  }
+
+  KeyspaceStorage storage_;
+  MemberIndex<KeyspaceStorage, KeyMeta> index_;
+  std::deque<KeyObjectSlot> objects_;
+  std::vector<std::uint8_t> types_;
+  HashOptions hash_options_;
+};
+
 struct StoreOptions {
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
@@ -730,6 +1121,56 @@ class Store {
   [[nodiscard]] std::optional<HashMemoryStats> hash_memory_stats(
       std::string_view key) const;
 
+  // --- String (value) ---
+  // A key holds at most one type (unified keyspace). SET replaces whatever was
+  // there, of any type; the other string ops and the key ops below gate on type
+  // in the command layer (WRONGTYPE) exactly as the zset/hash ops do.
+  [[nodiscard]] static constexpr std::size_t max_value_bytes() noexcept {
+    return StringValueMaxBytes;
+  }
+  void set(std::string_view key, std::string_view value);
+  [[nodiscard]] bool set_nx(std::string_view key, std::string_view value);
+  [[nodiscard]] std::optional<StringValueView> get(
+      std::string_view key) const noexcept;
+  [[nodiscard]] std::optional<std::string> get_set(std::string_view key,
+                                                   std::string_view value);
+  [[nodiscard]] std::optional<std::string> get_del(std::string_view key);
+  [[nodiscard]] std::optional<std::size_t> strlen(
+      std::string_view key) const noexcept;
+  [[nodiscard]] std::size_t append(std::string_view key, std::string_view value);
+  // INCR/DECR/INCRBY/DECRBY: nullopt if the value is not an integer or the result
+  // would overflow long long.
+  [[nodiscard]] std::optional<long long> incr_by(std::string_view key,
+                                                 long long delta);
+  // INCRBYFLOAT: nullopt if the value or the result is not a finite number;
+  // returns the canonical text form that is also stored.
+  [[nodiscard]] std::optional<std::string> incr_by_float(std::string_view key,
+                                                         double delta);
+  // GETRANGE key start end: the inclusive substring, with Redis index rules
+  // (negatives count from the end; out-of-range clamps; empty when start > end
+  // or the value is absent/empty).
+  [[nodiscard]] std::string getrange(std::string_view key, long long start,
+                                     long long end) const;
+  // SETRANGE key offset value: overwrite starting at offset, zero-padding any
+  // gap, and return the new length -- or nullopt if the result would exceed the
+  // 64 KiB ceiling. offset must be >= 0 (the command layer rejects negatives).
+  [[nodiscard]] std::optional<std::size_t> setrange(std::string_view key,
+                                                    std::size_t offset,
+                                                    std::string_view value);
+
+  // --- Keys (any type) ---
+  [[nodiscard]] bool del(std::string_view key) { return keyspace_.erase(key); }
+  [[nodiscard]] bool exists(std::string_view key) const noexcept {
+    return keyspace_.contains(key);
+  }
+  [[nodiscard]] std::optional<KeyType> key_type(
+      std::string_view key) const noexcept {
+    return keyspace_.type_of(key);
+  }
+  [[nodiscard]] bool key_is_string(std::string_view key) const noexcept {
+    return keyspace_.is_type(key, KeyType::String);
+  }
+
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
   // Compact a zset in place to reclaim insertion slack (block capacity, vector
   // over-allocation) and repack the member index to `member_index_density`.
@@ -776,50 +1217,40 @@ class Store {
  private:
   SnapshotLoadStats load_native(std::istream& in);
   void place_loaded_zset(std::string key, ZSet&& zset);
-  [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept;
-  [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept;
-  [[nodiscard]] ZSet& get_or_create_zset(std::string_view key);
-  // The one options object every zset in this store shares (built lazily from
-  // options_). All store zsets have identical options, so they hold a shared_ptr
-  // to this rather than each copying a ZSetOptions.
-  [[nodiscard]] const ZSetOptions* zset_options() const;
+  [[nodiscard]] ZSet* find_zset(std::string_view key) noexcept {
+    return keyspace_.find_zset(key);
+  }
+  [[nodiscard]] const ZSet* find_zset(std::string_view key) const noexcept {
+    return keyspace_.find_zset(key);
+  }
+  [[nodiscard]] ZSet& get_or_create_zset(std::string_view key) {
+    return keyspace_.get_or_create_zset(key, &zset_options_);
+  }
+  [[nodiscard]] const ZSetOptions* zset_options() const noexcept {
+    return &zset_options_;
+  }
   [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
-  // Rebuild the zset key arena + overflow table once deleted keys dominate it.
-  void compact_zset_keys_if_needed();
 
   void place_loaded_hash(std::string key, Hash&& hash);
-  [[nodiscard]] Hash* find_hash(std::string_view key) noexcept;
-  [[nodiscard]] const Hash* find_hash(std::string_view key) const noexcept;
-  [[nodiscard]] Hash& get_or_create_hash(std::string_view key);
+  [[nodiscard]] Hash* find_hash(std::string_view key) noexcept {
+    return keyspace_.find_hash(key);
+  }
+  [[nodiscard]] const Hash* find_hash(std::string_view key) const noexcept {
+    return keyspace_.find_hash(key);
+  }
+  [[nodiscard]] Hash& get_or_create_hash(std::string_view key) {
+    return keyspace_.get_or_create_hash(key);
+  }
   void erase_if_empty(std::string_view key, const Hash& hash);
 
-  struct InlineZsetSlot {
-    std::string key;
-    ZSet zset;
-  };
-
-  [[nodiscard]] ZSet* find_inline_zset(std::string_view key) noexcept;
-  [[nodiscard]] const ZSet* find_inline_zset(std::string_view key) const noexcept;
-  [[nodiscard]] bool inline_zset_slots_full() const noexcept;
-  [[nodiscard]] ZSet& emplace_inline_zset(std::string_view key);
-  void erase_inline_zset_if(std::string_view key, const ZSet& zset) noexcept;
-
-  std::vector<InlineZsetSlot> inline_zsets_;
-  SwissTable<std::string, std::size_t, StringTableHash, StringTableEqual>
-      inline_zset_index_;
-  // Overflow zset keys live packed in this arena; the swiss keys are bare uint64
-  // offsets into it (fixed-size slots, no per-key std::string / malloc churn).
-  KeyArena zset_key_arena_;
-  SwissTable<std::uint64_t, ZSet, KeyArenaHash, KeyArenaEqual> overflow_zsets_;
-  std::optional<Hash> inline_hash_;
-  std::string inline_hash_key_;
-  SwissTable<std::string, Hash, StringTableHash, StringTableEqual> overflow_hashes_;
   StoreOptions options_;
-  // Lazily built on first use; mutable so the const accessors (save/memory_stats)
-  // can materialize it. Every store zset points at this one object.
-  mutable ZSetOptions zset_options_;
-  mutable bool zset_options_ready_ = false;
+  // Built once in the constructor from options_; every zset in this store shares
+  // it (an 8 B pointer per zset, not a 32 B copy). Declared before keyspace_ so
+  // it is alive when the keyspace binds to it.
+  ZSetOptions zset_options_;
+  // Every key of every type lives here, in one namespace. See Keyspace above.
+  Keyspace keyspace_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
 };

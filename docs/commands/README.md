@@ -12,6 +12,10 @@ nothing but the key space (one `Store`).
 | Jim Tcl | a small embeddable Tcl ([jim.tcl.tk](https://jim.tcl.tk)) | [`TCL.EVAL`](TCL.EVAL.md) · [`TCL.EVALSHA`](TCL.EVALSHA.md) · [`TCL.SCRIPT`](TCL.SCRIPT.md) |
 | MicroPython | a lean Python ([micropython.org](https://micropython.org)) | [`UPYTHON.EVAL`](UPYTHON.EVAL.md) · [`UPYTHON.EVALSHA`](UPYTHON.EVALSHA.md) · [`UPYTHON.SCRIPT`](UPYTHON.SCRIPT.md) |
 
+The data-type commands that share this key space are documented separately:
+**[strings.md](strings.md)** (`SET` / `GET` / `INCR` / `GETRANGE` / …) and
+**[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`).
+
 ## Why three?
 
 `EVAL` runs PUC-Lua 5.1 for **bug-for-bug compatibility** with other Redis

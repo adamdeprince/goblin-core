@@ -18,22 +18,32 @@
 
 namespace goblin::core {
 
+// The default per-slot payload: a 32-bit member id (zset members and hash fields
+// never exceed 2^32). `id_type`/`get()`/`set()` are the uniform interface the
+// index uses so a wider payload (the keyspace's packed 48-bit KeyMeta) can be
+// dropped in without touching the swiss logic; `.member_id` stays so every
+// existing zset/hash call site is unchanged.
 struct ZSetMemberMeta {
+  using id_type = std::uint32_t;
   std::uint32_t member_id{0};
+  [[nodiscard]] id_type get() const noexcept { return member_id; }
+  void set(id_type value) noexcept { member_id = value; }
 };
 static_assert(sizeof(ZSetMemberMeta) == 4);
 
 // The tuned Swiss table (SIMD group probe, non-power-of-two capacity, growth
 // factor, density-targeted packing). It is storage-agnostic: it stores only
 // member ids in its slots and resolves a slot's key bytes on demand through
-// `Storage::view(uint32) -> std::string_view`. `ZSetMemberIndex` (below) is the
+// `Storage::view(id_type) -> std::string_view`. `ZSetMemberIndex` (below) is the
 // zset instantiation over ZSetMemberStorage; the hash type reuses it over
-// HashStorage for its field->id index.
-template <class Storage>
+// HashStorage for its field->id index, and the keyspace instantiates it over
+// KeyspaceStorage with a packed 48-bit KeyMeta.
+template <class Storage, class Meta = ZSetMemberMeta>
 class MemberIndex {
  public:
   using size_type = std::size_t;
   using hash_type = std::uint32_t;
+  using id_type = typename Meta::id_type;
 
   // Control bytes are probed a full 16-byte SIMD group at a time. Wider groups
   // (AVX2/AVX-512) measured slower: at a ~90% load factor a lookup resolves in
@@ -164,7 +174,7 @@ class MemberIndex {
 
   // Insert a known-unique member without a duplicate check or a capacity grow.
   // The caller must have reserved enough capacity (see reserve_for_density).
-  void insert_packed(std::string_view member, ZSetMemberMeta meta) {
+  void insert_packed(std::string_view member, Meta meta) {
     const auto hash = hash_member(member);
     const auto index = find_insert_index(hash);
     slots_[index].meta = meta;
@@ -172,7 +182,7 @@ class MemberIndex {
     ++size_;
   }
 
-  [[nodiscard]] ZSetMemberMeta* find(std::string_view member) {
+  [[nodiscard]] Meta* find(std::string_view member) {
     const auto index = find_index(member);
     if (index == npos) {
       return nullptr;
@@ -180,7 +190,7 @@ class MemberIndex {
     return &slots_[index].meta;
   }
 
-  [[nodiscard]] const ZSetMemberMeta* find(std::string_view member) const {
+  [[nodiscard]] const Meta* find(std::string_view member) const {
     const auto index = find_index(member);
     if (index == npos) {
       return nullptr;
@@ -196,8 +206,8 @@ class MemberIndex {
     return index;
   }
 
-  [[nodiscard]] std::uint32_t member_id_at(size_type index) const noexcept {
-    return slots_[index].meta.member_id;
+  [[nodiscard]] id_type member_id_at(size_type index) const noexcept {
+    return slots_[index].meta.get();
   }
 
   bool erase_at_index(size_type index) {
@@ -211,8 +221,8 @@ class MemberIndex {
     return true;
   }
 
-  [[nodiscard]] bool move_member_id(std::uint32_t old_member_id,
-                                    std::uint32_t new_member_id) {
+  [[nodiscard]] bool move_member_id(id_type old_member_id,
+                                    id_type new_member_id) {
     const auto index = find_index(member_view(old_member_id));
     if (index == npos) {
       return false;
@@ -221,20 +231,20 @@ class MemberIndex {
   }
 
   [[nodiscard]] bool move_member_id_at_slot(size_type index,
-                                            std::uint32_t old_member_id,
-                                            std::uint32_t new_member_id) {
+                                            id_type old_member_id,
+                                            id_type new_member_id) {
     if (index >= capacity_ || !is_full(index)) {
       return false;
     }
-    if (slots_[index].meta.member_id != old_member_id) {
+    if (slots_[index].meta.get() != old_member_id) {
       return false;
     }
 
-    slots_[index].meta.member_id = new_member_id;
+    slots_[index].meta.set(new_member_id);
     return true;
   }
 
-  std::pair<ZSetMemberMeta*, bool> insert(std::string_view member, ZSetMemberMeta meta) {
+  std::pair<Meta*, bool> insert(std::string_view member, Meta meta) {
     ensure_capacity_for_insert();
 
     const auto hash = hash_member(member);
@@ -270,7 +280,7 @@ class MemberIndex {
   void for_each(Fn&& fn) const {
     for (size_type i = 0; i < capacity_; ++i) {
       if (is_full(i)) {
-        fn(member_view(slots_[i].meta.member_id), slots_[i].meta);
+        fn(member_view(slots_[i].meta.get()), slots_[i].meta);
       }
     }
   }
@@ -285,7 +295,7 @@ class MemberIndex {
     writer.u64(tombstones_);
     writer.bytes(reinterpret_cast<const char*>(control_.data()), control_.size());
     for (size_type i = 0; i < capacity_; ++i) {
-      writer.u32(slots_[i].meta.member_id);
+      writer.u32(static_cast<std::uint32_t>(slots_[i].meta.get()));
     }
   }
 
@@ -302,13 +312,13 @@ class MemberIndex {
     control_.assign(control_begin, control_begin + control.size());
     slots_.resize(capacity_);
     for (size_type i = 0; i < capacity_; ++i) {
-      slots_[i].meta.member_id = reader.u32();
+      slots_[i].meta.set(reader.u32());
     }
   }
 
  private:
   struct Slot {
-    ZSetMemberMeta meta;
+    Meta meta;
   };
 
   static constexpr std::uint8_t kEmpty = 0x80;
@@ -387,7 +397,7 @@ class MemberIndex {
     return round_up_to_group((expected_size * 32 + 30) / 31);
   }
 
-  [[nodiscard]] std::string_view member_view(std::uint32_t member_id) const noexcept {
+  [[nodiscard]] std::string_view member_view(id_type member_id) const noexcept {
     return members_->view(member_id);
   }
 
@@ -463,7 +473,7 @@ class MemberIndex {
           index -= capacity_;
         }
 
-        if (simd::bytes_equal(member_view(slots_[index].meta.member_id), member)) {
+        if (simd::bytes_equal(member_view(slots_[index].meta.get()), member)) {
           return index;
         }
         matches &= matches - 1;
@@ -516,7 +526,7 @@ class MemberIndex {
   }
 
   void insert_existing(Slot slot) {
-    const auto hash = hash_member(member_view(slot.meta.member_id));
+    const auto hash = hash_member(member_view(slot.meta.get()));
     const auto index = find_insert_index(hash);
     slots_[index] = slot;
     set_control(index, fingerprint(hash));

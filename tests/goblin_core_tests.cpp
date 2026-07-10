@@ -14,6 +14,9 @@
 #include "goblin/core/upython_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "goblin/core/store.hpp"
+#include "goblin/core/string_value.hpp"
+#include "goblin/core/keyspace_storage.hpp"
+#include "goblin/core/ttl_set.hpp"
 #include "goblin/core/swiss_table.hpp"
 
 // Tests must validate even in Release builds; keep assert() live regardless of
@@ -809,37 +812,33 @@ void test_store_zset_methods() {
   assert(!store.zrank("z", "two").has_value());
 }
 
-void test_store_inline_and_overflow_zsets() {
+void test_store_multiple_zsets() {
   goblin::core::Store store;
 
+  // The unified keyspace holds every zset in one namespace; memory_stats reports
+  // the live zset count in overflow_zset_count (there is no inline/overflow split
+  // any more).
   assert(store.zadd("one", 1.0, "a") == 1);
-  auto stats = store.memory_stats();
-  assert(stats.inline_zset_count == 1);
-  assert(stats.overflow_zset_count == 0);
+  assert(store.memory_stats().overflow_zset_count == 1);
 
   assert(store.zadd("two", 2.0, "b") == 1);
-  stats = store.memory_stats();
-  assert(stats.inline_zset_count == 2);
-  assert(stats.overflow_zset_count == 0);
+  assert(store.memory_stats().overflow_zset_count == 2);
 
   assert(store.zscore("one", "a") == 1.0);
   assert(store.zscore("two", "b") == 2.0);
 
+  // Emptying a zset removes its key from the keyspace.
   const std::vector<std::string_view> remove_a{"a"};
   assert(store.zrem("one", remove_a) == 1);
   assert(store.zcard("one") == 0);
+  assert(!store.exists("one"));
   assert(store.zscore("two", "b") == 2.0);
-
-  stats = store.memory_stats();
-  assert(stats.inline_zset_count == 1);
-  assert(stats.overflow_zset_count == 0);
+  assert(store.memory_stats().overflow_zset_count == 1);
 
   assert(store.zadd("three", 3.0, "c") == 1);
   assert(store.zscore("two", "b") == 2.0);
   assert(store.zscore("three", "c") == 3.0);
-  stats = store.memory_stats();
-  assert(stats.inline_zset_count == 2);
-  assert(stats.overflow_zset_count == 0);
+  assert(store.memory_stats().overflow_zset_count == 2);
 }
 
 void test_store_shared_member_layer() {
@@ -982,21 +981,307 @@ void test_store_shared_member_layer_skips_unrelated_keys() {
   assert(!store.zscore("two", "a").has_value());
 }
 
-void test_store_inline_zset_slot_limit() {
-  goblin::core::Store store(
-      goblin::core::StoreOptions{.inline_zset_limit = 2});
+void test_store_many_zsets_coexist() {
+  goblin::core::Store store;
 
+  // Many zsets share one keyspace; each resolves independently and all are
+  // counted (the old inline-slot cap no longer applies).
   assert(store.zadd("one", 1.0, "a") == 1);
   assert(store.zadd("two", 2.0, "b") == 1);
-  auto stats = store.memory_stats();
-  assert(stats.inline_zset_count == 2);
-  assert(stats.overflow_zset_count == 0);
-
   assert(store.zadd("three", 3.0, "c") == 1);
-  stats = store.memory_stats();
-  assert(stats.inline_zset_count == 2);
-  assert(stats.overflow_zset_count == 1);
+  assert(store.memory_stats().overflow_zset_count == 3);
+  assert(store.zscore("one", "a") == 1.0);
+  assert(store.zscore("two", "b") == 2.0);
   assert(store.zscore("three", "c") == 3.0);
+}
+
+std::string joined_value(const goblin::core::Store& store, std::string_view key) {
+  const auto value = store.get(key);
+  assert(value.has_value());
+  std::string out;
+  out.append(value->head);
+  out.append(value->tail);
+  return out;
+}
+
+void test_store_strings() {
+  using goblin::core::KeyType;
+  goblin::core::Store store;
+
+  store.set("k", "42");
+  assert(joined_value(store, "k") == "42");
+  assert(store.get("k")->tail.empty());  // small values are fully inline
+  assert(store.strlen("k") == 2U);
+  assert(store.key_type("k") == KeyType::String);
+  assert(store.exists("k") && store.key_is_string("k"));
+
+  // 14 bytes is the largest fully-inline value; 15 spills a tail into the arena.
+  store.set("edge", "0123456789abcd");  // 14
+  assert(store.get("edge")->tail.empty());
+  store.set("edge2", "0123456789abcde");  // 15
+  assert(!store.get("edge2")->tail.empty());
+
+  const std::string big(1000, 'x');
+  store.set("big", big);
+  assert(joined_value(store, "big") == big);
+  assert(!store.get("big")->tail.empty());
+  assert(store.strlen("big") == 1000U);
+
+  // Overwrite spilled -> inline reclaims the tail; the value stays correct.
+  store.set("big", "hi");
+  assert(joined_value(store, "big") == "hi");
+  assert(store.get("big")->tail.empty());
+
+  assert(!store.set_nx("k", "nope"));    // exists
+  assert(store.set_nx("fresh", "yes"));  // absent
+  assert(joined_value(store, "fresh") == "yes");
+
+  // APPEND creates, then grows across the inline boundary.
+  assert(store.append("app", "abc") == 3U);
+  assert(store.append("app", "defghijklmnop") == 16U);
+  assert(joined_value(store, "app") == "abcdefghijklmnop");
+
+  assert(store.get_set("fresh", "changed") == std::optional<std::string>("yes"));
+  assert(joined_value(store, "fresh") == "changed");
+  assert(store.get_del("fresh") == std::optional<std::string>("changed"));
+  assert(!store.exists("fresh"));
+
+  assert(store.incr_by("counter", 1) == 1LL);
+  assert(store.incr_by("counter", 41) == 42LL);
+  assert(store.incr_by("counter", -2) == 40LL);
+  assert(joined_value(store, "counter") == "40");
+  store.set("notint", "abc");
+  assert(!store.incr_by("notint", 1).has_value());
+  assert(store.incr_by_float("f", 3.5) == std::optional<std::string>("3.5"));
+  assert(store.incr_by_float("f", 1.5) == std::optional<std::string>("5"));
+
+  assert(store.del("k"));
+  assert(!store.exists("k"));
+  assert(!store.del("k"));
+
+  // Clobber: SET over a zset replaces it -- one object per name.
+  assert(store.zadd("z", 1.0, "m") == 1);
+  assert(store.key_type("z") == KeyType::Zset);
+  store.set("z", "now-a-string");
+  assert(store.key_type("z") == KeyType::String);
+  assert(!store.zscore("z", "m").has_value());
+  assert(joined_value(store, "z") == "now-a-string");
+
+  assert(store.key_type("absent") == std::nullopt);
+  assert(!store.get("absent").has_value());
+  assert(!store.strlen("absent").has_value());
+}
+
+void test_store_string_arena_compaction() {
+  goblin::core::Store store;
+
+  std::vector<std::string> keys;
+  for (int i = 0; i < 200; ++i) {
+    std::string key = "c" + std::to_string(i);
+    store.set(key, std::string(1024, static_cast<char>('a' + (i % 26))));
+    keys.push_back(std::move(key));
+  }
+  // Overwrite each with a short value: ~200 KiB of tails go dead, past the
+  // compaction floor, so the arena rebuilds at least once mid-stream.
+  for (const auto& key : keys) {
+    store.set(key, "short-" + key);
+  }
+  for (const auto& key : keys) {
+    assert(joined_value(store, key) == "short-" + key);
+  }
+  // Values written after a compaction are addressed in the fresh arena.
+  for (int i = 0; i < 100; ++i) {
+    store.set("z" + std::to_string(i), std::string(2000, 'Z'));
+  }
+  for (int i = 0; i < 100; ++i) {
+    const auto value = store.get("z" + std::to_string(i));
+    assert(value.has_value() && value->size() == 2000);
+  }
+}
+
+void test_string_commands() {
+  goblin::core::Store store;
+
+  assert(execute_fields(store, {"SET", "k", "hello"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GET", "k"}) == "$5\r\nhello\r\n");
+  assert(execute_fields(store, {"STRLEN", "k"}) == ":5\r\n");
+  assert(execute_fields(store, {"TYPE", "k"}) == "+string\r\n");
+  assert(execute_fields(store, {"EXISTS", "k"}) == ":1\r\n");
+  assert(execute_fields(store, {"GET", "absent"}) == "$-1\r\n");
+  assert(execute_fields(store, {"TYPE", "absent"}) == "+none\r\n");
+
+  // A value past the inline cap round-trips through the arena tail.
+  const std::string big(500, 'x');
+  assert(execute_fields(store, {"SET", "big", big}) == "+OK\r\n");
+  assert(execute_fields(store, {"GET", "big"}) == "$500\r\n" + big + "\r\n");
+
+  // Values over the 64 KiB ceiling are rejected with a pointer to the store.
+  const std::string too_big(70000, 'z');
+  assert(execute_fields(store, {"SET", "toobig", too_big}) ==
+         "-ERR value is larger than the 64 KiB limit; use "
+         "https://goblin-store.dev\r\n");
+
+  assert(execute_fields(store, {"SETNX", "k", "nope"}) == ":0\r\n");
+  assert(execute_fields(store, {"SETNX", "fresh", "yes"}) == ":1\r\n");
+  assert(execute_fields(store, {"GET", "fresh"}) == "$3\r\nyes\r\n");
+  assert(execute_fields(store, {"SET", "fresh", "x", "NX"}) == "$-1\r\n");
+  assert(execute_fields(store, {"SET", "fresh2", "y", "NX"}) == "+OK\r\n");
+
+  assert(execute_fields(store, {"APPEND", "a", "foo"}) == ":3\r\n");
+  assert(execute_fields(store, {"APPEND", "a", "bar"}) == ":6\r\n");
+  assert(execute_fields(store, {"GET", "a"}) == "$6\r\nfoobar\r\n");
+
+  assert(execute_fields(store, {"INCR", "n"}) == ":1\r\n");
+  assert(execute_fields(store, {"INCRBY", "n", "9"}) == ":10\r\n");
+  assert(execute_fields(store, {"DECR", "n"}) == ":9\r\n");
+  assert(execute_fields(store, {"DECRBY", "n", "4"}) == ":5\r\n");
+  assert(execute_fields(store, {"SET", "n", "abc"}) == "+OK\r\n");
+  assert(execute_fields(store, {"INCR", "n"}) ==
+         "-ERR value is not an integer or out of range\r\n");
+  assert(execute_fields(store, {"INCRBYFLOAT", "f", "3.5"}) == "$3\r\n3.5\r\n");
+  assert(execute_fields(store, {"INCRBYFLOAT", "f", "1.5"}) == "$1\r\n5\r\n");
+
+  assert(execute_fields(store, {"GETSET", "k", "world"}) == "$5\r\nhello\r\n");
+  assert(execute_fields(store, {"GET", "k"}) == "$5\r\nworld\r\n");
+  assert(execute_fields(store, {"GETDEL", "k"}) == "$5\r\nworld\r\n");
+  assert(execute_fields(store, {"EXISTS", "k"}) == ":0\r\n");
+
+  assert(execute_fields(store, {"MSET", "x", "1", "y", "2"}) == "+OK\r\n");
+  assert(execute_fields(store, {"MGET", "x", "y", "absent"}) ==
+         "*3\r\n$1\r\n1\r\n$1\r\n2\r\n$-1\r\n");
+  assert(execute_fields(store, {"DEL", "x", "y", "absent"}) == ":2\r\n");
+
+  // WRONGTYPE gating, both directions, and MGET's nil-not-error rule.
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GET", "z"}) == wrongtype);
+  assert(execute_fields(store, {"APPEND", "z", "x"}) == wrongtype);
+  assert(execute_fields(store, {"INCR", "z"}) == wrongtype);
+  assert(execute_fields(store, {"SET", "s", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"ZADD", "s", "1", "m"}) == wrongtype);
+  assert(execute_fields(store, {"MGET", "z"}) == "*1\r\n$-1\r\n");
+  assert(execute_fields(store, {"TYPE", "z"}) == "+zset\r\n");
+
+  // SET clobbers a zset -- one object per name, no WRONGTYPE.
+  assert(execute_fields(store, {"SET", "z", "clobbered"}) == "+OK\r\n");
+  assert(execute_fields(store, {"TYPE", "z"}) == "+string\r\n");
+  assert(execute_fields(store, {"GET", "z"}) == "$9\r\nclobbered\r\n");
+}
+
+void test_string_range_commands() {
+  goblin::core::Store store;
+
+  // GETRANGE: Redis index rules (inclusive, negatives from the end, clamped).
+  assert(execute_fields(store, {"SET", "k", "Hello World"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GETRANGE", "k", "0", "4"}) == "$5\r\nHello\r\n");
+  assert(execute_fields(store, {"GETRANGE", "k", "-5", "-1"}) == "$5\r\nWorld\r\n");
+  assert(execute_fields(store, {"GETRANGE", "k", "0", "-1"}) ==
+         "$11\r\nHello World\r\n");
+  assert(execute_fields(store, {"GETRANGE", "k", "6", "100"}) ==
+         "$5\r\nWorld\r\n");  // end clamps to the last index
+  assert(execute_fields(store, {"GETRANGE", "k", "10", "5"}) ==
+         "$0\r\n\r\n");  // start > end
+  assert(execute_fields(store, {"GETRANGE", "absent", "0", "-1"}) == "$0\r\n\r\n");
+
+  // GETRANGE spanning the inline/tail boundary (a spilled 20-byte value).
+  assert(execute_fields(store, {"SET", "big", "0123456789ABCDEFGHIJ"}) ==
+         "+OK\r\n");
+  assert(execute_fields(store, {"GETRANGE", "big", "12", "17"}) ==
+         "$6\r\nCDEFGH\r\n");
+
+  // SETRANGE overwrites in place, zero-pads a gap, and reports the new length.
+  assert(execute_fields(store, {"SET", "s", "Hello World"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SETRANGE", "s", "6", "Redis"}) == ":11\r\n");
+  assert(execute_fields(store, {"GET", "s"}) == "$11\r\nHello Redis\r\n");
+  assert(execute_fields(store, {"SETRANGE", "pad", "5", "xy"}) == ":7\r\n");
+  assert(execute_fields(store, {"GET", "pad"}) ==
+         std::string("$7\r\n") + std::string(5, '\0') + "xy\r\n");
+
+  // SETRANGE with an empty value never creates or changes the string.
+  assert(execute_fields(store, {"SETRANGE", "gone", "0", ""}) == ":0\r\n");
+  assert(!store.exists("gone"));
+  assert(execute_fields(store, {"SETRANGE", "s", "0", ""}) == ":11\r\n");
+
+  // A negative offset is an error.
+  assert(execute_fields(store, {"SETRANGE", "s", "-1", "x"}) ==
+         "-ERR offset is out of range\r\n");
+
+  // Both gate on WRONGTYPE.
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GETRANGE", "z", "0", "-1"}) == wrongtype);
+  assert(execute_fields(store, {"SETRANGE", "z", "0", "x"}) == wrongtype);
+}
+
+void test_string_snapshot_roundtrip() {
+  using goblin::core::Store;
+  Store store;
+  store.set("k", "hello");
+  store.set("big", std::string(1000, 'q'));  // spilled value
+  store.set("empty", "");
+  assert(store.zadd("z", 1.0, "m") == 1);  // mixed types share the keyspace
+  assert(store.hset("h", "field", "value") == 1);
+
+  std::ostringstream out(std::ios::binary);
+  store.save(out);
+  const std::string bytes = out.str();
+
+  Store restored;
+  std::istringstream in(bytes, std::ios::binary);
+  const auto stats = restored.load(in);
+  assert(stats.keys == 5);
+  assert(joined_value(restored, "k") == "hello");
+  assert(joined_value(restored, "big") == std::string(1000, 'q'));
+  assert(joined_value(restored, "empty").empty());
+  assert(restored.key_type("empty") == goblin::core::KeyType::String);
+  assert(restored.zscore("z", "m") == 1.0);
+  assert(restored.hget("h", "field").value() == "value");
+}
+
+void test_ttl_set() {
+  goblin::core::TtlSet ttl;
+  assert(ttl.empty());
+
+  ttl.set(10, 5000);
+  ttl.set(20, 3000);
+  ttl.set(30, 8000);
+  assert(ttl.size() == 3);
+  assert(ttl.contains(10) && ttl.contains(20) && ttl.contains(30));
+  assert(ttl.expiry(10) == std::optional<std::uint64_t>(5000));
+  assert(!ttl.contains(99) && ttl.expiry(99) == std::nullopt);
+
+  // Updating an expiry keeps one entry and re-sorts it.
+  ttl.set(10, 1000);
+  assert(ttl.expiry(10) == std::optional<std::uint64_t>(1000));
+  assert(ttl.size() == 3);
+
+  assert(ttl.clear(30));
+  assert(!ttl.contains(30) && !ttl.clear(30));
+  assert(ttl.size() == 2);
+
+  // expire_due pops the soonest first, and only what is due.
+  std::vector<std::uint64_t> expired;
+  ttl.expire_due(999, [&](std::uint64_t id) { expired.push_back(id); });
+  assert(expired.empty());
+  ttl.expire_due(3000, [&](std::uint64_t id) { expired.push_back(id); });
+  assert((expired == std::vector<std::uint64_t>{10, 20}));  // 1000 then 3000
+  assert(ttl.empty());
+
+  // rekey moves an entry to a new id; unknown ids are a no-op.
+  ttl.set(100, 5000);
+  ttl.rekey(100, 7);
+  assert(!ttl.contains(100) && ttl.contains(7));
+  assert(ttl.expiry(7) == std::optional<std::uint64_t>(5000));
+  ttl.rekey(999, 1);
+  assert(!ttl.contains(1));
+
+  // 48-bit ids and expiries round-trip through the 32+16 packing.
+  const std::uint64_t big_id = (std::uint64_t{1} << 47) | 0x1234U;
+  const std::uint64_t big_expiry = (std::uint64_t{1} << 44) | 0xABCDU;
+  ttl.set(big_id, big_expiry);
+  assert(ttl.expiry(big_id) == std::optional<std::uint64_t>(big_expiry));
 }
 
 void run_store_rank_cache_test(goblin::core::RankCacheMode mode) {
@@ -2092,6 +2377,87 @@ void test_rdb_import() {
   }
 }
 
+void test_keyspace_storage_and_string_value() {
+  using goblin::core::KeyspaceStorage;
+  using goblin::core::StringValue;
+
+  static_assert(sizeof(StringValue) == 16);
+
+  // A tiny value lives entirely inline; block/offset are unused.
+  {
+    StringValue v{};
+    const std::string_view small = "42";
+    v.length = static_cast<std::uint16_t>(small.size());
+    assert(v.is_inline());
+    assert(v.tail_length() == 0);
+    std::memcpy(v.head_data(), small.data(), small.size());
+    assert(v.head() == small);
+  }
+  // A 14-byte value is the largest fully-inline value.
+  {
+    StringValue v{};
+    const std::string_view full = "0123456789abcd";  // 14 bytes
+    v.length = static_cast<std::uint16_t>(full.size());
+    assert(v.is_inline());
+    std::memcpy(v.head_data(), full.data(), full.size());
+    assert(v.head() == full);
+  }
+  // A larger value keeps a 6-byte prefix inline and addresses its tail.
+  {
+    StringValue v{};
+    v.length = 40;
+    assert(!v.is_inline());
+    assert(v.tail_length() == 40 - StringValue::kPrefixCap);
+    v.set_tail(7, 123);
+    assert(v.tail_block() == 7);
+    assert(v.tail_offset() == 123);
+    std::memcpy(v.head_data(), "prefix", StringValue::kPrefixCap);
+    assert(v.head() == std::string_view("prefix", StringValue::kPrefixCap));
+  }
+
+  // Key table: push/view, an empty key, value tails sharing the arena, and a
+  // swap-remove sliding the last id into a hole.
+  {
+    KeyspaceStorage storage;
+    const auto a = storage.push_back_key("alpha");
+    const auto b = storage.push_back_key("bravo");
+    const auto c = storage.push_back_key("");  // empty keys are valid
+    assert(a == 0 && b == 1 && c == 2);
+    assert(storage.size() == 3);
+    assert(storage.view(a) == "alpha");
+    assert(storage.view(b) == "bravo");
+    assert(storage.view(c).empty());
+
+    const auto loc = storage.append_tail("a-long-tail-of-bytes");
+    assert(storage.tail_view(loc, 20) == "a-long-tail-of-bytes");
+
+    storage.mark_key_dead(a);
+    storage.move_key_slot(a, c);
+    storage.pop_back_key();
+    assert(storage.size() == 2);
+    assert(storage.view(a).empty());  // c's (empty) bytes now sit at id a
+    assert(storage.view(b) == "bravo");
+    assert(storage.dead_bytes() == 5);  // "alpha"
+  }
+
+  // Cross a chunk boundary so the 32/32 {block, offset} split addresses more
+  // than one block; every key must still resolve.
+  {
+    KeyspaceStorage storage(KeyspaceStorage::kMinChunkBytes);  // 128 KiB chunks
+    std::vector<std::uint32_t> ids;
+    std::vector<std::string> keys;
+    const std::string filler(1024, 'x');
+    for (int i = 0; i < 400; ++i) {  // ~400 KiB of keys spans several chunks
+      std::string key = "k" + std::to_string(i) + ":" + filler;
+      ids.push_back(storage.push_back_key(key));
+      keys.push_back(std::move(key));
+    }
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      assert(storage.view(ids[i]) == keys[i]);
+    }
+  }
+}
+
 }  // namespace
 
 // --- Scripting (EVAL / EVALSHA / SCRIPT) -----------------------------------
@@ -2695,13 +3061,19 @@ int main() {
   test_zset_member_index_cleanup_shrinks_sparse_table();
   test_zset_skips_auto_compaction_for_small_removals();
   test_store_zset_methods();
-  test_store_inline_and_overflow_zsets();
+  test_store_multiple_zsets();
   test_store_shared_member_layer();
   test_store_shared_layer_structural_append_cow();
   test_zset_small_collection_footprint();
   test_zset_arena_growth_spans_blocks();
   test_store_shared_member_layer_skips_unrelated_keys();
-  test_store_inline_zset_slot_limit();
+  test_store_many_zsets_coexist();
+  test_store_strings();
+  test_store_string_arena_compaction();
+  test_string_commands();
+  test_string_range_commands();
+  test_string_snapshot_roundtrip();
+  test_ttl_set();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
   test_zset_score_width_promotes();
@@ -2767,5 +3139,7 @@ int main() {
   test_tcl_without_engine_is_unavailable();
   test_upython_scripting();
   test_upython_without_engine_is_unavailable();
+
+  test_keyspace_storage_and_string_value();
   return 0;
 }

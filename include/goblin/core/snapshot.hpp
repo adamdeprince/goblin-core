@@ -91,6 +91,11 @@ enum class HashOpcode : std::uint8_t {
 // ignored and the field index is rebuilt from the canonical layer.
 inline constexpr std::uint32_t kHashAcceleratorVersion = 1;
 
+enum class StringOpcode : std::uint8_t {
+  End = kOpEnd,
+  String = 0x01,  // operands: key, raw value bytes (no accelerator)
+};
+
 // CRC32C (Castagnoli), for corruption detection. The result is standard
 // CRC32C, so it is identical across the hardware and software paths and across
 // architectures (a snapshot written on one machine verifies on another).

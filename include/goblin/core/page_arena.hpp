@@ -211,4 +211,69 @@ struct RunReservation {
   return {offset, dst};
 }
 
+// A {block, offset} pair returned by reserve_run_bytes_split: the block index and
+// the in-block byte offset as two independent u32s, resolved as
+// blocks[block].get() + offset.
+struct RunReservationSplit {
+  std::uint32_t block{0};
+  std::uint32_t offset{0};
+  char* dst{nullptr};
+};
+
+// Split-address variant of reserve_run_bytes for the unified keyspace arena. The
+// packed variant above truncates the global position to a single u32, capping an
+// arena at 4 GiB -- unacceptable here, where every key AND every string value
+// share one arena. This returns the block index and in-block offset separately,
+// leaving next_offset a full size_t, so total capacity is chunk_bytes << 32 (4
+// PiB at the 1 MiB default) rather than 4 GiB. The grow/freeze/COW policy is
+// otherwise identical to reserve_run_bytes.
+[[nodiscard]] inline RunReservationSplit reserve_run_bytes_split(
+    std::vector<std::shared_ptr<char[]>>& blocks, std::size_t& next_offset,
+    std::size_t& active_bytes, std::size_t& committed_bytes,
+    std::size_t chunk_bytes, std::size_t chunk_shift, std::size_t chunk_mask,
+    double growth, std::size_t initial_bytes, std::size_t size) {
+  if (size == 0) {
+    return {static_cast<std::uint32_t>(next_offset >> chunk_shift),
+            static_cast<std::uint32_t>(next_offset & chunk_mask), nullptr};
+  }
+  std::size_t block_offset = next_offset & chunk_mask;
+  std::size_t block_index = next_offset >> chunk_shift;
+
+  if (block_index < blocks.size()) {  // writing into the active (last) block
+    if (block_offset + size <= active_bytes) {
+      if (blocks[block_index].use_count() > 1) {  // COW a fork-shared block
+        blocks[block_index] =
+            grow_page_block(blocks[block_index], block_offset, active_bytes);
+      }
+    } else if (block_offset + size <= chunk_bytes) {  // grow to fit (also COWs)
+      const std::size_t want = std::min(
+          chunk_bytes, next_grow_bytes(active_bytes, block_offset + size, growth));
+      blocks[block_index] =
+          grow_page_block(blocks[block_index], block_offset, want);
+      const std::size_t committed = page_block_alloc_bytes(want);
+      committed_bytes += committed - active_bytes;
+      active_bytes = committed;
+    } else {  // would straddle chunk_bytes; freeze this block, take the next slot
+      next_offset += chunk_bytes - block_offset;
+      block_offset = 0;
+      block_index += 1;
+    }
+  }
+
+  if (block_index >= blocks.size()) {  // fresh active block from a tiny floor
+    const std::size_t want = std::min(chunk_bytes, std::max(initial_bytes, size));
+    blocks.push_back(alloc_page_block(want));
+    const std::size_t committed = page_block_alloc_bytes(want);
+    committed_bytes += committed;
+    active_bytes = committed;
+    block_offset = 0;
+    block_index = blocks.size() - 1;
+  }
+
+  char* dst = blocks[block_index].get() + block_offset;
+  next_offset += size;
+  return {static_cast<std::uint32_t>(block_index),
+          static_cast<std::uint32_t>(block_offset), dst};
+}
+
 }  // namespace goblin::core
