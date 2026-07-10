@@ -71,6 +71,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `ZREVRANGE key start stop [WITHSCORES]`
 - `ZREVRANK key member`
 - `ZREM key member [member ...]`
+- `ZREMRANGEBYSCORE key min max`
 - `ZSCORE key member`
 - `HSET key field value [field value ...]`
 - `HSETNX key field value`
@@ -107,7 +108,9 @@ compiled artifact, so `EVALSHA` runs it with no re-parse or re-compile. There ar
 also native conditional-write commands — `GOBLIN.CAD` (compare-and-delete),
 `GOBLIN.CAEXPIRE` (compare-and-expire), and `GOBLIN.CAS` (compare-and-set, keeping
 the TTL) — for the Redlock lock-release, watchdog-renewal, and check-and-swap
-idioms. See [docs/commands](docs/commands/README.md) for the surface, and
+idioms, plus `GOBLIN.INCREX` (fixed-window rate limit) and `GOBLIN.ZWINDOW`
+(sliding-window limiter / mutex / counting semaphore) for the two classic
+rate-limit shapes. See [docs/commands](docs/commands/README.md) for the surface, and
 **[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)** for how the six languages
 compare on a trivial op (compare-and-delete) and a heavy one (real-time leaderboard
 rescore) — the ranking flips between them.

@@ -153,6 +153,32 @@ namespace {
   return value;
 }
 
+struct ScoreBound {
+  double value{0.0};
+  bool exclusive{false};
+};
+
+// A ZRANGEBYSCORE-style score bound: a plain number (inclusive), `(number`
+// (exclusive), or `-inf` / `+inf` / `inf` for an open side.
+[[nodiscard]] std::optional<ScoreBound> parse_score_bound(std::string_view text) {
+  bool exclusive = false;
+  if (!text.empty() && text.front() == '(') {
+    exclusive = true;
+    text.remove_prefix(1);
+  }
+  if (equals_ci(text, "-inf")) {
+    return ScoreBound{-std::numeric_limits<double>::infinity(), exclusive};
+  }
+  if (equals_ci(text, "+inf") || equals_ci(text, "inf")) {
+    return ScoreBound{std::numeric_limits<double>::infinity(), exclusive};
+  }
+  const auto value = parse_score(text);
+  if (!value) {
+    return std::nullopt;
+  }
+  return ScoreBound{*value, exclusive};
+}
+
 [[nodiscard]] std::string wrong_arity(std::string_view command) {
   std::string message = "ERR wrong number of arguments for '";
   message.append(command);
@@ -262,8 +288,10 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::zrevrange:
     case CommandType::zrevrank:
     case CommandType::zrem:
+    case CommandType::zremrangebyscore:
     case CommandType::zscore:
     case CommandType::goblin_td_leaderboard_rescore:  // reads the zset like ZRANGE
+    case CommandType::goblin_zwindow:                 // ZADD/ZREM/ZCARD on the zset
       return true;
     default:
       return false;
@@ -737,6 +765,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::zrem;
       return {.command = std::move(command)};
+    case CommandType::zremrangebyscore:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("zremrangebyscore"));
+      }
+      command.type = CommandType::zremrangebyscore;
+      return {.command = std::move(command)};
     case CommandType::zscore:
       if (command.args.size() != 2) {
         return parse_error(wrong_arity("zscore"));
@@ -1002,6 +1036,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::goblin_increx;
       return {.command = std::move(command)};
+    case CommandType::goblin_zwindow:
+      if (command.args.size() != 5) {
+        return parse_error(wrong_arity("goblin.zwindow"));
+      }
+      command.type = CommandType::goblin_zwindow;
+      return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
@@ -1249,6 +1289,19 @@ void execute_command_into(Store& store,
           command.args[0], std::span<const std::string_view>(command.args.data() + 1,
                                                              command.args.size() - 1)));
       return;
+
+    case CommandType::zremrangebyscore: {
+      const auto lo = parse_score_bound(command.args[1]);
+      const auto hi = parse_score_bound(command.args[2]);
+      if (!lo || !hi) {
+        resp::append_error(out, "ERR min or max is not a float");
+        return;
+      }
+      resp::append_integer(
+          out, store.zremrangebyscore(command.args[0], lo->value, lo->exclusive,
+                                      hi->value, hi->exclusive));
+      return;
+    }
 
     case CommandType::zscore: {
       const auto score = store.zscore(command.args[0], command.args[1]);
@@ -1966,6 +2019,40 @@ void execute_command_into(Store& store,
         return;
       }
       resp::append_integer(out, *value);
+      return;
+    }
+
+    case CommandType::goblin_zwindow: {
+      // Sliding-window limiter: evict entries older than `window`, and if the
+      // window has room (< `limit`) record this request at `now` and re-arm the
+      // key's TTL to `window` (which reaps an idle window). Returns 1 if admitted,
+      // else 0. The native form of the zremrangebyscore + zcard + zadd + expire
+      // idiom -- and the trailing EXPIRE was the piece TTLs made possible.
+      const auto now = parse_score(command.args[1]);
+      const auto window = parse_score(command.args[2]);
+      const auto limit = parse_ll(command.args[3]);
+      if (!now || !window) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      if (!limit) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*window > 9.0e15 || *window < -9.0e15) {
+        resp::append_error(out, "ERR invalid expire time");
+        return;
+      }
+      const std::uint64_t clock = store.now_ms();
+      const auto when = compute_when_ms(clock, static_cast<long long>(*window), 1000);
+      if (!when) {
+        resp::append_error(out, "ERR invalid expire time");
+        return;
+      }
+      const double cutoff = *now - *window;
+      const bool admitted = store.zwindow(command.args[0], *now, cutoff, *limit,
+                                          command.args[4], *when, clock);
+      resp::append_integer(out, admitted ? 1 : 0);
       return;
     }
 

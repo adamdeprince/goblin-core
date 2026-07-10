@@ -13,6 +13,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.CAS`](GOBLIN.CAS.md) | Compare-and-set: swap a key's value only if it still holds the expected one, keeping its TTL. |
 | [`GOBLIN.TD_LEADERBOARD_RESCORE`](GOBLIN.TD_LEADERBOARD_RESCORE.md) | Time-decay leaderboard rescore: return the top k members by recency weight. |
 | [`GOBLIN.INCREX`](GOBLIN.INCREX.md) | Increment a counter, arming a TTL on the first write (fixed-window rate limit). |
+| [`GOBLIN.ZWINDOW`](GOBLIN.ZWINDOW.md) | Sliding-window admit/reject (also a mutex or counting semaphore). |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -76,6 +77,21 @@ new counter. The TTL is armed only when the key is created and left ticking on
 later increments, so the window is fixed from the first hit and resets when it
 elapses. Redis has no single command for this and its docs recommend the Lua
 version — the tell. See the full page: **[GOBLIN.INCREX](GOBLIN.INCREX.md)**.
+
+## GOBLIN.ZWINDOW
+
+```
+GOBLIN.ZWINDOW key now window limit member
+```
+
+Sliding-window admit/reject — the native form of the sliding rate-limiter idiom
+(`ZREMRANGEBYSCORE` to evict entries older than `now - window`; if fewer than
+`limit` remain, `ZADD` this request and `EXPIRE` by `window`). Replies `1` if
+admitted, `0` if the window is full; a non-zset key is `WRONGTYPE`. The trailing
+`EXPIRE` — which per-key TTLs made possible — lets an idle window reap itself.
+`limit 1` makes it a self-healing mutex, `limit N` a counting semaphore. The
+sliding companion to [`GOBLIN.INCREX`](GOBLIN.INCREX.md)'s fixed window. See the
+full page: **[GOBLIN.ZWINDOW](GOBLIN.ZWINDOW.md)**.
 
 ## GOBLIN.MEMORY
 

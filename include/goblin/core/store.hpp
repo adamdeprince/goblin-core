@@ -116,6 +116,11 @@ class ZSet {
   [[nodiscard]] int add(double score, std::string_view member,
                         const ZSetOptions* options = default_options());
   [[nodiscard]] bool remove(std::string_view member);
+  // Remove every member whose score is in the [min, max] range (bounds optionally
+  // exclusive; -inf/+inf for an open side). Returns the count removed. Uses the
+  // score index's seek, so it is O(log n + removed), not a full scan.
+  [[nodiscard]] std::size_t remove_by_score_range(double min, bool min_exclusive,
+                                                  double max, bool max_exclusive);
   [[nodiscard]] std::optional<double> score(std::string_view member) const;
   [[nodiscard]] std::optional<std::size_t> rank(std::string_view member) const;
   [[nodiscard]] std::optional<std::size_t> reverse_rank(
@@ -878,6 +883,17 @@ class Store {
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
   [[nodiscard]] long long zrem(std::string_view key, std::span<const std::string_view> members);
+  // ZREMRANGEBYSCORE: remove members with score in [min, max] (bounds optionally
+  // exclusive; -inf/+inf accepted). Returns the count removed; drops an emptied key.
+  [[nodiscard]] long long zremrangebyscore(std::string_view key, double min,
+                                           bool min_exclusive, double max,
+                                           bool max_exclusive);
+  // GOBLIN.ZWINDOW sliding-window limiter: evict entries with score <= `cutoff`,
+  // then if the count is below `limit` record `member` at `now` and (re)arm the
+  // key's TTL to `when_ms`. Returns true if the request was admitted.
+  [[nodiscard]] bool zwindow(std::string_view key, double now, double cutoff,
+                             long long limit, std::string_view member,
+                             std::uint64_t when_ms, std::uint64_t now_ms);
   [[nodiscard]] long long zcard(std::string_view key) const;
   [[nodiscard]] std::optional<double> zscore(std::string_view key,
                                              std::string_view member) const;

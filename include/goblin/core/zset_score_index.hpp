@@ -436,6 +436,45 @@ class ZSetScoreIndex {
     return false;
   }
 
+  // Visit the member_ids whose score is in the [min, max] range (each bound
+  // optionally exclusive; -inf / +inf accepted for an open side), in ascending
+  // order. O(log n + matched) -- it seeks to the low bound and stops past the
+  // high one, never scanning the whole set. The callback must not mutate the
+  // index (collect first, then remove).
+  template <class Fn>
+  void for_score_range(double min, bool min_exclusive, double max,
+                       bool max_exclusive, Fn&& fn) const {
+    if (blocks_.empty()) {
+      return;
+    }
+    const bool min_open = min == -std::numeric_limits<double>::infinity();
+    const bool max_open = max == std::numeric_limits<double>::infinity();
+    std::size_t block_index = min_open ? 0 : lower_block_by_score(min);
+    bool first_block = true;
+    while (block_index < blocks_.size()) {
+      const auto& block = blocks_[block_index];
+      size_type offset =
+          (first_block && !min_open) ? block.lower_bound_score(min) : size_type{0};
+      first_block = false;
+      const size_type count = block.size();
+      for (; offset < count; ++offset) {
+        if (!max_open) {
+          if (block.score_greater_than(offset, max)) {
+            return;  // past the high bound; ascending order means we are done
+          }
+          if (max_exclusive && block.score_equals(offset, max)) {
+            return;
+          }
+        }
+        if (min_exclusive && !min_open && block.score_equals(offset, min)) {
+          continue;  // skip the leading == min entries when the low bound is open
+        }
+        fn(block.member_id_at(offset));
+      }
+      ++block_index;
+    }
+  }
+
   [[nodiscard]] std::optional<size_type> rank(ZSetScoreEntry value) const {
     if (blocks_.empty()) {
       return std::nullopt;

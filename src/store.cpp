@@ -425,6 +425,35 @@ int ZSet::add(double score, std::string_view member,
   return 1;
 }
 
+std::size_t ZSet::remove_by_score_range(double min, bool min_exclusive, double max,
+                                        bool max_exclusive) {
+  // Collect the matching member names first: removal below swap-moves member ids,
+  // so ids must not be held across removes -- names are stable. The listpack form
+  // is tiny (a cheap full scan); the full form seeks via the score index in
+  // O(log n + matched).
+  std::vector<std::string> names;
+  const auto in_range = [&](double score) {
+    return (min_exclusive ? score > min : score >= min) &&
+           (max_exclusive ? score < max : score <= max);
+  };
+  if (small_ptr() != nullptr) {
+    for_range_values(0, -1, [&](std::string_view member, double score) {
+      if (in_range(score)) {
+        names.emplace_back(member);
+      }
+    });
+  } else {
+    const auto* storage = member_storage();
+    entries().for_score_range(
+        min, min_exclusive, max, max_exclusive,
+        [&](std::uint32_t id) { names.emplace_back(storage->view(id)); });
+  }
+  for (const auto& name : names) {
+    (void)remove(name);
+  }
+  return names.size();
+}
+
 bool ZSet::remove(std::string_view member) {
   if (auto* lp = small_ptr()) {
     return lp->remove(member);
@@ -858,6 +887,36 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
   erase_if_empty(key, *zset);
 
   return removed;
+}
+
+long long Store::zremrangebyscore(std::string_view key, double min,
+                                  bool min_exclusive, double max,
+                                  bool max_exclusive) {
+  auto* zset = find_zset(key);
+  if (zset == nullptr) {
+    return 0;
+  }
+  const auto removed =
+      zset->remove_by_score_range(min, min_exclusive, max, max_exclusive);
+  (void)zset->compact_after_removal_if_needed(removed);
+  (void)zset->cleanup_member_index_after_removal_if_needed(removed);
+  erase_if_empty(key, *zset);
+  return static_cast<long long>(removed);
+}
+
+bool Store::zwindow(std::string_view key, double now, double cutoff,
+                    long long limit, std::string_view member,
+                    std::uint64_t when_ms, std::uint64_t now_ms) {
+  // Evict entries older than the window (score <= cutoff), then admit iff there
+  // is room. The trailing TTL re-arm is what reaps an idle key.
+  (void)zremrangebyscore(key, -std::numeric_limits<double>::infinity(), false,
+                         cutoff, false);
+  if (zcard(key) >= limit) {
+    return false;
+  }
+  (void)zadd(key, now, member);
+  (void)expire_at_ms(key, when_ms, now_ms);
+  return true;
 }
 
 // ---- Hash ----

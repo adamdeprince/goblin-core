@@ -1420,6 +1420,79 @@ void test_goblin_increx() {
   assert(!goblin::core::parse_command(many).ok());
 }
 
+void test_zremrangebyscore() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Full representation (past the listpack threshold): scores 1..100.
+  for (int i = 1; i <= 100; ++i) {
+    (void)execute_fields(store, {"ZADD", "z", std::to_string(i),
+                                 "m" + std::to_string(i)});
+  }
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "z", "10", "20"}) == ":11\r\n");
+  assert(execute_fields(store, {"ZCARD", "z"}) == ":89\r\n");
+  // Exclusive bounds: (30, 40) removes 31..39 only.
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "z", "(30", "(40"}) == ":9\r\n");
+  // Open sides via -inf / +inf.
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "z", "-inf", "5"}) == ":5\r\n");
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "z", "95", "+inf"}) == ":6\r\n");
+  assert(execute_fields(store, {"ZCARD", "z"}) == ":69\r\n");
+  // Emptying the zset drops the key.
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "z", "-inf", "+inf"}) == ":69\r\n");
+  assert(execute_fields(store, {"EXISTS", "z"}) == ":0\r\n");
+
+  // Listpack representation (tiny) takes the same path correctly.
+  for (int i = 1; i <= 5; ++i) {
+    (void)execute_fields(store, {"ZADD", "lp", std::to_string(i),
+                                 "x" + std::to_string(i)});
+  }
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "lp", "2", "4"}) == ":3\r\n");
+  assert(execute_fields(store, {"ZRANGE", "lp", "0", "-1"}) ==
+         "*2\r\n$2\r\nx1\r\n$2\r\nx5\r\n");
+
+  // Errors and edges.
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "absent", "0", "100"}) == ":0\r\n");
+  assert(execute_fields(store, {"SET", "s", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "s", "0", "100"}) == wrongtype);
+  assert(execute_fields(store, {"ZREMRANGEBYSCORE", "lp", "abc", "100"}).front() == '-');
+  std::vector<std::string_view> bad = {"ZREMRANGEBYSCORE", "lp", "0"};
+  assert(!goblin::core::parse_command(bad).ok());
+}
+
+void test_goblin_zwindow() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Deterministic admit/reject and TTL via the Store method (explicit clock).
+  const std::uint64_t clock = 9000;
+  assert(store.zwindow("rl", 1000, 990, 2, "a", clock + 10000, clock));   // admitted
+  assert(store.zcard("rl") == 1);
+  assert(store.pttl_ms("rl", clock) == 10000);                            // window armed
+  assert(store.zwindow("rl", 1001, 991, 2, "b", clock + 10000, clock));   // admitted
+  assert(store.zcard("rl") == 2);
+  assert(!store.zwindow("rl", 1002, 992, 2, "c", clock + 10000, clock));  // full -> reject
+  assert(store.zcard("rl") == 2);
+  // Slide the window: now=1020, cutoff=1010 evicts a(1000) and b(1001), so there
+  // is room again.
+  assert(store.zwindow("rl", 1020, 1010, 2, "d", clock + 10000, clock));
+  assert(store.zcard("rl") == 1);
+
+  // Capacity 1 is a mutex: the holder wins, the contender is rejected.
+  assert(store.zwindow("mx", 5000, 4970, 1, "o1", clock + 30000, clock));
+  assert(!store.zwindow("mx", 5001, 4971, 1, "o2", clock + 30000, clock));
+
+  // Command layer: admit/reject, WRONGTYPE, bad args, arity.
+  assert(execute_fields(store, {"GOBLIN.ZWINDOW", "c", "1000", "10", "1", "x"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.ZWINDOW", "c", "1001", "10", "1", "y"}) == ":0\r\n");
+  assert(execute_fields(store, {"SET", "str", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.ZWINDOW", "str", "1000", "10", "1", "x"}) == wrongtype);
+  assert(execute_fields(store, {"GOBLIN.ZWINDOW", "c", "notnum", "10", "1", "x"}).front() == '-');
+  std::vector<std::string_view> few = {"GOBLIN.ZWINDOW", "c", "1000", "10", "1"};
+  assert(!goblin::core::parse_command(few).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3745,6 +3818,8 @@ int main() {
   test_goblin_td_leaderboard_rescore();
   test_memory_report();
   test_goblin_increx();
+  test_zremrangebyscore();
+  test_goblin_zwindow();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

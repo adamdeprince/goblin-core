@@ -44,6 +44,7 @@ ZRANK, goblin::core::CommandType::zrank
 ZREVRANGE, goblin::core::CommandType::zrevrange
 ZREVRANK, goblin::core::CommandType::zrevrank
 ZREM, goblin::core::CommandType::zrem
+ZREMRANGEBYSCORE, goblin::core::CommandType::zremrangebyscore
 ZSCORE, goblin::core::CommandType::zscore
 HSET, goblin::core::CommandType::hset
 HSETNX, goblin::core::CommandType::hsetnx
@@ -94,4 +95,5 @@ GOBLIN.CAEXPIRE, goblin::core::CommandType::goblin_caexpire
 GOBLIN.CAS, goblin::core::CommandType::goblin_cas
 GOBLIN.TD_LEADERBOARD_RESCORE, goblin::core::CommandType::goblin_td_leaderboard_rescore
 GOBLIN.INCREX, goblin::core::CommandType::goblin_increx
+GOBLIN.ZWINDOW, goblin::core::CommandType::goblin_zwindow
 %%
