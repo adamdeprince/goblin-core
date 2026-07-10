@@ -11,6 +11,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.CAD`](GOBLIN.CAD.md) | Compare-and-delete: delete a key only if it still holds the expected value. |
 | [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) | Compare-and-expire: renew a key's TTL only if it still holds the expected value. |
 | [`GOBLIN.CAS`](GOBLIN.CAS.md) | Compare-and-set: swap a key's value only if it still holds the expected one, keeping its TTL. |
+| [`GOBLIN.TD_LEADERBOARD_RESCORE`](GOBLIN.TD_LEADERBOARD_RESCORE.md) | Time-decay leaderboard rescore: return the top k members by recency weight. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -49,6 +50,18 @@ Compare-and-set — check-and-swap in one atomic op. Overwrites `key` with `new`
 replies `OK` when it holds a string equal to `expected`, otherwise replies `0`; a
 non-string key is `WRONGTYPE`. **The TTL is preserved** (`KEEPTTL`) — a bare `SET`
 would clear it. See the full page: **[GOBLIN.CAS](GOBLIN.CAS.md)**.
+
+## GOBLIN.TD_LEADERBOARD_RESCORE
+
+```
+GOBLIN.TD_LEADERBOARD_RESCORE key now half_life k mode
+```
+
+Time-decay leaderboard rescore — read a zset whose score is each member's
+last-activity timestamp, recompute a recency weight (`LINEAR`, `EXP`, or `STEP`
+decay), and return the top `k` by that weight, most recent first. The native form
+of the whole-zset rescore idiom, ~10× faster than the same script in any embedded
+interpreter. See the full page: **[GOBLIN.TD_LEADERBOARD_RESCORE](GOBLIN.TD_LEADERBOARD_RESCORE.md)**.
 
 ## GOBLIN.MEMORY
 

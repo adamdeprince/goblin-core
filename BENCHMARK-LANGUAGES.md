@@ -64,28 +64,35 @@ another client can change the key between the read and the delete.
 python3 benchmarks/cad_benchmark.py --goblin-bin build/goblin-core --keys 20000 --rounds 9
 ```
 
-## Workload 2 — leaderboard rescore (a heavy script)
+## Workload 2 — time-decay leaderboard rescore (a heavy script, + a native command)
 
 A read-only real-time rescore: read a 1000-member leaderboard (score = each
-member's last-activity timestamp), recompute every entry's recency
-`1/(1 + age/half_life)` (no transcendentals), keep the top-k in a bounded
-insertion-sorted array, and return it. Roughly 1000 iterations of parse +
-arithmetic + branch + list ops per call — so this measures the VM's *execution*
-speed, not per-call overhead.
+member's last-activity timestamp), recompute every entry's recency weight, and
+return the top-k, kept in a bounded insertion-sorted array (no full sort). Three
+decay modes — `LINEAR` = `1/(1 + age/hl)`, `EXP` = `0.5^(age/hl)`, `STEP` = in/out
+of a window. ~1000 iterations of parse + arithmetic + branch + list ops per call,
+so this measures the VM's *execution* speed — and here the same idiom also has a
+native command, [`GOBLIN.TD_LEADERBOARD_RESCORE`](docs/commands/GOBLIN.TD_LEADERBOARD_RESCORE.md).
+All implementations return the same top-k ordering per mode. Pipelined over UDS,
+median of 5 rounds, µs/op:
 
-| language | seq µs/op | pipe µs/op | vs fastest |
+| implementation | LINEAR | EXP | STEP |
 | --- | ---: | ---: | ---: |
-| **Luau** | `403` | **`386`** | **`1.00×`** |
-| PUC-Lua 5.1 | `452` | `440` | `1.14×` |
-| QuickJS (JavaScript) | `548` | `529` | `1.37×` |
-| Wren | `680` | `672` | `1.74×` |
-| MicroPython | `1582` | `1566` | `4.06×` |
-| Jim Tcl | `2271` | `2267` | `5.87×` |
+| **native `GOBLIN.TD_LEADERBOARD_RESCORE`** | **`48`** | **`49`** | **`19`** |
+| `LUAU.EVAL` (Luau) | `477` | `479` | `127` |
+| `EVAL` (PUC-Lua 5.1) | `770` | `774` | `223` |
+| `QUICKJS.EVAL` (JavaScript) | `938` | `952` | `164` |
+| `WREN.EVAL` (Wren) | `970` | `971` | `197` |
+| `UPYTHON.EVAL` (MicroPython) | `2456` | `2454` | `656` |
+| `TCL.EVAL` (Jim Tcl) | `5834` | n/a | `852` |
 
-Now the interpreters separate by nearly **6×**: Luau and PUC-Lua lead, QuickJS and
-Wren follow, and MicroPython and Tcl trail. Because the script cost (`0.4–2.3` ms)
-dwarfs the ~`10` µs round trip, **sequential ≈ pipelined** — pipelining buys almost
-nothing when the server is doing real work per call.
+Three things. **The native command is ~10× faster than the fastest interpreter
+(Luau) and up to ~50× the slowest** — it skips the interpreter and the `ZRANGE`
+copy and streams the board once. **The interpreters separate by >10×** on this
+real workload (Luau leads, Jim Tcl trails). **`EXP`'s `pow` is not the bottleneck**
+(`EXP ≈ LINEAR` everywhere) — per-member interpreter overhead is; `STEP` is
+cheapest (a compare, no arithmetic). One engine can't even express `EXP`: Jim Tcl's
+minimal `expr` has no `pow`/`exp`, so it does `LINEAR` and `STEP` only.
 
 ```
 python3 benchmarks/leaderboard_rescore_benchmark.py --goblin-bin build/goblin-core --members 1000 --k 10
@@ -94,13 +101,16 @@ python3 benchmarks/leaderboard_rescore_benchmark.py --goblin-bin build/goblin-co
 ## Takeaway
 
 The ranking **flips** between the two workloads. Jim Tcl is near the top on the
-trivial compare-and-delete (per-call overhead is low) but slowest by far — ~6× —
-on the heavy rescore; Luau is middling on the trivial op but fastest on real
-compute. So pick the interpreter for the *shape* of your scripts — light glue
-between commands vs. heavy in-script computation — and for the one idiom that has
-a native command, prefer [`GOBLIN.CAD`](docs/commands/GOBLIN.CAD.md). Either way
-every script is precompiled, so `EVALSHA` never pays for compilation regardless of
-engine (which for MicroPython would otherwise be ~`960` µs per call).
+trivial compare-and-delete (per-call overhead is low) but slowest by far — >10× the
+fastest interpreter — on the heavy rescore; Luau is middling on the trivial op but
+fastest on real compute. So pick the interpreter for the *shape* of your scripts —
+light glue between commands vs. heavy in-script computation. And where a hot idiom
+has a native command — [`GOBLIN.CAD`](docs/commands/GOBLIN.CAD.md) for lock
+release, [`GOBLIN.TD_LEADERBOARD_RESCORE`](docs/commands/GOBLIN.TD_LEADERBOARD_RESCORE.md)
+for the rescore — it beats every interpreter by ~10× or more, since it skips the VM
+entirely. Either way every script is precompiled, so `EVALSHA` never pays for
+compilation regardless of engine (which for MicroPython would otherwise be ~`960` µs
+per call).
 
 The same two idioms, translated into each language, are on the command pages:
 [`EVAL`](docs/commands/EVAL.md), [`LUAU.EVAL`](docs/commands/LUAU.EVAL.md),

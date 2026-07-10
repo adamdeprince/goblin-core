@@ -1296,6 +1296,53 @@ void test_goblin_cas() {
   assert(!goblin::core::parse_command(many).ok());
 }
 
+void test_goblin_td_leaderboard_rescore() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Board: m0@100 .. m4@500 (score = activity timestamp, ascending).
+  for (int i = 0; i < 5; ++i) {
+    assert(execute_fields(store, {"ZADD", "lb", std::to_string((i + 1) * 100),
+                                  "m" + std::to_string(i)}) == ":1\r\n");
+  }
+
+  // STEP: the window [now-hl, now] = [350, 500] covers m3, m4 (weight 1); the
+  // rest are 0. Top-3 by weight desc, ties broken by ZRANGE order, is m3, m4,
+  // then the first-seen 0-weight survivor (m0). tostring(1.0)="1", tostring(0.0)="0".
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500", "150",
+                                "3", "STEP"}) ==
+         "*6\r\n$2\r\nm3\r\n$1\r\n1\r\n$2\r\nm4\r\n$1\r\n1\r\n$2\r\nm0\r\n$1\r\n0\r\n");
+
+  // LINEAR and EXP both rank the most-recent (highest ts) member first; k pairs.
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500", "100",
+                                "2", "LINEAR"})
+             .rfind("*4\r\n$2\r\nm4\r\n", 0) == 0);
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500", "100",
+                                "2", "EXP"})
+             .rfind("*4\r\n$2\r\nm4\r\n", 0) == 0);
+
+  // Errors and edge cases.
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500", "100",
+                                "3", "NOPE"}) ==
+         "-ERR mode must be LINEAR, EXP or STEP\r\n");
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "absent", "500",
+                                "100", "3", "LINEAR"}) == "*0\r\n");
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500", "100",
+                                "0", "LINEAR"}) == "*0\r\n");
+  assert(execute_fields(store, {"SET", "s", "x"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "s", "500", "100",
+                                "3", "LINEAR"}) == wrongtype);
+  assert(execute_fields(store, {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "x", "100",
+                                "3", "LINEAR"})
+             .front() == '-');  // now is not a number
+
+  // Arity: exactly key + now + half_life + k + mode.
+  std::vector<std::string_view> few = {"GOBLIN.TD_LEADERBOARD_RESCORE", "lb", "500",
+                                       "100", "3"};
+  assert(!goblin::core::parse_command(few).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3618,6 +3665,7 @@ int main() {
   test_goblin_cad();
   test_goblin_caexpire();
   test_goblin_cas();
+  test_goblin_td_leaderboard_rescore();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Benchmark the real-time leaderboard-rescore idiom across every embedded language.
+"""Benchmark the time-decay leaderboard rescore: native command vs every language.
 
-A leaderboard's stored score is each member's last-activity timestamp. The script
-rescores every entry on read by recency -- decay = 1/(1 + age/half_life), no
-transcendentals -- and returns the top k most-recent members, keeping the top-k in
-a bounded insertion-sorted array (work is O(n*k), not a full sort). It is
-read-only, so one board is loaded once and rescored repeatedly.
+A leaderboard zset stores each member's last-activity timestamp as its score. The
+rescore reads the whole zset, recomputes a recency weight for every member, and
+returns the top k by that weight -- kept in a bounded insertion-sorted array (no
+full sort). Three decay modes:
 
-This exercises the *interpreters* only: the same idiom (verbatim from the
-docs/commands/*.EVAL.md pages) in PUC-Lua, Luau, Wren, Jim Tcl, MicroPython, and
-QuickJS. There is no native command or hand-rolled baseline -- the point is to
-compare the languages on a heavier, branchy, allocation-y script than
-compare-and-delete. Every script is SCRIPT LOAD-compiled before timing and run by
-EVALSHA, and all six are verified to return identical output first.
+  LINEAR : 1 / (1 + age/half_life)   -- hyperbolic falloff, no transcendental
+  EXP    : 0.5 ^ (age/half_life)     -- true half-life decay (a pow per member)
+  STEP   : 1 inside the [now-half_life, now] window, else 0
 
-One Python connection over a Unix socket; read the ratios, not absolute peak
-(client-bound). Example:
+Compared: the native GOBLIN.TD_LEADERBOARD_RESCORE, and the identical idiom in
+each embedded language (PUC-Lua, Luau, Wren, Jim Tcl, MicroPython, QuickJS), run
+by EVALSHA (SCRIPT LOAD-compiled before timing). All seven are verified to return
+the same top-k member ordering (per mode) before timing. Pipelined over a Unix
+domain socket, so the number is server-side per-op cost. One Python connection is
+client-bound; read the ratios. Lower is better.
 
     python3 benchmarks/leaderboard_rescore_benchmark.py \
-        --goblin-bin build-release/goblin-core --members 1000 --k 10
+        --goblin-bin build/goblin-core --members 1000 --k 10
 """
 from __future__ import annotations
 
@@ -36,138 +36,185 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zset_benchmark as zbench  # noqa: E402 - path set above.
 
 
+# --- the idiom in each language (0.5^x written portably; Luau has no math.pow) ---
+
 LUA = r"""
-local now, hl, k = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
-local flat = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
-local best, bestn = {}, 0
-for i = 1, #flat, 2 do
-  local m = flat[i]
-  local ts = tonumber(flat[i + 1])
-  local d = 1.0 / (1.0 + (now - ts) / hl)
-  if bestn < k or d > best[bestn].s then
-    local pos = (bestn < k) and bestn + 1 or bestn
-    while pos > 1 and best[pos - 1].s < d do
-      best[pos] = best[pos - 1]
-      pos = pos - 1
-    end
-    best[pos] = {m = m, s = d}
-    if bestn < k then bestn = bestn + 1 end
+local now=tonumber(ARGV[1]); local hl=tonumber(ARGV[2]); local k=tonumber(ARGV[3]); local mode=ARGV[4]
+local flat=redis.call('ZRANGE',KEYS[1],0,-1,'WITHSCORES')
+local names,scores,n={},{},0
+local function push(name,s)
+  if n<k then n=n+1; names[n],scores[n]=name,s; local j=n
+    while j>1 and scores[j]>scores[j-1] do names[j],names[j-1]=names[j-1],names[j]; scores[j],scores[j-1]=scores[j-1],scores[j]; j=j-1 end
+  elseif s>scores[k] then names[k],scores[k]=name,s; local j=k
+    while j>1 and scores[j]>scores[j-1] do names[j],names[j-1]=names[j-1],names[j]; scores[j],scores[j-1]=scores[j-1],scores[j]; j=j-1 end
   end
 end
-local result = {}
-for i = 1, bestn do
-  result[#result + 1] = best[i].m
-  result[#result + 1] = math.floor(best[i].s * 1000000 + 0.5)
-end
-return result
+if mode=='LINEAR' then local inv=1.0/hl
+  for i=1,#flat,2 do push(flat[i], 1.0/(1.0+(now-tonumber(flat[i+1]))*inv)) end
+elseif mode=='EXP' then local inv=1.0/hl
+  for i=1,#flat,2 do push(flat[i], 0.5^((now-tonumber(flat[i+1]))*inv)) end
+elseif mode=='STEP' then local cutoff=now-hl
+  for i=1,#flat,2 do local ts=tonumber(flat[i+1]); push(flat[i], ts>=cutoff and 1.0 or 0.0) end
+else return redis.error_reply('ERR mode must be LINEAR, EXP or STEP') end
+local out={}
+for i=1,n do out[#out+1]=names[i]; out[#out+1]=tostring(scores[i]) end
+return out
 """
 
 WREN = r"""
 var now = Num.fromString(ARGV[0])
 var hl = Num.fromString(ARGV[1])
 var k = Num.fromString(ARGV[2])
+var mode = ARGV[3]
 var flat = Redis.call(["zrange", KEYS[0], 0, -1, "WITHSCORES"])
-var best = []
-var i = 0
-while (i < flat.count) {
-  var m = flat[i]
-  var ts = Num.fromString(flat[i + 1])
-  var d = 1 / (1 + (now - ts) / hl)
-  if (best.count < k || d > best[best.count - 1][1]) {
-    var pos = best.count
-    while (pos > 0 && best[pos - 1][1] < d) pos = pos - 1
-    best.insert(pos, [m, d])
-    if (best.count > k) best.removeAt(best.count - 1)
+var names = []
+var scores = []
+var push = Fn.new {|name, s|
+  var j = -1
+  if (names.count < k) {
+    names.add(name)
+    scores.add(s)
+    j = names.count - 1
+  } else if (s > scores[k-1]) {
+    names[k-1] = name
+    scores[k-1] = s
+    j = k - 1
   }
-  i = i + 2
+  while (j > 0 && scores[j] > scores[j-1]) {
+    var tn = names[j]
+    names[j] = names[j-1]
+    names[j-1] = tn
+    var tx = scores[j]
+    scores[j] = scores[j-1]
+    scores[j-1] = tx
+    j = j - 1
+  }
 }
-var result = []
-for (e in best) {
-  result.add(e[0])
-  result.add((e[1] * 1000000 + 0.5).floor)
+var i = 0
+if (mode == "LINEAR") {
+  var inv = 1 / hl
+  while (i < flat.count) {
+    push.call(flat[i], 1 / (1 + (now - Num.fromString(flat[i+1])) * inv))
+    i = i + 2
+  }
+} else if (mode == "EXP") {
+  var inv = 1 / hl
+  while (i < flat.count) {
+    push.call(flat[i], (0.5).pow((now - Num.fromString(flat[i+1])) * inv))
+    i = i + 2
+  }
+} else if (mode == "STEP") {
+  var cutoff = now - hl
+  while (i < flat.count) {
+    var ts = Num.fromString(flat[i+1])
+    push.call(flat[i], (ts >= cutoff) ? 1 : 0)
+    i = i + 2
+  }
+} else {
+  return Redis.error("ERR mode must be LINEAR, EXP or STEP")
 }
-return result
+var out = []
+var m = 0
+while (m < names.count) {
+  out.add(names[m])
+  out.add(scores[m].toString)
+  m = m + 1
+}
+return out
 """
 
 TCL = r"""
-set now [lindex $ARGV 0]
-set hl [lindex $ARGV 1]
-set k [lindex $ARGV 2]
+proc push {name s} {
+  upvar 1 bestM bestM bestS bestS nn nn k k
+  if {$nn < $k} {
+    lappend bestM $name; lappend bestS $s; incr nn
+    set j [expr {$nn-1}]
+  } elseif {$s > [lindex $bestS [expr {$k-1}]]} {
+    lset bestM [expr {$k-1}] $name; lset bestS [expr {$k-1}] $s
+    set j [expr {$k-1}]
+  } else { return }
+  while {$j>0 && [lindex $bestS $j] > [lindex $bestS [expr {$j-1}]]} {
+    set jm [expr {$j-1}]
+    set t [lindex $bestM $j]; lset bestM $j [lindex $bestM $jm]; lset bestM $jm $t
+    set t [lindex $bestS $j]; lset bestS $j [lindex $bestS $jm]; lset bestS $jm $t
+    incr j -1
+  }
+}
+set now [lindex $ARGV 0]; set hl [lindex $ARGV 1]; set k [lindex $ARGV 2]; set mode [lindex $ARGV 3]
 set flat [redis call zrange [lindex $KEYS 0] 0 -1 WITHSCORES]
-set bestM {}
-set bestS {}
-set n [llength $flat]
-for {set i 0} {$i < $n} {incr i 2} {
-  set m [lindex $flat $i]
-  set ts [lindex $flat [expr {$i + 1}]]
-  set d [expr {1.0 / (1.0 + ($now - $ts) / double($hl))}]
-  set cnt [llength $bestS]
-  set ins 0
-  if {$cnt < $k} {
-    set ins 1
-  } elseif {$d > [lindex $bestS end]} {
-    set ins 1
+set bestM {}; set bestS {}; set nn 0
+set len [llength $flat]
+if {$mode eq "LINEAR"} {
+  set inv [expr {1.0/$hl}]
+  for {set i 0} {$i<$len} {incr i 2} {
+    push [lindex $flat $i] [expr {1.0/(1.0+($now-[lindex $flat [expr {$i+1}]])*$inv)}]
   }
-  if {$ins} {
-    set pos $cnt
-    while {$pos > 0 && [lindex $bestS [expr {$pos - 1}]] < $d} { incr pos -1 }
-    set bestM [linsert $bestM $pos $m]
-    set bestS [linsert $bestS $pos $d]
-    if {[llength $bestS] > $k} {
-      set bestM [lreplace $bestM end end]
-      set bestS [lreplace $bestS end end]
-    }
+} elseif {$mode eq "EXP"} {
+  set inv [expr {1.0/$hl}]
+  for {set i 0} {$i<$len} {incr i 2} {
+    push [lindex $flat $i] [expr {pow(0.5,($now-[lindex $flat [expr {$i+1}]])*$inv)}]
   }
-}
-set result {}
-foreach m $bestM s $bestS {
-  lappend result $m [expr {int($s * 1000000 + 0.5)}]
-}
-return [redis array $result]
+} elseif {$mode eq "STEP"} {
+  set cutoff [expr {$now-$hl}]
+  for {set i 0} {$i<$len} {incr i 2} {
+    set ts [lindex $flat [expr {$i+1}]]
+    push [lindex $flat $i] [expr {$ts>=$cutoff ? 1.0 : 0.0}]
+  }
+} else { return [redis error {ERR mode must be LINEAR, EXP or STEP}] }
+set out {}
+foreach m $bestM sv $bestS { lappend out $m $sv }
+return [redis array $out]
 """
 
 PY = r"""
-now = float(ARGV[0]); hl = float(ARGV[1]); k = int(ARGV[2])
-flat = redis.call('zrange', KEYS[0], 0, -1, 'WITHSCORES')
-best = []
-for i in range(0, len(flat), 2):
-    m = flat[i]
-    ts = float(flat[i + 1])
-    d = 1.0 / (1.0 + (now - ts) / hl)
-    if len(best) < k or d > best[-1][0]:
-        pos = len(best)
-        while pos > 0 and best[pos - 1][0] < d:
-            pos -= 1
-        best.insert(pos, [d, m])
-        if len(best) > k:
-            best.pop()
-reply = []
-for d, m in best:
-    reply.append(m)
-    reply.append(int(d * 1000000 + 0.5))
+now=float(ARGV[0]); hl=float(ARGV[1]); k=int(ARGV[2]); mode=ARGV[3]
+flat=redis.call('zrange',KEYS[0],0,-1,'WITHSCORES')
+names=[]; scores=[]
+def push(name,s):
+    if len(names)<k:
+        names.append(name); scores.append(s); j=len(names)-1
+    elif k>0 and s>scores[k-1]:
+        names[k-1]=name; scores[k-1]=s; j=k-1
+    else:
+        return
+    while j>0 and scores[j]>scores[j-1]:
+        names[j],names[j-1]=names[j-1],names[j]; scores[j],scores[j-1]=scores[j-1],scores[j]; j-=1
+ok=True
+if mode=='LINEAR':
+    inv=1.0/hl
+    for i in range(0,len(flat),2): push(flat[i], 1.0/(1.0+(now-float(flat[i+1]))*inv))
+elif mode=='EXP':
+    inv=1.0/hl
+    for i in range(0,len(flat),2): push(flat[i], 0.5**((now-float(flat[i+1]))*inv))
+elif mode=='STEP':
+    cutoff=now-hl
+    for i in range(0,len(flat),2):
+        ts=float(flat[i+1]); push(flat[i], 1.0 if ts>=cutoff else 0.0)
+else:
+    ok=False; reply={'err':'ERR mode must be LINEAR, EXP or STEP'}
+if ok:
+    out=[]
+    for a in range(len(names)): out.append(names[a]); out.append(str(scores[a]))
+    reply=out
 """
 
 JS = r"""
-var now = parseFloat(ARGV[0]), hl = parseFloat(ARGV[1]), k = parseInt(ARGV[2]);
-var flat = redis.call('zrange', KEYS[0], 0, -1, 'WITHSCORES');
-var best = [];
-for (var i = 0; i < flat.length; i += 2) {
-  var m = flat[i];
-  var ts = parseFloat(flat[i + 1]);
-  var d = 1.0 / (1.0 + (now - ts) / hl);
-  if (best.length < k || d > best[best.length - 1][0]) {
-    var pos = best.length;
-    while (pos > 0 && best[pos - 1][0] < d) pos -= 1;
-    best.splice(pos, 0, [d, m]);
-    if (best.length > k) best.pop();
-  }
+var now=parseFloat(ARGV[0]), hl=parseFloat(ARGV[1]), k=parseInt(ARGV[2]), mode=ARGV[3];
+var flat=redis.call('zrange',KEYS[0],0,-1,'WITHSCORES');
+var names=[], scores=[];
+function push(name,s){
+  var j;
+  if (names.length<k){ names.push(name); scores.push(s); j=names.length-1; }
+  else if (k>0 && s>scores[k-1]){ names[k-1]=name; scores[k-1]=s; j=k-1; }
+  else return;
+  while (j>0 && scores[j]>scores[j-1]){ var tn=names[j]; names[j]=names[j-1]; names[j-1]=tn;
+    var tx=scores[j]; scores[j]=scores[j-1]; scores[j-1]=tx; j-=1; }
 }
-var result = [];
-for (var j = 0; j < best.length; j++) {
-  result.push(best[j][1]);
-  result.push(Math.floor(best[j][0] * 1000000 + 0.5));
-}
-return result;
+if (mode==='LINEAR'){ var inv=1/hl; for(var i=0;i<flat.length;i+=2) push(flat[i], 1/(1+(now-parseFloat(flat[i+1]))*inv)); }
+else if (mode==='EXP'){ var inv=1/hl; for(var i=0;i<flat.length;i+=2) push(flat[i], Math.pow(0.5,(now-parseFloat(flat[i+1]))*inv)); }
+else if (mode==='STEP'){ var cutoff=now-hl; for(var i=0;i<flat.length;i+=2){ var ts=parseFloat(flat[i+1]); push(flat[i], ts>=cutoff?1:0); } }
+else return redis.error('ERR mode must be LINEAR, EXP or STEP');
+var out=[]; for(var a=0;a<names.length;a++){ out.push(names[a]); out.push(String(scores[a])); } return out;
 """
 
 # (label, command prefix, source).
@@ -179,27 +226,17 @@ ENGINES = [
     ("UPYTHON.EVAL (MicroPython)", "UPYTHON.", PY),
     ("QUICKJS.EVAL (JavaScript)", "QUICKJS.", JS),
 ]
+NATIVE = "GOBLIN.TD_LEADERBOARD_RESCORE (native C++)"
+MODES = ["LINEAR", "EXP", "STEP"]
 
 
-def normalize(reply) -> list:
-    return [x.decode() if isinstance(x, (bytes, bytearray)) else x for x in reply]
-
-
-def load_and_compile(client, members: int):
-    base = 1_000_000
-    cmds = [("ZADD", "board", base + i * 7, f"p{i}") for i in range(members)]
-    client.pipeline(cmds, flush_every=512)
-    now = base + members * 7 + 50
-    shas = {}
-    print("Compiling scripts (SCRIPT LOAD) before benchmarking:")
-    for label, prefix, src in ENGINES:
-        sha = client.command(f"{prefix}SCRIPT", "LOAD", src)
-        sha = sha.decode() if isinstance(sha, bytes) else str(sha)
-        if len(sha) != 40:
-            raise RuntimeError(f"{label}: unexpected SCRIPT LOAD reply {sha!r}")
-        shas[label] = (prefix, sha)
-        print(f"  {label:30}  {sha}")
-    return shas, now
+def names_of(reply) -> list:
+    # reply is a flat [name, score, name, score, ...]; keep just the member names.
+    out = []
+    for i in range(0, len(reply), 2):
+        x = reply[i]
+        out.append(x.decode() if isinstance(x, (bytes, bytearray)) else x)
+    return out
 
 
 def main(argv: Sequence[str]) -> int:
@@ -210,66 +247,98 @@ def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--goblin-bin", type=Path, default=default_goblin)
-    parser.add_argument("--members", type=int, default=1000, help="leaderboard size")
-    parser.add_argument("--k", type=int, default=10, help="top-k to return")
-    parser.add_argument("--half-life", type=float, default=300.0)
-    parser.add_argument("--iters", type=int, default=2000, help="rescores per timed round")
-    parser.add_argument("--rounds", type=int, default=7, help="rounds (median reported)")
-    parser.add_argument("--pipeline", type=int, default=64, help="pipelined in-flight depth")
-    parser.add_argument("--unix-socket", type=str, default=None,
-                        help="UDS path (default: a short auto path in /tmp)")
+    parser.add_argument("--members", type=int, default=1000)
+    parser.add_argument("--k", type=int, default=10)
+    parser.add_argument("--iters", type=int, default=500, help="rescores per timed round")
+    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--pipeline", type=int, default=32, help="in-flight depth")
+    parser.add_argument("--unix-socket", type=str, default=None)
     args = parser.parse_args(argv)
 
-    sock = args.unix_socket or f"/tmp/goblin-rescore-{os.getpid()}.sock"
+    sock = args.unix_socket or f"/tmp/goblin-td-{os.getpid()}.sock"
     server = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False, unix_socket=sock)
     try:
         c = zbench.RespClient("127.0.0.1", server.port, unix_socket=sock)
-        shas, now = load_and_compile(c, args.members)
-        script_args = [str(now), str(int(args.half_life)), str(args.k)]
+        base = 1_000_000
+        c.pipeline((("ZADD", "lb", base + i * 7, f"p{i}") for i in range(args.members)),
+                   flush_every=512)
+        now = base + args.members * 7 + 40
+        hl = max(int(args.members * 7 // 2), 1)   # STEP window ~ half the board
+        sargs = [str(now), str(hl), str(args.k)]
 
-        # Verify all six return identical output before timing.
-        print(f"\nVerifying all six agree on the top {args.k} of {args.members}...")
-        ref = None
-        for label, (prefix, sha) in shas.items():
-            out = normalize(c.command(f"{prefix}EVALSHA", sha, 1, "board", *script_args))
-            if ref is None:
-                ref = out
-            elif out != ref:
-                print(f"  [FAIL] {label} disagrees:\n    {out}\n vs {ref}")
+        print("Compiling scripts (SCRIPT LOAD) before benchmarking:")
+        shas = {}
+        for label, prefix, src in ENGINES:
+            sha = c.command(f"{prefix}SCRIPT", "LOAD", src)
+            sha = sha.decode() if isinstance(sha, bytes) else str(sha)
+            if len(sha) != 40:
+                print(f"  [FAIL] {label} LOAD -> {sha!r}")
                 return 1
-        print(f"  all agree; top members: {[ref[i] for i in range(0, len(ref), 2)]}")
+            shas[label] = (prefix, sha)
+            print(f"  {label:30}  {sha}")
 
-        print(f"\nBenchmarking {args.iters} rescores/round, median of {args.rounds} rounds, "
-              f"over UDS, pipeline depth {args.pipeline}.\n")
+        def run(label, mode):
+            if label == NATIVE:
+                return c.command("GOBLIN.TD_LEADERBOARD_RESCORE", "lb", *sargs, mode)
+            prefix, sha = shas[label]
+            return c.command(f"{prefix}EVALSHA", sha, 1, "lb", *sargs, mode)
 
-        def seq(prefix, sha):
-            start = time.perf_counter()
-            for _ in range(args.iters):
-                c.command(f"{prefix}EVALSHA", sha, 1, "board", *script_args)
-            return (time.perf_counter() - start) / args.iters
+        impls = [NATIVE] + [e[0] for e in ENGINES]
 
-        def pipe(prefix, sha):
-            cmds = [(f"{prefix}EVALSHA", sha, 1, "board", *script_args)
-                    for _ in range(args.iters)]
-            start = time.perf_counter()
-            c.pipeline(cmds, flush_every=args.pipeline)
-            return (time.perf_counter() - start) / args.iters
+        # Verify agreement on the top-k member ordering, per mode. An engine whose
+        # runtime lacks the math a mode needs (Jim Tcl's minimal expr has no
+        # pow/exp, so no EXP) is recorded as unsupported rather than compared.
+        print(f"\nVerifying agreement across {len(impls)} implementations x {len(MODES)} modes...")
+        supported = {}
+        for mode in MODES:
+            ref = names_of(run(NATIVE, mode))
+            for label in impls:
+                try:
+                    got = names_of(run(label, mode))
+                except RuntimeError as exc:
+                    supported[(label, mode)] = False
+                    print(f"    {label} / {mode}: unsupported ({exc})")
+                    continue
+                supported[(label, mode)] = True
+                if got != ref:
+                    print(f"  [FAIL] {mode} {label} disagrees:\n    {got}\n vs {ref}")
+                    return 1
+            print(f"  {mode:7} agree; top members: {ref[:5]}...")
 
-        rows = []
-        for label, (prefix, sha) in shas.items():
-            s = statistics.median([seq(prefix, sha) for _ in range(args.rounds)]) * 1e6
-            p = statistics.median([pipe(prefix, sha) for _ in range(args.rounds)]) * 1e6
-            rows.append((label, s, p))
+        # Bench: pipelined per-op cost per supported (implementation, mode).
+        def bench(label, mode):
+            cmds = ([("GOBLIN.TD_LEADERBOARD_RESCORE", "lb", *sargs, mode)] * args.iters
+                    if label == NATIVE else
+                    [(f"{shas[label][0]}EVALSHA", shas[label][1], 1, "lb", *sargs, mode)] * args.iters)
+            per = []
+            for _ in range(args.rounds):
+                t = time.perf_counter()
+                c.pipeline(iter(cmds), flush_every=args.pipeline)
+                per.append((time.perf_counter() - t) / args.iters)
+            return statistics.median(per) * 1e6
 
-        fastest = min(p for _, _, p in rows)
-        head = f"{'language':30}{'seq us/op':>12}{'seq k/s':>10}{'pipe us/op':>12}{'pipe k/s':>10}{'vs best':>9}"
+        print(f"\nRescoring {args.members} members, top {args.k}, pipelined over UDS "
+              f"(depth {args.pipeline}), median of {args.rounds} rounds. us/op:\n")
+        rows = [(label, {m: (bench(label, m) if supported.get((label, m)) else None)
+                         for m in MODES}) for label in impls]
+
+        def cell(x):
+            return f"{x:10.1f}" if x is not None else f"{'--':>10}"
+
+        head = f"{'implementation':34}{'LINEAR':>10}{'EXP':>10}{'STEP':>10}"
         print(head)
         print("-" * len(head))
-        for label, s, p in sorted(rows, key=lambda r: r[2]):
-            print(f"{label:30}{s:12.2f}{1000.0/s:10.1f}{p:12.2f}{1000.0/p:10.1f}{p/fastest:8.2f}x")
-        print(f"\n  Rescoring a {args.members}-member board, top {args.k}. seq = one at a "
-              f"time; pipe = {args.pipeline} in flight.\n  One Python connection over UDS "
-              "(client-bound); read the ratios, not absolute peak.")
+        native_us = dict(rows[0][1])
+        for label, us in rows:
+            cells = "".join(cell(us[m]) for m in MODES)
+            tag = "  <- native" if label == NATIVE else ""
+            print(f"{label:34}{cells}{tag}")
+        vs = [f"{label.split()[0]} {us['EXP']/native_us['EXP']:.0f}x"
+              for label, us in rows if label != NATIVE and us["EXP"] is not None]
+        print("\nEXP cost vs native:  " + ", ".join(vs))
+        print("\n  us/op, lower is better. All implementations return the same top-k\n"
+              "  ordering per mode. `--` = the engine can't express that mode (Jim Tcl\n"
+              "  has no pow/exp for EXP). One Python connection; read the ratios.")
         c.close()
     finally:
         server.stop()

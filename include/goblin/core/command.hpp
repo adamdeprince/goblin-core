@@ -91,6 +91,7 @@ enum class CommandType {
   goblin_cad,
   goblin_caexpire,
   goblin_cas,
+  goblin_td_leaderboard_rescore,
   echo,
   info,
   unknown,

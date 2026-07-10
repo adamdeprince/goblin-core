@@ -92,4 +92,5 @@ GOBLIN.LOAD, goblin::core::CommandType::goblin_load
 GOBLIN.CAD, goblin::core::CommandType::goblin_cad
 GOBLIN.CAEXPIRE, goblin::core::CommandType::goblin_caexpire
 GOBLIN.CAS, goblin::core::CommandType::goblin_cas
+GOBLIN.TD_LEADERBOARD_RESCORE, goblin::core::CommandType::goblin_td_leaderboard_rescore
 %%

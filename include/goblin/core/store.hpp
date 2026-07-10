@@ -912,6 +912,19 @@ class Store {
 
     return zset->for_range_values(start, stop, std::forward<Fn>(fn));
   }
+  // Iterate every (member, score) of a zset in ZRANGE order (by score, ties by
+  // member bytes), for whole-zset reads such as the time-decay rescore.
+  // `fn(std::string_view member, double score)`; a missing key is a no-op.
+  template <class Fn>
+  std::size_t for_each_zset_entry(std::string_view key, Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    if (zset == nullptr) {
+      return 0;
+    }
+    return zset->for_range(0, -1, [&fn](const ZSetEntry& e) {
+      fn(e.member, e.score);
+    });
+  }
   template <class CountFn, class Fn>
   std::size_t zrange_values_for_each_counted(std::string_view key,
                                              long long start,

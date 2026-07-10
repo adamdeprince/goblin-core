@@ -249,6 +249,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::zrevrank:
     case CommandType::zrem:
     case CommandType::zscore:
+    case CommandType::goblin_td_leaderboard_rescore:  // reads the zset like ZRANGE
       return true;
     default:
       return false;
@@ -514,12 +515,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   command.name = fields.front();
   command.args = fields.subspan(1);
 
-  // Upper-case the name into a fixed 16-byte buffer, then perfect-hash it in O(1).
-  // Names longer than the longest command (GOBLIN.OPTIMIZE, 15) cannot match and
-  // short-circuit to unknown without touching the buffer.
+  // Upper-case the name into a fixed 32-byte buffer, then perfect-hash it in O(1).
+  // Names longer than the longest command (GOBLIN.TD_LEADERBOARD_RESCORE, 29)
+  // cannot match and short-circuit to unknown without touching the buffer.
   const CommandEntry* entry = nullptr;
-  if (command.name.size() <= 15) {
-    std::array<char, 16> upper{};
+  if (command.name.size() <= 31) {
+    std::array<char, 32> upper{};
     for (std::size_t k = 0; k < command.name.size(); ++k) {
       upper[k] = ascii_upper_char(command.name[k]);
     }
@@ -973,6 +974,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("goblin.cas"));
       }
       command.type = CommandType::goblin_cas;
+      return {.command = std::move(command)};
+    case CommandType::goblin_td_leaderboard_rescore:
+      if (command.args.size() != 5) {
+        return parse_error(wrong_arity("goblin.td_leaderboard_rescore"));
+      }
+      command.type = CommandType::goblin_td_leaderboard_rescore;
       return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
@@ -1816,6 +1823,100 @@ void execute_command_into(Store& store,
         resp::append_simple_string(out, "OK");
       } else {
         resp::append_integer(out, 0);
+      }
+      return;
+    }
+
+    case CommandType::goblin_td_leaderboard_rescore: {
+      // Time-decay leaderboard rescore: read a zset whose score is each member's
+      // last-activity timestamp, recompute a recency weight, and return the top k
+      // by that weight -- the whole-zset rescore idiom scripted for real
+      // leaderboards, done natively (one pass, no interpreter, no ZRANGE copy).
+      //   LINEAR: 1 / (1 + age/hl)   (hyperbolic falloff, no transcendental)
+      //   EXP:    0.5 ^ (age/hl)     (true half-life decay)
+      //   STEP:   1 inside the [now-hl, now] window, else 0
+      const auto now = parse_score(command.args[1]);
+      const auto hl = parse_score(command.args[2]);
+      if (!now || !hl) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const auto k_parsed = parse_ll(command.args[3]);
+      if (!k_parsed) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      enum class Mode { kLinear, kExp, kStep } mode;
+      if (equals_ci(command.args[4], "LINEAR")) {
+        mode = Mode::kLinear;
+      } else if (equals_ci(command.args[4], "EXP")) {
+        mode = Mode::kExp;
+      } else if (equals_ci(command.args[4], "STEP")) {
+        mode = Mode::kStep;
+      } else {
+        resp::append_error(out, "ERR mode must be LINEAR, EXP or STEP");
+        return;
+      }
+
+      const double now_v = *now;
+      const double inv = 1.0 / *hl;         // mirrors the script's `local inv`
+      const double cutoff = now_v - *hl;    // STEP window edge
+      const std::size_t k =
+          *k_parsed > 0 ? static_cast<std::size_t>(*k_parsed) : 0;
+
+      // Bounded top-k kept sorted descending, by the same insertion sort as the
+      // script (so ties break by iteration = ZRANGE order, which matters for STEP
+      // where many weights are equal).
+      struct Entry {
+        std::string name;
+        double score;
+      };
+      std::vector<Entry> best;
+      best.reserve(std::min<std::size_t>(k, 4096));
+      const auto push = [&best, k](std::string_view name, double s) {
+        std::size_t j;
+        if (best.size() < k) {
+          best.push_back({std::string(name), s});
+          j = best.size() - 1;
+        } else if (k > 0 && s > best[k - 1].score) {
+          best[k - 1] = {std::string(name), s};
+          j = k - 1;
+        } else {
+          return;
+        }
+        while (j > 0 && best[j].score > best[j - 1].score) {
+          std::swap(best[j], best[j - 1]);
+          --j;
+        }
+      };
+
+      if (k > 0) {
+        store.for_each_zset_entry(
+            command.args[0], [&](std::string_view member, double score) {
+              const double age = now_v - score;
+              double decayed;
+              switch (mode) {
+                case Mode::kLinear:
+                  decayed = 1.0 / (1.0 + age * inv);
+                  break;
+                case Mode::kExp:
+                  decayed = std::pow(0.5, age * inv);
+                  break;
+                default:  // kStep
+                  decayed = score >= cutoff ? 1.0 : 0.0;
+                  break;
+              }
+              push(member, decayed);
+            });
+      }
+
+      resp::append_array_header(out, best.size() * 2);
+      char buf[32];
+      for (const auto& e : best) {
+        resp::append_bulk_string(out, e.name);
+        const int len = std::snprintf(buf, sizeof(buf), "%.14g", e.score);
+        resp::append_bulk_string(out,
+                                 std::string_view(buf, static_cast<std::size_t>(len)));
       }
       return;
     }

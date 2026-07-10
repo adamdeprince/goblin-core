@@ -40,9 +40,9 @@
 #line 17 "src/command_hash.gperf"
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 
-#define TOTAL_KEYWORDS 76
+#define TOTAL_KEYWORDS 77
 #define MIN_WORD_LENGTH 3
-#define MAX_WORD_LENGTH 15
+#define MAX_WORD_LENGTH 29
 #define MIN_HASH_VALUE 8
 #define MAX_HASH_VALUE 198
 /* maximum key range = 191, duplicates = 0 */
@@ -127,7 +127,7 @@ CommandDispatch::lookup (const char *str, size_t len)
        0,  0,  0,  0,  0,  0,  0,  0,  8,  0,  0,  6,  0,  3,
        0,  0,  6,  0,  8,  4,  5,  6,  7,  3,  0, 10,  6,  0,
        0,  4,  5, 11,  0,  8,  4, 15,  6,  7,  0,  4,  0,  6,
-       7,  0,  0, 15,  6,  0,  0,  0, 10,  6,  7,  3,  4,  0,
+       7,  0,  0, 15,  6,  0,  0, 29, 10,  6,  7,  3,  4,  0,
        0,  0,  0,  4, 10,  0,  7,  3,  0,  0, 11,  0,  0,  4,
       10,  0,  0,  0, 14,  0, 11,  0,  0,  4,  0, 11,  0,  0,
        4,  0,  0,  0,  0,  4,  5,  6, 12,  0,  9,  5,  0,  0,
@@ -216,7 +216,8 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"SCRIPT", goblin::core::CommandType::script},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 95 "src/command_hash.gperf"
+      {"GOBLIN.TD_LEADERBOARD_RESCORE", goblin::core::CommandType::goblin_td_leaderboard_rescore},
 #line 94 "src/command_hash.gperf"
       {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
 #line 47 "src/command_hash.gperf"
@@ -434,5 +435,5 @@ CommandDispatch::lookup (const char *str, size_t len)
     }
   return static_cast<struct CommandEntry *> (0);
 }
-#line 95 "src/command_hash.gperf"
+#line 96 "src/command_hash.gperf"
 
