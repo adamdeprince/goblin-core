@@ -159,6 +159,45 @@ Goblin Core leads at every concurrency and widens at 500 saturating clients
 penalty. Dragonfly and the modern Redis engines land within a few percent of each
 other at fan-out; the immediate-write design keeps Goblin Core ahead throughout.
 
+## Scripting: compare-and-delete
+
+The most-copied Redis script is the [Redlock](https://redis.io/docs/latest/develop/use/patterns/distributed-locks/)
+lock release — delete a key only if it still holds your token — which Goblin Core
+also ships as the native [`GOBLIN.CAD`](docs/commands/GOBLIN.CAD.md) and as the
+idiom in each of its six [embedded interpreters](docs/commands/README.md). Every
+scripted form is `SCRIPT LOAD`-compiled once and run by `EVALSHA`, so this
+measures execution of the precompiled script, not compilation.
+
+`benchmarks/cad_benchmark.py`, one connection, median of 9 rounds. Every row is
+Goblin Core's own implementation, so this is a *within-engine* comparison, not
+the cross-engine parity setup above — and a *relative* per-op measurement: a
+single Python connection is client-bound, so read the ratios, not absolute
+throughput (for that use a C load generator as in [Throughput](#throughput)).
+Every implementation is verified to agree (a matching token deletes and replies
+`1`, a mismatch replies `0`) before timing.
+
+| implementation | round trips | sequential µs/op | pipelined µs/op | server cost vs `GOBLIN.CAD` |
+| --- | ---: | ---: | ---: | ---: |
+| **`GOBLIN.CAD`** (native C++) | 1 | `28.3` | **`2.1`** | **`1.00×`** |
+| `TCL.EVAL` (Jim Tcl) | 1 | `27.3` | `3.6` | `1.71×` |
+| `WREN.EVAL` (Wren) | 1 | `29.0` | `3.7` | `1.73×` |
+| `UPYTHON.EVAL` (MicroPython) | 1 | `27.4` | `4.0` | `1.85×` |
+| `LUAU.EVAL` (Luau) | 1 | `27.8` | `4.0` | `1.85×` |
+| `QUICKJS.EVAL` (JavaScript) | 1 | `28.4` | `4.5` | `2.09×` |
+| `EVAL` (PUC-Lua 5.1) | 1 | `28.4` | `4.6` | `2.16×` |
+| `GET` + `DEL` (client-side, racy) | 2 | `55.3` | — | `1.96×` seq |
+
+Two results. **Sequentially, any atomic single-round-trip form is ~2× faster than
+the naive `GET`+`DEL`**: one op at a time, every 1-RTT form is client-bound
+(~`28` µs/op) and ties, while the two-round-trip `GET`+`DEL` is the outlier at
+`55.3` µs — and it is also *racy*, since another client can change the key between
+the read and the delete, the very bug the atomic forms exist to avoid.
+**Pipelined, with the round trip amortized, the native command is ~2× cheaper on
+the server than even a precompiled interpreter** (`2.1` µs/op vs `3.6–4.6`) — the
+`server cost vs GOBLIN.CAD` column. Precompilation is what makes that a fair
+fight: without it each `EVALSHA` would re-parse and re-compile the script, which
+for MicroPython alone is ~`960` µs per call.
+
 ## Persistence
 
 Same 1M-member dataset loaded into each engine; each saves and loads its own
