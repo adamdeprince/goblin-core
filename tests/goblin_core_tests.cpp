@@ -1399,6 +1399,58 @@ void test_ttl_snapshot_roundtrip() {
   assert(restored.expiretime_ms("absent") == -2);
 }
 
+void test_expire_and_set_options() {
+  goblin::core::Store store;
+
+  // EXPIRE NX / XX.
+  assert(execute_fields(store, {"SET", "k", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"EXPIRE", "k", "100", "XX"}) == ":0\r\n");  // no TTL
+  assert(execute_fields(store, {"EXPIRE", "k", "100", "NX"}) == ":1\r\n");  // sets
+  assert(execute_fields(store, {"EXPIRE", "k", "200", "NX"}) == ":0\r\n");  // has TTL
+  assert(execute_fields(store, {"EXPIRE", "k", "200", "XX"}) == ":1\r\n");  // sets
+
+  // EXPIRE GT / LT (current ~200s).
+  assert(execute_fields(store, {"EXPIRE", "k", "100", "GT"}) == ":0\r\n");  // 100 < 200
+  assert(execute_fields(store, {"EXPIRE", "k", "300", "GT"}) == ":1\r\n");  // 300 > 200
+  assert(execute_fields(store, {"EXPIRE", "k", "400", "LT"}) == ":0\r\n");  // 400 > 300
+  assert(execute_fields(store, {"EXPIRE", "k", "50", "LT"}) == ":1\r\n");   // 50 < 300
+
+  // A key with no expiry is +infinity: GT never sets, LT always sets.
+  assert(execute_fields(store, {"SET", "n", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"EXPIRE", "n", "100", "GT"}) == ":0\r\n");
+  assert(execute_fields(store, {"EXPIRE", "n", "100", "LT"}) == ":1\r\n");
+
+  // Incompatible flag combinations.
+  assert(execute_fields(store, {"EXPIRE", "k", "1", "NX", "XX"}) ==
+         "-ERR NX and XX, GT or LT options at the same time are not "
+         "compatible\r\n");
+  assert(execute_fields(store, {"EXPIRE", "k", "1", "GT", "LT"}) ==
+         "-ERR GT and LT options at the same time are not compatible\r\n");
+
+  // SET NX / XX.
+  assert(execute_fields(store, {"SET", "fresh", "v", "XX"}) == "$-1\r\n");  // absent
+  assert(!store.exists("fresh"));
+  assert(execute_fields(store, {"SET", "fresh", "v", "NX"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SET", "fresh", "w", "XX"}) == "+OK\r\n");
+
+  // SET ... GET returns the old value.
+  assert(execute_fields(store, {"SET", "g", "old"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SET", "g", "new", "GET"}) == "$3\r\nold\r\n");
+  assert(execute_fields(store, {"GET", "g"}) == "$3\r\nnew\r\n");
+  assert(execute_fields(store, {"SET", "g2", "v", "GET"}) == "$-1\r\n");  // no old
+
+  // SET NX GET on an existing key returns the old value but does not set.
+  assert(execute_fields(store, {"SET", "g", "nope", "NX", "GET"}) ==
+         "$3\r\nnew\r\n");
+  assert(execute_fields(store, {"GET", "g"}) == "$3\r\nnew\r\n");
+
+  // SET ... GET on a non-string key is WRONGTYPE and does not clobber it.
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"SET", "z", "v", "GET"}) ==
+         "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+  assert(execute_fields(store, {"TYPE", "z"}) == "+zset\r\n");
+}
+
 void run_store_rank_cache_test(goblin::core::RankCacheMode mode) {
   goblin::core::Store store(goblin::core::StoreOptions{.rank_cache_mode = mode});
 
@@ -3191,6 +3243,7 @@ int main() {
   test_ttl_set();
   test_ttl_commands();
   test_ttl_snapshot_roundtrip();
+  test_expire_and_set_options();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
   test_zset_score_width_promotes();

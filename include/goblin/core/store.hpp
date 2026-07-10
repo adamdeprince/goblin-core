@@ -428,6 +428,17 @@ struct KeyMove {
   std::uint64_t to;
 };
 
+// EXPIRE-family condition flags (a bitmask; kNone sets unconditionally). A key
+// with no current expiry is treated as +infinity for GT/LT. NX is exclusive with
+// XX/GT/LT and GT with LT -- the command layer enforces that.
+struct ExpireFlag {
+  static constexpr unsigned kNone = 0;
+  static constexpr unsigned kNx = 1;  // only if the key has no current expiry
+  static constexpr unsigned kXx = 2;  // only if the key has a current expiry
+  static constexpr unsigned kGt = 4;  // only if the new expiry is greater
+  static constexpr unsigned kLt = 8;  // only if the new expiry is less
+};
+
 // A string value as two views: an inline head (the whole value, or its 6-byte
 // prefix) and an arena tail (empty when the value fits inline). Two views so GET
 // never copies -- the RESP layer writes head then tail.
@@ -1192,10 +1203,12 @@ class Store {
   // their own to stay deterministic.
   [[nodiscard]] std::uint64_t now_ms() const noexcept;
   [[nodiscard]] bool ttl_empty() const noexcept { return ttl_.empty(); }
-  // Set the key's absolute expiry. A time already at/past now deletes the key.
-  // Returns false only when the key does not exist.
+  // Set the key's absolute expiry, subject to the ExpireFlag condition. A time
+  // already at/past now deletes the key. Returns false when the key does not
+  // exist or the condition is not met.
   [[nodiscard]] bool expire_at_ms(std::string_view key, std::uint64_t when_ms,
-                                  std::uint64_t now);
+                                  std::uint64_t now,
+                                  unsigned flags = ExpireFlag::kNone);
   // Remaining ms, or -2 (no such key) / -1 (no expiry).
   [[nodiscard]] long long pttl_ms(std::string_view key, std::uint64_t now) const;
   // Absolute expiry ms, or -2 (no such key) / -1 (no expiry).

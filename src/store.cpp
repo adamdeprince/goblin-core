@@ -1133,12 +1133,27 @@ std::uint64_t Store::now_ms() const noexcept {
 }
 
 bool Store::expire_at_ms(std::string_view key, std::uint64_t when_ms,
-                         std::uint64_t now) {
+                         std::uint64_t now, unsigned flags) {
   const auto id = keyspace_.id_of(key);
   if (!id) {
     return false;
   }
-  if (when_ms <= now) {  // a time already past deletes the key now
+  const auto current = ttl_.expiry(*id);
+  const bool has_current = current.has_value();
+  // A key with no current expiry is +infinity for GT/LT.
+  if ((flags & ExpireFlag::kNx) && has_current) {
+    return false;
+  }
+  if ((flags & ExpireFlag::kXx) && !has_current) {
+    return false;
+  }
+  if ((flags & ExpireFlag::kGt) && (!has_current || when_ms <= *current)) {
+    return false;
+  }
+  if ((flags & ExpireFlag::kLt) && (has_current && when_ms >= *current)) {
+    return false;
+  }
+  if (when_ms <= now) {  // condition met, but the time is already past -> delete
     ttl_.clear(*id);
     erase_keyspace_at(*id);
     return true;

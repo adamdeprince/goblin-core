@@ -40,19 +40,30 @@ time has passed is reclaimed by the model above).
 ## EXPIRE / PEXPIRE
 
 ```
-EXPIRE key seconds
-PEXPIRE key milliseconds
+EXPIRE key seconds [NX | XX | GT | LT]
+PEXPIRE key milliseconds [NX | XX | GT | LT]
 ```
 
 Set the key's TTL relative to now. Reply `1` if set, `0` if the key does not
-exist. A non-positive amount deletes the key immediately (and still replies
-`1`).
+exist or the condition is not met. A non-positive amount deletes the key
+immediately (and still replies `1`).
+
+The optional condition (a key with no current expiry counts as +infinity):
+
+- `NX` — only if the key has no TTL.
+- `XX` — only if it already has a TTL.
+- `GT` — only if the new expiry is later than the current one.
+- `LT` — only if the new expiry is earlier than the current one.
+
+`NX` is exclusive with `XX` / `GT` / `LT`, and `GT` with `LT`.
 
 ```
 > SET session "abc"
 OK
 > EXPIRE session 60
 (integer) 1
+> EXPIRE session 30 GT     # 30s < 60s, so not applied
+(integer) 0
 > TTL session
 (integer) 60
 ```
@@ -60,12 +71,13 @@ OK
 ## EXPIREAT / PEXPIREAT
 
 ```
-EXPIREAT key unix-seconds
-PEXPIREAT key unix-milliseconds
+EXPIREAT key unix-seconds [NX | XX | GT | LT]
+PEXPIREAT key unix-milliseconds [NX | XX | GT | LT]
 ```
 
-Set an **absolute** expiry. A time already in the past deletes the key (reply
-`1`). Reply `0` if the key does not exist.
+Set an **absolute** expiry, with the same optional condition as `EXPIRE`. A time
+already in the past deletes the key (reply `1`). Reply `0` if the key does not
+exist or the condition is not met.
 
 ```
 > PEXPIREAT session 1893456000000

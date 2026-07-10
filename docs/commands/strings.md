@@ -70,30 +70,35 @@ OK
 string
 ```
 
-> **Expiry.** `SET` accepts `NX`, an expiry (`EX` / `PX` / `EXAT` / `PXAT`), and
-> `KEEPTTL`; the `XX` / `GET` options are not yet supported. The dedicated
-> expiration commands live in [ttl.md](ttl.md).
+> **Options.** `SET` accepts `NX` / `XX`, `GET`, an expiry (`EX` / `PX` / `EXAT`
+> / `PXAT`), and `KEEPTTL`. The dedicated expiration commands live in
+> [ttl.md](ttl.md).
 
 ---
 
 ## SET
 
 ```
-SET key value [NX] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL]
+SET key value [NX | XX] [GET] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL]
 ```
 
 Set `key` to `value`, replacing any existing value **of any type**. Replies
-`+OK`. With `NX`, set only if the key is absent — replying `+OK` when stored, or
-a nil bulk string when the key already exists. An expiry option sets a TTL in
-the same command; `KEEPTTL` preserves an existing TTL instead of clearing it (a
-bare `SET` clears any TTL). See [ttl.md](ttl.md).
+`+OK`. Options:
+
+- `NX` — set only if the key is absent; `XX` — only if it already exists. When
+  the condition is not met, nothing is set and the reply is a nil bulk string.
+- `GET` — reply with the **old** value (nil if absent) instead of `+OK`, whether
+  or not the write happens. `WRONGTYPE` if the key holds a non-string.
+- An expiry (`EX` / `PX` / `EXAT` / `PXAT`) sets a TTL in the same command;
+  `KEEPTTL` preserves an existing TTL. A bare `SET` clears any TTL. See
+  [ttl.md](ttl.md).
 
 ```
 > SET greeting "hello"
 OK
 > SET greeting "hi" NX
 (nil)
-> GET greeting
+> SET greeting "hi" GET
 "hello"
 ```
 

@@ -893,7 +893,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::pexpire:
     case CommandType::expireat:
     case CommandType::pexpireat:
-      if (command.args.size() != 2) {
+      if (command.args.size() < 2) {  // key, amount, then optional NX/XX/GT/LT
         return parse_error(wrong_arity("expire"));
       }
       command.type = entry->type;
@@ -1271,7 +1271,8 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::set: {
-      // SET key value [NX] [EX s | PX ms | EXAT ts | PXAT ms | KEEPTTL].
+      // SET key value [NX | XX] [GET]
+      //     [EX s | PX ms | EXAT ts | PXAT ms | KEEPTTL].
       const auto& key = command.args[0];
       const auto& value = command.args[1];
       if (value.size() > Store::max_value_bytes()) {
@@ -1279,13 +1280,19 @@ void execute_command_into(Store& store,
         return;
       }
       bool nx = false;
+      bool xx = false;
       bool keepttl = false;
+      bool want_get = false;
       std::optional<std::uint64_t> expire_when;
       const auto now = store.now_ms();
       for (std::size_t i = 2; i < command.args.size(); ++i) {
         const auto& opt = command.args[i];
         if (equals_ci(opt, "NX")) {
           nx = true;
+        } else if (equals_ci(opt, "XX")) {
+          xx = true;
+        } else if (equals_ci(opt, "GET")) {
+          want_get = true;
         } else if (equals_ci(opt, "KEEPTTL")) {
           keepttl = true;
         } else if (equals_ci(opt, "EX") || equals_ci(opt, "PX") ||
@@ -1317,27 +1324,51 @@ void execute_command_into(Store& store,
           return;
         }
       }
-      if (keepttl && expire_when) {  // an expiry option and KEEPTTL conflict
+      if ((nx && xx) || (keepttl && expire_when)) {
         resp::append_error(out, syntax_error());
         return;
       }
 
-      bool stored = true;
-      if (nx) {
-        stored = store.set_nx(key, value);  // a new key carries no prior TTL
-      } else if (keepttl) {
-        store.set_keep_ttl(key, value);
-      } else {
-        store.set(key, value);  // clears any existing TTL
-      }
-      if (!stored) {
-        resp::append_null_bulk_string(out);
+      const bool exists = store.exists(key);
+      // SET ... GET reports the old value, so a non-string key is WRONGTYPE and
+      // the whole command is aborted (nothing is set).
+      if (want_get && exists && !store.key_is_string(key)) {
+        resp::append_error(out, kWrongType);
         return;
       }
-      if (expire_when) {
-        (void)store.expire_at_ms(key, *expire_when, now);
+      const bool condition_met = !(nx && exists) && !(xx && !exists);
+
+      std::optional<std::string> old_value;  // captured before the overwrite
+      if (want_get) {
+        if (const auto current = store.get(key)) {
+          old_value.emplace();
+          old_value->reserve(current->size());
+          old_value->append(current->head);
+          old_value->append(current->tail);
+        }
       }
-      resp::append_simple_string(out, "OK");
+      if (condition_met) {
+        if (keepttl) {
+          store.set_keep_ttl(key, value);
+        } else {
+          store.set(key, value);  // clears any existing TTL
+        }
+        if (expire_when) {
+          (void)store.expire_at_ms(key, *expire_when, now);
+        }
+      }
+
+      if (want_get) {
+        if (old_value) {
+          resp::append_bulk_string(out, *old_value);
+        } else {
+          resp::append_null_bulk_string(out);
+        }
+      } else if (condition_met) {
+        resp::append_simple_string(out, "OK");
+      } else {
+        resp::append_null_bulk_string(out);
+      }
       return;
     }
     case CommandType::get: {
@@ -1557,6 +1588,35 @@ void execute_command_into(Store& store,
         resp::append_error(out, integer_range_error());
         return;
       }
+      unsigned flags = 0;
+      for (std::size_t i = 2; i < command.args.size(); ++i) {
+        const auto& opt = command.args[i];
+        if (equals_ci(opt, "NX")) {
+          flags |= ExpireFlag::kNx;
+        } else if (equals_ci(opt, "XX")) {
+          flags |= ExpireFlag::kXx;
+        } else if (equals_ci(opt, "GT")) {
+          flags |= ExpireFlag::kGt;
+        } else if (equals_ci(opt, "LT")) {
+          flags |= ExpireFlag::kLt;
+        } else {
+          resp::append_error(out,
+                             "ERR Unsupported option " + std::string(opt));
+          return;
+        }
+      }
+      if ((flags & ExpireFlag::kNx) &&
+          (flags & (ExpireFlag::kXx | ExpireFlag::kGt | ExpireFlag::kLt))) {
+        resp::append_error(
+            out,
+            "ERR NX and XX, GT or LT options at the same time are not compatible");
+        return;
+      }
+      if ((flags & ExpireFlag::kGt) && (flags & ExpireFlag::kLt)) {
+        resp::append_error(
+            out, "ERR GT and LT options at the same time are not compatible");
+        return;
+      }
       const auto now = store.now_ms();
       std::optional<std::uint64_t> when;
       switch (command.type) {
@@ -1578,7 +1638,7 @@ void execute_command_into(Store& store,
         return;
       }
       resp::append_integer(
-          out, store.expire_at_ms(command.args[0], *when, now) ? 1 : 0);
+          out, store.expire_at_ms(command.args[0], *when, now, flags) ? 1 : 0);
       return;
     }
     case CommandType::ttl:
