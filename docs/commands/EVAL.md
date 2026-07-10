@@ -130,6 +130,29 @@ DONE
 "caught"
 ```
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The single most-copied Redis script is the safe lock release: delete a key only
+if it still holds the token you wrote (an unconditional `DEL` could drop a lock a
+later client now holds).
+
+```lua
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+```
+
+```
+> SET lock:job my-token
+OK
+> EVAL "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0" 1 lock:job my-token
+(integer) 1
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter, no
+script cache: [`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
+
 ## Sandbox
 
 The interpreter opens only `base`, `table`, `string`, `math`, `debug`, and a

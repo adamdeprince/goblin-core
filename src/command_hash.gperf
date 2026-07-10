@@ -89,4 +89,5 @@ GOBLIN.MEMORY, goblin::core::CommandType::goblin_memory
 GOBLIN.OPTIMIZE, goblin::core::CommandType::goblin_optimize
 GOBLIN.SAVE, goblin::core::CommandType::goblin_save
 GOBLIN.LOAD, goblin::core::CommandType::goblin_load
+GOBLIN.CAD, goblin::core::CommandType::goblin_cad
 %%

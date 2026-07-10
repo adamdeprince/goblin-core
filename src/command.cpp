@@ -277,7 +277,8 @@ constexpr std::string_view kValueTooLarge =
 
 // String commands that require the key to already hold a string (or be absent).
 // SET / SETNX / MSET clobber or create regardless of type, and MGET / DEL /
-// EXISTS / TYPE are type-agnostic, so none of those are gated.
+// EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD is
+// gated too: it reads the value like GET, so a non-string key is WRONGTYPE.
 [[nodiscard]] bool is_typed_string_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::get:
@@ -292,6 +293,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::incrbyfloat:
     case CommandType::getrange:
     case CommandType::setrange:
+    case CommandType::goblin_cad:
       return true;
     default:
       return false;
@@ -951,6 +953,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::goblin_load;
       return {.command = std::move(command)};
+    case CommandType::goblin_cad:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("goblin.cad"));
+      }
+      command.type = CommandType::goblin_cad;
+      return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
@@ -974,7 +982,8 @@ void execute_command_into(Store& store,
   // WRONGTYPE: a key holds at most one type (one unified namespace). A command
   // that operates on a specific type is rejected when the key already holds a
   // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
-  // TYPE (type-agnostic), and GOBLIN.* / scripts are exempt.
+  // TYPE (type-agnostic), scripts, and the introspection GOBLIN.* commands are
+  // exempt; GOBLIN.CAD is not (it reads the value like GET).
   if (!command.args.empty()) {
     if (const auto required = command_requires_type(command.type)) {
       if (const auto actual = store.key_type(command.args[0]);
@@ -1736,6 +1745,17 @@ void execute_command_into(Store& store,
       } else {
         resp::append_integer(out, static_cast<long long>(*reclaimed));
       }
+      return;
+    }
+
+    case CommandType::goblin_cad: {
+      // Compare-and-delete: the Redlock unlock idiom (GET; if it equals the
+      // expected token, DEL) as one native atomic op, no interpreter. Replies
+      // with the number of keys deleted -- 1 on a match, 0 otherwise -- so it is
+      // a drop-in for the script's `return redis.call("del", KEYS[1])` / `0`.
+      const bool deleted =
+          store.compare_and_delete(command.args[0], command.args[1]);
+      resp::append_integer(out, deleted ? 1 : 0);
       return;
     }
 

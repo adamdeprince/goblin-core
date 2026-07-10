@@ -152,6 +152,23 @@ return 1" 0
 client. To keep the scripting VM lean, its heap is capped well below Wren's 10 MB
 default.
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The most-copied Redis script — safe lock release, deleting a key only if it still
+holds the token you wrote — in Wren: commands go through `Redis.call` with a
+List, and `KEYS`/`ARGV` are 0-based Lists:
+
+```wren
+if (Redis.call(["get", KEYS[0]]) == ARGV[0]) {
+  return Redis.call(["del", KEYS[0]])
+}
+return 0
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter:
+[`GOBLIN.CAD key expected`](GOBLIN.CAD.md), which replies `1` on a match and `0`
+otherwise, exactly like the script.
+
 ## See also
 
 - [`WREN.EVALSHA`](WREN.EVALSHA.md) — run a cached Wren script by digest.

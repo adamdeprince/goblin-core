@@ -1010,6 +1010,21 @@ std::optional<std::string> Store::get_del(std::string_view key) {
   return previous;
 }
 
+bool Store::compare_and_delete(std::string_view key, std::string_view expected) {
+  const auto current = keyspace_.get_string(key);
+  if (!current) {
+    return false;  // missing key -> nothing to compare (0)
+  }
+  // Compare the (head, tail) split against `expected` without materializing it:
+  // sizes first, then the inline head, then any spilled tail.
+  if (current->size() != expected.size() ||
+      expected.substr(0, current->head.size()) != current->head ||
+      expected.substr(current->head.size()) != current->tail) {
+    return false;
+  }
+  return erase_key(key);
+}
+
 std::optional<std::size_t> Store::strlen(std::string_view key) const noexcept {
   return keyspace_.string_length(key);
 }

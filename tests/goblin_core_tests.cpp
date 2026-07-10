@@ -1170,6 +1170,47 @@ void test_string_commands() {
   assert(execute_fields(store, {"GET", "z"}) == "$9\r\nclobbered\r\n");
 }
 
+void test_goblin_cad() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // A missing key has nothing to compare -> 0.
+  assert(execute_fields(store, {"GOBLIN.CAD", "lock", "tokenA"}) == ":0\r\n");
+
+  // A mismatched token leaves the value untouched -> 0.
+  assert(execute_fields(store, {"SET", "lock", "tokenA"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "lock", "tokenB"}) == ":0\r\n");
+  assert(execute_fields(store, {"GET", "lock"}) == "$6\r\ntokenA\r\n");
+
+  // The matching token deletes it and reports one key removed; a second attempt
+  // then finds nothing.
+  assert(execute_fields(store, {"GOBLIN.CAD", "lock", "tokenA"}) == ":1\r\n");
+  assert(execute_fields(store, {"EXISTS", "lock"}) == ":0\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "lock", "tokenA"}) == ":0\r\n");
+
+  // A spilled (out-of-line) value is compared across the head/tail split: a
+  // difference in the tail, and one in the inline prefix, both miss.
+  const std::string big(500, 'x');
+  assert(execute_fields(store, {"SET", "big", big}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "big", std::string(499, 'x') + "y"}) ==
+         ":0\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "big", "y" + std::string(499, 'x')}) ==
+         ":0\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "big", big}) == ":1\r\n");
+  assert(execute_fields(store, {"EXISTS", "big"}) == ":0\r\n");
+
+  // A non-string key is WRONGTYPE, exactly as GET would be.
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "z", "whatever"}) == wrongtype);
+
+  // Arity: exactly key + expected (checked at the parse layer).
+  std::vector<std::string_view> too_few = {"GOBLIN.CAD", "lock"};
+  assert(!goblin::core::parse_command(too_few).ok());
+  std::vector<std::string_view> too_many = {"GOBLIN.CAD", "lock", "a", "b"};
+  assert(!goblin::core::parse_command(too_many).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3342,6 +3383,84 @@ void test_quickjs_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// The compare-and-delete idiom (the Redlock unlock script) written in every
+// embedded language, each asserted to be a faithful drop-in for the native
+// GOBLIN.CAD: a matching token deletes the key and replies 1, a re-run replies
+// 0, and a mismatched token leaves the key in place and replies 0. Each engine
+// lives in its own scope so only one VM is alive at a time (MicroPython balances
+// mp_init/mp_deinit per instance).
+void test_compare_and_delete_idiom() {
+  using goblin::core::Store;
+
+  // Run one engine's idiom through the three cases against a shared store.
+  auto check = [](auto run, Store& store, auto& engine, std::string_view cmd,
+                  std::string_view src) {
+    store.set("lk", "secret");
+    assert(run(store, engine, {cmd, src, "1", "lk", "secret"}) == ":1\r\n");  // match -> del
+    assert(run(store, engine, {cmd, src, "1", "lk", "secret"}) == ":0\r\n");  // gone
+    store.set("lk", "secret");
+    assert(run(store, engine, {cmd, src, "1", "lk", "nope"}) == ":0\r\n");    // mismatch
+    assert(store.get("lk").has_value());  // ... left the key untouched
+    (void)store.del("lk");
+  };
+
+  Store store;
+  {  // PUC-Lua and Luau: 1-based KEYS/ARGV, varargs redis.call, top-level return.
+    goblin::core::ScriptEngine e(store);
+    check(run_script, store, e, "EVAL",
+R"(if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0)");
+  }
+  {
+    goblin::core::LuauEngine e(store);
+    check(run_luau, store, e, "LUAU.EVAL",
+R"(if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0)");
+  }
+  {  // Wren: 0-based Lists, Redis.call takes a List, return inside the wrapper.
+    goblin::core::WrenEngine e(store);
+    check(run_wren, store, e, "WREN.EVAL",
+R"(if (Redis.call(["get", KEYS[0]]) == ARGV[0]) {
+  return Redis.call(["del", KEYS[0]])
+}
+return 0)");
+  }
+  {  // Tcl: lists read with lindex (0-based), string compare with eq.
+    goblin::core::TclEngine e(store);
+    check(run_tcl, store, e, "TCL.EVAL",
+R"(if {[redis call get [lindex $KEYS 0]] eq [lindex $ARGV 0]} {
+  return [redis call del [lindex $KEYS 0]]
+}
+return 0)");
+  }
+  {  // MicroPython: 0-based lists, the reply comes from the `reply` global.
+    goblin::core::UPythonEngine e(store);
+    check(run_upython, store, e, "UPYTHON.EVAL",
+R"(if redis.call("get", KEYS[0]) == ARGV[0]:
+    reply = redis.call("del", KEYS[0])
+else:
+    reply = 0)");
+  }
+  {  // JavaScript: 0-based arrays, strict ===, return inside the wrapper.
+    goblin::core::QuickJsEngine e(store);
+    check(run_quickjs, store, e, "QUICKJS.EVAL",
+R"(if (redis.call("get", KEYS[0]) === ARGV[0]) {
+  return redis.call("del", KEYS[0])
+}
+return 0)");
+  }
+
+  // The native GOBLIN.CAD is the same drop-in on the same store.
+  store.set("lk", "secret");
+  assert(execute_fields(store, {"GOBLIN.CAD", "lk", "nope"}) == ":0\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "lk", "secret"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAD", "lk", "secret"}) == ":0\r\n");
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -3371,6 +3490,7 @@ int main() {
   test_store_strings();
   test_store_string_arena_compaction();
   test_string_commands();
+  test_goblin_cad();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();
@@ -3445,6 +3565,7 @@ int main() {
   test_upython_without_engine_is_unavailable();
   test_quickjs_scripting();
   test_quickjs_without_engine_is_unavailable();
+  test_compare_and_delete_idiom();
 
   test_keyspace_storage_and_string_value();
   return 0;

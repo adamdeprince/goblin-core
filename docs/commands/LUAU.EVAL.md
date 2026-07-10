@@ -74,6 +74,29 @@ Luau's standard library is sandbox-safe by construction: there is no `io`, no
 `package`/`require`, and `os` is limited to `time`/`clock`/`date`. Host modules
 cannot be loaded.
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The most-copied Redis script — safe lock release, deleting a key only if it still
+holds the token you wrote — is byte-for-byte identical Luau and Lua source
+(`KEYS`/`ARGV` are 1-based in both):
+
+```lua
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+end
+return 0
+```
+
+```
+> SET lock:job my-token
+OK
+> LUAU.EVAL "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end return 0" 1 lock:job my-token
+(integer) 1
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter:
+[`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
+
 ## See also
 
 - [`LUAU.EVALSHA`](LUAU.EVALSHA.md) — run a cached Luau script by digest.

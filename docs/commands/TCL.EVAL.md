@@ -113,6 +113,29 @@ interpreter. At startup the engine additionally removes `exit`, `source`,
 (error) ERR invalid command name "source"
 ```
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The most-copied Redis script — safe lock release, deleting a key only if it still
+holds the token you wrote — in Tcl: the `redis` command talks to the store, and
+`KEYS`/`ARGV` are lists read with `lindex` (0-based), compared with `eq`:
+
+```tcl
+if {[redis call get [lindex $KEYS 0]] eq [lindex $ARGV 0]} {
+  return [redis call del [lindex $KEYS 0]]
+}
+return 0
+```
+
+```
+> SET lock:job my-token
+OK
+> TCL.EVAL "if {[redis call get [lindex $KEYS 0]] eq [lindex $ARGV 0]} { return [redis call del [lindex $KEYS 0]] } return 0" 1 lock:job my-token
+(integer) 1
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter:
+[`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
+
 ## See also
 
 - [`TCL.EVALSHA`](TCL.EVALSHA.md) — run a cached Tcl script by digest.

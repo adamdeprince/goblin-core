@@ -99,6 +99,23 @@ The VM is built at MicroPython's minimal ROM level: there is no filesystem, no
 `os`/`sys`, no sockets, no `import` of host modules. `print()` output goes to the
 server log, not to the client. The GC heap is created lazily on the first script.
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The most-copied Redis script — safe lock release, deleting a key only if it still
+holds the token you wrote — in Python: `KEYS`/`ARGV` are 0-based lists and the
+reply comes from the `reply` global (Python has no top-level `return`):
+
+```python
+if redis.call("get", KEYS[0]) == ARGV[0]:
+    reply = redis.call("del", KEYS[0])
+else:
+    reply = 0
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter:
+[`GOBLIN.CAD key expected`](GOBLIN.CAD.md), which replies `1` on a match and `0`
+otherwise, exactly like the script.
+
 ## See also
 
 - [`UPYTHON.EVALSHA`](UPYTHON.EVALSHA.md) — run a cached script by digest.

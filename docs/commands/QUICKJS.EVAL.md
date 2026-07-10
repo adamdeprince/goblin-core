@@ -102,6 +102,29 @@ also capped with a memory limit and a maximum stack size. `KEYS` and `ARGV` are
 the only injected globals besides `redis`. The runtime is created lazily on the
 first script.
 
+## Compare-and-delete — the Redlock unlock idiom
+
+The most-copied Redis script — safe lock release, deleting a key only if it still
+holds the token you wrote — in JavaScript: `KEYS`/`ARGV` are 0-based arrays,
+compared with strict `===`:
+
+```javascript
+if (redis.call("get", KEYS[0]) === ARGV[0]) {
+  return redis.call("del", KEYS[0])
+}
+return 0
+```
+
+```
+> SET lock:job my-token
+OK
+> QUICKJS.EVAL "if (redis.call('get', KEYS[0]) === ARGV[0]) { return redis.call('del', KEYS[0]) } return 0" 1 lock:job my-token
+(integer) 1
+```
+
+Goblin Core also ships this as a native, single-op command — no interpreter:
+[`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
+
 ## See also
 
 - [`QUICKJS.EVALSHA`](QUICKJS.EVALSHA.md) — run a cached script by digest.

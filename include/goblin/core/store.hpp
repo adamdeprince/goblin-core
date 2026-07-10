@@ -1161,6 +1161,12 @@ class Store {
   [[nodiscard]] std::optional<std::string> get_set(std::string_view key,
                                                    std::string_view value);
   [[nodiscard]] std::optional<std::string> get_del(std::string_view key);
+  // GOBLIN.CAD compare-and-delete: if the key holds a string equal to
+  // `expected`, delete it and return true; otherwise false. The value is
+  // compared in place (no allocation on the common inline path). A non-string
+  // key is rejected as WRONGTYPE by the command layer before this is reached.
+  [[nodiscard]] bool compare_and_delete(std::string_view key,
+                                        std::string_view expected);
   [[nodiscard]] std::optional<std::size_t> strlen(
       std::string_view key) const noexcept;
   [[nodiscard]] std::size_t append(std::string_view key, std::string_view value);
