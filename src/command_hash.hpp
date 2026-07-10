@@ -40,7 +40,7 @@
 #line 17 "src/command_hash.gperf"
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 
-#define TOTAL_KEYWORDS 84
+#define TOTAL_KEYWORDS 85
 #define MIN_WORD_LENGTH 3
 #define MAX_WORD_LENGTH 29
 #define MIN_HASH_VALUE 8
@@ -125,7 +125,7 @@ CommandDispatch::lookup (const char *str, size_t len)
   static const unsigned char lengthtable[] =
     {
        0,  0,  0,  0,  0,  0,  0,  0,  8,  4,  0,  0,  0,  3,
-       0, 15,  6,  0,  8,  4, 15, 11,  7,  3,  4, 10,  6,  0,
+       0, 15,  6,  0,  8,  4, 15, 11,  7,  3,  4, 10,  6, 12,
       13,  4,  5,  6,  7,  0,  4,  5,  6,  0,  0, 29, 10, 11,
        0,  3,  0,  5,  6,  0,  3, 14,  0,  6,  0,  0,  4,  0,
       11,  7,  8,  4,  0,  6,  0,  8,  4,  0,  6,  0,  0, 14,
@@ -181,7 +181,8 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
 #line 65 "src/command_hash.gperf"
       {"GETDEL", goblin::core::CommandType::getdel},
-      {"",goblin::core::CommandType::unknown},
+#line 103 "src/command_hash.gperf"
+      {"GOBLIN.CLAIM", goblin::core::CommandType::goblin_claim},
 #line 102 "src/command_hash.gperf"
       {"GOBLIN.HSETGT", goblin::core::CommandType::goblin_hsetgt},
 #line 49 "src/command_hash.gperf"
@@ -419,5 +420,5 @@ CommandDispatch::lookup (const char *str, size_t len)
     }
   return static_cast<struct CommandEntry *> (0);
 }
-#line 103 "src/command_hash.gperf"
+#line 104 "src/command_hash.gperf"
 

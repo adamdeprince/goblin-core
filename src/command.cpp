@@ -1070,6 +1070,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::goblin_hsetgt;
       return {.command = std::move(command)};
+    case CommandType::goblin_claim:
+      if (command.args.size() != 4) {
+        return parse_error(wrong_arity("goblin.claim"));
+      }
+      command.type = CommandType::goblin_claim;
+      return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
@@ -2143,6 +2149,45 @@ void execute_command_into(Store& store,
         return;
       }
       resp::append_integer(out, *result ? 1 : 0);
+      return;
+    }
+
+    case CommandType::goblin_claim: {
+      // Idempotency guard: SET claim_key = token NX EX seconds; if that won the
+      // slot reply "CLAIMED", otherwise the request was already handled -- reply
+      // the stored result under result_key (GET). One native atomic op, no
+      // interpreter: the SET-NX-EX and the GET are direct store calls.
+      //   args: claim_key(0) result_key(1) token(2) seconds(3)
+      const auto seconds = parse_ll(command.args[3]);
+      if (!seconds) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*seconds <= 0) {
+        resp::append_error(out, "ERR invalid expire time in 'goblin.claim' command");
+        return;
+      }
+      if (command.args[2].size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, *seconds, 1000);
+      if (!when) {  // seconds so large the expiry leaves the representable range
+        resp::append_error(out, "ERR invalid expire time in 'goblin.claim' command");
+        return;
+      }
+      const auto outcome =
+          store.claim(command.args[0], command.args[1], command.args[2], *when, now);
+      if (outcome.claimed) {
+        resp::append_bulk_string(out, "CLAIMED");
+      } else if (outcome.result_wrongtype) {
+        resp::append_error(out, kWrongType);
+      } else if (outcome.result) {
+        resp::append_bulk_string(out, *outcome.result);
+      } else {
+        resp::append_null_bulk_string(out);
+      }
       return;
     }
 

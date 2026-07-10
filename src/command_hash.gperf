@@ -100,4 +100,5 @@ GOBLIN.INCRBOUND, goblin::core::CommandType::goblin_incrbound
 GOBLIN.DECRPOS, goblin::core::CommandType::goblin_decrpos
 GOBLIN.HCAD, goblin::core::CommandType::goblin_hcad
 GOBLIN.HSETGT, goblin::core::CommandType::goblin_hsetgt
+GOBLIN.CLAIM, goblin::core::CommandType::goblin_claim
 %%

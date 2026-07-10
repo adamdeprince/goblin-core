@@ -1147,6 +1147,37 @@ bool Store::compare_and_set(std::string_view key, std::string_view expected,
   return true;
 }
 
+Store::ClaimOutcome Store::claim(std::string_view claim_key,
+                                 std::string_view result_key, std::string_view token,
+                                 std::uint64_t when_ms, std::uint64_t now) {
+  ClaimOutcome outcome;
+  // An expired claim must free the slot before the NX check, and an expired result
+  // must read as absent -- purge both at `now` (a cheap no-op when no TTLs exist).
+  (void)purge_if_expired(claim_key, now);
+  if (!exists(claim_key)) {
+    // SET claim_key = token NX EX: the slot was free, so we won it.
+    set(claim_key, token);  // claim_key was absent, so there is no TTL to clear
+    (void)expire_at_ms(claim_key, when_ms, now);
+    outcome.claimed = true;
+    return outcome;
+  }
+  // The slot is already held -> return the stored result (GET result_key). NX never
+  // WRONGTYPEs, but this fallthrough GET does when result_key is not a string.
+  (void)purge_if_expired(result_key, now);
+  if (const auto type = key_type(result_key);
+      type.has_value() && *type != KeyType::String) {
+    outcome.result_wrongtype = true;
+    return outcome;
+  }
+  if (const auto value = get(result_key)) {
+    outcome.result.emplace();
+    outcome.result->reserve(value->size());
+    outcome.result->append(value->head);
+    outcome.result->append(value->tail);
+  }
+  return outcome;
+}
+
 std::optional<std::size_t> Store::strlen(std::string_view key) const noexcept {
   return keyspace_.string_length(key);
 }

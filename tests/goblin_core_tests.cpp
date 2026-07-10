@@ -1646,6 +1646,73 @@ void test_goblin_hsetgt() {
   assert(t.pttl_ms("k", 40'000) == 10'000);
 }
 
+void test_goblin_claim() {
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // --- Deterministic claim / expiry through the Store method (explicit clock) ---
+  {
+    goblin::core::Store store;
+    const std::uint64_t now = 10'000;
+    // Fresh slot -> claimed; claim_key is set to the token with the TTL armed.
+    auto o1 = store.claim("c", "r", "reqA", now + 5'000, now);
+    assert(o1.claimed && !o1.result_wrongtype && !o1.result);
+    const auto held = store.get("c");
+    assert(held && held->head == "reqA");
+    assert(store.pttl_ms("c", now) == 5'000);
+    // Held, but no result stored yet -> not claimed, nil result; token unchanged.
+    auto o2 = store.claim("c", "r", "reqB", now + 5'000, now);
+    assert(!o2.claimed && !o2.result_wrongtype && !o2.result);
+    assert(store.get("c")->head == "reqA");
+    // The worker stores its result; a duplicate request reads it back.
+    store.set("r", "RESULT");
+    auto o3 = store.claim("c", "r", "reqC", now + 5'000, now);
+    assert(!o3.claimed && o3.result == "RESULT");
+    // Once the claim TTL passes, the slot is free again -> a new claim wins.
+    auto o4 = store.claim("c", "r", "reqD", now + 20'000 + 5'000, now + 20'000);
+    assert(o4.claimed);
+    assert(store.get("c")->head == "reqD");
+  }
+
+  // A non-string result key makes the fallthrough GET a WRONGTYPE (NX never is).
+  {
+    goblin::core::Store store;
+    const std::uint64_t now = 10'000;
+    assert(store.claim("c", "r", "A", now + 5'000, now).claimed);  // hold the slot
+    (void)store.hset("r", "f", "v");                               // result key is a hash
+    auto o = store.claim("c", "r", "B", now + 5'000, now);
+    assert(!o.claimed && o.result_wrongtype && !o.result);
+  }
+
+  // --- Command wiring ---
+  goblin::core::Store store;
+  // Fresh claim -> bulk "CLAIMED".
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "res", "tok", "100"}) ==
+         "$7\r\nCLAIMED\r\n");
+  // Held, no result yet -> nil.
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "res", "tok2", "100"}) ==
+         "$-1\r\n");
+  // Store a result; a duplicate reads it back.
+  assert(execute_fields(store, {"SET", "res", "DONE"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "res", "tok3", "100"}) ==
+         "$4\r\nDONE\r\n");
+  // A non-string result key -> WRONGTYPE on the fallthrough GET.
+  assert(execute_fields(store, {"HSET", "hres", "f", "v"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "hres", "tok4", "100"}) == wrongtype);
+  // A claim key that already holds a non-string just fails NX (no WRONGTYPE): it
+  // falls through to read the result key -> "DONE".
+  assert(execute_fields(store, {"HSET", "k2", "f", "v"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k2", "res", "tok5", "100"}) ==
+         "$4\r\nDONE\r\n");
+  // Errors: EX 0, non-integer seconds; arity.
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "res", "t", "0"}) ==
+         "-ERR invalid expire time in 'goblin.claim' command\r\n");
+  assert(execute_fields(store, {"GOBLIN.CLAIM", "k", "res", "t", "abc"}) ==
+         "-ERR value is not an integer or out of range\r\n");
+  std::vector<std::string_view> few = {"GOBLIN.CLAIM", "k", "res", "tok"};
+  assert(!goblin::core::parse_command(few).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3977,6 +4044,7 @@ int main() {
   test_goblin_decrpos();
   test_goblin_hcad();
   test_goblin_hsetgt();
+  test_goblin_claim();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

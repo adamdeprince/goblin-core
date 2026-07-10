@@ -112,8 +112,9 @@ idioms, plus `GOBLIN.INCREX` (fixed-window rate limit) and `GOBLIN.ZWINDOW`
 (sliding-window limiter / mutex / counting semaphore) for the two classic
 rate-limit shapes, `GOBLIN.INCRBOUND` (bounded increment / quota) and
 `GOBLIN.DECRPOS` (decrement-if-positive / stock reservation) for capped counters,
-and the hash-field pair `GOBLIN.HCAD` (compare-and-delete a field) and
-`GOBLIN.HSETGT` (set-if-greater — the `ZADD GT` that hashes lack, for watermarks).
+the hash-field pair `GOBLIN.HCAD` (compare-and-delete a field) and `GOBLIN.HSETGT`
+(set-if-greater — the `ZADD GT` that hashes lack, for watermarks), and
+`GOBLIN.CLAIM` (an idempotency guard that claims work once with an expiring lease).
 See [docs/commands](docs/commands/README.md) for the surface, and
 **[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)** for how the six languages
 compare on a trivial op (compare-and-delete) and a heavy one (real-time leaderboard

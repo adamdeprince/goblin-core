@@ -99,6 +99,7 @@ enum class CommandType {
   goblin_decrpos,
   goblin_hcad,
   goblin_hsetgt,
+  goblin_claim,
   echo,
   info,
   unknown,

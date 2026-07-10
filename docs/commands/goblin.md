@@ -18,6 +18,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.DECRPOS`](GOBLIN.DECRPOS.md) | Decrement only while positive: reserve stock / take a permit, else -1. |
 | [`GOBLIN.HCAD`](GOBLIN.HCAD.md) | Compare-and-delete a hash field: delete it only if it still holds the expected value. |
 | [`GOBLIN.HSETGT`](GOBLIN.HSETGT.md) | Set-if-greater on a hash field: the `ZADD GT` that hashes lack (watermarks). |
+| [`GOBLIN.CLAIM`](GOBLIN.CLAIM.md) | Idempotency guard: claim work once with an expiring lease, else return the prior result. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -148,6 +149,21 @@ replies `1`; otherwise leaves it and replies `0`. A non-numeric `value` or curre
 value is an error; a non-hash key is `WRONGTYPE`. The raw text is stored and any
 TTL is preserved. For high-water marks, monotonic versions, and last-write-wins by
 timestamp. See the full page: **[GOBLIN.HSETGT](GOBLIN.HSETGT.md)**.
+
+## GOBLIN.CLAIM
+
+```
+GOBLIN.CLAIM claim_key result_key token seconds
+```
+
+Idempotency guard — the native form of the exactly-once idiom (`SET claim_key
+token NX EX seconds`; if it claimed the slot return `CLAIMED`, else `GET
+result_key`). Replies `CLAIMED` when the caller won the work, the previously-stored
+result when it was already done, nil when it is still in flight, or `WRONGTYPE`
+when `result_key` is a non-string. The `NX` claim never `WRONGTYPE`s on `claim_key`
+of any type. The expiring lease — which per-key TTLs made possible — reclaims a
+crashed worker's slot automatically so the work is retried. See the full page:
+**[GOBLIN.CLAIM](GOBLIN.CLAIM.md)**.
 
 ## GOBLIN.MEMORY
 

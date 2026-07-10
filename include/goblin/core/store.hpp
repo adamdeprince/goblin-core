@@ -1246,6 +1246,25 @@ class Store {
   [[nodiscard]] bool compare_and_set(std::string_view key,
                                      std::string_view expected,
                                      std::string_view new_value);
+  // GOBLIN.CLAIM idempotency guard. The outcome of a claim attempt: either the
+  // slot was won (`claimed`), or it was already taken and the previously-stored
+  // result under the result key is returned (`result`, nullopt when that key is
+  // absent), or that key holds a non-string so the fallthrough read is a WRONGTYPE
+  // (`result_wrongtype`).
+  struct ClaimOutcome {
+    bool claimed{false};
+    bool result_wrongtype{false};
+    std::optional<std::string> result{};  // meaningful only when !claimed
+  };
+  // Atomically: purge both keys at `now`; try to SET claim_key = token only if it
+  // is absent (NX), arming an expiry at `when_ms`. If that won the slot, return
+  // {claimed=true}. Otherwise the slot is held, so read result_key (GET
+  // semantics): return its value, nullopt if absent, or result_wrongtype if it is
+  // not a string. claim_key is set with NX, so it never WRONGTYPEs on any type.
+  [[nodiscard]] ClaimOutcome claim(std::string_view claim_key,
+                                   std::string_view result_key,
+                                   std::string_view token, std::uint64_t when_ms,
+                                   std::uint64_t now);
   [[nodiscard]] std::optional<std::size_t> strlen(
       std::string_view key) const noexcept;
   [[nodiscard]] std::size_t append(std::string_view key, std::string_view value);
