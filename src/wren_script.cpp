@@ -38,6 +38,7 @@ const char* const kGoblinModule =
     "  foreign static keys\n"
     "  foreign static argv\n"
     "  foreign static setReply_(value)\n"
+    "  foreign static stash_(fn)\n"
     "  static error(msg) {\n"
     "    var m = {}\n"
     "    m[\"err\"] = msg\n"
@@ -61,6 +62,7 @@ void tramp_log(WrenVM* vm) { engine_of(vm)->foreign_log(vm); }
 void tramp_set_reply(WrenVM* vm) { engine_of(vm)->foreign_set_reply(vm); }
 void tramp_keys(WrenVM* vm) { engine_of(vm)->foreign_keys(vm); }
 void tramp_argv(WrenVM* vm) { engine_of(vm)->foreign_argv(vm); }
+void tramp_stash(WrenVM* vm) { engine_of(vm)->foreign_stash(vm); }
 
 WrenForeignMethodFn bind_foreign_method(WrenVM*, const char* module,
                                         const char* className, bool isStatic,
@@ -76,6 +78,7 @@ WrenForeignMethodFn bind_foreign_method(WrenVM*, const char* module,
   if (std::strcmp(signature, "setReply_(_)") == 0) return tramp_set_reply;
   if (std::strcmp(signature, "keys") == 0) return tramp_keys;
   if (std::strcmp(signature, "argv") == 0) return tramp_argv;
+  if (std::strcmp(signature, "stash_(_)") == 0) return tramp_stash;
   return nullptr;
 }
 
@@ -346,6 +349,12 @@ void WrenEngine::foreign_set_reply(WrenVM* vm) {
   reply_set_ = true;
 }
 
+void WrenEngine::foreign_stash(WrenVM* vm) {
+  // Grab the wrapper Fn (argument 1) as a handle so the compiled function
+  // outlives this interpret and can be cached for later EVALSHA calls.
+  pending_handle_ = wrenGetSlotHandle(vm, 1);
+}
+
 void WrenEngine::foreign_keys(WrenVM* vm) {
   wrenEnsureSlots(vm, 2);
   wrenSetSlotNewList(vm, 0);
@@ -376,6 +385,11 @@ WrenEngine::WrenEngine(Store& store) : store_(store) {}
 
 WrenEngine::~WrenEngine() {
   if (vm_ != nullptr) {
+    // Release every handle before freeing the VM (they reference VM objects).
+    for (const auto& [sha, handle] : scripts_) wrenReleaseHandle(vm_, handle);
+    scripts_.clear();
+    if (pending_handle_ != nullptr) wrenReleaseHandle(vm_, pending_handle_);
+    if (call_handle_ != nullptr) wrenReleaseHandle(vm_, call_handle_);
     wrenFreeVM(vm_);
     vm_ = nullptr;
   }
@@ -402,31 +416,61 @@ void WrenEngine::ensure_vm() {
   // per-script interpret can reference it without re-declaring a top-level name.
   wrenInterpret(vm_, "goblin", kGoblinModule);
   wrenInterpret(vm_, "main", "import \"goblin\" for Redis\n");
+
+  // A reusable handle for calling a zero-arg wrapper Fn (`fn.call()`).
+  call_handle_ = wrenMakeCallHandle(vm_, "call()");
 }
 
-bool WrenEngine::run(std::string_view body,
-                     std::span<const std::string_view> keys,
-                     std::span<const std::string_view> argv,
-                     std::string& out) {
+WrenHandle* WrenEngine::compile_to_handle(std::string_view body,
+                                          std::string& out) {
   ensure_vm();
   if (vm_ == nullptr) {
     resp::append_error(out, "ERR could not initialize scripting engine");
-    return false;
+    return nullptr;
   }
+  error_.clear();
+  pending_handle_ = nullptr;
 
+  // Wren has no top-level return and no in-language eval, so compile the body
+  // into a reusable wrapper Fn and hand it to C++ via Redis.stash_ (which grabs a
+  // handle). The outer Fn, when later called, runs the body and marshals its
+  // result through Redis.setReply_. KEYS/ARGV are 0-based Lists (Wren indexing).
+  // Building the Fn compiles the body but does not run it.
+  std::string wrapped =
+      "Redis.stash_(Fn.new{\n"
+      "Redis.setReply_((Fn.new{\nvar KEYS = Redis.keys\nvar ARGV = Redis.argv\n";
+  wrapped.append(body);
+  wrapped += "\n}).call())\n})\n";
+
+  const WrenInterpretResult result = wrenInterpret(vm_, "main", wrapped.c_str());
+  if (result != WREN_RESULT_SUCCESS || pending_handle_ == nullptr) {
+    const std::string message = error_.empty() ? "compile error" : error_;
+    resp::append_error(out, "ERR Error compiling script: " + sanitize_line(message));
+    if (pending_handle_ != nullptr) {
+      wrenReleaseHandle(vm_, pending_handle_);
+      pending_handle_ = nullptr;
+    }
+    return nullptr;
+  }
+  WrenHandle* handle = pending_handle_;
+  pending_handle_ = nullptr;
+  return handle;
+}
+
+bool WrenEngine::run(WrenHandle* fn,
+                     std::span<const std::string_view> keys,
+                     std::span<const std::string_view> argv,
+                     std::string& out) {
   current_keys_ = keys;
   current_argv_ = argv;
   reply_.clear();
   reply_set_ = false;
   error_.clear();
 
-  // Wren has no top-level return, so run the body as a function and capture its
-  // result through Redis.setReply_. KEYS/ARGV are 0-based Lists (Wren indexing).
-  std::string wrapped = "Redis.setReply_((Fn.new{\nvar KEYS = Redis.keys\nvar ARGV = Redis.argv\n";
-  wrapped.append(body);
-  wrapped += "\n}).call())\n";
-
-  const WrenInterpretResult result = wrenInterpret(vm_, "main", wrapped.c_str());
+  // Call the cached wrapper Fn (fn.call()) -- no compilation on this path.
+  wrenEnsureSlots(vm_, 1);
+  wrenSetSlotHandle(vm_, 0, fn);  // receiver
+  const WrenInterpretResult result = wrenCall(vm_, call_handle_);
   if (result == WREN_RESULT_SUCCESS) {
     if (reply_set_) {
       out.append(reply_);
@@ -435,37 +479,17 @@ bool WrenEngine::run(std::string_view body,
     }
     return true;
   }
-
   const std::string message = error_.empty() ? "script error" : error_;
-  if (result == WREN_RESULT_COMPILE_ERROR) {
-    resp::append_error(out, "ERR Error compiling script: " + sanitize_line(message));
-    return false;
-  }
   resp::append_error(out, ensure_error_code(sanitize_line(message)));
-  return true;  // compiled, but errored at runtime -- still cacheable
+  return true;  // ran (with a runtime error) -- the script stays cached
 }
 
 bool WrenEngine::compile_ok(std::string_view body, std::string& out) {
-  ensure_vm();
-  if (vm_ == nullptr) {
-    resp::append_error(out, "ERR could not initialize scripting engine");
-    return false;
-  }
-  error_.clear();
-
-  // Construct the wrapped function without calling it: this compiles the body
-  // (syntax check, with KEYS/ARGV in scope) but runs no user code.
-  std::string wrapped = "(Fn.new{\nvar KEYS = Redis.keys\nvar ARGV = Redis.argv\n";
-  wrapped.append(body);
-  wrapped += "\n})\n";
-
-  const WrenInterpretResult result = wrenInterpret(vm_, "main", wrapped.c_str());
-  if (result == WREN_RESULT_COMPILE_ERROR) {
-    const std::string message = error_.empty() ? "compile error" : error_;
-    resp::append_error(out, "ERR Error compiling script: " + sanitize_line(message));
-    return false;
-  }
-  scripts_[sha1_hex(body)] = std::string(body);
+  const std::string sha = sha1_hex(body);
+  if (scripts_.count(sha) != 0) return true;  // already compiled and cached
+  WrenHandle* handle = compile_to_handle(body, out);
+  if (handle == nullptr) return false;
+  scripts_.emplace(sha, handle);
   return true;
 }
 
@@ -479,9 +503,17 @@ void WrenEngine::eval(std::span<const std::string_view> args, std::string& out) 
   if (!split_keys_and_args(args, &keys, &argv, out)) return;
 
   const std::string_view body = args[0];
-  if (run(body, keys, argv, out)) {
-    scripts_.emplace(sha1_hex(body), std::string(body));
+  const std::string sha = sha1_hex(body);
+  // Compile once and cache the wrapper Fn; a repeat EVAL of the same source then
+  // takes the same no-recompile path as EVALSHA.
+  if (const auto it = scripts_.find(sha); it != scripts_.end()) {
+    (void)run(it->second, keys, argv, out);
+    return;
   }
+  WrenHandle* handle = compile_to_handle(body, out);
+  if (handle == nullptr) return;
+  scripts_.emplace(sha, handle);
+  (void)run(handle, keys, argv, out);
 }
 
 void WrenEngine::eval_sha(std::span<const std::string_view> args, std::string& out) {
@@ -499,8 +531,7 @@ void WrenEngine::eval_sha(std::span<const std::string_view> args, std::string& o
     resp::append_error(out, "NOSCRIPT No matching script. Please use WREN.EVAL.");
     return;
   }
-  const std::string body = it->second;
-  (void)run(body, keys, argv, out);
+  (void)run(it->second, keys, argv, out);  // cached wrapper Fn -- no recompile
 }
 
 void WrenEngine::script(std::span<const std::string_view> args, std::string& out) {
@@ -529,6 +560,7 @@ void WrenEngine::script(std::span<const std::string_view> args, std::string& out
   }
 
   if (equals_upper(sub, "FLUSH")) {
+    for (const auto& [sha, handle] : scripts_) wrenReleaseHandle(vm_, handle);
     scripts_.clear();
     resp::append_simple_string(out, "OK");
     return;

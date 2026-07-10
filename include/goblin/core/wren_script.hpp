@@ -7,9 +7,10 @@
 #include <unordered_map>
 #include <vector>
 
-// Wren's VM type, forward-declared so this header stays free of the vendored
-// Wren headers (which are C and must be included via extern "C").
+// Wren's VM and handle types, forward-declared so this header stays free of the
+// vendored Wren headers (which are C and must be included via extern "C").
 typedef struct WrenVM WrenVM;
+typedef struct WrenHandle WrenHandle;
 
 namespace goblin::core {
 
@@ -43,23 +44,33 @@ class WrenEngine {
   void foreign_set_reply(WrenVM* vm);
   void foreign_keys(WrenVM* vm);
   void foreign_argv(WrenVM* vm);
+  // Grabs the wrapper Fn passed to Redis.stash_ as a handle, so the compiled
+  // function can be cached and re-called without recompiling.
+  void foreign_stash(WrenVM* vm);
   void report_error(std::string message);
   void note_write(std::string_view text);
 
  private:
   void ensure_vm();
+  // Compile `body` into a callable wrapper Fn and return a handle to it (what the
+  // cache stores), or nullptr on a compile error (message written to `out`). The
+  // body is compiled but not run.
+  WrenHandle* compile_to_handle(std::string_view body, std::string& out);
   bool compile_ok(std::string_view body, std::string& out);  // caches on success
-  // Compiles and runs `body`, writing the RESP reply to `out`. Returns true if
-  // the script compiled (whether or not it then errored at runtime), so EVAL can
-  // cache exactly the scripts a later EVALSHA could run.
-  bool run(std::string_view body,
+  // Call a cached wrapper Fn handle with KEYS/ARGV bound, writing the RESP reply
+  // to `out`. No compilation on this path -- the EVALSHA / cached-EVAL fast path.
+  bool run(WrenHandle* fn,
            std::span<const std::string_view> keys,
            std::span<const std::string_view> argv,
            std::string& out);
 
   Store& store_;
   WrenVM* vm_ = nullptr;
-  std::unordered_map<std::string, std::string> scripts_;  // 40-hex SHA1 -> body
+  // 40-hex SHA1 of the source -> handle to the precompiled wrapper Fn. Caching
+  // the compiled function is what lets EVALSHA skip re-interpreting the source.
+  std::unordered_map<std::string, WrenHandle*> scripts_;
+  WrenHandle* call_handle_ = nullptr;     // the "call()" method handle (created once)
+  WrenHandle* pending_handle_ = nullptr;  // set by foreign_stash during compile
 
   // Per-run state (single-threaded; scripts never nest).
   std::span<const std::string_view> current_keys_;
