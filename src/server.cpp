@@ -7,6 +7,7 @@
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
+#include "goblin/core/upython_script.hpp"
 #include "goblin/core/wren_script.hpp"
 
 #include <cerrno>
@@ -257,6 +258,7 @@ void accept_clients(int listener,
                                              LuauEngine& luau_engine,
                                              WrenEngine& wren_engine,
                                              TclEngine& tcl_engine,
+                                             UPythonEngine& upython_engine,
                                              const ServerConfig& config) {
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
@@ -275,7 +277,8 @@ void accept_clients(int listener,
             .script_engine = &script_engine,
             .luau_engine = &luau_engine,
             .wren_engine = &wren_engine,
-            .tcl_engine = &tcl_engine});
+            .tcl_engine = &tcl_engine,
+            .upython_engine = &upython_engine});
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
@@ -296,6 +299,7 @@ void accept_clients(int listener,
                                LuauEngine& luau_engine,
                                WrenEngine& wren_engine,
                                TclEngine& tcl_engine,
+                               UPythonEngine& upython_engine,
                                const ServerConfig& config) {
   char buffer[16 * 1024];
 
@@ -309,7 +313,7 @@ void accept_clients(int listener,
       client.parser.append(std::string_view(buffer, static_cast<std::size_t>(received)));
 
       if (!process_buffered_commands(client, store, script_engine, luau_engine,
-                                     wren_engine, tcl_engine, config)) {
+                                     wren_engine, tcl_engine, upython_engine, config)) {
         return false;
       }
       continue;
@@ -398,6 +402,7 @@ int Server::run() {
   LuauEngine luau_engine(store_);
   WrenEngine wren_engine(store_);
   TclEngine tcl_engine(store_);
+  UPythonEngine upython_engine(store_);
 
   std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
             << '\n';
@@ -449,12 +454,13 @@ int Server::run() {
 
       if (keep && !clients[i].read_backpressured) {
         keep = process_buffered_commands(clients[i], store_, script_engine,
-                                         luau_engine, wren_engine, tcl_engine, config_);
+                                         luau_engine, wren_engine, tcl_engine,
+                                         upython_engine, config_);
       }
 
       if (keep && (revents & POLLIN) != 0 && !clients[i].read_backpressured) {
         keep = read_client(clients[i], store_, script_engine, luau_engine,
-                           wren_engine, tcl_engine, config_);
+                           wren_engine, tcl_engine, upython_engine, config_);
       }
 
       if (keep && has_pending_output(clients[i])) {
@@ -464,7 +470,8 @@ int Server::run() {
       while (keep && !clients[i].read_backpressured &&
              clients[i].parser.has_queued_frames()) {
         keep = process_buffered_commands(clients[i], store_, script_engine,
-                                         luau_engine, wren_engine, tcl_engine, config_);
+                                         luau_engine, wren_engine, tcl_engine,
+                                         upython_engine, config_);
         if (keep && has_pending_output(clients[i])) {
           keep = write_client(clients[i], config_);
         }

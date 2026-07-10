@@ -75,6 +75,26 @@ canonical integer replies as an integer, everything else as a bulk string; the
 engine deletes process- and host-touching commands (`exit`, `source`, `popen`,
 `puts`) and unsets `env` at startup.
 
+## MicroPython (fifth interpreter, `UPYTHON.*` commands)
+
+`micropython/` holds a self-contained C tree produced by
+[MicroPython](https://micropython.org)'s embed port (`ports/embed`): the whole
+`micropython_embed/` package (`py/`, `shared/runtime/`, `port/`, and the
+generated `genhdr/`), plus the `mpconfigport.h` it was generated from. The config
+is MicroPython's minimal ROM level plus byte-strings (binary-safe keys/values),
+floats, big integers, and readable error messages. Only `port/mphalport.c` is
+modified from upstream, to route `print()` to the server log rather than stdout.
+It builds as its own C static library (`goblin_upy`); its `mp_`-prefixed symbols
+collide with nothing. To regenerate after a config change, run the embed port's
+makefile against `mpconfigport.h`.
+
+Python has no top-level return, so a `UPYTHON.EVAL` script produces its reply by
+assigning to the module global `reply` (the Python analogue of Wren's
+`Redis.setReply_`). `redis.call(...)` talks to the store and raises a Python
+exception on a command error (so `try/except` works); `redis.error`/`status`/
+`sha1hex`/`log` are also provided. KEYS/ARGV are 0-based lists. The GC heap is
+allocated lazily on the first script.
+
 ## What is *not* vendored
 
 The `EVAL` / `EVALSHA` / `SCRIPT` commands, the `redis` / `server` Lua API table

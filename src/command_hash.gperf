@@ -31,6 +31,9 @@ WREN.SCRIPT, goblin::core::CommandType::wren_script
 TCL.EVAL, goblin::core::CommandType::tcl_eval
 TCL.EVALSHA, goblin::core::CommandType::tcl_evalsha
 TCL.SCRIPT, goblin::core::CommandType::tcl_script
+UPYTHON.EVAL, goblin::core::CommandType::upython_eval
+UPYTHON.EVALSHA, goblin::core::CommandType::upython_evalsha
+UPYTHON.SCRIPT, goblin::core::CommandType::upython_script
 ZADD, goblin::core::CommandType::zadd
 ZCARD, goblin::core::CommandType::zcard
 ZRANGE, goblin::core::CommandType::zrange

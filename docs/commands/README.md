@@ -1,6 +1,6 @@
 # Scripting commands
 
-Goblin Core embeds **four independent scripting interpreters**. Each is reached
+Goblin Core embeds **five independent scripting interpreters**. Each is reached
 through its own command prefix and keeps its own script cache and VM; they share
 nothing but the key space (one `Store`).
 
@@ -10,6 +10,7 @@ nothing but the key space (one `Store`).
 | Luau | Roblox's typed, sandboxed Lua | [`LUAU.EVAL`](LUAU.EVAL.md) · [`LUAU.EVALSHA`](LUAU.EVALSHA.md) · [`LUAU.SCRIPT`](LUAU.SCRIPT.md) |
 | Wren | a small class-based language ([wren.io](https://wren.io)) | [`WREN.EVAL`](WREN.EVAL.md) · [`WREN.EVALSHA`](WREN.EVALSHA.md) · [`WREN.SCRIPT`](WREN.SCRIPT.md) |
 | Jim Tcl | a small embeddable Tcl ([jim.tcl.tk](https://jim.tcl.tk)) | [`TCL.EVAL`](TCL.EVAL.md) · [`TCL.EVALSHA`](TCL.EVALSHA.md) · [`TCL.SCRIPT`](TCL.SCRIPT.md) |
+| MicroPython | a lean Python ([micropython.org](https://micropython.org)) | [`UPYTHON.EVAL`](UPYTHON.EVAL.md) · [`UPYTHON.EVALSHA`](UPYTHON.EVALSHA.md) · [`UPYTHON.SCRIPT`](UPYTHON.SCRIPT.md) |
 
 ## Why three?
 
@@ -26,19 +27,20 @@ is an explicit decision.
   They are exposed to the script as `KEYS` and `ARGV`.
 
   > Indexing differs by language: Lua (`EVAL`, `LUAU.EVAL`) is **1-based**
-  > (`KEYS[1]`), Wren (`WREN.EVAL`) is **0-based** (`KEYS[0]`), and Tcl
-  > (`TCL.EVAL`) exposes them as lists read with `lindex` (`[lindex $KEYS 0]`).
+  > (`KEYS[1]`), Wren (`WREN.EVAL`) and Python (`UPYTHON.EVAL`) are **0-based**
+  > (`KEYS[0]`), and Tcl (`TCL.EVAL`) exposes them as lists read with `lindex`
+  > (`[lindex $KEYS 0]`).
 
 - **Atomicity.** The server is single-threaded, so a script runs to completion
   with no other command interleaved. Every `redis.call` inside a script executes
   against the same store synchronously.
 
 - **Calling commands.** Scripts reach the data through a host binding
-  (`redis.call` / `redis.pcall` in Lua, `Redis.call` / `Redis.pcall` in Wren,
-  `redis call` / `redis pcall` in Tcl) that re-enters the normal command
+  (`redis.call` / `redis.pcall` in Lua and Python, `Redis.call` / `Redis.pcall`
+  in Wren, `redis call` / `redis pcall` in Tcl) that re-enters the normal command
   pipeline. A script may **not** call another script command — `EVAL`, `EVALSHA`,
-  `SCRIPT`, and the `LUAU.*` / `WREN.*` / `TCL.*` equivalents are rejected from
-  inside a script.
+  `SCRIPT`, and the `LUAU.*` / `WREN.*` / `TCL.*` / `UPYTHON.*` equivalents are
+  rejected from inside a script.
 
 - **Script cache.** Each interpreter caches scripts by the SHA1 of their source.
   `…EVAL` adds to the cache; `…EVALSHA` runs a cached script by its digest;

@@ -84,3 +84,19 @@ vendored; third_party/jimtcl/jimautoconf.h is a hand-written portable config so
 the subset builds without Jim's autosetup step. The TCL.* command handlers, the
 `redis` Tcl command, and the Tcl<->RESP conversion (src/tcl_script.cpp) were
 written from the public Jim Tcl embedding API.
+
+A fifth interpreter powers the UPYTHON.EVAL / UPYTHON.EVALSHA / UPYTHON.SCRIPT
+command family, embedding MicroPython. Its embed port (ports/embed) generated a
+self-contained C tree, vendored under third_party/micropython/, from its own
+public upstream:
+
+  MicroPython          Copyright (c) 2013-2024 Damien P. George and contributors
+                       (MIT)
+                       https://micropython.org
+                       https://github.com/micropython/micropython
+                       third_party/micropython/LICENSE
+
+The generated micropython_embed/ tree and its genhdr/ headers correspond to the
+config in third_party/micropython/mpconfigport.h. The UPYTHON.* command handlers,
+the `redis` Python module, and the Python<->RESP conversion (src/upython_script.cpp)
+were written from the public MicroPython embedding API.

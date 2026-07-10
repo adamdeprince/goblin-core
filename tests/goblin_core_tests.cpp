@@ -11,6 +11,7 @@
 #include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
 #include "goblin/core/tcl_script.hpp"
+#include "goblin/core/upython_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/swiss_table.hpp"
@@ -2583,6 +2584,98 @@ void test_tcl_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// --- MicroPython scripting (UPYTHON.EVAL / UPYTHON.EVALSHA / UPYTHON.SCRIPT) --
+
+std::string run_upython(goblin::core::Store& store,
+                        goblin::core::UPythonEngine& engine,
+                        std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.upython_engine = &engine});
+  return out;
+}
+
+// MicroPython keeps a single global VM, so all Python assertions share one engine
+// (and one Store) rather than constructing/destructing the VM per case.
+void test_upython_scripting() {
+  goblin::core::Store store;
+  goblin::core::UPythonEngine engine(store);
+  auto& e = engine;
+
+  // A script produces its reply by assigning the `reply` global.
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = 1 + 2", "0"}) == ":3\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = 'hello'", "0"}) ==
+         "$5\r\nhello\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "x = 5", "0"}) == "$-1\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = True", "0"}) == ":1\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = False", "0"}) == "$-1\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = [1, 2, 3]", "0"}) ==
+         "*3\r\n:1\r\n:2\r\n:3\r\n");
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVAL", "reply = [x * x for x in range(4)]", "0"}) ==
+         "*4\r\n:0\r\n:1\r\n:4\r\n:9\r\n");
+  // KEYS / ARGV are 0-based lists.
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = KEYS[0]", "1", "k1"}) ==
+         "$2\r\nk1\r\n");
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVAL", "reply = sum(int(x) for x in ARGV)", "0", "10",
+                      "20", "12"}) == ":42\r\n");
+  // The redis helpers.
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = redis.status('GOOD')", "0"}) ==
+         "+GOOD\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = redis.error('My Error')", "0"}) ==
+         "-My Error\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = redis.sha1hex('')", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+
+  // redis.call, and the write is visible to a plain command.
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVAL", "reply = redis.call('zadd', KEYS[0], 1, 'a')", "1",
+                      "z"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  // try/except recovers a command error; an uncaught one is a RESP error.
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVAL",
+                      "try:\n redis.call('zscore')\nexcept Exception:\n reply = 'caught'",
+                      "0"}) == "$6\r\ncaught\r\n");
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = redis.call('zscore')", "0"})
+             .front() == '-');
+  assert(run_upython(store, e, {"UPYTHON.EVAL", "reply = 1 // 0", "0"}).front() == '-');
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVAL", "reply = redis.call('upython.eval', 'reply=1', '0')",
+                      "0"})
+             .front() == '-');
+
+  // SCRIPT LOAD / EVALSHA / EXISTS / FLUSH.
+  const auto load = run_upython(store, e, {"UPYTHON.SCRIPT", "LOAD", "reply = 42"});
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+  assert(run_upython(store, e, {"UPYTHON.EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_upython(store, e, {"UPYTHON.SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  assert(run_upython(store, e,
+                     {"UPYTHON.EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+  assert(run_upython(store, e, {"UPYTHON.SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_upython(store, e, {"UPYTHON.SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+  // LOAD rejects a syntax error without running.
+  assert(run_upython(store, e, {"UPYTHON.SCRIPT", "LOAD", "def f("}).front() == '-');
+
+  // Distinct interpreter: Python syntax is a syntax error under PUC-Lua.
+  goblin::core::ScriptEngine puc(store);
+  assert(run_script(store, puc, {"EVAL", "reply = [x for x in range(3)]", "0"}).front() ==
+         '-');
+}
+
+void test_upython_without_engine_is_unavailable() {
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"UPYTHON.EVAL", "reply = 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -2672,5 +2765,7 @@ int main() {
   test_tcl_script_load_and_evalsha();
   test_tcl_is_a_distinct_interpreter();
   test_tcl_without_engine_is_unavailable();
+  test_upython_scripting();
+  test_upython_without_engine_is_unavailable();
   return 0;
 }

@@ -13,6 +13,7 @@ class ScriptEngine;
 class LuauEngine;
 class WrenEngine;
 class TclEngine;
+class UPythonEngine;
 
 enum class CommandType {
   ping,
@@ -28,6 +29,9 @@ enum class CommandType {
   tcl_eval,
   tcl_evalsha,
   tcl_script,
+  upython_eval,
+  upython_evalsha,
+  upython_script,
   zadd,
   zcard,
   zrange,
@@ -87,6 +91,8 @@ struct CommandExecutionOptions {
   WrenEngine* wren_engine{nullptr};
   // The Tcl counterpart, for TCL.EVAL / TCL.EVALSHA / TCL.SCRIPT.
   TclEngine* tcl_engine{nullptr};
+  // The MicroPython counterpart, for UPYTHON.EVAL / UPYTHON.EVALSHA / UPYTHON.SCRIPT.
+  UPythonEngine* upython_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);

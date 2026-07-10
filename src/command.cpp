@@ -5,6 +5,7 @@
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
+#include "goblin/core/upython_script.hpp"
 #include "goblin/core/wren_script.hpp"
 
 #include <algorithm>
@@ -512,6 +513,24 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::tcl_script;
       return {.command = std::move(command)};
+    case CommandType::upython_eval:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("upython.eval"));
+      }
+      command.type = CommandType::upython_eval;
+      return {.command = std::move(command)};
+    case CommandType::upython_evalsha:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("upython.evalsha"));
+      }
+      command.type = CommandType::upython_evalsha;
+      return {.command = std::move(command)};
+    case CommandType::upython_script:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("upython.script"));
+      }
+      command.type = CommandType::upython_script;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -809,6 +828,30 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR This Redis command is not available");
       } else {
         options.tcl_engine->script(command.args, out);
+      }
+      return;
+
+    case CommandType::upython_eval:
+      if (options.upython_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.upython_engine->eval(command.args, out);
+      }
+      return;
+
+    case CommandType::upython_evalsha:
+      if (options.upython_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.upython_engine->eval_sha(command.args, out);
+      }
+      return;
+
+    case CommandType::upython_script:
+      if (options.upython_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.upython_engine->script(command.args, out);
       }
       return;
 
