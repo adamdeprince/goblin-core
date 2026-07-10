@@ -1006,6 +1006,43 @@ std::optional<long long> Store::hincrby(std::string_view key,
   return next;
 }
 
+bool Store::hash_compare_and_delete(std::string_view key, std::string_view field,
+                                    std::string_view expected) {
+  auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return false;  // no such hash -> nothing to delete (0)
+  }
+  const auto current = hash->get(field);
+  if (!current || *current != expected) {
+    return false;  // field absent or value mismatch -> nothing deleted (0)
+  }
+  const bool removed = hash->erase(field);
+  erase_if_empty(key, *hash);  // drop the key if that was its last field
+  return removed;
+}
+
+std::optional<bool> Store::hash_set_if_greater(std::string_view key,
+                                               std::string_view field, double value,
+                                               std::string_view value_text) {
+  // Read the current value without creating the hash: an absent key or field
+  // counts as -inf, so a first write of any finite value wins.
+  double current = -std::numeric_limits<double>::infinity();
+  if (const auto* hash = find_hash(key)) {
+    if (const auto existing = hash->get(field)) {
+      const auto parsed = parse_double(*existing);
+      if (!parsed) {
+        return std::nullopt;  // existing value is not a finite number
+      }
+      current = *parsed;
+    }
+  }
+  if (!(value > current)) {
+    return false;  // not strictly greater -> leave the field unchanged
+  }
+  (void)hset(key, field, value_text);  // store the raw text, creating key/field
+  return true;
+}
+
 std::optional<HashMemoryStats> Store::hash_memory_stats(
     std::string_view key) const {
   const auto* hash = find_hash(key);

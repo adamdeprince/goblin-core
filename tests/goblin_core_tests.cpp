@@ -1575,6 +1575,77 @@ void test_goblin_decrpos() {
   assert(t.pttl_ms("c", 40'000) == 10'000);
 }
 
+void test_goblin_hcad() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  assert(execute_fields(store, {"HSET", "h", "lock", "tok", "keep", "v"}) == ":2\r\n");
+  // Mismatch -> 0, field kept.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "h", "lock", "other"}) == ":0\r\n");
+  assert(execute_fields(store, {"HEXISTS", "h", "lock"}) == ":1\r\n");
+  // Match -> 1, field deleted.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "h", "lock", "tok"}) == ":1\r\n");
+  assert(execute_fields(store, {"HEXISTS", "h", "lock"}) == ":0\r\n");
+  // Re-delete of the now-absent field -> 0.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "h", "lock", "tok"}) == ":0\r\n");
+  // Absent field -> 0; the hash (with its other field) survives.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "h", "ghost", "x"}) == ":0\r\n");
+  assert(execute_fields(store, {"EXISTS", "h"}) == ":1\r\n");
+  // Deleting the last field drops the key.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "h", "keep", "v"}) == ":1\r\n");
+  assert(execute_fields(store, {"EXISTS", "h"}) == ":0\r\n");
+  // Absent key -> 0.
+  assert(execute_fields(store, {"GOBLIN.HCAD", "missing", "f", "v"}) == ":0\r\n");
+  // Wrong type and arity.
+  assert(execute_fields(store, {"SET", "s", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.HCAD", "s", "f", "v"}) == wrongtype);
+  std::vector<std::string_view> few = {"GOBLIN.HCAD", "h", "f"};
+  assert(!goblin::core::parse_command(few).ok());
+}
+
+void test_goblin_hsetgt() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // First write on an absent key/field wins (absent counts as -inf).
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "f", "5"}) == ":1\r\n");
+  assert(execute_fields(store, {"HGET", "wm", "f"}) == "$1\r\n5\r\n");
+  // A lower value -> 0, unchanged.
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "f", "3"}) == ":0\r\n");
+  assert(execute_fields(store, {"HGET", "wm", "f"}) == "$1\r\n5\r\n");
+  // Equal -> 0 (strictly greater is required).
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "f", "5"}) == ":0\r\n");
+  // Greater -> 1, updated; the raw text is stored (the fraction is preserved).
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "f", "9.5"}) == ":1\r\n");
+  assert(execute_fields(store, {"HGET", "wm", "f"}) == "$3\r\n9.5\r\n");
+  // A different field on the same hash starts fresh at -inf.
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "g", "-100"}) == ":1\r\n");
+  assert(execute_fields(store, {"HGET", "wm", "g"}) == "$4\r\n-100\r\n");
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "g", "-50"}) == ":1\r\n");
+
+  // Errors: non-numeric new value, non-numeric current value, wrong type, arity.
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "wm", "f", "abc"}) ==
+         "-ERR value is not a valid float\r\n");
+  assert(execute_fields(store, {"HSET", "bad", "f", "notnum"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "bad", "f", "5"}) ==
+         "-ERR hash value is not a float\r\n");
+  assert(execute_fields(store, {"SET", "s", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.HSETGT", "s", "f", "5"}) == wrongtype);
+  std::vector<std::string_view> few = {"GOBLIN.HSETGT", "wm", "f"};
+  assert(!goblin::core::parse_command(few).ok());
+
+  // The key's TTL survives an update (HSET keeps it), checked deterministically.
+  goblin::core::Store t;
+  assert(execute_fields(t, {"HSET", "k", "v", "1"}) == ":1\r\n");
+  assert(t.expire_at_ms("k", 50'000, 40'000));
+  assert(t.hash_set_if_greater("k", "v", 9.0, "9") == true);
+  const auto stored = t.hget("k", "v");  // direct read; execute_fields would purge
+  assert(stored && *stored == "9");       // the fake past TTL against real wall-clock
+  assert(t.pttl_ms("k", 40'000) == 10'000);
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3904,6 +3975,8 @@ int main() {
   test_goblin_zwindow();
   test_goblin_incrbound();
   test_goblin_decrpos();
+  test_goblin_hcad();
+  test_goblin_hsetgt();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

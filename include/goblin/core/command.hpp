@@ -97,6 +97,8 @@ enum class CommandType {
   goblin_zwindow,
   goblin_incrbound,
   goblin_decrpos,
+  goblin_hcad,
+  goblin_hsetgt,
   echo,
   info,
   unknown,

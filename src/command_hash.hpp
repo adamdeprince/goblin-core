@@ -40,12 +40,12 @@
 #line 17 "src/command_hash.gperf"
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 
-#define TOTAL_KEYWORDS 82
+#define TOTAL_KEYWORDS 84
 #define MIN_WORD_LENGTH 3
 #define MAX_WORD_LENGTH 29
 #define MIN_HASH_VALUE 8
-#define MAX_HASH_VALUE 222
-/* maximum key range = 215, duplicates = 0 */
+#define MAX_HASH_VALUE 177
+/* maximum key range = 170, duplicates = 0 */
 
 class CommandDispatch
 {
@@ -60,32 +60,32 @@ CommandDispatch::hash (const char *str, size_t len)
 {
   static const unsigned char asso_values[] =
     {
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223,  55, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223,  75, 223,   5,  15,   5,
-      223,   5,  15,   0, 223,  25,  15,  95,  60,   0,
-       50,  55,  50,   0,   0,   5,  65,  10,  40,  70,
-       15, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223, 223, 223, 223, 223,
-      223, 223, 223, 223, 223, 223
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178,   0, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178,  45, 178,   5,  25,   0,
+      178,   0,   5,  35, 178,  15,  20,  10,  35,   0,
+       80,  10,  30,  10,  10,  35,  60,  45,  30,  85,
+       50, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178, 178, 178, 178, 178,
+      178, 178, 178, 178, 178, 178
     };
   unsigned int hval = len;
 
@@ -124,22 +124,19 @@ CommandDispatch::lookup (const char *str, size_t len)
 {
   static const unsigned char lengthtable[] =
     {
-       0,  0,  0,  0,  0,  0,  0,  0,  3,  0,  0,  6,  0,  3,
-       4, 10,  6,  0,  3,  4, 10, 11,  0,  8,  4, 15,  6,  7,
-       8,  0, 15,  6,  0,  0, 14, 10, 16,  0,  3, 29,  5,  0,
-       7,  8, 14,  5, 11,  0,  0,  4,  5,  6,  0,  8,  0,  0,
-       6,  0, 13,  4, 10,  6,  7,  0,  4,  0,  6,  7,  0,  4,
-       0, 11,  0,  0,  4,  0,  6,  0,  0,  4,  0, 11,  7,  0,
-       9,  5, 11,  0,  0,  4,  0, 16,  7,  0,  4,  5,  6,  0,
-       0,  4,  0,  0,  0,  0,  4,  0, 11,  0,  0,  4,  0,  0,
-       0,  0,  4,  5,  0,  0,  0,  9,  0, 11,  0,  8, 14,  0,
-       0,  0,  0, 14,  0,  0,  0,  0,  0,  0,  6, 12,  0,  9,
-       0,  0, 12,  0,  0,  0,  6,  0,  0,  0,  0,  0,  7,  0,
-       0,  0,  0,  0,  0,  9,  0,  0,  0,  0,  4,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-      12, 13,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0, 15,  0,  0,  0,  0, 15,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 12
+       0,  0,  0,  0,  0,  0,  0,  0,  8,  4,  0,  0,  0,  3,
+       0, 15,  6,  0,  8,  4, 15, 11,  7,  3,  4, 10,  6,  0,
+      13,  4,  5,  6,  7,  0,  4,  5,  6,  0,  0, 29, 10, 11,
+       0,  3,  0,  5,  6,  0,  3, 14,  0,  6,  0,  0,  4,  0,
+      11,  7,  8,  4,  0,  6,  0,  8,  4,  0,  6,  0,  0, 14,
+      10,  0,  0,  0,  4, 10, 16, 12, 13,  0,  5,  0,  0,  0,
+       4,  5,  6,  7,  0,  9,  0, 11,  0,  0,  4,  0, 16,  7,
+       0,  4,  5, 11,  0,  0,  4, 15, 11,  0, 13, 14,  0, 11,
+       7,  0,  4,  0,  6,  0,  8,  4,  0,  0,  0,  0,  4,  0,
+      11,  0,  0,  9,  0,  0,  7,  0,  0,  0,  0,  0,  0, 14,
+       0,  0,  0,  0,  9,  0,  0, 12,  0,  9,  0,  0,  0,  0,
+       0,  0,  6, 12,  0,  0,  0,  6,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0, 15,  0, 12
     };
   static const struct CommandEntry wordlist[] =
     {
@@ -151,231 +148,224 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 61 "src/command_hash.gperf"
-      {"SET", goblin::core::CommandType::set},
+#line 73 "src/command_hash.gperf"
+      {"GETRANGE", goblin::core::CommandType::getrange},
+#line 20 "src/command_hash.gperf"
+      {"ECHO", goblin::core::CommandType::echo},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 24 "src/command_hash.gperf"
-      {"SCRIPT", goblin::core::CommandType::script},
       {"",goblin::core::CommandType::unknown},
 #line 62 "src/command_hash.gperf"
       {"GET", goblin::core::CommandType::get},
-#line 20 "src/command_hash.gperf"
-      {"ECHO", goblin::core::CommandType::echo},
-#line 33 "src/command_hash.gperf"
-      {"TCL.SCRIPT", goblin::core::CommandType::tcl_script},
+      {"",goblin::core::CommandType::unknown},
+#line 90 "src/command_hash.gperf"
+      {"GOBLIN.OPTIMIZE", goblin::core::CommandType::goblin_optimize},
 #line 63 "src/command_hash.gperf"
       {"GETSET", goblin::core::CommandType::getset},
-      {"",goblin::core::CommandType::unknown},
-#line 84 "src/command_hash.gperf"
-      {"TTL", goblin::core::CommandType::ttl},
-#line 49 "src/command_hash.gperf"
-      {"HSET", goblin::core::CommandType::hset},
-#line 95 "src/command_hash.gperf"
-      {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
-#line 91 "src/command_hash.gperf"
-      {"GOBLIN.SAVE", goblin::core::CommandType::goblin_save},
       {"",goblin::core::CommandType::unknown},
 #line 74 "src/command_hash.gperf"
       {"SETRANGE", goblin::core::CommandType::setrange},
 #line 51 "src/command_hash.gperf"
       {"HGET", goblin::core::CommandType::hget},
-#line 90 "src/command_hash.gperf"
-      {"GOBLIN.OPTIMIZE", goblin::core::CommandType::goblin_optimize},
-#line 48 "src/command_hash.gperf"
-      {"ZSCORE", goblin::core::CommandType::zscore},
-#line 58 "src/command_hash.gperf"
-      {"HEXISTS", goblin::core::CommandType::hexists},
-#line 73 "src/command_hash.gperf"
-      {"GETRANGE", goblin::core::CommandType::getrange},
-      {"",goblin::core::CommandType::unknown},
 #line 94 "src/command_hash.gperf"
       {"GOBLIN.CAEXPIRE", goblin::core::CommandType::goblin_caexpire},
+#line 91 "src/command_hash.gperf"
+      {"GOBLIN.SAVE", goblin::core::CommandType::goblin_save},
+#line 58 "src/command_hash.gperf"
+      {"HEXISTS", goblin::core::CommandType::hexists},
+#line 61 "src/command_hash.gperf"
+      {"SET", goblin::core::CommandType::set},
+#line 76 "src/command_hash.gperf"
+      {"MGET", goblin::core::CommandType::mget},
+#line 95 "src/command_hash.gperf"
+      {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
 #line 65 "src/command_hash.gperf"
       {"GETDEL", goblin::core::CommandType::getdel},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 100 "src/command_hash.gperf"
-      {"GOBLIN.DECRPOS", goblin::core::CommandType::goblin_decrpos},
-#line 93 "src/command_hash.gperf"
-      {"GOBLIN.CAD", goblin::core::CommandType::goblin_cad},
-#line 99 "src/command_hash.gperf"
-      {"GOBLIN.INCRBOUND", goblin::core::CommandType::goblin_incrbound},
-      {"",goblin::core::CommandType::unknown},
-#line 77 "src/command_hash.gperf"
-      {"DEL", goblin::core::CommandType::del},
-#line 96 "src/command_hash.gperf"
-      {"GOBLIN.TD_LEADERBOARD_RESCORE", goblin::core::CommandType::goblin_td_leaderboard_rescore},
-#line 41 "src/command_hash.gperf"
-      {"ZCARD", goblin::core::CommandType::zcard},
-      {"",goblin::core::CommandType::unknown},
+#line 102 "src/command_hash.gperf"
+      {"GOBLIN.HSETGT", goblin::core::CommandType::goblin_hsetgt},
+#line 49 "src/command_hash.gperf"
+      {"HSET", goblin::core::CommandType::hset},
+#line 52 "src/command_hash.gperf"
+      {"HMGET", goblin::core::CommandType::hmget},
+#line 24 "src/command_hash.gperf"
+      {"SCRIPT", goblin::core::CommandType::script},
 #line 54 "src/command_hash.gperf"
       {"HGETALL", goblin::core::CommandType::hgetall},
-#line 31 "src/command_hash.gperf"
-      {"TCL.EVAL", goblin::core::CommandType::tcl_eval},
-#line 98 "src/command_hash.gperf"
-      {"GOBLIN.ZWINDOW", goblin::core::CommandType::goblin_zwindow},
+      {"",goblin::core::CommandType::unknown},
+#line 75 "src/command_hash.gperf"
+      {"MSET", goblin::core::CommandType::mset},
 #line 55 "src/command_hash.gperf"
       {"HKEYS", goblin::core::CommandType::hkeys},
-#line 92 "src/command_hash.gperf"
-      {"GOBLIN.LOAD", goblin::core::CommandType::goblin_load},
+#line 80 "src/command_hash.gperf"
+      {"EXPIRE", goblin::core::CommandType::expire},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 53 "src/command_hash.gperf"
-      {"HDEL", goblin::core::CommandType::hdel},
+#line 96 "src/command_hash.gperf"
+      {"GOBLIN.TD_LEADERBOARD_RESCORE", goblin::core::CommandType::goblin_td_leaderboard_rescore},
+#line 93 "src/command_hash.gperf"
+      {"GOBLIN.CAD", goblin::core::CommandType::goblin_cad},
+#line 101 "src/command_hash.gperf"
+      {"GOBLIN.HCAD", goblin::core::CommandType::goblin_hcad},
+      {"",goblin::core::CommandType::unknown},
+#line 84 "src/command_hash.gperf"
+      {"TTL", goblin::core::CommandType::ttl},
+      {"",goblin::core::CommandType::unknown},
 #line 64 "src/command_hash.gperf"
       {"SETNX", goblin::core::CommandType::setnx},
 #line 78 "src/command_hash.gperf"
       {"EXISTS", goblin::core::CommandType::exists},
       {"",goblin::core::CommandType::unknown},
-#line 82 "src/command_hash.gperf"
-      {"EXPIREAT", goblin::core::CommandType::expireat},
+#line 77 "src/command_hash.gperf"
+      {"DEL", goblin::core::CommandType::del},
+#line 100 "src/command_hash.gperf"
+      {"GOBLIN.DECRPOS", goblin::core::CommandType::goblin_decrpos},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 80 "src/command_hash.gperf"
-      {"EXPIRE", goblin::core::CommandType::expire},
-      {"",goblin::core::CommandType::unknown},
-#line 97 "src/command_hash.gperf"
-      {"GOBLIN.INCREX", goblin::core::CommandType::goblin_increx},
-#line 19 "src/command_hash.gperf"
-      {"PING", goblin::core::CommandType::ping},
-#line 87 "src/command_hash.gperf"
-      {"EXPIRETIME", goblin::core::CommandType::expiretime},
 #line 50 "src/command_hash.gperf"
       {"HSETNX", goblin::core::CommandType::hsetnx},
-#line 86 "src/command_hash.gperf"
-      {"PERSIST", goblin::core::CommandType::persist},
-      {"",goblin::core::CommandType::unknown},
-#line 21 "src/command_hash.gperf"
-      {"INFO", goblin::core::CommandType::info},
-      {"",goblin::core::CommandType::unknown},
-#line 66 "src/command_hash.gperf"
-      {"STRLEN", goblin::core::CommandType::strlen},
-#line 81 "src/command_hash.gperf"
-      {"PEXPIRE", goblin::core::CommandType::pexpire},
-      {"",goblin::core::CommandType::unknown},
-#line 85 "src/command_hash.gperf"
-      {"PTTL", goblin::core::CommandType::pttl},
-      {"",goblin::core::CommandType::unknown},
-#line 88 "src/command_hash.gperf"
-      {"PEXPIRETIME", goblin::core::CommandType::pexpiretime},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 53 "src/command_hash.gperf"
+      {"HDEL", goblin::core::CommandType::hdel},
+      {"",goblin::core::CommandType::unknown},
+#line 92 "src/command_hash.gperf"
+      {"GOBLIN.LOAD", goblin::core::CommandType::goblin_load},
+#line 59 "src/command_hash.gperf"
+      {"HSTRLEN", goblin::core::CommandType::hstrlen},
+#line 82 "src/command_hash.gperf"
+      {"EXPIREAT", goblin::core::CommandType::expireat},
 #line 69 "src/command_hash.gperf"
       {"DECR", goblin::core::CommandType::decr},
       {"",goblin::core::CommandType::unknown},
-#line 42 "src/command_hash.gperf"
-      {"ZRANGE", goblin::core::CommandType::zrange},
+#line 66 "src/command_hash.gperf"
+      {"STRLEN", goblin::core::CommandType::strlen},
+      {"",goblin::core::CommandType::unknown},
+#line 31 "src/command_hash.gperf"
+      {"TCL.EVAL", goblin::core::CommandType::tcl_eval},
+#line 57 "src/command_hash.gperf"
+      {"HLEN", goblin::core::CommandType::hlen},
+      {"",goblin::core::CommandType::unknown},
+#line 48 "src/command_hash.gperf"
+      {"ZSCORE", goblin::core::CommandType::zscore},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 79 "src/command_hash.gperf"
-      {"TYPE", goblin::core::CommandType::key_type},
+#line 39 "src/command_hash.gperf"
+      {"QUICKJS.SCRIPT", goblin::core::CommandType::quickjs_script},
+#line 33 "src/command_hash.gperf"
+      {"TCL.SCRIPT", goblin::core::CommandType::tcl_script},
       {"",goblin::core::CommandType::unknown},
-#line 27 "src/command_hash.gperf"
-      {"LUAU.SCRIPT", goblin::core::CommandType::luau_script},
-#line 59 "src/command_hash.gperf"
-      {"HSTRLEN", goblin::core::CommandType::hstrlen},
       {"",goblin::core::CommandType::unknown},
-#line 44 "src/command_hash.gperf"
-      {"ZREVRANGE", goblin::core::CommandType::zrevrange},
+      {"",goblin::core::CommandType::unknown},
+#line 21 "src/command_hash.gperf"
+      {"INFO", goblin::core::CommandType::info},
+#line 87 "src/command_hash.gperf"
+      {"EXPIRETIME", goblin::core::CommandType::expiretime},
+#line 99 "src/command_hash.gperf"
+      {"GOBLIN.INCRBOUND", goblin::core::CommandType::goblin_incrbound},
+#line 37 "src/command_hash.gperf"
+      {"QUICKJS.EVAL", goblin::core::CommandType::quickjs_eval},
+#line 97 "src/command_hash.gperf"
+      {"GOBLIN.INCREX", goblin::core::CommandType::goblin_increx},
+      {"",goblin::core::CommandType::unknown},
 #line 56 "src/command_hash.gperf"
       {"HVALS", goblin::core::CommandType::hvals},
-#line 72 "src/command_hash.gperf"
-      {"INCRBYFLOAT", goblin::core::CommandType::incrbyfloat},
+      {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 22 "src/command_hash.gperf"
       {"EVAL", goblin::core::CommandType::eval},
+#line 41 "src/command_hash.gperf"
+      {"ZCARD", goblin::core::CommandType::zcard},
+#line 42 "src/command_hash.gperf"
+      {"ZRANGE", goblin::core::CommandType::zrange},
+#line 81 "src/command_hash.gperf"
+      {"PEXPIRE", goblin::core::CommandType::pexpire},
       {"",goblin::core::CommandType::unknown},
-#line 47 "src/command_hash.gperf"
-      {"ZREMRANGEBYSCORE", goblin::core::CommandType::zremrangebyscore},
-#line 60 "src/command_hash.gperf"
-      {"HINCRBY", goblin::core::CommandType::hincrby},
-      {"",goblin::core::CommandType::unknown},
-#line 57 "src/command_hash.gperf"
-      {"HLEN", goblin::core::CommandType::hlen},
-#line 43 "src/command_hash.gperf"
-      {"ZRANK", goblin::core::CommandType::zrank},
-#line 71 "src/command_hash.gperf"
-      {"DECRBY", goblin::core::CommandType::decrby},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 75 "src/command_hash.gperf"
-      {"MSET", goblin::core::CommandType::mset},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 76 "src/command_hash.gperf"
-      {"MGET", goblin::core::CommandType::mget},
+#line 44 "src/command_hash.gperf"
+      {"ZREVRANGE", goblin::core::CommandType::zrevrange},
       {"",goblin::core::CommandType::unknown},
 #line 32 "src/command_hash.gperf"
       {"TCL.EVALSHA", goblin::core::CommandType::tcl_evalsha},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 40 "src/command_hash.gperf"
-      {"ZADD", goblin::core::CommandType::zadd},
+#line 46 "src/command_hash.gperf"
+      {"ZREM", goblin::core::CommandType::zrem},
       {"",goblin::core::CommandType::unknown},
+#line 47 "src/command_hash.gperf"
+      {"ZREMRANGEBYSCORE", goblin::core::CommandType::zremrangebyscore},
+#line 86 "src/command_hash.gperf"
+      {"PERSIST", goblin::core::CommandType::persist},
       {"",goblin::core::CommandType::unknown},
+#line 79 "src/command_hash.gperf"
+      {"TYPE", goblin::core::CommandType::key_type},
+#line 43 "src/command_hash.gperf"
+      {"ZRANK", goblin::core::CommandType::zrank},
+#line 88 "src/command_hash.gperf"
+      {"PEXPIRETIME", goblin::core::CommandType::pexpiretime},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 68 "src/command_hash.gperf"
       {"INCR", goblin::core::CommandType::incr},
-#line 52 "src/command_hash.gperf"
-      {"HMGET", goblin::core::CommandType::hmget},
+#line 38 "src/command_hash.gperf"
+      {"QUICKJS.EVALSHA", goblin::core::CommandType::quickjs_evalsha},
+#line 27 "src/command_hash.gperf"
+      {"LUAU.SCRIPT", goblin::core::CommandType::luau_script},
       {"",goblin::core::CommandType::unknown},
+#line 89 "src/command_hash.gperf"
+      {"GOBLIN.MEMORY", goblin::core::CommandType::goblin_memory},
+#line 98 "src/command_hash.gperf"
+      {"GOBLIN.ZWINDOW", goblin::core::CommandType::goblin_zwindow},
+      {"",goblin::core::CommandType::unknown},
+#line 72 "src/command_hash.gperf"
+      {"INCRBYFLOAT", goblin::core::CommandType::incrbyfloat},
+#line 23 "src/command_hash.gperf"
+      {"EVALSHA", goblin::core::CommandType::evalsha},
+      {"",goblin::core::CommandType::unknown},
+#line 85 "src/command_hash.gperf"
+      {"PTTL", goblin::core::CommandType::pttl},
+      {"",goblin::core::CommandType::unknown},
+#line 71 "src/command_hash.gperf"
+      {"DECRBY", goblin::core::CommandType::decrby},
+      {"",goblin::core::CommandType::unknown},
+#line 45 "src/command_hash.gperf"
+      {"ZREVRANK", goblin::core::CommandType::zrevrank},
+#line 19 "src/command_hash.gperf"
+      {"PING", goblin::core::CommandType::ping},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 40 "src/command_hash.gperf"
+      {"ZADD", goblin::core::CommandType::zadd},
+      {"",goblin::core::CommandType::unknown},
+#line 30 "src/command_hash.gperf"
+      {"WREN.SCRIPT", goblin::core::CommandType::wren_script},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 25 "src/command_hash.gperf"
       {"LUAU.EVAL", goblin::core::CommandType::luau_eval},
       {"",goblin::core::CommandType::unknown},
-#line 30 "src/command_hash.gperf"
-      {"WREN.SCRIPT", goblin::core::CommandType::wren_script},
       {"",goblin::core::CommandType::unknown},
-#line 45 "src/command_hash.gperf"
-      {"ZREVRANK", goblin::core::CommandType::zrevrank},
+#line 60 "src/command_hash.gperf"
+      {"HINCRBY", goblin::core::CommandType::hincrby},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
 #line 36 "src/command_hash.gperf"
       {"UPYTHON.SCRIPT", goblin::core::CommandType::upython_script},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 39 "src/command_hash.gperf"
-      {"QUICKJS.SCRIPT", goblin::core::CommandType::quickjs_script},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 70 "src/command_hash.gperf"
-      {"INCRBY", goblin::core::CommandType::incrby},
-#line 34 "src/command_hash.gperf"
-      {"UPYTHON.EVAL", goblin::core::CommandType::upython_eval},
-      {"",goblin::core::CommandType::unknown},
 #line 83 "src/command_hash.gperf"
       {"PEXPIREAT", goblin::core::CommandType::pexpireat},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 37 "src/command_hash.gperf"
-      {"QUICKJS.EVAL", goblin::core::CommandType::quickjs_eval},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 67 "src/command_hash.gperf"
-      {"APPEND", goblin::core::CommandType::append},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 23 "src/command_hash.gperf"
-      {"EVALSHA", goblin::core::CommandType::evalsha},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 34 "src/command_hash.gperf"
+      {"UPYTHON.EVAL", goblin::core::CommandType::upython_eval},
       {"",goblin::core::CommandType::unknown},
 #line 28 "src/command_hash.gperf"
       {"WREN.EVAL", goblin::core::CommandType::wren_eval},
@@ -383,32 +373,17 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 46 "src/command_hash.gperf"
-      {"ZREM", goblin::core::CommandType::zrem},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 67 "src/command_hash.gperf"
+      {"APPEND", goblin::core::CommandType::append},
 #line 26 "src/command_hash.gperf"
       {"LUAU.EVALSHA", goblin::core::CommandType::luau_evalsha},
-#line 89 "src/command_hash.gperf"
-      {"GOBLIN.MEMORY", goblin::core::CommandType::goblin_memory},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 70 "src/command_hash.gperf"
+      {"INCRBY", goblin::core::CommandType::incrby},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -424,27 +399,6 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
 #line 35 "src/command_hash.gperf"
       {"UPYTHON.EVALSHA", goblin::core::CommandType::upython_evalsha},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 38 "src/command_hash.gperf"
-      {"QUICKJS.EVALSHA", goblin::core::CommandType::quickjs_evalsha},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 29 "src/command_hash.gperf"
       {"WREN.EVALSHA", goblin::core::CommandType::wren_evalsha}
@@ -465,5 +419,5 @@ CommandDispatch::lookup (const char *str, size_t len)
     }
   return static_cast<struct CommandEntry *> (0);
 }
-#line 101 "src/command_hash.gperf"
+#line 103 "src/command_hash.gperf"
 

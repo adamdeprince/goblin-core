@@ -98,4 +98,6 @@ GOBLIN.INCREX, goblin::core::CommandType::goblin_increx
 GOBLIN.ZWINDOW, goblin::core::CommandType::goblin_zwindow
 GOBLIN.INCRBOUND, goblin::core::CommandType::goblin_incrbound
 GOBLIN.DECRPOS, goblin::core::CommandType::goblin_decrpos
+GOBLIN.HCAD, goblin::core::CommandType::goblin_hcad
+GOBLIN.HSETGT, goblin::core::CommandType::goblin_hsetgt
 %%

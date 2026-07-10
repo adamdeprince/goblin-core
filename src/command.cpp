@@ -312,6 +312,8 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::hexists:
     case CommandType::hstrlen:
     case CommandType::hincrby:
+    case CommandType::goblin_hcad:    // deletes a field; non-hash is WRONGTYPE
+    case CommandType::goblin_hsetgt:  // sets a field; non-hash is WRONGTYPE
       return true;
     default:
       return false;
@@ -1055,6 +1057,18 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("goblin.decrpos"));
       }
       command.type = CommandType::goblin_decrpos;
+      return {.command = std::move(command)};
+    case CommandType::goblin_hcad:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("goblin.hcad"));
+      }
+      command.type = CommandType::goblin_hcad;
+      return {.command = std::move(command)};
+    case CommandType::goblin_hsetgt:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("goblin.hsetgt"));
+      }
+      command.type = CommandType::goblin_hsetgt;
       return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
@@ -2100,6 +2114,35 @@ void execute_command_into(Store& store,
         return;
       }
       resp::append_integer(out, *result);  // new value on success, or -1 on reject
+      return;
+    }
+
+    case CommandType::goblin_hcad: {
+      // Compare-and-delete on a hash field: the field-level form of GOBLIN.CAD
+      // (HGET; if it equals `expected`, HDEL) as one native atomic op. Replies 1
+      // on a match/delete, 0 otherwise.
+      const bool deleted = store.hash_compare_and_delete(
+          command.args[0], command.args[1], command.args[2]);
+      resp::append_integer(out, deleted ? 1 : 0);
+      return;
+    }
+
+    case CommandType::goblin_hsetgt: {
+      // Set-if-greater on a hash field: the ZADD GT that hashes lack (HGET; if the
+      // new value beats the current, HSET). Watermarks, monotonic versions,
+      // last-write-wins by timestamp. Replies 1 if it updated, 0 if not greater.
+      const auto value = parse_score(command.args[2]);
+      if (!value) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const auto result = store.hash_set_if_greater(command.args[0], command.args[1],
+                                                    *value, command.args[2]);
+      if (!result) {  // the current field value is present but not a number
+        resp::append_error(out, "ERR hash value is not a float");
+        return;
+      }
+      resp::append_integer(out, *result ? 1 : 0);
       return;
     }
 

@@ -16,6 +16,8 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.ZWINDOW`](GOBLIN.ZWINDOW.md) | Sliding-window admit/reject (also a mutex or counting semaphore). |
 | [`GOBLIN.INCRBOUND`](GOBLIN.INCRBOUND.md) | Bounded increment: consume a quota up to a ceiling, else reply -1. |
 | [`GOBLIN.DECRPOS`](GOBLIN.DECRPOS.md) | Decrement only while positive: reserve stock / take a permit, else -1. |
+| [`GOBLIN.HCAD`](GOBLIN.HCAD.md) | Compare-and-delete a hash field: delete it only if it still holds the expected value. |
+| [`GOBLIN.HSETGT`](GOBLIN.HSETGT.md) | Set-if-greater on a hash field: the `ZADD GT` that hashes lack (watermarks). |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -121,6 +123,31 @@ the counter is positive, otherwise leaves the key untouched — never creating i
 and returns `-1`; a non-string key is `WRONGTYPE`. The count never goes negative.
 For stock reservation and semaphore-by-counter (`DECRPOS` to acquire, `INCR` to
 release). See the full page: **[GOBLIN.DECRPOS](GOBLIN.DECRPOS.md)**.
+
+## GOBLIN.HCAD
+
+```
+GOBLIN.HCAD key field expected
+```
+
+Compare-and-delete on a hash field — the field-level form of
+[`GOBLIN.CAD`](GOBLIN.CAD.md) (`HGET`; if it equals `expected`, `HDEL`). Deletes
+the field and replies `1` on an exact byte match, otherwise `0`; a non-hash key is
+`WRONGTYPE`. Deleting the last field drops the key. See the full page:
+**[GOBLIN.HCAD](GOBLIN.HCAD.md)**.
+
+## GOBLIN.HSETGT
+
+```
+GOBLIN.HSETGT key field value
+```
+
+Set-if-greater on a hash field — **the `ZADD GT` that hashes lack**. Reads the
+field (absent counts as `-inf`) and, if `value` is strictly greater, stores it and
+replies `1`; otherwise leaves it and replies `0`. A non-numeric `value` or current
+value is an error; a non-hash key is `WRONGTYPE`. The raw text is stored and any
+TTL is preserved. For high-water marks, monotonic versions, and last-write-wins by
+timestamp. See the full page: **[GOBLIN.HSETGT](GOBLIN.HSETGT.md)**.
 
 ## GOBLIN.MEMORY
 

@@ -1185,6 +1185,22 @@ class Store {
   [[nodiscard]] std::optional<long long> hincrby(std::string_view key,
                                                  std::string_view field,
                                                  long long delta);
+  // GOBLIN.HCAD compare-and-delete on a field: if `field` holds a string equal to
+  // `expected`, delete the field and return true; otherwise false. Deleting the
+  // last field drops the key. A non-hash key is WRONGTYPE (command layer).
+  [[nodiscard]] bool hash_compare_and_delete(std::string_view key,
+                                             std::string_view field,
+                                             std::string_view expected);
+  // GOBLIN.HSETGT set-if-greater on a field: set `field` = `value_text` iff the
+  // numeric `value` is strictly greater than the field's current numeric value (an
+  // absent field counts as -inf, so a first write always wins). The raw
+  // `value_text` is stored, not a canonicalized form. Returns true if updated,
+  // false if not greater, or nullopt if the current field value is present but not
+  // a finite number. The ZADD GT that hashes lack.
+  [[nodiscard]] std::optional<bool> hash_set_if_greater(std::string_view key,
+                                                        std::string_view field,
+                                                        double value,
+                                                        std::string_view value_text);
   template <class Fn>
   void hash_for_each(std::string_view key, Fn&& fn) const {
     const auto* hash = find_hash(key);
