@@ -17,20 +17,23 @@ only if it still holds the expected token":
 Every script is compiled once with SCRIPT LOAD *before* timing starts, so the
 per-engine numbers measure execution of the precompiled script, not compilation.
 
-This is a sequential (non-pipelined) latency benchmark: each operation is a full
-request/response, so the numbers reflect per-op round-trip + server cost from a
-client's point of view -- which is the whole point, since the naive baseline
-pays two round trips. A single Python connection is not a peak-throughput load
-generator (it is client-bound); for absolute server throughput use a C driver.
+It reports four numbers per implementation, from one server listening on both
+transports: sequential (one request/response at a time -- the per-op round trip,
+where the naive baseline pays for two) and pipelined (many in flight -- round
+trip amortized, so server-side cost shows), each over TCP loopback and over a
+Unix domain socket (the realistic transport for a co-located lock client). A
+single Python connection is client-bound, not a peak-throughput load generator;
+read the ratios, and use a C driver for absolute server throughput.
 
 Example:
 
     python3 benchmarks/cad_benchmark.py --goblin-bin build-release/goblin-core \
-        --keys 20000 --rounds 5
+        --keys 20000 --rounds 5 --pipeline 256
 """
 from __future__ import annotations
 
 import argparse
+import os
 import statistics
 import time
 from pathlib import Path
@@ -89,9 +92,10 @@ ENGINES = [
 TOKEN = "unique-owner-token-a1b2c3d4"
 
 
-def compile_scripts(client: zbench.RespClient) -> dict[str, tuple[str, str]]:
+def compile_scripts(client: zbench.RespClient, announce: bool = True) -> dict[str, tuple[str, str]]:
     """SCRIPT LOAD every idiom (once, before timing) and return {label: (prefix, sha)}."""
-    print("Compiling scripts (SCRIPT LOAD) before benchmarking:")
+    if announce:
+        print("Compiling scripts (SCRIPT LOAD) before benchmarking:")
     loaded: dict[str, tuple[str, str]] = {}
     for label, prefix, src in ENGINES:
         sha = client.command(f"{prefix}SCRIPT", "LOAD", src)
@@ -99,7 +103,8 @@ def compile_scripts(client: zbench.RespClient) -> dict[str, tuple[str, str]]:
         if len(sha) != 40:
             raise RuntimeError(f"{label}: unexpected SCRIPT LOAD reply {sha!r}")
         loaded[label] = (prefix, sha)
-        print(f"  {label:30}  {sha}")
+        if announce:
+            print(f"  {label:30}  {sha}")
     return loaded
 
 
@@ -212,67 +217,79 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--populate-pipeline", type=int, default=512,
                         help="pipeline depth for the untimed key population")
     parser.add_argument("--unix-socket", type=str, default=None,
-                        help="connect over this UDS path instead of TCP loopback "
-                             "(keep it short -- sun_path is capped at ~104 bytes)")
+                        help="UDS path to use (default: a short auto path in /tmp; "
+                             "sun_path is capped at ~104 bytes)")
     args = parser.parse_args(argv)
 
-    transport = f"UDS ({args.unix_socket})" if args.unix_socket else "TCP loopback (127.0.0.1)"
-    print(f"Transport: {transport}")
-    server = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False,
-                                 unix_socket=args.unix_socket)
+    # goblin-core binds either TCP or a Unix socket, not both, so run two servers
+    # -- one per transport -- and drive each with its own client. The scripts are
+    # SCRIPT LOAD-compiled on both (each has its own cache); the SHA1 digests are
+    # identical (same source), so the approaches are the same on either.
+    sock = args.unix_socket or f"/tmp/goblin-cad-{os.getpid()}.sock"
+    server_tcp = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False)
+    server_uds = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False,
+                                     unix_socket=sock)
     try:
-        client = zbench.RespClient("127.0.0.1", server.port,
-                                   unix_socket=server.unix_socket)
+        tcp = zbench.RespClient("127.0.0.1", server_tcp.port)            # TCP loopback
+        uds = zbench.RespClient("127.0.0.1", server_uds.port, unix_socket=sock)  # Unix socket
         keys = [f"cad:bench:{i}" for i in range(args.keys)]
-        scripts = compile_scripts(client)
+        scripts = compile_scripts(tcp)
+        compile_scripts(uds, announce=False)  # same digests, populate the UDS cache too
         approaches = build_approaches(scripts)
 
-        print("\nVerifying correctness of each implementation...")
+        print("\nVerifying correctness of each implementation (both transports)...")
         for a in approaches:
-            verify(client, a["op"], TOKEN)
+            verify(tcp, a["op"], TOKEN)
+            verify(uds, a["op"], TOKEN)
         print("  all implementations agree (match -> 1 + deleted, mismatch -> 0).")
 
-        def report(title, rows, native_us):
-            head = f"{'implementation':32} {'us/op':>9} {'kops/s':>9} {'RTT':>4} {'vs CAD':>8}"
-            print(f"\n{title}\n{head}\n{'-' * len(head)}")
-            for label, us, rtt in sorted(rows, key=lambda r: r[1]):
-                print(f"{label:32} {us:9.2f} {1000.0 / us:9.1f} {rtt:>4} {us / native_us:7.2f}x")
+        depth = args.pipeline
+        pop = args.populate_pipeline
 
-        # View 1 -- sequential latency (one op at a time). Shows the per-op
-        # round-trip cost: this is where the naive non-pipelined GET+DEL pays its
-        # second round trip. A single Python connection is client-bound, so the
-        # 1-RTT forms cluster near that floor.
-        print(f"\nBenchmarking {args.keys} ops/round, median of {args.rounds} rounds.")
-        seq = []
-        for a in approaches:
-            per_op = [measure_sequential(client, a["op"], keys, TOKEN, args.populate_pipeline)
-                      for _ in range(args.rounds)]
-            seq.append((a["label"], statistics.median(per_op) * 1e6, a["rtt"]))
-        native_seq = next(us for label, us, _ in seq if label.startswith("GOBLIN.CAD"))
-        report("Sequential (per-op latency, one request at a time):", seq, native_seq)
-        print("\n  RTT = round trips per op. GET+DEL's two round trips (and its race\n"
-              "  window between the GET and the DEL) are what the atomic forms remove.")
+        def med(fn: Callable[[], float]) -> float:
+            return statistics.median([fn() for _ in range(args.rounds)]) * 1e6
 
-        # View 2 -- pipelined server throughput (many ops in flight). Amortizes the
-        # client round trip so the server-side per-op cost -- native C++ vs each
-        # precompiled interpreter -- can surface. GET+DEL has no single-request
-        # form, so it is omitted here.
-        pipe = []
+        # Four numbers per implementation: sequential (one op at a time -- per-op
+        # round trip) and pipelined (`depth` in flight -- round trip amortized),
+        # each over TCP loopback and over the Unix socket. GET+DEL has no single
+        # pipelined request (its DEL is conditional on the GET), so it is seq-only.
+        print(f"\nBenchmarking {args.keys} ops/round, median of {args.rounds} rounds, "
+              f"pipeline depth {depth}.\n")
+        rows = []
         for a in approaches:
-            if a["cmds"] is None:
-                continue
-            per_op = [measure_pipelined(client, a["cmds"], keys, TOKEN,
-                                        args.populate_pipeline, args.pipeline)
-                      for _ in range(args.rounds)]
-            pipe.append((a["label"], statistics.median(per_op) * 1e6, a["rtt"]))
-        native_pipe = next(us for label, us, _ in pipe if label.startswith("GOBLIN.CAD"))
-        report(f"Pipelined (server throughput, depth {args.pipeline}):", pipe, native_pipe)
-        print("\n  With the round trip amortized, this ranks the server-side cost of the\n"
-              "  native command against each precompiled interpreter. Still one Python\n"
-              "  connection, so a C driver is needed for absolute peak throughput.")
-        client.close()
+            op, cmds = a["op"], a["cmds"]
+            tcp_seq = med(lambda op=op: measure_sequential(tcp, op, keys, TOKEN, pop))
+            uds_seq = med(lambda op=op: measure_sequential(uds, op, keys, TOKEN, pop))
+            if cmds is not None:
+                tcp_pipe = med(lambda c=cmds: measure_pipelined(tcp, c, keys, TOKEN, pop, depth))
+                uds_pipe = med(lambda c=cmds: measure_pipelined(uds, c, keys, TOKEN, pop, depth))
+            else:
+                tcp_pipe = uds_pipe = None
+            rows.append((a["label"], a["rtt"], tcp_seq, uds_seq, tcp_pipe, uds_pipe))
+
+        def cell(x: float | None) -> str:
+            return f"{x:10.2f}" if x is not None else f"{'--':>10}"
+
+        head = (f"{'implementation':32} {'RTT':>4}"
+                f"{'TCP seq':>11}{'UDS seq':>11}{'TCP p' + str(depth):>11}{'UDS p' + str(depth):>11}")
+        print(head)
+        print("-" * len(head))
+        for label, rtt, ts, us, tp, up in rows:
+            print(f"{label:32} {rtt:>4}{cell(ts)}{cell(us)}{cell(tp)}{cell(up)}")
+        print(f"\n  us/op. seq = one request at a time (per-op round trip); "
+              f"p{depth} = {depth} requests in flight.\n"
+              "  One Python connection (client-bound), so read the ratios across a row,\n"
+              "  not absolute peak throughput. Lower is better.")
+        tcp.close()
+        uds.close()
     finally:
-        server.stop()
+        server_tcp.stop()
+        server_uds.stop()
+        if not args.unix_socket:
+            try:
+                os.unlink(sock)
+            except OSError:
+                pass
     return 0
 
 
