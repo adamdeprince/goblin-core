@@ -10,6 +10,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 |---|---|
 | [`GOBLIN.CAD`](GOBLIN.CAD.md) | Compare-and-delete: delete a key only if it still holds the expected value. |
 | [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) | Compare-and-expire: renew a key's TTL only if it still holds the expected value. |
+| [`GOBLIN.CAS`](GOBLIN.CAS.md) | Compare-and-set: swap a key's value only if it still holds the expected one, keeping its TTL. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -37,6 +38,17 @@ watchdog script. Sets `key`'s TTL to `ms` from now and replies `1` when it holds
 string equal to `expected`, otherwise replies `0`; a non-string key is
 `WRONGTYPE`. The renew counterpart of `GOBLIN.CAD`. See the full page:
 **[GOBLIN.CAEXPIRE](GOBLIN.CAEXPIRE.md)**.
+
+## GOBLIN.CAS
+
+```
+GOBLIN.CAS key expected new
+```
+
+Compare-and-set — check-and-swap in one atomic op. Overwrites `key` with `new` and
+replies `OK` when it holds a string equal to `expected`, otherwise replies `0`; a
+non-string key is `WRONGTYPE`. **The TTL is preserved** (`KEEPTTL`) — a bare `SET`
+would clear it. See the full page: **[GOBLIN.CAS](GOBLIN.CAS.md)**.
 
 ## GOBLIN.MEMORY
 

@@ -1250,6 +1250,52 @@ void test_goblin_caexpire() {
   assert(!goblin::core::parse_command(many).ok());
 }
 
+void test_goblin_cas() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Basic swap: a mismatched token leaves the value; the matching token replaces
+  // it and replies +OK (what SET returns), a mismatch replies 0.
+  assert(execute_fields(store, {"SET", "k", "tok"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAS", "k", "wrong", "new"}) == ":0\r\n");
+  assert(execute_fields(store, {"GET", "k"}) == "$3\r\ntok\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAS", "k", "tok", "new"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GET", "k"}) == "$3\r\nnew\r\n");
+
+  // A missing key: nothing to swap, and it is NOT created.
+  assert(execute_fields(store, {"GOBLIN.CAS", "absent", "a", "b"}) == ":0\r\n");
+  assert(execute_fields(store, {"EXISTS", "absent"}) == ":0\r\n");
+
+  // TTL is preserved across a successful swap (the KEEPTTL point) -- checked
+  // deterministically via the Store method with an explicit now.
+  store.set("lock", "t0");
+  const std::uint64_t now = 1000;
+  assert(store.expire_at_ms("lock", now + 30000, now));
+  assert(store.pttl_ms("lock", now) == 30000);
+  assert(store.compare_and_set("lock", "t0", "t1"));   // swap the value...
+  assert(store.pttl_ms("lock", now) == 30000);         // ... TTL survives
+  const auto v = store.get("lock");
+  assert(v && v->head == "t1" && v->tail.empty());     // ... value changed
+  // A mismatched CAS touches neither the value nor the TTL.
+  assert(!store.compare_and_set("lock", "wrong", "t2"));
+  assert(store.pttl_ms("lock", now) == 30000);
+
+  // A non-string key is WRONGTYPE, like GET.
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.CAS", "z", "x", "y"}) == wrongtype);
+
+  // A new value over the 64 KiB cap is rejected (before any swap).
+  const std::string huge(64 * 1024 + 1, 'x');
+  assert(execute_fields(store, {"GOBLIN.CAS", "k", "new", huge}).front() == '-');
+
+  // Arity: exactly key + expected + new (checked at the parse layer).
+  std::vector<std::string_view> few = {"GOBLIN.CAS", "k", "tok"};
+  assert(!goblin::core::parse_command(few).ok());
+  std::vector<std::string_view> many = {"GOBLIN.CAS", "k", "tok", "a", "b"};
+  assert(!goblin::core::parse_command(many).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3571,6 +3617,7 @@ int main() {
   test_string_commands();
   test_goblin_cad();
   test_goblin_caexpire();
+  test_goblin_cas();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

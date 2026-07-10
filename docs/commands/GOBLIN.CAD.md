@@ -70,8 +70,9 @@ OK
 
 ## See also
 
-- [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) — compare-and-expire, the lock-*renewal*
-  counterpart (renew the lease only while you still hold it).
+- [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) — compare-and-expire (renew the lease),
+  and [`GOBLIN.CAS`](GOBLIN.CAS.md) — compare-and-set (swap the value, keeping the
+  TTL): the other conditional-write commands.
 - The same idiom written in each embedded language: [`EVAL`](EVAL.md) (Lua),
   [`LUAU.EVAL`](LUAU.EVAL.md), [`WREN.EVAL`](WREN.EVAL.md),
   [`TCL.EVAL`](TCL.EVAL.md), [`UPYTHON.EVAL`](UPYTHON.EVAL.md),

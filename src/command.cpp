@@ -277,9 +277,9 @@ constexpr std::string_view kValueTooLarge =
 
 // String commands that require the key to already hold a string (or be absent).
 // SET / SETNX / MSET clobber or create regardless of type, and MGET / DEL /
-// EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD and
-// GOBLIN.CAEXPIRE are gated too: they read the value like GET, so a non-string
-// key is WRONGTYPE.
+// EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD /
+// GOBLIN.CAEXPIRE / GOBLIN.CAS are gated too: they read the value like GET, so a
+// non-string key is WRONGTYPE.
 [[nodiscard]] bool is_typed_string_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::get:
@@ -296,6 +296,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::setrange:
     case CommandType::goblin_cad:
     case CommandType::goblin_caexpire:
+    case CommandType::goblin_cas:
       return true;
     default:
       return false;
@@ -967,6 +968,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::goblin_caexpire;
       return {.command = std::move(command)};
+    case CommandType::goblin_cas:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("goblin.cas"));
+      }
+      command.type = CommandType::goblin_cas;
+      return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
   }
@@ -991,7 +998,8 @@ void execute_command_into(Store& store,
   // that operates on a specific type is rejected when the key already holds a
   // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
   // TYPE (type-agnostic), scripts, and the introspection GOBLIN.* commands are
-  // exempt; GOBLIN.CAD / GOBLIN.CAEXPIRE are not (they read the value like GET).
+  // exempt; GOBLIN.CAD / GOBLIN.CAEXPIRE / GOBLIN.CAS are not (they read the
+  // value like GET).
   if (!command.args.empty()) {
     if (const auto required = command_requires_type(command.type)) {
       if (const auto actual = store.key_type(command.args[0]);
@@ -1787,6 +1795,28 @@ void execute_command_into(Store& store,
       const bool renewed =
           store.compare_and_expire(command.args[0], command.args[1], *when, now);
       resp::append_integer(out, renewed ? 1 : 0);
+      return;
+    }
+
+    case CommandType::goblin_cas: {
+      // Compare-and-set: the check-and-swap idiom (GET; if it equals the expected
+      // token, SET the new value with KEEPTTL) as one native atomic op. KEEPTTL
+      // is the point -- a bare SET would clear the key's expiry, a bug shipped
+      // constantly; GOBLIN.CAS preserves it. Replies +OK on a swap (what SET
+      // returns) and 0 when the token did not match -- a drop-in for the script's
+      // `return redis.call("set", KEYS[1], ARGV[2], "KEEPTTL")` / `0`.
+      const auto& new_value = command.args[2];
+      if (new_value.size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      const bool swapped =
+          store.compare_and_set(command.args[0], command.args[1], new_value);
+      if (swapped) {
+        resp::append_simple_string(out, "OK");
+      } else {
+        resp::append_integer(out, 0);
+      }
       return;
     }
 

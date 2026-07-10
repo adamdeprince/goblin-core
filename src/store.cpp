@@ -1038,6 +1038,18 @@ bool Store::compare_and_expire(std::string_view key, std::string_view expected,
   return expire_at_ms(key, when_ms, now);
 }
 
+bool Store::compare_and_set(std::string_view key, std::string_view expected,
+                            std::string_view new_value) {
+  const auto current = keyspace_.get_string(key);
+  if (!current || !view_equals(*current, expected)) {
+    return false;  // missing key or mismatch -> nothing to swap (0)
+  }
+  // Overwrite with the new value but keep any existing TTL -- a bare set() would
+  // clear the expiry; set_keep_ttl is the KEEPTTL semantic.
+  set_keep_ttl(key, new_value);
+  return true;
+}
+
 std::optional<std::size_t> Store::strlen(std::string_view key) const noexcept {
   return keyspace_.string_length(key);
 }

@@ -82,8 +82,9 @@ OK
 
 ## See also
 
-- [`GOBLIN.CAD`](GOBLIN.CAD.md) — compare-and-delete, the lock-*release* half of
-  the same pattern.
+- [`GOBLIN.CAD`](GOBLIN.CAD.md) — compare-and-delete (release the lock), and
+  [`GOBLIN.CAS`](GOBLIN.CAS.md) — compare-and-set (swap the value, keeping the
+  TTL): the other conditional-write commands.
 - [`SET`](strings.md#set) with `NX PX` — how the lock token and initial lease are
   written; [`PEXPIRE`](ttl.md) / [`PTTL`](ttl.md) — the TTL commands it wraps.
 - [Goblin extension commands](goblin.md) — the rest of the `GOBLIN.*` family.
