@@ -644,6 +644,7 @@ ZSetMemoryStats ZSet::memory_stats(const ZSetOptions* options) const noexcept {
   if (member_storage() != nullptr) {
     stats.score_width = member_storage()->score_width();
     stats.member_storage_bytes = member_storage()->byte_size();
+    stats.member_storage_dead_bytes = member_storage()->dead_bytes();
     stats.member_storage_allocated_bytes =
         member_storage()->allocated_bytes() / layer_shares;
     stats.member_ref_capacity = member_storage()->ref_capacity();
@@ -1905,6 +1906,31 @@ StoreMemoryStats Store::memory_stats() const noexcept {
   stats.total_allocated_bytes =
       stats.overflow_table_allocated_bytes + stats.overflow_zset_allocated_bytes;
   return stats;
+}
+
+MemoryReport Store::memory_report() const noexcept {
+  MemoryReport r;
+  const ZSetOptions* zopts = zset_options();
+  // Every zset: arena used (live + dead) plus its fixed index/cache structures.
+  keyspace_.for_each_zset([&r, zopts](std::string_view, const ZSet& zset) {
+    const auto s = zset.memory_stats(zopts);
+    r.used_memory += s.member_storage_bytes + s.score_string_cache_bytes +
+                     s.member_index_allocated_bytes + s.score_index_allocated_bytes +
+                     s.rank_location_cache_allocated_bytes;
+    r.reclaimable_bytes += s.member_storage_dead_bytes;
+  });
+  // Every hash: its field-value arena (live + dead) plus the field index.
+  keyspace_.for_each_hash([&r](std::string_view, const Hash& hash) {
+    const auto s = hash.memory_stats();
+    r.used_memory += s.field_value_live_bytes + s.field_value_dead_bytes +
+                     s.field_index_allocated_bytes;
+    r.reclaimable_bytes += s.field_value_dead_bytes;
+  });
+  // The keyspace itself: key/value arena (live + dead) plus the swiss index and
+  // object/type tables.
+  r.used_memory += keyspace_.footprint_used_bytes();
+  r.reclaimable_bytes += keyspace_.footprint_dead_bytes();
+  return r;
 }
 
 std::string format_score(double score) {

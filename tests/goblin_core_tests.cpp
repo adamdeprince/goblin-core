@@ -1343,6 +1343,45 @@ void test_goblin_td_leaderboard_rescore() {
   assert(!goblin::core::parse_command(few).ok());
 }
 
+void test_memory_report() {
+  goblin::core::Store store;
+
+  // An empty store has allocated nothing and has nothing to reclaim.
+  assert(store.memory_report().used_memory == 0);
+  assert(store.memory_report().reclaimable_bytes == 0);
+
+  // A zset grows used_memory with no dead bytes yet.
+  for (int i = 0; i < 200; ++i) {
+    (void)execute_fields(store, {"ZADD", "z", std::to_string(i),
+                                 "member:" + std::to_string(i)});
+  }
+  const auto after_add = store.memory_report();
+  assert(after_add.used_memory > 0);
+  assert(after_add.reclaimable_bytes == 0);
+
+  // Removing members orphans their arena bytes -> reclaimable > 0 (50 dead vs 150
+  // live stays under the auto-compaction trigger, so it persists).
+  for (int i = 0; i < 50; ++i) {
+    (void)execute_fields(store, {"ZREM", "z", "member:" + std::to_string(i)});
+  }
+  assert(store.memory_report().reclaimable_bytes > 0);
+
+  // Compaction reclaims every dead byte.
+  (void)execute_fields(store, {"GOBLIN.OPTIMIZE", "z"});
+  assert(store.memory_report().reclaimable_bytes == 0);
+
+  // Hashes feed the same accounting: HDEL orphans field-value bytes.
+  for (int i = 0; i < 200; ++i) {
+    (void)execute_fields(store, {"HSET", "h", "f" + std::to_string(i),
+                                 "value-" + std::to_string(i)});
+  }
+  assert(store.memory_report().reclaimable_bytes == 0);
+  for (int i = 0; i < 50; ++i) {
+    (void)execute_fields(store, {"HDEL", "h", "f" + std::to_string(i)});
+  }
+  assert(store.memory_report().reclaimable_bytes > 0);
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3666,6 +3705,7 @@ int main() {
   test_goblin_caexpire();
   test_goblin_cas();
   test_goblin_td_leaderboard_rescore();
+  test_memory_report();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

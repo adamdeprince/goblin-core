@@ -72,7 +72,8 @@ struct ZSetMemoryStats {
   std::size_t member_count{0};
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   ScoreWidth score_width{ScoreWidth::I16};
-  std::size_t member_storage_bytes{0};
+  std::size_t member_storage_bytes{0};        // used = live + dead (arena high-water)
+  std::size_t member_storage_dead_bytes{0};   // reclaimable-by-compact subset
   std::size_t member_storage_allocated_bytes{0};
   std::size_t member_ref_capacity{0};
   std::size_t score_string_cache_bytes{0};
@@ -688,6 +689,15 @@ class Keyspace {
   [[nodiscard]] std::size_t value_arena_used_bytes() const noexcept {
     return storage_.used_bytes();
   }
+  // Keyspace contribution to used_memory: the key+value arena's used (live+dead)
+  // bytes plus the fixed index / type / object-slot tables (no dead of their own).
+  [[nodiscard]] std::size_t footprint_used_bytes() const noexcept {
+    return storage_.used_bytes() + index_.allocated_bytes() +
+           types_.capacity() + types_.size() * sizeof(KeyObjectSlot);
+  }
+  [[nodiscard]] std::size_t footprint_dead_bytes() const noexcept {
+    return storage_.dead_bytes();
+  }
 
  private:
   [[nodiscard]] std::optional<std::uint64_t> find_id(
@@ -851,6 +861,15 @@ struct StoreMemoryStats {
   std::size_t inline_zset_allocated_bytes{0};
   std::size_t overflow_zset_allocated_bytes{0};
   std::size_t total_allocated_bytes{0};
+};
+
+// Process-wide allocation accounting for INFO, summed from every arena's O(1)
+// live/dead counters (no scan): `used_memory` is what our allocation layers hold
+// -- arena live + dead + the fixed index/table structures -- and
+// `reclaimable_bytes` is the dead subset a compaction would free.
+struct MemoryReport {
+  std::size_t used_memory{0};
+  std::size_t reclaimable_bytes{0};
 };
 
 class Store {
@@ -1259,6 +1278,8 @@ class Store {
   std::size_t active_expire(std::uint64_t now, std::size_t budget);
 
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
+  // Aggregate used_memory / reclaimable across every zset, hash, and the keyspace.
+  [[nodiscard]] MemoryReport memory_report() const noexcept;
   // Compact a zset in place to reclaim insertion slack (block capacity, vector
   // over-allocation) and repack the member index to `member_index_density`.
   // Returns the number of allocated bytes reclaimed, or nullopt if the key does

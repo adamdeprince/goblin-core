@@ -67,20 +67,34 @@ namespace {
 // A minimal redis-compatible INFO payload: enough of the Server + Memory
 // sections for tooling (redis-cli, benchmark harnesses) that keys off
 // used_memory_rss / redis_version. Fields are CRLF-separated per the protocol.
-[[nodiscard]] std::string build_info_string() {
+//
+// used_memory is what our allocation layers actually hold, summed from every
+// arena's O(1) live/dead counters (Store::memory_report -- no scan); used_memory_rss
+// is the OS resident set. mem_fragmentation_ratio is honest and *internal*: our
+// allocation over its compacted size (used minus the reclaimable dead bytes a
+// GOBLIN.OPTIMIZE would free), so 1.00 means nothing to reclaim and higher means
+// churn has left dead bytes in the arenas. mem_reclaimable_bytes is that dead total.
+[[nodiscard]] std::string build_info_string(const Store& store) {
   const std::size_t rss = current_rss_bytes();
-  const std::string rss_str = std::to_string(rss);
+  const MemoryReport mem = store.memory_report();
+  const std::size_t used = mem.used_memory;
+  const std::size_t dead = mem.reclaimable_bytes;
+  const std::size_t compacted = used > dead ? used - dead : 0;
+  char frag[16];
+  std::snprintf(frag, sizeof(frag), "%.2f",
+                compacted > 0 ? static_cast<double>(used) / compacted : 1.0);
   std::string s;
   s += "# Server\r\n";
   s += "redis_version:7.4.0\r\n";
   s += "redis_mode:standalone\r\n";
   s += "# Memory\r\n";
-  s += "used_memory:" + rss_str + "\r\n";
-  s += "used_memory_rss:" + rss_str + "\r\n";
-  s += "used_memory_peak:" + rss_str + "\r\n";
+  s += "used_memory:" + std::to_string(used) + "\r\n";
+  s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
+  s += "used_memory_peak:" + std::to_string(used) + "\r\n";
+  s += "mem_reclaimable_bytes:" + std::to_string(dead) + "\r\n";
   s += "maxmemory:0\r\n";
   s += "maxmemory_policy:noeviction\r\n";
-  s += "mem_fragmentation_ratio:1.00\r\n";
+  s += "mem_fragmentation_ratio:" + std::string(frag) + "\r\n";
   return s;
 }
 
@@ -1029,7 +1043,7 @@ void execute_command_into(Store& store,
       resp::append_bulk_string(out, command.args.front());
       return;
     case CommandType::info:
-      resp::append_bulk_string(out, build_info_string());
+      resp::append_bulk_string(out, build_info_string(store));
       return;
 
     case CommandType::eval:
