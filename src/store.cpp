@@ -6,6 +6,7 @@
 #include <cassert>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -809,7 +810,7 @@ void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   if (!zset.empty()) {
     return;
   }
-  (void)keyspace_.erase(key);
+  (void)erase_key(key);
 }
 
 const ZSet* Store::find_member_layer_template() const noexcept {
@@ -864,7 +865,7 @@ void Store::erase_if_empty(std::string_view key, const Hash& hash) {
   if (!hash.empty()) {
     return;
   }
-  (void)keyspace_.erase(key);
+  (void)erase_key(key);
 }
 
 void Store::place_loaded_hash(std::string key, Hash&& hash) {
@@ -958,6 +959,17 @@ std::optional<HashMemoryStats> Store::hash_memory_stats(
 
 void Store::set(std::string_view key, std::string_view value) {
   keyspace_.set_string(key, value);
+  // SET clears any existing TTL (Redis default; SET ... KEEPTTL keeps it via
+  // set_keep_ttl). Skip the id lookup entirely when no TTLs exist.
+  if (!ttl_.empty()) {
+    if (const auto id = keyspace_.id_of(key)) {
+      ttl_.clear(*id);
+    }
+  }
+}
+
+void Store::set_keep_ttl(std::string_view key, std::string_view value) {
+  keyspace_.set_string(key, value);
 }
 
 bool Store::set_nx(std::string_view key, std::string_view value) {
@@ -994,7 +1006,7 @@ std::optional<std::string> Store::get_del(std::string_view key) {
   if (const auto current = keyspace_.get_string(key)) {
     previous = join_value(*current);
   }
-  (void)keyspace_.erase(key);
+  (void)erase_key(key);
   return previous;
 }
 
@@ -1109,6 +1121,87 @@ std::optional<std::size_t> Store::setrange(std::string_view key,
             buffer.begin() + static_cast<std::ptrdiff_t>(offset));
   keyspace_.set_string(key, buffer);
   return result_len;
+}
+
+// ---- TTL ----
+
+std::uint64_t Store::now_ms() const noexcept {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+}
+
+bool Store::expire_at_ms(std::string_view key, std::uint64_t when_ms,
+                         std::uint64_t now) {
+  const auto id = keyspace_.id_of(key);
+  if (!id) {
+    return false;
+  }
+  if (when_ms <= now) {  // a time already past deletes the key now
+    ttl_.clear(*id);
+    erase_keyspace_at(*id);
+    return true;
+  }
+  ttl_.set(*id, when_ms);
+  return true;
+}
+
+long long Store::pttl_ms(std::string_view key, std::uint64_t now) const {
+  const auto id = keyspace_.id_of(key);
+  if (!id) {
+    return -2;
+  }
+  const auto expiry = ttl_.expiry(*id);
+  if (!expiry) {
+    return -1;
+  }
+  if (*expiry <= now) {
+    return -2;  // due but not yet purged -- report as already gone
+  }
+  return static_cast<long long>(*expiry - now);
+}
+
+long long Store::expiretime_ms(std::string_view key) const {
+  const auto id = keyspace_.id_of(key);
+  if (!id) {
+    return -2;
+  }
+  const auto expiry = ttl_.expiry(*id);
+  if (!expiry) {
+    return -1;
+  }
+  return static_cast<long long>(*expiry);
+}
+
+bool Store::persist(std::string_view key) {
+  const auto id = keyspace_.id_of(key);
+  if (!id) {
+    return false;
+  }
+  return ttl_.clear(*id);
+}
+
+bool Store::purge_if_expired(std::string_view key, std::uint64_t now) {
+  if (ttl_.empty()) {
+    return false;
+  }
+  const auto id = keyspace_.id_of(key);
+  if (!id) {
+    return false;
+  }
+  const auto expiry = ttl_.expiry(*id);
+  if (!expiry || *expiry > now) {
+    return false;
+  }
+  ttl_.clear(*id);
+  erase_keyspace_at(*id);
+  return true;
+}
+
+std::size_t Store::active_expire(std::uint64_t now, std::size_t budget) {
+  return ttl_.expire_due(now, budget,
+                         [this](std::uint64_t id) { erase_keyspace_at(id); });
 }
 
 long long Store::zcard(std::string_view key) const {
@@ -1396,7 +1489,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(3);  // section count (ZSET, HASH, STRING)
+  writer.u32(4);  // section count (ZSET, HASH, STRING, TTL)
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -1492,6 +1585,32 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   keyspace_.for_each_string(emit_string);
   out.write(&end, 1);
 
+  // TTL section: each key's absolute expiry ms, its own object family. Written
+  // last so a loader has already placed every key before it resolves ids to
+  // attach expiries. No accelerator.
+  std::string ttl_header;
+  snapshot::Writer ttl_writer(ttl_header);
+  ttl_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Ttl));
+  ttl_writer.u32(0);
+  ttl_writer.u64(0);
+  out.write(ttl_header.data(), static_cast<std::streamsize>(ttl_header.size()));
+
+  ttl_.for_each([&](std::uint64_t key_id, std::uint64_t expiry_ms) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(keyspace_.key_for_id(key_id));
+    operand_writer.u64(expiry_ms);
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(snapshot::TtlOpcode::Ttl));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(), static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  });
+  out.write(&end, 1);
+
   if (!out) {
     throw snapshot::snapshot_error("snapshot write failed");
   }
@@ -1581,10 +1700,12 @@ SnapshotLoadStats Store::load(std::istream& in) {
 
 void Store::clear() noexcept {
   keyspace_.clear();
+  ttl_.clear_all();
 }
 
 SnapshotLoadStats Store::load_native(std::istream& in) {
   keyspace_.clear();
+  ttl_.clear_all();
 
   // A corrupt length field must fail cleanly, not attempt a wild allocation.
   constexpr std::uint64_t kMaxOperandBytes = std::uint64_t{1} << 40;
@@ -1628,6 +1749,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
       const bool is_string =
           section_type ==
           static_cast<std::uint32_t>(snapshot::SectionType::String);
+      const bool is_ttl =
+          section_type == static_cast<std::uint32_t>(snapshot::SectionType::Ttl);
       const bool zset_use_accelerator =
           is_zset && section_version == snapshot::kZsetAcceleratorVersion &&
           hash_identity == ZSetMemberIndex::hash_identity();
@@ -1679,6 +1802,14 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           const auto value = reader.str();
           keyspace_.set_string(key, value);
           ++stats.keys;
+        } else if (is_ttl && opcode == static_cast<std::uint8_t>(
+                                           snapshot::TtlOpcode::Ttl)) {
+          snapshot::Reader reader(operands);
+          const auto key = reader.str();
+          const auto expiry_ms = reader.u64();
+          if (const auto id = keyspace_.id_of(key)) {
+            ttl_.set(*id, expiry_ms);
+          }
         }
         // else: unknown opcode or section -- already consumed, skip.
       }
@@ -1686,6 +1817,7 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
     return stats;
   } catch (...) {
     keyspace_.clear();
+    ttl_.clear_all();
     throw;
   }
 }

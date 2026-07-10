@@ -70,21 +70,23 @@ OK
 string
 ```
 
-> **TTL is not yet supported.** `SET`'s `EX` / `PX` / `EXAT` / `PXAT` / `XX` /
-> `GET` / `KEEPTTL` options are rejected as a syntax error for now; only `NX` is
-> accepted. Expiry is on the roadmap.
+> **Expiry.** `SET` accepts `NX`, an expiry (`EX` / `PX` / `EXAT` / `PXAT`), and
+> `KEEPTTL`; the `XX` / `GET` options are not yet supported. The dedicated
+> expiration commands live in [ttl.md](ttl.md).
 
 ---
 
 ## SET
 
 ```
-SET key value [NX]
+SET key value [NX] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL]
 ```
 
 Set `key` to `value`, replacing any existing value **of any type**. Replies
 `+OK`. With `NX`, set only if the key is absent — replying `+OK` when stored, or
-a nil bulk string when the key already exists.
+a nil bulk string when the key already exists. An expiry option sets a TTL in
+the same command; `KEEPTTL` preserves an existing TTL instead of clearing it (a
+bare `SET` clears any TTL). See [ttl.md](ttl.md).
 
 ```
 > SET greeting "hello"

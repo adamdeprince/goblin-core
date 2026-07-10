@@ -407,6 +407,11 @@ int Server::run() {
   std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
             << '\n';
 
+  // Keys expired per active-expiration sweep. A bounded batch keeps a mass
+  // expiry from stalling the loop; when a sweep fills the batch more are likely
+  // due, so the poll below returns immediately to sweep again.
+  constexpr std::size_t kActiveExpireBudget = 1000;
+
   while (running_) {
     if (auto outcome = store_.reap_background_save()) {
       if (outcome->ok) {
@@ -416,6 +421,16 @@ int Server::run() {
       } else {
         std::cerr << "goblin-core: background save of " << outcome->path
                   << " FAILED\n";
+      }
+    }
+
+    // Active expiration: reclaim untouched keys whose TTL has passed, even with
+    // no client accessing them. Nothing to do (and no clock read) when empty.
+    int poll_timeout = 1000;
+    if (!store_.ttl_empty()) {
+      if (store_.active_expire(store_.now_ms(), kActiveExpireBudget) ==
+          kActiveExpireBudget) {
+        poll_timeout = 0;  // batch full -- more are likely due, sweep again now
       }
     }
 
@@ -434,7 +449,7 @@ int Server::run() {
       pollfds.push_back(pollfd{.fd = client.fd, .events = events, .revents = 0});
     }
 
-    const int ready = ::poll(pollfds.data(), pollfds.size(), 1000);
+    const int ready = ::poll(pollfds.data(), pollfds.size(), poll_timeout);
     if (ready < 0) {
       if (errno == EINTR) {
         continue;

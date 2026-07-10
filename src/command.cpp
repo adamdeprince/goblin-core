@@ -313,6 +313,54 @@ constexpr std::string_view kValueTooLarge =
   return std::nullopt;
 }
 
+// Commands whose first argument is a key, so lazy expiration purges it on access.
+[[nodiscard]] bool command_has_key_arg(CommandType type) noexcept {
+  if (command_requires_type(type).has_value()) {
+    return true;  // zset / hash / typed-string commands
+  }
+  switch (type) {
+    case CommandType::set:
+    case CommandType::setnx:
+    case CommandType::mset:
+    case CommandType::mget:
+    case CommandType::del:
+    case CommandType::exists:
+    case CommandType::key_type:
+    case CommandType::expire:
+    case CommandType::pexpire:
+    case CommandType::expireat:
+    case CommandType::pexpireat:
+    case CommandType::ttl:
+    case CommandType::pttl:
+    case CommandType::persist:
+    case CommandType::expiretime:
+    case CommandType::pexpiretime:
+    case CommandType::goblin_memory:
+    case CommandType::goblin_optimize:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The absolute expiry ms for the EXPIRE family: base + amount * unit, in a
+// 128-bit intermediate so it can't overflow. nullopt when the result is past the
+// 48-bit expiry range (an invalid expire time); a negative result clamps to 0
+// (already past -> the key is deleted).
+[[nodiscard]] std::optional<std::uint64_t> compute_when_ms(std::uint64_t base_ms,
+                                                           long long amount,
+                                                           long long unit_ms) {
+  const __int128 when = static_cast<__int128>(base_ms) +
+                        static_cast<__int128>(amount) * unit_ms;
+  if (when < 0) {
+    return std::uint64_t{0};
+  }
+  if (when >= (static_cast<__int128>(1) << 48)) {
+    return std::nullopt;
+  }
+  return static_cast<std::uint64_t>(when);
+}
+
 // INCR/DECR/INCRBY/DECRBY: apply the (possibly negative) delta and reply with the
 // new value, or the canonical integer error on a non-integer value or overflow.
 void append_incr(std::string& out, Store& store, std::string_view key,
@@ -841,6 +889,25 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::key_type;
       return {.command = std::move(command)};
+    case CommandType::expire:
+    case CommandType::pexpire:
+    case CommandType::expireat:
+    case CommandType::pexpireat:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("expire"));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::ttl:
+    case CommandType::pttl:
+    case CommandType::persist:
+    case CommandType::expiretime:
+    case CommandType::pexpiretime:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("ttl"));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
     case CommandType::goblin_memory:
       if (command.args.size() != 1) {
         return parse_error(wrong_arity("goblin.memory"));
@@ -876,6 +943,15 @@ void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,
                           CommandExecutionOptions options) {
+  // Lazy expiration: a key whose TTL has already passed is deleted on first
+  // access, before the type gate or the command sees it. Only the first-key
+  // argument is handled here (multi-key readers purge their extra keys); gated on
+  // a non-empty TTL set so a server with no expirations pays nothing.
+  if (!command.args.empty() && command_has_key_arg(command.type) &&
+      !store.ttl_empty()) {
+    (void)store.purge_if_expired(command.args[0], store.now_ms());
+  }
+
   // WRONGTYPE: a key holds at most one type (one unified namespace). A command
   // that operates on a specific type is rejected when the key already holds a
   // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
@@ -1195,32 +1271,73 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::set: {
-      // SET key value [NX]. Other options (EX/PX/XX/GET/KEEPTTL) are not yet
-      // supported; TTL is on the roadmap.
+      // SET key value [NX] [EX s | PX ms | EXAT ts | PXAT ms | KEEPTTL].
+      const auto& key = command.args[0];
       const auto& value = command.args[1];
       if (value.size() > Store::max_value_bytes()) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
       bool nx = false;
+      bool keepttl = false;
+      std::optional<std::uint64_t> expire_when;
+      const auto now = store.now_ms();
       for (std::size_t i = 2; i < command.args.size(); ++i) {
-        if (equals_ci(command.args[i], "NX")) {
+        const auto& opt = command.args[i];
+        if (equals_ci(opt, "NX")) {
           nx = true;
+        } else if (equals_ci(opt, "KEEPTTL")) {
+          keepttl = true;
+        } else if (equals_ci(opt, "EX") || equals_ci(opt, "PX") ||
+                   equals_ci(opt, "EXAT") || equals_ci(opt, "PXAT")) {
+          if (i + 1 >= command.args.size()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          const auto amount = parse_ll(command.args[++i]);
+          if (!amount) {
+            resp::append_error(out, integer_range_error());
+            return;
+          }
+          if (equals_ci(opt, "EX")) {
+            expire_when = compute_when_ms(now, *amount, 1000);
+          } else if (equals_ci(opt, "PX")) {
+            expire_when = compute_when_ms(now, *amount, 1);
+          } else if (equals_ci(opt, "EXAT")) {
+            expire_when = compute_when_ms(0, *amount, 1000);
+          } else {  // PXAT
+            expire_when = compute_when_ms(0, *amount, 1);
+          }
+          if (!expire_when) {
+            resp::append_error(out, "ERR invalid expire time in 'set' command");
+            return;
+          }
         } else {
           resp::append_error(out, syntax_error());
           return;
         }
       }
-      if (nx) {
-        if (store.set_nx(command.args[0], value)) {
-          resp::append_simple_string(out, "OK");
-        } else {
-          resp::append_null_bulk_string(out);
-        }
-      } else {
-        store.set(command.args[0], value);
-        resp::append_simple_string(out, "OK");
+      if (keepttl && expire_when) {  // an expiry option and KEEPTTL conflict
+        resp::append_error(out, syntax_error());
+        return;
       }
+
+      bool stored = true;
+      if (nx) {
+        stored = store.set_nx(key, value);  // a new key carries no prior TTL
+      } else if (keepttl) {
+        store.set_keep_ttl(key, value);
+      } else {
+        store.set(key, value);  // clears any existing TTL
+      }
+      if (!stored) {
+        resp::append_null_bulk_string(out);
+        return;
+      }
+      if (expire_when) {
+        (void)store.expire_at_ms(key, *expire_when, now);
+      }
+      resp::append_simple_string(out, "OK");
       return;
     }
     case CommandType::get: {
@@ -1369,8 +1486,13 @@ void execute_command_into(Store& store,
       return;
     }
     case CommandType::mget: {
+      const bool has_ttl = !store.ttl_empty();
+      const auto now = has_ttl ? store.now_ms() : std::uint64_t{0};
       resp::append_array_header(out, command.args.size());
       for (const auto& key : command.args) {
+        if (has_ttl) {
+          (void)store.purge_if_expired(key, now);
+        }
         const auto value = store.get(key);  // nil for a missing or non-string key
         if (!value) {
           resp::append_null_bulk_string(out);
@@ -1395,8 +1517,13 @@ void execute_command_into(Store& store,
       return;
     }
     case CommandType::exists: {
+      const bool has_ttl = !store.ttl_empty();
+      const auto now = has_ttl ? store.now_ms() : std::uint64_t{0};
       long long count = 0;
       for (const auto& key : command.args) {
+        if (has_ttl) {
+          (void)store.purge_if_expired(key, now);
+        }
         count += store.exists(key) ? 1 : 0;
       }
       resp::append_integer(out, count);
@@ -1419,6 +1546,62 @@ void execute_command_into(Store& store,
         }
       }
       resp::append_simple_string(out, name);
+      return;
+    }
+    case CommandType::expire:
+    case CommandType::pexpire:
+    case CommandType::expireat:
+    case CommandType::pexpireat: {
+      const auto amount = parse_ll(command.args[1]);
+      if (!amount) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto now = store.now_ms();
+      std::optional<std::uint64_t> when;
+      switch (command.type) {
+        case CommandType::expire:
+          when = compute_when_ms(now, *amount, 1000);
+          break;
+        case CommandType::pexpire:
+          when = compute_when_ms(now, *amount, 1);
+          break;
+        case CommandType::expireat:
+          when = compute_when_ms(0, *amount, 1000);
+          break;
+        default:  // pexpireat
+          when = compute_when_ms(0, *amount, 1);
+          break;
+      }
+      if (!when) {
+        resp::append_error(out, "ERR invalid expire time");
+        return;
+      }
+      resp::append_integer(
+          out, store.expire_at_ms(command.args[0], *when, now) ? 1 : 0);
+      return;
+    }
+    case CommandType::ttl:
+    case CommandType::pttl: {
+      const auto ms = store.pttl_ms(command.args[0], store.now_ms());
+      if (command.type == CommandType::pttl || ms < 0) {
+        resp::append_integer(out, ms);
+      } else {
+        resp::append_integer(out, (ms + 500) / 1000);  // TTL rounds to seconds
+      }
+      return;
+    }
+    case CommandType::persist:
+      resp::append_integer(out, store.persist(command.args[0]) ? 1 : 0);
+      return;
+    case CommandType::expiretime:
+    case CommandType::pexpiretime: {
+      const auto ms = store.expiretime_ms(command.args[0]);
+      if (command.type == CommandType::pexpiretime || ms < 0) {
+        resp::append_integer(out, ms);
+      } else {
+        resp::append_integer(out, ms / 1000);  // EXPIRETIME in seconds
+      }
       return;
     }
 

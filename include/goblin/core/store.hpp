@@ -21,6 +21,7 @@
 #include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/string_value.hpp"
+#include "goblin/core/ttl_set.hpp"
 #include "goblin/core/swiss_table.hpp"
 #include "goblin/core/zset_member_index.hpp"
 #include "goblin/core/zset_member_layer.hpp"
@@ -419,6 +420,14 @@ enum class KeyType : std::uint8_t {
   Hash = 2,
 };
 
+// The swap-remove an erase performs: the key that had id `from` now lives at id
+// `to`. External indexes that reference keys by id (the TTL set) fix themselves
+// up with this. Returned by Keyspace::erase_at.
+struct KeyMove {
+  std::uint64_t from;
+  std::uint64_t to;
+};
+
 // A string value as two views: an inline head (the whole value, or its 6-byte
 // prefix) and an arena tail (empty when the value fits inline). Two views so GET
 // never copies -- the RESP layer writes head then tail.
@@ -596,14 +605,36 @@ class Keyspace {
   }
 
   // ---- lifecycle ----
-  [[nodiscard]] bool erase(std::string_view key) {
-    const auto id = find_id(key);
-    if (!id) {
-      return false;
+  [[nodiscard]] std::optional<std::uint64_t> id_of(
+      std::string_view key) const noexcept {
+    return find_id(key);
+  }
+  // Key bytes for a live id (e.g. one a TTL entry references, for snapshotting).
+  [[nodiscard]] std::string_view key_for_id(std::uint64_t id) const noexcept {
+    return storage_.view(id);
+  }
+
+  // Erase the key at `id`, returning the swap-remove it caused (the last key slid
+  // into `id`), or nullopt if `id` was the last key. The caller fixes up any
+  // external id-keyed index (the TTL set) using the returned move.
+  [[nodiscard]] std::optional<KeyMove> erase_at(std::uint64_t id) {
+    const auto last = static_cast<std::uint64_t>(types_.size() - 1);
+    destroy_object(id);
+    storage_.mark_key_dead(id);
+    (void)index_.erase(storage_.view(id));  // key bytes at id still intact
+    std::optional<KeyMove> moved;
+    if (id != last) {
+      (void)index_.move_member_id(last, id);  // last's key now maps to id
+      storage_.move_key_slot(id, last);
+      types_[id] = types_[last];
+      relocate_object(id, last);
+      moved = KeyMove{last, id};
     }
-    erase_id(*id);
+    storage_.pop_back_key();
+    objects_.pop_back();
+    types_.pop_back();
     maybe_compact();
-    return true;
+    return moved;
   }
 
   template <class Fn>
@@ -737,22 +768,6 @@ class Keyspace {
         objects_[dst].hash = objects_[src].hash;
         break;
     }
-  }
-
-  void erase_id(std::uint64_t id) {
-    const auto last = static_cast<std::uint64_t>(types_.size() - 1);
-    destroy_object(id);
-    storage_.mark_key_dead(id);
-    (void)index_.erase(storage_.view(id));  // key bytes at id still intact
-    if (id != last) {
-      (void)index_.move_member_id(last, id);  // last's key now maps to id
-      storage_.move_key_slot(id, last);
-      types_[id] = types_[last];
-      relocate_object(id, last);
-    }
-    storage_.pop_back_key();
-    objects_.pop_back();
-    types_.pop_back();
   }
 
   void destroy_all() noexcept {
@@ -1159,7 +1174,7 @@ class Store {
                                                     std::string_view value);
 
   // --- Keys (any type) ---
-  [[nodiscard]] bool del(std::string_view key) { return keyspace_.erase(key); }
+  [[nodiscard]] bool del(std::string_view key) { return erase_key(key); }
   [[nodiscard]] bool exists(std::string_view key) const noexcept {
     return keyspace_.contains(key);
   }
@@ -1170,6 +1185,31 @@ class Store {
   [[nodiscard]] bool key_is_string(std::string_view key) const noexcept {
     return keyspace_.is_type(key, KeyType::String);
   }
+
+  // --- TTL (absolute times are ms since the Unix epoch) ---
+  // Current wall-clock ms. The command layer reads it once and passes it to the
+  // methods below, so one command sees a single consistent "now"; tests pass
+  // their own to stay deterministic.
+  [[nodiscard]] std::uint64_t now_ms() const noexcept;
+  [[nodiscard]] bool ttl_empty() const noexcept { return ttl_.empty(); }
+  // Set the key's absolute expiry. A time already at/past now deletes the key.
+  // Returns false only when the key does not exist.
+  [[nodiscard]] bool expire_at_ms(std::string_view key, std::uint64_t when_ms,
+                                  std::uint64_t now);
+  // Remaining ms, or -2 (no such key) / -1 (no expiry).
+  [[nodiscard]] long long pttl_ms(std::string_view key, std::uint64_t now) const;
+  // Absolute expiry ms, or -2 (no such key) / -1 (no expiry).
+  [[nodiscard]] long long expiretime_ms(std::string_view key) const;
+  // PERSIST: drop the TTL; true if one was removed.
+  [[nodiscard]] bool persist(std::string_view key);
+  // SET ... KEEPTTL: store a value without touching an existing TTL.
+  void set_keep_ttl(std::string_view key, std::string_view value);
+  // Lazy expiration: if the key's TTL is at/past now, delete it and report it.
+  // Cheap no-op when no TTLs exist.
+  bool purge_if_expired(std::string_view key, std::uint64_t now);
+  // Active expiration: delete up to `budget` keys due at/before now, soonest
+  // first; returns the count expired.
+  std::size_t active_expire(std::uint64_t now, std::size_t budget);
 
   [[nodiscard]] StoreMemoryStats memory_stats() const noexcept;
   // Compact a zset in place to reclaim insertion slack (block capacity, vector
@@ -1244,6 +1284,26 @@ class Store {
   }
   void erase_if_empty(std::string_view key, const Hash& hash);
 
+  // Erase a key (any type), clearing its own TTL and rekeying the TTL of the key
+  // that the swap-remove slid into its slot.
+  bool erase_key(std::string_view key) {
+    const auto id = keyspace_.id_of(key);
+    if (!id) {
+      return false;
+    }
+    ttl_.clear(*id);
+    erase_keyspace_at(*id);
+    return true;
+  }
+  // Erase the keyspace key at `id` and fix up the swapped key's TTL. Does NOT
+  // touch id's own TTL entry -- callers reached from the TtlSet (active
+  // expiration) already removed it.
+  void erase_keyspace_at(std::uint64_t id) {
+    if (const auto moved = keyspace_.erase_at(id)) {
+      ttl_.rekey(moved->from, moved->to);
+    }
+  }
+
   StoreOptions options_;
   // Built once in the constructor from options_; every zset in this store shares
   // it (an 8 B pointer per zset, not a 32 B copy). Declared before keyspace_ so
@@ -1251,6 +1311,8 @@ class Store {
   ZSetOptions zset_options_;
   // Every key of every type lives here, in one namespace. See Keyspace above.
   Keyspace keyspace_;
+  // The one keyspace-wide expiry set (sparse: only keys with a TTL). See TtlSet.
+  TtlSet ttl_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
 };

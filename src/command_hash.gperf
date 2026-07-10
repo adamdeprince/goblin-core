@@ -73,6 +73,15 @@ MGET, goblin::core::CommandType::mget
 DEL, goblin::core::CommandType::del
 EXISTS, goblin::core::CommandType::exists
 TYPE, goblin::core::CommandType::key_type
+EXPIRE, goblin::core::CommandType::expire
+PEXPIRE, goblin::core::CommandType::pexpire
+EXPIREAT, goblin::core::CommandType::expireat
+PEXPIREAT, goblin::core::CommandType::pexpireat
+TTL, goblin::core::CommandType::ttl
+PTTL, goblin::core::CommandType::pttl
+PERSIST, goblin::core::CommandType::persist
+EXPIRETIME, goblin::core::CommandType::expiretime
+PEXPIRETIME, goblin::core::CommandType::pexpiretime
 GOBLIN.MEMORY, goblin::core::CommandType::goblin_memory
 GOBLIN.OPTIMIZE, goblin::core::CommandType::goblin_optimize
 GOBLIN.SAVE, goblin::core::CommandType::goblin_save

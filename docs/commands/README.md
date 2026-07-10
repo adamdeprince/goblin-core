@@ -13,8 +13,9 @@ nothing but the key space (one `Store`).
 | MicroPython | a lean Python ([micropython.org](https://micropython.org)) | [`UPYTHON.EVAL`](UPYTHON.EVAL.md) · [`UPYTHON.EVALSHA`](UPYTHON.EVALSHA.md) · [`UPYTHON.SCRIPT`](UPYTHON.SCRIPT.md) |
 
 The data-type commands that share this key space are documented separately:
-**[strings.md](strings.md)** (`SET` / `GET` / `INCR` / `GETRANGE` / …) and
-**[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`).
+**[strings.md](strings.md)** (`SET` / `GET` / `INCR` / `GETRANGE` / …),
+**[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`), and **[ttl.md](ttl.md)**
+(`EXPIRE` / `TTL` / `PERSIST` / …).
 
 ## Why three?
 

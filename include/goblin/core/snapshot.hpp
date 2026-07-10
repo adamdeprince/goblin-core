@@ -61,6 +61,7 @@ enum class SectionType : std::uint32_t {
   Hash = 3,
   List = 4,
   Set = 5,
+  Ttl = 6,
 };
 
 // Each section body is a stream of instructions -- a tiny per-family bytecode --
@@ -94,6 +95,11 @@ inline constexpr std::uint32_t kHashAcceleratorVersion = 1;
 enum class StringOpcode : std::uint8_t {
   End = kOpEnd,
   String = 0x01,  // operands: key, raw value bytes (no accelerator)
+};
+
+enum class TtlOpcode : std::uint8_t {
+  End = kOpEnd,
+  Ttl = 0x01,  // operands: key, absolute expiry ms (u64)
 };
 
 // CRC32C (Castagnoli), for corruption detection. The result is standard

@@ -150,18 +150,31 @@ class TtlSet {
   // slot), which is safe: each victim is removed from both structures before fn
   // runs, and the loop re-reads the front each time rather than holding a cursor.
   template <class Fn>
-  void expire_due(std::uint64_t now_ms, Fn&& fn) {
-    while (!order_.empty()) {
+  std::size_t expire_due(std::uint64_t now_ms, std::size_t budget, Fn&& fn) {
+    std::size_t expired = 0;
+    while (expired < budget && !order_.empty()) {
       const TtlEntry front = order_.at(0);
       if (front.expiry_ms() > now_ms) {
-        return;
+        break;
       }
       const auto key_id = front.key();
       (void)order_.erase_one(front);
       (void)index_.erase(PackedU48::make(key_id));
       fn(key_id);
+      ++expired;
     }
+    return expired;
   }
+
+  // Visit every (key_id, expiry_ms) pair (unordered). Used to persist TTLs.
+  template <class Fn>
+  void for_each(Fn&& fn) const {
+    index_.for_each([&fn](const auto& entry) {
+      fn(entry.first.get(), entry.second.get());
+    });
+  }
+
+  void clear_all() noexcept { *this = TtlSet{}; }
 
   [[nodiscard]] std::size_t allocated_bytes() const noexcept {
     return index_.allocated_bytes() + order_.size() * sizeof(TtlEntry);

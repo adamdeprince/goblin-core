@@ -1263,10 +1263,23 @@ void test_ttl_set() {
 
   // expire_due pops the soonest first, and only what is due.
   std::vector<std::uint64_t> expired;
-  ttl.expire_due(999, [&](std::uint64_t id) { expired.push_back(id); });
+  assert(ttl.expire_due(999, 100, [&](std::uint64_t id) {
+    expired.push_back(id);
+  }) == 0);
   assert(expired.empty());
-  ttl.expire_due(3000, [&](std::uint64_t id) { expired.push_back(id); });
+  assert(ttl.expire_due(3000, 100, [&](std::uint64_t id) {
+    expired.push_back(id);
+  }) == 2);
   assert((expired == std::vector<std::uint64_t>{10, 20}));  // 1000 then 3000
+
+  // The budget caps how many are expired per call.
+  ttl.set(1, 100);
+  ttl.set(2, 100);
+  ttl.set(3, 100);
+  assert(ttl.expire_due(200, 2, [](std::uint64_t) {}) == 2);
+  assert(ttl.size() == 1);
+  assert(ttl.expire_due(200, 100, [](std::uint64_t) {}) == 1);
+  assert(ttl.empty());
   assert(ttl.empty());
 
   // rekey moves an entry to a new id; unknown ids are a no-op.
@@ -1282,6 +1295,108 @@ void test_ttl_set() {
   const std::uint64_t big_expiry = (std::uint64_t{1} << 44) | 0xABCDU;
   ttl.set(big_id, big_expiry);
   assert(ttl.expiry(big_id) == std::optional<std::uint64_t>(big_expiry));
+}
+
+long long resp_integer(const std::string& reply) {
+  assert(reply.size() >= 4 && reply.front() == ':');
+  return std::stoll(reply.substr(1));
+}
+
+void test_ttl_commands() {
+  goblin::core::Store store;
+
+  assert(execute_fields(store, {"SET", "k", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"TTL", "k"}) == ":-1\r\n");       // key, no expiry
+  assert(execute_fields(store, {"PTTL", "k"}) == ":-1\r\n");
+  assert(execute_fields(store, {"TTL", "absent"}) == ":-2\r\n");  // no such key
+  assert(execute_fields(store, {"PERSIST", "k"}) == ":0\r\n");    // nothing to drop
+
+  // EXPIRE / TTL rounding / PERSIST.
+  assert(execute_fields(store, {"EXPIRE", "k", "1000"}) == ":1\r\n");
+  {
+    const auto n = resp_integer(execute_fields(store, {"TTL", "k"}));
+    assert(n > 990 && n <= 1000);
+  }
+  assert(execute_fields(store, {"PERSIST", "k"}) == ":1\r\n");
+  assert(execute_fields(store, {"TTL", "k"}) == ":-1\r\n");
+  assert(execute_fields(store, {"EXPIRE", "absent", "100"}) == ":0\r\n");
+
+  // A past EXPIREAT deletes the key immediately (still replies 1).
+  assert(execute_fields(store, {"SET", "gone", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"EXPIREAT", "gone", "1"}) == ":1\r\n");
+  assert(execute_fields(store, {"EXISTS", "gone"}) == ":0\r\n");
+
+  // A future PEXPIREAT: PTTL and PEXPIRETIME report it.
+  const std::uint64_t future = store.now_ms() + 500000;
+  assert(execute_fields(store, {"SET", "f", "v"}) == "+OK\r\n");
+  assert(execute_fields(store,
+                        {"PEXPIREAT", "f", std::to_string(future)}) == ":1\r\n");
+  {
+    const auto n = resp_integer(execute_fields(store, {"PTTL", "f"}));
+    assert(n > 490000 && n <= 500000);
+  }
+  assert(execute_fields(store, {"PEXPIRETIME", "f"}) ==
+         ":" + std::to_string(future) + "\r\n");
+
+  // SET clears the TTL; SET ... KEEPTTL keeps it; SET ... EX sets one.
+  assert(execute_fields(store, {"SET", "f", "v2"}) == "+OK\r\n");
+  assert(execute_fields(store, {"TTL", "f"}) == ":-1\r\n");
+  assert(execute_fields(store, {"EXPIRE", "f", "1000"}) == ":1\r\n");
+  assert(execute_fields(store, {"SET", "f", "v3", "KEEPTTL"}) == "+OK\r\n");
+  assert(resp_integer(execute_fields(store, {"TTL", "f"})) > 990);
+  assert(execute_fields(store, {"SET", "g", "v", "EX", "100"}) == "+OK\r\n");
+  {
+    const auto n = resp_integer(execute_fields(store, {"TTL", "g"}));
+    assert(n > 90 && n <= 100);
+  }
+
+  // Lazy expiration: a key with a past TTL is gone on next access.
+  assert(execute_fields(store, {"SET", "lazy", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"PEXPIRE", "lazy", "1"}) == ":1\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  assert(execute_fields(store, {"GET", "lazy"}) == "$-1\r\n");
+  assert(execute_fields(store, {"EXISTS", "lazy"}) == ":0\r\n");
+
+  // Active expiration deletes due keys in a batch.
+  assert(execute_fields(store, {"SET", "a1", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SET", "a2", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"PEXPIRE", "a1", "1"}) == ":1\r\n");
+  assert(execute_fields(store, {"PEXPIRE", "a2", "1"}) == ":1\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  assert(store.active_expire(store.now_ms(), 100) == 2);
+  assert(execute_fields(store, {"EXISTS", "a1", "a2"}) == ":0\r\n");
+
+  // TTL commands apply to any type, not just strings.
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"EXPIRE", "z", "1000"}) == ":1\r\n");
+  assert(resp_integer(execute_fields(store, {"TTL", "z"})) > 990);
+}
+
+void test_ttl_snapshot_roundtrip() {
+  using goblin::core::Store;
+  Store store;
+  const auto now = store.now_ms();
+  const std::uint64_t k_expiry = now + 1000000;
+  const std::uint64_t z_expiry = now + 2000000;
+  store.set("k", "v");
+  assert(store.expire_at_ms("k", k_expiry, now));
+  store.set("noexp", "v");  // key, no TTL
+  assert(store.zadd("z", 1.0, "m") == 1);
+  assert(store.expire_at_ms("z", z_expiry, now));  // a TTL on a non-string
+
+  std::ostringstream out(std::ios::binary);
+  store.save(out);
+  const std::string bytes = out.str();
+
+  Store restored;
+  std::istringstream in(bytes, std::ios::binary);
+  (void)restored.load(in);
+
+  // Absolute expiries survive the round trip; keys without a TTL stay that way.
+  assert(restored.expiretime_ms("k") == static_cast<long long>(k_expiry));
+  assert(restored.expiretime_ms("z") == static_cast<long long>(z_expiry));
+  assert(restored.expiretime_ms("noexp") == -1);
+  assert(restored.expiretime_ms("absent") == -2);
 }
 
 void run_store_rank_cache_test(goblin::core::RankCacheMode mode) {
@@ -3074,6 +3189,8 @@ int main() {
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();
+  test_ttl_commands();
+  test_ttl_snapshot_roundtrip();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();
   test_zset_score_width_promotes();
