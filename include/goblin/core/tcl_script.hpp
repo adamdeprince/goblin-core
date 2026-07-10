@@ -44,14 +44,22 @@ class TclEngine {
 
  private:
   void ensure_vm();
-  void run(std::string_view body,
+  // Intern the body as a ref-counted Jim script object and cache it under `sha`
+  // (or return the existing one). Jim_EvalObj compiles a script object's internal
+  // rep on first eval and caches it on the object, so reusing the same object is
+  // what lets EVALSHA skip re-parsing. interp_ must already exist.
+  Jim_Obj* intern_script(const std::string& sha, std::string_view body);
+  // Evaluate an interned (precompiled) script object with KEYS/ARGV bound.
+  void run(Jim_Obj* script,
            std::span<const std::string_view> keys,
            std::span<const std::string_view> argv,
            std::string& out);
 
   Store& store_;
   Jim_Interp* interp_ = nullptr;
-  std::unordered_map<std::string, std::string> scripts_;  // 40-hex SHA1 -> body
+  // 40-hex SHA1 of the source -> interned (ref-counted) Jim script object, whose
+  // compiled internal rep is reused across evals.
+  std::unordered_map<std::string, Jim_Obj*> scripts_;
 
   // Reusable scratch for a `redis call` (single-threaded; never aliased).
   std::vector<std::string> call_arg_storage_;

@@ -257,6 +257,8 @@ TclEngine::TclEngine(Store& store) : store_(store) {}
 
 TclEngine::~TclEngine() {
   if (interp_ != nullptr) {
+    for (const auto& [sha, obj] : scripts_) Jim_DecrRefCount(interp_, obj);
+    scripts_.clear();
     Jim_FreeInterp(interp_);
     interp_ = nullptr;
   }
@@ -282,24 +284,28 @@ void TclEngine::ensure_vm() {
   Jim_Eval(interp_, "catch {unset ::env}");  // no environment-variable access
 }
 
-void TclEngine::run(std::string_view body,
+Jim_Obj* TclEngine::intern_script(const std::string& sha, std::string_view body) {
+  if (const auto it = scripts_.find(sha); it != scripts_.end()) {
+    return it->second;
+  }
+  // Jim_EvalObj is binary-safe (unlike Jim_Eval, which takes a C string). Holding
+  // a reference keeps the object -- and the compiled script rep Jim caches on it
+  // after the first eval -- alive for later EVALSHA calls.
+  Jim_Obj* script =
+      Jim_NewStringObj(interp_, body.data(), static_cast<int>(body.size()));
+  Jim_IncrRefCount(script);
+  scripts_.emplace(sha, script);
+  return script;
+}
+
+void TclEngine::run(Jim_Obj* script,
                     std::span<const std::string_view> keys,
                     std::span<const std::string_view> argv,
                     std::string& out) {
-  ensure_vm();
-  if (interp_ == nullptr) {
-    resp::append_error(out, "ERR could not initialize scripting engine");
-    return;
-  }
-
   Jim_SetVariableStr(interp_, "KEYS", build_list(interp_, keys));
   Jim_SetVariableStr(interp_, "ARGV", build_list(interp_, argv));
 
-  // Jim_EvalObj is binary-safe (unlike Jim_Eval, which takes a C string).
-  Jim_Obj* script = Jim_NewStringObj(interp_, body.data(), static_cast<int>(body.size()));
-  Jim_IncrRefCount(script);
-  const int rc = Jim_EvalObj(interp_, script);
-  Jim_DecrRefCount(interp_, script);
+  const int rc = Jim_EvalObj(interp_, script);  // reuses the cached compiled rep
 
   if (rc == JIM_OK || rc == JIM_RETURN) {
     // Hold a reference to the result: converting it calls Jim_GetWide, which on a
@@ -323,11 +329,16 @@ void TclEngine::eval(std::span<const std::string_view> args, std::string& out) {
   std::span<const std::string_view> argv;
   if (!split_keys_and_args(args, &keys, &argv, out)) return;
 
-  const std::string_view body = args[0];
+  ensure_vm();
+  if (interp_ == nullptr) {
+    resp::append_error(out, "ERR could not initialize scripting engine");
+    return;
+  }
   // Tcl has no separate compile phase (parse errors surface at run time), so a
-  // submitted script is always cached, matching EVAL's "cache then run".
-  scripts_.emplace(sha1_hex(body), std::string(body));
-  run(body, keys, argv, out);
+  // submitted script is always cached, matching EVAL's "cache then run". The
+  // interned object reuses its compiled rep on a later EVALSHA / repeat EVAL.
+  Jim_Obj* script = intern_script(sha1_hex(args[0]), args[0]);
+  run(script, keys, argv, out);
 }
 
 void TclEngine::eval_sha(std::span<const std::string_view> args, std::string& out) {
@@ -345,8 +356,8 @@ void TclEngine::eval_sha(std::span<const std::string_view> args, std::string& ou
     resp::append_error(out, "NOSCRIPT No matching script. Please use TCL.EVAL.");
     return;
   }
-  const std::string body = it->second;
-  run(body, keys, argv, out);
+  // A cached entry implies the interpreter exists (it was created when interned).
+  run(it->second, keys, argv, out);
 }
 
 void TclEngine::script(std::span<const std::string_view> args, std::string& out) {
@@ -379,8 +390,9 @@ void TclEngine::script(std::span<const std::string_view> args, std::string& out)
                               "(unbalanced braces, brackets, or quotes)");
       return;
     }
-    scripts_.emplace(sha1_hex(body), std::string(body));
-    resp::append_bulk_string(out, sha1_hex(body));
+    const std::string sha = sha1_hex(body);
+    (void)intern_script(sha, body);
+    resp::append_bulk_string(out, sha);
     return;
   }
 
@@ -393,6 +405,7 @@ void TclEngine::script(std::span<const std::string_view> args, std::string& out)
   }
 
   if (equals_upper(sub, "FLUSH")) {
+    for (const auto& [sha, obj] : scripts_) Jim_DecrRefCount(interp_, obj);
     scripts_.clear();
     resp::append_simple_string(out, "OK");
     return;
