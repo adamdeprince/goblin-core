@@ -907,11 +907,29 @@ long long Store::zremrangebyscore(std::string_view key, double min,
 bool Store::zwindow(std::string_view key, double now, double cutoff,
                     long long limit, std::string_view member,
                     std::uint64_t when_ms, std::uint64_t now_ms) {
-  // Evict entries older than the window (score <= cutoff), then admit iff there
-  // is room. The trailing TTL re-arm is what reaps an idle key.
-  (void)zremrangebyscore(key, -std::numeric_limits<double>::infinity(), false,
-                         cutoff, false);
-  if (zcard(key) >= limit) {
+  // Evict entries older than the window (score <= cutoff), then admit iff there is
+  // room; the trailing TTL re-arm reaps an idle key. One keyspace lookup covers the
+  // whole op: the former version re-found the key for zcard and zadd and could
+  // erase then immediately recreate a fully-cycled window. Here the zset is held
+  // across evict -> size check -> add.
+  if (ZSet* zset = find_zset(key); zset != nullptr) {
+    const auto removed = zset->remove_by_score_range(
+        -std::numeric_limits<double>::infinity(), false, cutoff, false);
+    (void)zset->compact_after_removal_if_needed(removed);
+    (void)zset->cleanup_member_index_after_removal_if_needed(removed);
+    if (static_cast<long long>(zset->size()) >= limit) {
+      erase_if_empty(key, *zset);  // only reachable empty when limit <= 0
+      return false;                // window already full -> reject
+    }
+    // Room to admit. Add on the same pointer (repopulating an emptied window, so it
+    // is never erased). Intentionally not Store::zadd: its shared-member-layer
+    // adoption is useless for per-request members and would cost an O(#zsets) scan.
+    (void)zset->add(now, member, zset_options());
+    (void)expire_at_ms(key, when_ms, now_ms);
+    return true;
+  }
+  // No such key -> a fresh window; a non-positive limit admits nothing.
+  if (limit <= 0) {
     return false;
   }
   (void)zadd(key, now, member);
@@ -1026,8 +1044,9 @@ std::optional<bool> Store::hash_set_if_greater(std::string_view key,
                                                std::string_view value_text) {
   // Read the current value without creating the hash: an absent key or field
   // counts as -inf, so a first write of any finite value wins.
+  Hash* hash = find_hash(key);
   double current = -std::numeric_limits<double>::infinity();
-  if (const auto* hash = find_hash(key)) {
+  if (hash != nullptr) {
     if (const auto existing = hash->get(field)) {
       const auto parsed = parse_double(*existing);
       if (!parsed) {
@@ -1039,7 +1058,14 @@ std::optional<bool> Store::hash_set_if_greater(std::string_view key,
   if (!(value > current)) {
     return false;  // not strictly greater -> leave the field unchanged
   }
-  (void)hset(key, field, value_text);  // store the raw text, creating key/field
+  // Store the raw text. Reuse the pointer we already found on the update path (the
+  // common case), falling back to get_or_create only when the key is brand new --
+  // this avoids a second keyspace lookup that hset() would repeat.
+  if (hash != nullptr) {
+    (void)hash->set(field, value_text);
+  } else {
+    (void)get_or_create_hash(key).set(field, value_text);
+  }
   return true;
 }
 
@@ -1154,10 +1180,10 @@ Store::ClaimOutcome Store::claim(std::string_view claim_key,
   // An expired claim must free the slot before the NX check, and an expired result
   // must read as absent -- purge both at `now` (a cheap no-op when no TTLs exist).
   (void)purge_if_expired(claim_key, now);
-  if (!exists(claim_key)) {
-    // SET claim_key = token NX EX: the slot was free, so we won it.
-    set(claim_key, token);  // claim_key was absent, so there is no TTL to clear
-    (void)expire_at_ms(claim_key, when_ms, now);
+  // SET claim_key = token NX: one keyspace lookup that both tests existence (of any
+  // type) and stores on a win -- where a separate exists() + set() did two.
+  if (set_nx(claim_key, token)) {
+    (void)expire_at_ms(claim_key, when_ms, now);  // the EX arm of SET NX EX
     outcome.claimed = true;
     return outcome;
   }
