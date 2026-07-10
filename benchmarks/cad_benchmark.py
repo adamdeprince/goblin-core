@@ -211,9 +211,15 @@ def main(argv: Sequence[str]) -> int:
                         help="in-flight depth for the pipelined (server-throughput) view")
     parser.add_argument("--populate-pipeline", type=int, default=512,
                         help="pipeline depth for the untimed key population")
+    parser.add_argument("--unix-socket", type=str, default=None,
+                        help="connect over this UDS path instead of TCP loopback "
+                             "(keep it short -- sun_path is capped at ~104 bytes)")
     args = parser.parse_args(argv)
 
-    server = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False)
+    transport = f"UDS ({args.unix_socket})" if args.unix_socket else "TCP loopback (127.0.0.1)"
+    print(f"Transport: {transport}")
+    server = zbench.start_goblin(binary=args.goblin_bin, rank_cache=False,
+                                 unix_socket=args.unix_socket)
     try:
         client = zbench.RespClient("127.0.0.1", server.port,
                                    unix_socket=server.unix_socket)

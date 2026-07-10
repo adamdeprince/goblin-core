@@ -168,35 +168,36 @@ idiom in each of its six [embedded interpreters](docs/commands/README.md). Every
 scripted form is `SCRIPT LOAD`-compiled once and run by `EVALSHA`, so this
 measures execution of the precompiled script, not compilation.
 
-`benchmarks/cad_benchmark.py`, one connection, median of 9 rounds. Every row is
-Goblin Core's own implementation, so this is a *within-engine* comparison, not
-the cross-engine parity setup above — and a *relative* per-op measurement: a
-single Python connection is client-bound, so read the ratios, not absolute
-throughput (for that use a C load generator as in [Throughput](#throughput)).
+`benchmarks/cad_benchmark.py --unix-socket`, one connection over a **Unix domain
+socket** (the realistic transport for a co-located lock client), median of 9
+rounds. Every row is Goblin Core's own implementation, so this is a *within-engine*
+comparison, not the cross-engine parity setup above — and a *relative* per-op
+measurement: one Python connection is client-bound, so read the ratios, not
+absolute throughput (for that use a C load generator as in [Throughput](#throughput)).
 Every implementation is verified to agree (a matching token deletes and replies
 `1`, a mismatch replies `0`) before timing.
 
 | implementation | round trips | sequential µs/op | pipelined µs/op | server cost vs `GOBLIN.CAD` |
 | --- | ---: | ---: | ---: | ---: |
-| **`GOBLIN.CAD`** (native C++) | 1 | `28.3` | **`2.1`** | **`1.00×`** |
-| `TCL.EVAL` (Jim Tcl) | 1 | `27.3` | `3.6` | `1.71×` |
-| `WREN.EVAL` (Wren) | 1 | `29.0` | `3.7` | `1.73×` |
-| `UPYTHON.EVAL` (MicroPython) | 1 | `27.4` | `4.0` | `1.85×` |
-| `LUAU.EVAL` (Luau) | 1 | `27.8` | `4.0` | `1.85×` |
-| `QUICKJS.EVAL` (JavaScript) | 1 | `28.4` | `4.5` | `2.09×` |
-| `EVAL` (PUC-Lua 5.1) | 1 | `28.4` | `4.6` | `2.16×` |
-| `GET` + `DEL` (client-side, racy) | 2 | `55.3` | — | `1.96×` seq |
+| **`GOBLIN.CAD`** (native C++) | 1 | `9.9` | **`1.4`** | **`1.00×`** |
+| `WREN.EVAL` (Wren) | 1 | `10.4` | `2.4` | `1.78×` |
+| `TCL.EVAL` (Jim Tcl) | 1 | `10.5` | `2.4` | `1.81×` |
+| `UPYTHON.EVAL` (MicroPython) | 1 | `10.5` | `2.6` | `1.91×` |
+| `LUAU.EVAL` (Luau) | 1 | `10.8` | `2.6` | `1.95×` |
+| `QUICKJS.EVAL` (JavaScript) | 1 | `11.3` | `3.0` | `2.22×` |
+| `EVAL` (PUC-Lua 5.1) | 1 | `11.2` | `3.1` | `2.26×` |
+| `GET` + `DEL` (client-side, racy) | 2 | `20.1` | — | `2.02×` seq |
 
-Two results. **Sequentially, any atomic single-round-trip form is ~2× faster than
-the naive `GET`+`DEL`**: one op at a time, every 1-RTT form is client-bound
-(~`28` µs/op) and ties, while the two-round-trip `GET`+`DEL` is the outlier at
-`55.3` µs — and it is also *racy*, since another client can change the key between
-the read and the delete, the very bug the atomic forms exist to avoid.
-**Pipelined, with the round trip amortized, the native command is ~2× cheaper on
-the server than even a precompiled interpreter** (`2.1` µs/op vs `3.6–4.6`) — the
-`server cost vs GOBLIN.CAD` column. Precompilation is what makes that a fair
-fight: without it each `EVALSHA` would re-parse and re-compile the script, which
-for MicroPython alone is ~`960` µs per call.
+Two results, and over a Unix socket both show cleanly. **The two-round-trip
+`GET`+`DEL` costs ~2× any atomic form** — `20.1` µs vs ~`10` µs sequentially — and
+it is also *racy*, since another client can change the key between the read and
+the delete, the very bug the atomic forms exist to avoid. **The native command is
+the cheapest atomic form**: with the loopback round trip gone its edge shows even
+one op at a time (`9.9` µs vs `10.4–11.3`), and pipelined — round trip amortized —
+it is ~2× cheaper on the server than even a precompiled interpreter (`1.4` µs/op
+vs `2.4–3.1`), the `server cost vs GOBLIN.CAD` column. Precompilation is what
+makes that a fair fight: without it each `EVALSHA` would re-parse and re-compile
+the script, which for MicroPython alone is ~`960` µs per call.
 
 ## Persistence
 
