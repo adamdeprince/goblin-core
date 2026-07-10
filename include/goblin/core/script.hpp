@@ -50,9 +50,14 @@ class ScriptEngine {
   friend struct LuaBridge;
 
   void ensure_vm();
-  // Compile `body`, run it with KEYS/ARGV bound, and append the RESP reply (or a
-  // RESP error) to `out`. `name` is the chunk name used in error messages.
-  void run(std::string_view body,
+  // Compile `body` to a Lua bytecode chunk (via lua_dump) -- what the cache
+  // stores. A syntax error writes a RESP error to `out` and returns false.
+  bool compile_to_bytecode(std::string_view body, std::string& bytecode,
+                           std::string& out);
+  // Load a cached bytecode chunk (Lua's loader undumps precompiled chunks with
+  // no parsing), run it with KEYS/ARGV bound, and append the RESP reply (or a
+  // RESP error) to `out`. This is the EVALSHA / cached-EVAL fast path.
+  void run(std::string_view bytecode,
            std::span<const std::string_view> keys,
            std::span<const std::string_view> argv,
            std::string& out);
@@ -64,7 +69,9 @@ class ScriptEngine {
 
   Store& store_;
   lua_State* L_ = nullptr;
-  std::unordered_map<std::string, std::string> scripts_;  // 40-hex SHA1 -> body
+  // 40-hex SHA1 of the source -> precompiled Lua bytecode. Caching the compiled
+  // chunk (not the source) is what lets EVALSHA skip the parse/compile step.
+  std::unordered_map<std::string, std::string> scripts_;
 
   // Reusable, engine-owned scratch. These live here rather than on the trampoline
   // stack so a Lua error (longjmp) never unwinds past a live C++ destructor.

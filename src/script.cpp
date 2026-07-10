@@ -503,7 +503,38 @@ void ScriptEngine::ensure_vm() {
   lua_pop(L, 1);
 }
 
-void ScriptEngine::run(std::string_view body,
+// lua_dump writer that appends the emitted bytecode to a std::string.
+static int append_bytecode(lua_State*, const void* p, std::size_t sz, void* ud) {
+  static_cast<std::string*>(ud)->append(static_cast<const char*>(p), sz);
+  return 0;
+}
+
+bool ScriptEngine::compile_to_bytecode(std::string_view body,
+                                       std::string& bytecode, std::string& out) {
+  ensure_vm();
+  lua_State* L = L_;
+  if (L == nullptr) {
+    resp::append_error(out, "ERR could not initialize scripting engine");
+    return false;
+  }
+  const int base = lua_gettop(L);
+  if (luaL_loadbuffer(L, body.data(), body.size(), "@user_script") != 0) {
+    std::size_t len = 0;
+    const char* msg = lua_tolstring(L, -1, &len);
+    std::string reply = "ERR Error compiling script (new function): ";
+    reply += sanitize_line(msg != nullptr ? std::string_view(msg, len)
+                                          : std::string_view("unknown error"));
+    resp::append_error(out, reply);
+    lua_settop(L, base);
+    return false;
+  }
+  bytecode.clear();
+  lua_dump(L, append_bytecode, &bytecode);  // serialize the compiled chunk
+  lua_settop(L, base);                       // pop the function
+  return true;
+}
+
+void ScriptEngine::run(std::string_view bytecode,
                        std::span<const std::string_view> keys,
                        std::span<const std::string_view> argv,
                        std::string& out) {
@@ -515,10 +546,12 @@ void ScriptEngine::run(std::string_view body,
   }
 
   const int base = lua_gettop(L);
-  if (luaL_loadbuffer(L, body.data(), body.size(), "@user_script") != 0) {
+  // Load the precompiled chunk: Lua's loader sees the bytecode signature and
+  // undumps it without re-parsing. (Bytecode is our own, produced by lua_dump.)
+  if (luaL_loadbuffer(L, bytecode.data(), bytecode.size(), "@user_script") != 0) {
     std::size_t len = 0;
     const char* msg = lua_tolstring(L, -1, &len);
-    std::string reply = "ERR Error compiling script (new function): ";
+    std::string reply = "ERR Error loading script: ";
     reply += sanitize_line(msg != nullptr ? std::string_view(msg, len)
                                           : std::string_view("unknown error"));
     resp::append_error(out, reply);
@@ -569,9 +602,17 @@ void ScriptEngine::eval(std::span<const std::string_view> args, std::string& out
   if (!split_keys_and_args(args, &keys, &argv, out)) return;
 
   const std::string_view body = args[0];
-  // EVAL caches the script by SHA1, so a later EVALSHA of the same body hits.
-  scripts_.emplace(sha1_hex(body), std::string(body));
-  run(body, keys, argv, out);
+  // EVAL caches the compiled bytecode by SHA1, so a later EVALSHA -- or a repeat
+  // EVAL of the same source (looked up before compiling) -- skips the compile.
+  const std::string sha = sha1_hex(body);
+  if (const auto it = scripts_.find(sha); it != scripts_.end()) {
+    run(it->second, keys, argv, out);
+    return;
+  }
+  std::string bytecode;
+  if (!compile_to_bytecode(body, bytecode, out)) return;
+  run(bytecode, keys, argv, out);
+  scripts_.emplace(sha, std::move(bytecode));
 }
 
 void ScriptEngine::eval_sha(std::span<const std::string_view> args, std::string& out) {
@@ -589,10 +630,10 @@ void ScriptEngine::eval_sha(std::span<const std::string_view> args, std::string&
     resp::append_error(out, "NOSCRIPT No matching script. Please use EVAL.");
     return;
   }
-  // Copy the body: run() may reuse engine buffers, and the map could rehash if a
-  // nested path inserted (it cannot today, but the copy keeps the view stable).
-  const std::string body = it->second;
-  run(body, keys, argv, out);
+  // run() consumes the cached bytecode with luaL_loadbuffer before any script
+  // code executes, and nested EVAL/EVALSHA/SCRIPT are blocked, so the map cannot
+  // mutate mid-run -- no defensive copy needed.
+  run(it->second, keys, argv, out);
 }
 
 void ScriptEngine::script(std::span<const std::string_view> args, std::string& out) {
@@ -607,27 +648,15 @@ void ScriptEngine::script(std::span<const std::string_view> args, std::string& o
       resp::append_error(out, "ERR Unknown SCRIPT subcommand or wrong number of arguments");
       return;
     }
-    ensure_vm();
-    if (L_ == nullptr) {
-      resp::append_error(out, "ERR could not initialize scripting engine");
-      return;
-    }
-    // Validate that the body compiles before caching, so SCRIPT LOAD rejects
-    // syntactically broken scripts exactly like EVAL would.
+    // Compile and cache the bytecode, so SCRIPT LOAD rejects syntactically
+    // broken scripts exactly like EVAL would and a later EVALSHA skips compiling.
     const std::string_view body = args[1];
-    if (luaL_loadbuffer(L_, body.data(), body.size(), "@user_script") != 0) {
-      std::size_t len = 0;
-      const char* msg = lua_tolstring(L_, -1, &len);
-      std::string reply = "ERR Error compiling script (new function): ";
-      reply += sanitize_line(msg != nullptr ? std::string_view(msg, len)
-                                            : std::string_view("unknown error"));
-      resp::append_error(out, reply);
-      lua_pop(L_, 1);
+    std::string bytecode;
+    if (!compile_to_bytecode(body, bytecode, out)) {
       return;
     }
-    lua_pop(L_, 1);  // discard the compiled chunk; we cache the source
     const std::string sha = sha1_hex(body);
-    scripts_.emplace(sha, std::string(body));
+    scripts_.emplace(sha, std::move(bytecode));
     resp::append_bulk_string(out, sha);
     return;
   }
