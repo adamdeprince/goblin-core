@@ -88,13 +88,36 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 The protocol handler accepts RESP array commands and a basic inline command
 format for local testing.
 
+## Scripting
+
+Goblin Core embeds **six independent scripting interpreters**, each reached through
+its own command prefix, with its own VM and its own precompiled script cache; they
+share nothing but the key space:
+
+- **PUC-Lua 5.1** — `EVAL` / `EVALSHA` / `SCRIPT`, the dialect real Redis scripts target
+- **Luau** — `LUAU.EVAL` …, Roblox's typed, sandboxed Lua
+- **Wren** — `WREN.EVAL` …, a small class-based language
+- **Jim Tcl** — `TCL.EVAL` …
+- **MicroPython** — `UPYTHON.EVAL` …
+- **QuickJS** — `QUICKJS.EVAL` …, JavaScript
+
+Each is a *distinct* interpreter: a script written for one is a syntax error under
+another. `SCRIPT LOAD` (or the first `EVAL`) compiles a script once and caches the
+compiled artifact, so `EVALSHA` runs it with no re-parse or re-compile. There is
+also a native `GOBLIN.CAD` compare-and-delete for the most-copied lock-release
+idiom. See [docs/commands](docs/commands/README.md) for the surface, and
+**[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)** for how the six languages
+compare on a trivial op (compare-and-delete) and a heavy one (real-time leaderboard
+rescore) — the ranking flips between them.
+
 ## Compatibility Scope
 
 Goblin Core is not yet a full Redis replacement. This release is scoped to the
 sorted-set and hash command surfaces above plus `PING` for liveness checks. It
 does not implement automatic (background) persistence, replication, cluster mode,
-pub/sub, Lua, transactions, ACLs, Redis modules, eviction policies, or Redis key
-types beyond sorted sets and hashes. Point-in-time snapshots are available on demand via
+pub/sub, transactions, ACLs, Redis modules, eviction policies, or Redis key types
+beyond sorted sets and hashes. Scripting *is* supported, and then some — see the
+[Scripting](#scripting) section above for the six embedded interpreters. Point-in-time snapshots are available on demand via
 `GOBLIN.SAVE`/`GOBLIN.LOAD`, and a Redis `dump.rdb` can be imported to migrate
 sorted sets (see Run and "Migrating from Redis" below).
 

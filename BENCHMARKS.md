@@ -203,6 +203,10 @@ native **`GOBLIN.CAD` is the cheapest**: ~2× under the interpreters pipelined
 scripted forms this close — without it each `EVALSHA` would re-parse and re-compile
 the script, ~`960` µs per call for MicroPython alone.
 
+The full language comparison — this table plus a heavier leaderboard-rescore
+workload, where the six interpreters separate by ~6× — is in
+**[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)**.
+
 ## Persistence
 
 Same 1M-member dataset loaded into each engine; each saves and loads its own
