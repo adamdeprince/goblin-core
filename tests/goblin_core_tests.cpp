@@ -3461,6 +3461,46 @@ return 0)");
   assert(execute_fields(store, {"GOBLIN.CAD", "lk", "secret"}) == ":0\r\n");
 }
 
+// SCRIPT LOAD / EVALSHA / SCRIPT FLUSH on every engine, showing the cached
+// (precompiled) script runs by digest, is repeatable, and reports NOSCRIPT for an
+// unknown or flushed digest. This exercises each engine's precompile path: LOAD
+// compiles once, EVALSHA executes the cached artifact with no recompilation.
+void test_evalsha_runs_cached_script() {
+  using goblin::core::Store;
+  const std::string_view kMissing = "ffffffffffffffffffffffffffffffffffffffff";
+
+  auto check = [kMissing](auto run, Store& store, auto& engine,
+                          const std::string& prefix, std::string_view script) {
+    const std::string script_cmd = prefix + "SCRIPT";
+    const std::string evalsha_cmd = prefix + "EVALSHA";
+
+    // SCRIPT LOAD returns the 40-hex digest.
+    const std::string load = run(store, engine, {script_cmd, "LOAD", script});
+    assert(load.size() == 5 + 40 + 2 && load.compare(0, 5, "$40\r\n") == 0);
+    const std::string sha = load.substr(5, 40);
+
+    // EVALSHA runs the cached compiled script -- and is repeatable (the cached
+    // artifact is reused, not consumed).
+    assert(run(store, engine, {evalsha_cmd, sha, "0"}) == ":42\r\n");
+    assert(run(store, engine, {evalsha_cmd, sha, "0"}) == ":42\r\n");
+
+    // An unknown digest is NOSCRIPT.
+    assert(run(store, engine, {evalsha_cmd, kMissing, "0"}).rfind("-NOSCRIPT", 0) == 0);
+
+    // After FLUSH the digest is gone.
+    assert(run(store, engine, {script_cmd, "FLUSH"}) == "+OK\r\n");
+    assert(run(store, engine, {evalsha_cmd, sha, "0"}).rfind("-NOSCRIPT", 0) == 0);
+  };
+
+  Store store;
+  { goblin::core::ScriptEngine e(store);  check(run_script, store, e, "", "return 42"); }
+  { goblin::core::LuauEngine e(store);    check(run_luau, store, e, "LUAU.", "return 42"); }
+  { goblin::core::WrenEngine e(store);    check(run_wren, store, e, "WREN.", "return 42"); }
+  { goblin::core::TclEngine e(store);     check(run_tcl, store, e, "TCL.", "return 42"); }
+  { goblin::core::UPythonEngine e(store); check(run_upython, store, e, "UPYTHON.", "reply = 42"); }
+  { goblin::core::QuickJsEngine e(store); check(run_quickjs, store, e, "QUICKJS.", "return 42"); }
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -3566,6 +3606,7 @@ int main() {
   test_quickjs_scripting();
   test_quickjs_without_engine_is_unavailable();
   test_compare_and_delete_idiom();
+  test_evalsha_runs_cached_script();
 
   test_keyspace_storage_and_string_value();
   return 0;
