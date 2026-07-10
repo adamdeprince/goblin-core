@@ -12,6 +12,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.CAEXPIRE`](GOBLIN.CAEXPIRE.md) | Compare-and-expire: renew a key's TTL only if it still holds the expected value. |
 | [`GOBLIN.CAS`](GOBLIN.CAS.md) | Compare-and-set: swap a key's value only if it still holds the expected one, keeping its TTL. |
 | [`GOBLIN.TD_LEADERBOARD_RESCORE`](GOBLIN.TD_LEADERBOARD_RESCORE.md) | Time-decay leaderboard rescore: return the top k members by recency weight. |
+| [`GOBLIN.INCREX`](GOBLIN.INCREX.md) | Increment a counter, arming a TTL on the first write (fixed-window rate limit). |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -62,6 +63,19 @@ last-activity timestamp, recompute a recency weight (`LINEAR`, `EXP`, or `STEP`
 decay), and return the top `k` by that weight, most recent first. The native form
 of the whole-zset rescore idiom, ~10× faster than the same script in any embedded
 interpreter. See the full page: **[GOBLIN.TD_LEADERBOARD_RESCORE](GOBLIN.TD_LEADERBOARD_RESCORE.md)**.
+
+## GOBLIN.INCREX
+
+```
+GOBLIN.INCREX key seconds
+```
+
+Increment-with-expiry-on-first-write — the atomic native form of the fixed-window
+rate-limit idiom (`INCR`; if the result is `1`, `EXPIRE` by `seconds`). Returns the
+new counter. The TTL is armed only when the key is created and left ticking on
+later increments, so the window is fixed from the first hit and resets when it
+elapses. Redis has no single command for this and its docs recommend the Lua
+version — the tell. See the full page: **[GOBLIN.INCREX](GOBLIN.INCREX.md)**.
 
 ## GOBLIN.MEMORY
 

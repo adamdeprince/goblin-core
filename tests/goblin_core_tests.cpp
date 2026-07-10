@@ -1382,6 +1382,44 @@ void test_memory_report() {
   assert(store.memory_report().reclaimable_bytes > 0);
 }
 
+void test_goblin_increx() {
+  goblin::core::Store store;
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Deterministic window via the Store method (explicit now / when).
+  const std::uint64_t now = 1000;
+  const auto v1 = store.incr_expire("rl", now + 100000, now);
+  assert(v1 && *v1 == 1);
+  assert(store.pttl_ms("rl", now) == 100000);  // window armed on the first write
+  // A later increment keeps the running window (only a result of 1 arms it), so
+  // the `when` here is ignored -- the fixed window ticks from the first hit.
+  const auto v2 = store.incr_expire("rl", now + 50000, now);
+  assert(v2 && *v2 == 2);
+  assert(store.pttl_ms("rl", now) == 100000);
+  const auto v3 = store.incr_expire("rl", now + 50000, now);
+  assert(v3 && *v3 == 3);
+  assert(store.pttl_ms("rl", now) == 100000);
+  // A non-integer value increments nothing.
+  store.set("bad", "abc");
+  assert(!store.incr_expire("bad", now + 1000, now).has_value());
+
+  // Command layer: replies, WRONGTYPE, and bad arguments.
+  assert(execute_fields(store, {"GOBLIN.INCREX", "c", "100"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCREX", "c", "100"}) == ":2\r\n");
+  assert(execute_fields(store, {"SET", "ni", "abc"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCREX", "ni", "100"}).front() == '-');
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCREX", "z", "100"}) == wrongtype);
+  assert(execute_fields(store, {"GOBLIN.INCREX", "c", "xyz"}).front() == '-');
+
+  // Arity: exactly key + seconds (checked at the parse layer).
+  std::vector<std::string_view> few = {"GOBLIN.INCREX", "c"};
+  assert(!goblin::core::parse_command(few).ok());
+  std::vector<std::string_view> many = {"GOBLIN.INCREX", "c", "1", "2"};
+  assert(!goblin::core::parse_command(many).ok());
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3706,6 +3744,7 @@ int main() {
   test_goblin_cas();
   test_goblin_td_leaderboard_rescore();
   test_memory_report();
+  test_goblin_increx();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

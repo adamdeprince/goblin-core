@@ -40,7 +40,7 @@
 #line 17 "src/command_hash.gperf"
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 
-#define TOTAL_KEYWORDS 77
+#define TOTAL_KEYWORDS 78
 #define MIN_WORD_LENGTH 3
 #define MAX_WORD_LENGTH 29
 #define MIN_HASH_VALUE 8
@@ -126,7 +126,7 @@ CommandDispatch::lookup (const char *str, size_t len)
     {
        0,  0,  0,  0,  0,  0,  0,  0,  8,  0,  0,  6,  0,  3,
        0,  0,  6,  0,  8,  4,  5,  6,  7,  3,  0, 10,  6,  0,
-       0,  4,  5, 11,  0,  8,  4, 15,  6,  7,  0,  4,  0,  6,
+       0,  4,  5, 11,  0,  8,  4, 15,  6,  7, 13,  4,  0,  6,
        7,  0,  0, 15,  6,  0,  0, 29, 10,  6,  7,  3,  4,  0,
        0,  0,  0,  4, 10,  0,  7,  3,  0,  0, 11,  0,  0,  4,
       10,  0,  0,  0, 14,  0, 11,  0,  0,  4,  0, 11,  0,  0,
@@ -200,7 +200,8 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"GETDEL", goblin::core::CommandType::getdel},
 #line 58 "src/command_hash.gperf"
       {"HSTRLEN", goblin::core::CommandType::hstrlen},
-      {"",goblin::core::CommandType::unknown},
+#line 96 "src/command_hash.gperf"
+      {"GOBLIN.INCREX", goblin::core::CommandType::goblin_increx},
 #line 21 "src/command_hash.gperf"
       {"INFO", goblin::core::CommandType::info},
       {"",goblin::core::CommandType::unknown},
@@ -435,5 +436,5 @@ CommandDispatch::lookup (const char *str, size_t len)
     }
   return static_cast<struct CommandEntry *> (0);
 }
-#line 96 "src/command_hash.gperf"
+#line 97 "src/command_hash.gperf"
 

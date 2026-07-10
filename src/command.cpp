@@ -312,6 +312,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::goblin_cad:
     case CommandType::goblin_caexpire:
     case CommandType::goblin_cas:
+    case CommandType::goblin_increx:  // INCRs the value; non-string is WRONGTYPE
       return true;
     default:
       return false;
@@ -994,6 +995,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("goblin.td_leaderboard_rescore"));
       }
       command.type = CommandType::goblin_td_leaderboard_rescore;
+      return {.command = std::move(command)};
+    case CommandType::goblin_increx:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("goblin.increx"));
+      }
+      command.type = CommandType::goblin_increx;
       return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
@@ -1932,6 +1939,33 @@ void execute_command_into(Store& store,
         resp::append_bulk_string(out,
                                  std::string_view(buf, static_cast<std::size_t>(len)));
       }
+      return;
+    }
+
+    case CommandType::goblin_increx: {
+      // INCR with expiry-on-first-write: increment the key, and if the result is
+      // 1 (the key was just created) set its TTL to `seconds`. Returns the new
+      // counter -- the atomic native form of the fixed-window rate-limit idiom
+      // Redis's own docs script in Lua (INCR; if == 1 then EXPIRE). The window
+      // resets for free: an expired key is lazily purged before the INCR, so the
+      // next call recreates it at 1 and re-arms the TTL.
+      const auto seconds = parse_ll(command.args[1]);
+      if (!seconds) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, *seconds, 1000);
+      if (!when) {
+        resp::append_error(out, "ERR invalid expire time");
+        return;
+      }
+      const auto value = store.incr_expire(command.args[0], *when, now);
+      if (!value) {
+        resp::append_error(out, integer_range_error());  // non-integer or overflow
+        return;
+      }
+      resp::append_integer(out, *value);
       return;
     }
 

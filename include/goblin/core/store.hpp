@@ -1221,6 +1221,12 @@ class Store {
   // would overflow long long.
   [[nodiscard]] std::optional<long long> incr_by(std::string_view key,
                                                  long long delta);
+  // GOBLIN.INCREX: INCR the key by 1, and if the result is 1 (the key was just
+  // created) set its absolute expiry to `when_ms`. Returns the new value, or
+  // nullopt if the value is not an integer or the result would overflow.
+  [[nodiscard]] std::optional<long long> incr_expire(std::string_view key,
+                                                     std::uint64_t when_ms,
+                                                     std::uint64_t now);
   // INCRBYFLOAT: nullopt if the value or the result is not a finite number;
   // returns the canonical text form that is also stored.
   [[nodiscard]] std::optional<std::string> incr_by_float(std::string_view key,

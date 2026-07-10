@@ -1085,6 +1085,21 @@ std::optional<long long> Store::incr_by(std::string_view key, long long delta) {
   return result;
 }
 
+std::optional<long long> Store::incr_expire(std::string_view key,
+                                            std::uint64_t when_ms,
+                                            std::uint64_t now) {
+  const auto value = incr_by(key, 1);
+  if (!value) {
+    return std::nullopt;  // not an integer, or overflow
+  }
+  // A result of 1 means the key was just created (incr_by keeps any existing TTL
+  // in place, so a running counter's window keeps ticking): arm the window.
+  if (*value == 1) {
+    (void)expire_at_ms(key, when_ms, now);
+  }
+  return value;
+}
+
 std::optional<std::string> Store::incr_by_float(std::string_view key,
                                                 double delta) {
   double current = 0.0;
