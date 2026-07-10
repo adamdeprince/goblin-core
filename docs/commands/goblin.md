@@ -87,7 +87,10 @@ factor in `(0, 1]` (default `0.97`). Replies with the number of bytes reclaimed,
 or nil when the key is absent. This moves the reindex cost out of the serving
 path — the intended pattern is to bulk-load a key, run `GOBLIN.OPTIMIZE` once,
 then serve reads. Sorted sets and hashes also auto-compact under heavy churn, so
-this is an explicit trigger, not a requirement.
+this is an explicit trigger, not a requirement. The process-wide signal for *when*
+compaction is worth running is [`INFO`](INFO.md)'s `mem_fragmentation_ratio` (an
+internal-fragmentation measure — how much of `used_memory` is reclaimable dead
+weight), which drops back to `1.00` after a compaction.
 
 ## GOBLIN.SAVE
 
@@ -113,6 +116,8 @@ sets in. Already-expired keys are dropped during the load.
 
 ## See also
 
+- [`INFO`](INFO.md) — process-wide `used_memory` / `mem_fragmentation_ratio`, and
+  how Goblin's internal-fragmentation meaning differs from Redis's external one.
 - [Scripting commands](README.md) — the embedded interpreters (`EVAL`,
   `QUICKJS.EVAL`, and the rest), which also live under prefixes.
 - [String commands](strings.md), [key commands](keys.md),
