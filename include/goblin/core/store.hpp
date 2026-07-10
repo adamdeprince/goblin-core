@@ -1237,6 +1237,18 @@ class Store {
   // would overflow long long.
   [[nodiscard]] std::optional<long long> incr_by(std::string_view key,
                                                  long long delta);
+  // GOBLIN.INCRBOUND: bounded increment. If the current integer value plus
+  // `delta` is <= `max`, apply the increment (creating the key from 0 if absent,
+  // preserving any TTL) and return the new value; otherwise leave the key
+  // untouched and return -1. nullopt only when the stored value is not an integer
+  // or the admitted result would underflow long long.
+  [[nodiscard]] std::optional<long long> incr_bound(std::string_view key,
+                                                    long long delta, long long max);
+  // GOBLIN.DECRPOS: decrement by one only when the current integer value is > 0,
+  // returning the new value; otherwise (including an absent key) leave the key
+  // untouched -- never creating it -- and return -1. nullopt only when the stored
+  // value is not an integer.
+  [[nodiscard]] std::optional<long long> decr_positive(std::string_view key);
   // GOBLIN.INCREX: INCR the key by 1, and if the result is 1 (the key was just
   // created) set its absolute expiry to `when_ms`. Returns the new value, or
   // nullopt if the value is not an integer or the result would overflow.

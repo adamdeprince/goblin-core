@@ -110,7 +110,9 @@ also native conditional-write commands — `GOBLIN.CAD` (compare-and-delete),
 the TTL) — for the Redlock lock-release, watchdog-renewal, and check-and-swap
 idioms, plus `GOBLIN.INCREX` (fixed-window rate limit) and `GOBLIN.ZWINDOW`
 (sliding-window limiter / mutex / counting semaphore) for the two classic
-rate-limit shapes. See [docs/commands](docs/commands/README.md) for the surface, and
+rate-limit shapes, and `GOBLIN.INCRBOUND` (bounded increment / quota) and
+`GOBLIN.DECRPOS` (decrement-if-positive / stock reservation) for capped counters.
+See [docs/commands](docs/commands/README.md) for the surface, and
 **[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)** for how the six languages
 compare on a trivial op (compare-and-delete) and a heavy one (real-time leaderboard
 rescore) — the ranking flips between them.

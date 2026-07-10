@@ -14,6 +14,8 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.TD_LEADERBOARD_RESCORE`](GOBLIN.TD_LEADERBOARD_RESCORE.md) | Time-decay leaderboard rescore: return the top k members by recency weight. |
 | [`GOBLIN.INCREX`](GOBLIN.INCREX.md) | Increment a counter, arming a TTL on the first write (fixed-window rate limit). |
 | [`GOBLIN.ZWINDOW`](GOBLIN.ZWINDOW.md) | Sliding-window admit/reject (also a mutex or counting semaphore). |
+| [`GOBLIN.INCRBOUND`](GOBLIN.INCRBOUND.md) | Bounded increment: consume a quota up to a ceiling, else reply -1. |
+| [`GOBLIN.DECRPOS`](GOBLIN.DECRPOS.md) | Decrement only while positive: reserve stock / take a permit, else -1. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
 | `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
@@ -92,6 +94,33 @@ admitted, `0` if the window is full; a non-zset key is `WRONGTYPE`. The trailing
 `limit 1` makes it a self-healing mutex, `limit N` a counting semaphore. The
 sliding companion to [`GOBLIN.INCREX`](GOBLIN.INCREX.md)'s fixed window. See the
 full page: **[GOBLIN.ZWINDOW](GOBLIN.ZWINDOW.md)**.
+
+## GOBLIN.INCRBOUND
+
+```
+GOBLIN.INCRBOUND key delta max
+```
+
+Bounded increment — the native form of the capped-quota idiom (`GET`; if
+`value + delta <= max`, `INCRBY delta`, else return `-1`). Applies the increment
+and returns the new value when it stays within `max`, otherwise leaves the key
+untouched and returns `-1`; a non-string key is `WRONGTYPE`. The bound is
+inclusive, `delta` may be negative, and any TTL is preserved. For quota
+consumption and inventory draw-down. See the full page:
+**[GOBLIN.INCRBOUND](GOBLIN.INCRBOUND.md)**.
+
+## GOBLIN.DECRPOS
+
+```
+GOBLIN.DECRPOS key
+```
+
+Decrement-if-positive — the native form of the stock-reservation idiom (`GET`; if
+`value > 0`, `DECR`, else return `-1`). Decrements and returns the new value when
+the counter is positive, otherwise leaves the key untouched — never creating it —
+and returns `-1`; a non-string key is `WRONGTYPE`. The count never goes negative.
+For stock reservation and semaphore-by-counter (`DECRPOS` to acquire, `INCR` to
+release). See the full page: **[GOBLIN.DECRPOS](GOBLIN.DECRPOS.md)**.
 
 ## GOBLIN.MEMORY
 

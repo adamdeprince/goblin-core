@@ -1144,6 +1144,49 @@ std::optional<long long> Store::incr_by(std::string_view key, long long delta) {
   return result;
 }
 
+std::optional<long long> Store::incr_bound(std::string_view key, long long delta,
+                                           long long max) {
+  long long current = 0;
+  if (const auto value = keyspace_.get_string(key)) {
+    const auto parsed = parse_i64(join_value(*value));
+    if (!parsed) {
+      return std::nullopt;  // not an integer
+    }
+    current = *parsed;
+  }
+  // Bound check without overflow: current and delta are int64, so their sum fits
+  // in int128. `max` is an int64, so sum <= max guarantees the admitted result
+  // fits the int64 high end; only the low end can underflow.
+  const __int128 sum =
+      static_cast<__int128>(current) + static_cast<__int128>(delta);
+  if (sum > static_cast<__int128>(max)) {
+    return -1;  // over budget -- reject; the key is left untouched
+  }
+  if (sum < static_cast<__int128>(std::numeric_limits<long long>::min())) {
+    return std::nullopt;  // admitted result would underflow long long
+  }
+  const long long result = static_cast<long long>(sum);
+  keyspace_.set_string(key, std::to_string(result));  // preserves any TTL
+  return result;
+}
+
+std::optional<long long> Store::decr_positive(std::string_view key) {
+  long long current = 0;
+  if (const auto value = keyspace_.get_string(key)) {
+    const auto parsed = parse_i64(join_value(*value));
+    if (!parsed) {
+      return std::nullopt;  // not an integer
+    }
+    current = *parsed;
+  }
+  if (current <= 0) {
+    return -1;  // nothing to reserve -- reject; the key is never created/modified
+  }
+  const long long result = current - 1;  // current >= 1, so no underflow
+  keyspace_.set_string(key, std::to_string(result));  // preserves any TTL
+  return result;
+}
+
 std::optional<long long> Store::incr_expire(std::string_view key,
                                             std::uint64_t when_ms,
                                             std::uint64_t now) {

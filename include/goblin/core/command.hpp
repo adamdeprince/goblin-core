@@ -95,6 +95,8 @@ enum class CommandType {
   goblin_td_leaderboard_rescore,
   goblin_increx,
   goblin_zwindow,
+  goblin_incrbound,
+  goblin_decrpos,
   echo,
   info,
   unknown,

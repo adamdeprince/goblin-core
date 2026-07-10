@@ -341,6 +341,8 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::goblin_caexpire:
     case CommandType::goblin_cas:
     case CommandType::goblin_increx:  // INCRs the value; non-string is WRONGTYPE
+    case CommandType::goblin_incrbound:  // bounded INCR; non-string is WRONGTYPE
+    case CommandType::goblin_decrpos:    // conditional DECR; non-string is WRONGTYPE
       return true;
     default:
       return false;
@@ -1041,6 +1043,18 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("goblin.zwindow"));
       }
       command.type = CommandType::goblin_zwindow;
+      return {.command = std::move(command)};
+    case CommandType::goblin_incrbound:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("goblin.incrbound"));
+      }
+      command.type = CommandType::goblin_incrbound;
+      return {.command = std::move(command)};
+    case CommandType::goblin_decrpos:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("goblin.decrpos"));
+      }
+      command.type = CommandType::goblin_decrpos;
       return {.command = std::move(command)};
     case CommandType::unknown:
       break;  // never returned by the perfect hash; keeps the switch exhaustive
@@ -2053,6 +2067,39 @@ void execute_command_into(Store& store,
       const bool admitted = store.zwindow(command.args[0], *now, cutoff, *limit,
                                           command.args[4], *when, clock);
       resp::append_integer(out, admitted ? 1 : 0);
+      return;
+    }
+
+    case CommandType::goblin_incrbound: {
+      // Bounded increment: apply `delta` only if the result stays <= `max`, else
+      // reply -1. The native form of the get + compare + incrby quota idiom, done
+      // as one integer parse, one bound check, and a conditional store -- no
+      // interpreter and no round trip.
+      const auto delta = parse_ll(command.args[1]);
+      const auto max = parse_ll(command.args[2]);
+      if (!delta || !max) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto result = store.incr_bound(command.args[0], *delta, *max);
+      if (!result) {  // stored value not an integer, or the admitted result overflows
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_integer(out, *result);  // new value on admit, or -1 on reject
+      return;
+    }
+
+    case CommandType::goblin_decrpos: {
+      // Decrement-if-positive: reserve one unit only when the counter is > 0, else
+      // reply -1 without creating or touching the key. The native form of the
+      // get + test + decr stock-reservation idiom.
+      const auto result = store.decr_positive(command.args[0]);
+      if (!result) {  // stored value is not an integer
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_integer(out, *result);  // new value on success, or -1 on reject
       return;
     }
 

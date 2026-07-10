@@ -1493,6 +1493,88 @@ void test_goblin_zwindow() {
   assert(!goblin::core::parse_command(few).ok());
 }
 
+void test_goblin_incrbound() {
+  goblin::core::Store store;
+  const std::string range_err = "-ERR value is not an integer or out of range\r\n";
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  // Absent key starts at 0 and is created on the first admit.
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "3", "10"}) == ":3\r\n");
+  assert(execute_fields(store, {"GET", "q"}) == "$1\r\n3\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "4", "10"}) == ":7\r\n");
+  // Would exceed max -> reject with -1, key left untouched.
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "4", "10"}) == ":-1\r\n");
+  assert(execute_fields(store, {"GET", "q"}) == "$1\r\n7\r\n");
+  // Landing exactly on max is admitted (the bound is inclusive).
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "3", "10"}) == ":10\r\n");
+  // Zero delta admits while <= max; negative delta frees budget.
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "0", "10"}) == ":10\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "-2", "10"}) == ":8\r\n");
+  // A single delta over max is rejected from a fresh key, which stays absent.
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "fresh", "100", "10"}) == ":-1\r\n");
+  assert(execute_fields(store, {"EXISTS", "fresh"}) == ":0\r\n");
+
+  // Errors: non-integer stored value, bad delta/max, wrong type, arity.
+  assert(execute_fields(store, {"SET", "txt", "nope"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "txt", "1", "10"}) == range_err);
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "x", "10"}) == range_err);
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "q", "1", "y"}) == range_err);
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.INCRBOUND", "z", "1", "10"}) == wrongtype);
+  std::vector<std::string_view> bad = {"GOBLIN.INCRBOUND", "q", "1"};
+  assert(!goblin::core::parse_command(bad).ok());
+
+  // The TTL survives an admitted increment (as INCRBY does) and a rejected one,
+  // checked deterministically through the Store method with an explicit clock.
+  goblin::core::Store t;
+  (void)execute_fields(t, {"SET", "c", "1"});
+  assert(t.expire_at_ms("c", 50'000, 40'000));
+  assert(t.incr_bound("c", 4, 10) == 5);      // admitted
+  assert(t.pttl_ms("c", 40'000) == 10'000);   // TTL still armed
+  assert(t.incr_bound("c", 100, 10) == -1);   // rejected, key untouched
+  assert(t.pttl_ms("c", 40'000) == 10'000);   // TTL unchanged
+}
+
+void test_goblin_decrpos() {
+  goblin::core::Store store;
+  const std::string range_err = "-ERR value is not an integer or out of range\r\n";
+  const std::string wrongtype =
+      "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+  assert(execute_fields(store, {"SET", "stock", "3"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "stock"}) == ":2\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "stock"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "stock"}) == ":0\r\n");
+  // At zero, reject with -1 and leave the value at 0.
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "stock"}) == ":-1\r\n");
+  assert(execute_fields(store, {"GET", "stock"}) == "$1\r\n0\r\n");
+  // A negative value is not > 0 -> reject, untouched.
+  assert(execute_fields(store, {"SET", "neg", "-5"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "neg"}) == ":-1\r\n");
+  assert(execute_fields(store, {"GET", "neg"}) == "$2\r\n-5\r\n");
+  // Absent key: reject with -1, and it is never created.
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "ghost"}) == ":-1\r\n");
+  assert(execute_fields(store, {"EXISTS", "ghost"}) == ":0\r\n");
+
+  // Errors: non-integer value, wrong type, arity (exactly one key argument).
+  assert(execute_fields(store, {"SET", "txt", "nope"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "txt"}) == range_err);
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"GOBLIN.DECRPOS", "z"}) == wrongtype);
+  std::vector<std::string_view> none = {"GOBLIN.DECRPOS"};
+  assert(!goblin::core::parse_command(none).ok());
+  std::vector<std::string_view> many = {"GOBLIN.DECRPOS", "a", "b"};
+  assert(!goblin::core::parse_command(many).ok());
+
+  // TTL preserved across a successful decrement.
+  goblin::core::Store t;
+  (void)execute_fields(t, {"SET", "c", "2"});
+  assert(t.expire_at_ms("c", 50'000, 40'000));
+  assert(t.decr_positive("c") == 1);
+  assert(t.pttl_ms("c", 40'000) == 10'000);
+}
+
 void test_string_range_commands() {
   goblin::core::Store store;
 
@@ -3820,6 +3902,8 @@ int main() {
   test_goblin_increx();
   test_zremrangebyscore();
   test_goblin_zwindow();
+  test_goblin_incrbound();
+  test_goblin_decrpos();
   test_string_range_commands();
   test_string_snapshot_roundtrip();
   test_ttl_set();

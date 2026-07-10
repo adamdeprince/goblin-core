@@ -96,4 +96,6 @@ GOBLIN.CAS, goblin::core::CommandType::goblin_cas
 GOBLIN.TD_LEADERBOARD_RESCORE, goblin::core::CommandType::goblin_td_leaderboard_rescore
 GOBLIN.INCREX, goblin::core::CommandType::goblin_increx
 GOBLIN.ZWINDOW, goblin::core::CommandType::goblin_zwindow
+GOBLIN.INCRBOUND, goblin::core::CommandType::goblin_incrbound
+GOBLIN.DECRPOS, goblin::core::CommandType::goblin_decrpos
 %%
