@@ -1399,6 +1399,38 @@ void test_ttl_snapshot_roundtrip() {
   assert(restored.expiretime_ms("absent") == -2);
 }
 
+void test_ttl_load_drops_expired() {
+  using goblin::core::Store;
+  Store store;
+  const auto now = store.now_ms();
+  store.set("soon", "v");
+  assert(store.expire_at_ms("soon", now + 20, now));       // ~20 ms out
+  store.set("later", "v");
+  assert(store.expire_at_ms("later", now + 1000000, now));  // far future
+  assert(store.zadd("z", 1.0, "m") == 1);
+  assert(store.expire_at_ms("z", now + 20, now));           // a soon-expired zset
+  store.set("noexp", "v");
+
+  std::ostringstream out(std::ios::binary);
+  store.save(out);
+  const std::string bytes = out.str();
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));  // "soon"/"z" pass
+
+  Store restored;
+  std::istringstream in(bytes, std::ios::binary);
+  const auto stats = restored.load(in);
+
+  // Keys already expired at load time are dropped, not resurrected.
+  assert(!restored.exists("soon"));
+  assert(!restored.exists("z"));
+  assert(stats.keys == 2);  // only "later" and "noexp" remain
+  assert(restored.exists("later"));
+  assert(restored.expiretime_ms("later") ==
+         static_cast<long long>(now + 1000000));
+  assert(restored.exists("noexp"));
+}
+
 void test_expire_and_set_options() {
   goblin::core::Store store;
 
@@ -3243,6 +3275,7 @@ int main() {
   test_ttl_set();
   test_ttl_commands();
   test_ttl_snapshot_roundtrip();
+  test_ttl_load_drops_expired();
   test_expire_and_set_options();
   test_store_rank_location_cache();
   test_block_hint_rank_cache_uses_narrow_storage();

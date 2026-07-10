@@ -32,8 +32,8 @@ expires next" is just the minimum, and each entry is 12 bytes.
 ## Persistence
 
 TTLs are written to the snapshot in their own `TTL` section as **absolute**
-ms-since-epoch, so they survive save/load unchanged (a key reloaded after its
-time has passed is reclaimed by the model above).
+ms-since-epoch, so they survive save/load unchanged. A key whose expiry has
+already passed by the time the snapshot is loaded is dropped, not reloaded.
 
 ---
 

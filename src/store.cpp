@@ -1823,7 +1823,16 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           const auto key = reader.str();
           const auto expiry_ms = reader.u64();
           if (const auto id = keyspace_.id_of(key)) {
-            ttl_.set(*id, expiry_ms);
+            if (expiry_ms <= now_ms()) {
+              // Already past at load time: drop the key, as Redis does, rather
+              // than load it and lean on lazy/active expiration. (The TTL section
+              // is last, so the key exists; erasing by id fixes up the TTL of the
+              // key the swap-remove slides into its slot.)
+              erase_keyspace_at(*id);
+              --stats.keys;
+            } else {
+              ttl_.set(*id, expiry_ms);
+            }
           }
         }
         // else: unknown opcode or section -- already consumed, skip.
