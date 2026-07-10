@@ -136,6 +136,56 @@ OK
 Goblin Core also ships this as a native, single-op command — no interpreter:
 [`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
 
+## Real-time leaderboard rescoring
+
+A heavier example: a leaderboard whose stored score is each member's
+last-activity timestamp, *rescored on read* by recency —
+`decay = 1 / (1 + age / half_life)`, no transcendentals — returning the top `k`
+most-recent members. The top-k is kept in a bounded insertion-sorted list
+(O(n·k), not a full sort). `ARGV` is `now, half_life, k`; the reply is built with
+`redis array` as `[member, round(decay·1e6), …]`, most recent first.
+
+```tcl
+# KEYS[0] = leaderboard (score = last-activity unix ts); ARGV = now, half_life, k
+set now [lindex $ARGV 0]
+set hl [lindex $ARGV 1]
+set k [lindex $ARGV 2]
+set flat [redis call zrange [lindex $KEYS 0] 0 -1 WITHSCORES]
+set bestM {}
+set bestS {}
+set n [llength $flat]
+for {set i 0} {$i < $n} {incr i 2} {
+  set m [lindex $flat $i]
+  set ts [lindex $flat [expr {$i + 1}]]
+  set d [expr {1.0 / (1.0 + ($now - $ts) / double($hl))}]
+  set cnt [llength $bestS]
+  set ins 0
+  if {$cnt < $k} {
+    set ins 1
+  } elseif {$d > [lindex $bestS end]} {
+    set ins 1
+  }
+  if {$ins} {
+    set pos $cnt
+    while {$pos > 0 && [lindex $bestS [expr {$pos - 1}]] < $d} { incr pos -1 }
+    set bestM [linsert $bestM $pos $m]
+    set bestS [linsert $bestS $pos $d]
+    if {[llength $bestS] > $k} {
+      set bestM [lreplace $bestM end end]
+      set bestS [lreplace $bestS end end]
+    }
+  }
+}
+set result {}
+foreach m $bestM s $bestS {
+  lappend result $m [expr {int($s * 1000000 + 0.5)}]
+}
+return [redis array $result]
+```
+
+(Jim Tcl's `expr` has `int` and `round` but not `floor`; `int(x + 0.5)` rounds a
+positive `x`.)
+
 ## See also
 
 - [`TCL.EVALSHA`](TCL.EVALSHA.md) — run a cached Tcl script by digest.

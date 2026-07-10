@@ -125,6 +125,39 @@ OK
 Goblin Core also ships this as a native, single-op command — no interpreter:
 [`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
 
+## Real-time leaderboard rescoring
+
+A heavier example: a leaderboard whose stored score is each member's
+last-activity timestamp, *rescored on read* by recency —
+`decay = 1 / (1 + age / half_life)`, no transcendentals — returning the top `k`
+most-recent members. The top-k is kept in a bounded insertion-sorted array
+(O(n·k), not a full sort). `ARGV` is `now, half_life, k` (0-based); the reply is
+`[member, round(decay·1e6), …]`, most recent first.
+
+```javascript
+// KEYS[0] = leaderboard (score = last-activity unix ts); ARGV = now, half_life, k
+var now = parseFloat(ARGV[0]), hl = parseFloat(ARGV[1]), k = parseInt(ARGV[2]);
+var flat = redis.call('zrange', KEYS[0], 0, -1, 'WITHSCORES');
+var best = [];                                  // [decay, member], sorted desc
+for (var i = 0; i < flat.length; i += 2) {
+  var m = flat[i];
+  var ts = parseFloat(flat[i + 1]);
+  var d = 1.0 / (1.0 + (now - ts) / hl);
+  if (best.length < k || d > best[best.length - 1][0]) {   // bounded top-k
+    var pos = best.length;
+    while (pos > 0 && best[pos - 1][0] < d) pos -= 1;
+    best.splice(pos, 0, [d, m]);
+    if (best.length > k) best.pop();
+  }
+}
+var result = [];
+for (var j = 0; j < best.length; j++) {
+  result.push(best[j][1]);
+  result.push(Math.floor(best[j][0] * 1000000 + 0.5));
+}
+return result;
+```
+
 ## See also
 
 - [`QUICKJS.EVALSHA`](QUICKJS.EVALSHA.md) — run a cached script by digest.

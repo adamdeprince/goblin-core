@@ -116,6 +116,37 @@ Goblin Core also ships this as a native, single-op command — no interpreter:
 [`GOBLIN.CAD key expected`](GOBLIN.CAD.md), which replies `1` on a match and `0`
 otherwise, exactly like the script.
 
+## Real-time leaderboard rescoring
+
+A heavier example: a leaderboard whose stored score is each member's
+last-activity timestamp, *rescored on read* by recency —
+`decay = 1 / (1 + age / half_life)`, no transcendentals — returning the top `k`
+most-recent members. The top-k is kept in a bounded insertion-sorted list
+(O(n·k), not a full sort). `ARGV` is `now, half_life, k` (0-based); the reply comes
+from the `reply` global as `[member, round(decay·1e6), …]`, most recent first.
+
+```python
+# KEYS[0] = leaderboard (score = last-activity unix ts); ARGV = now, half_life, k
+now = float(ARGV[0]); hl = float(ARGV[1]); k = int(ARGV[2])
+flat = redis.call('zrange', KEYS[0], 0, -1, 'WITHSCORES')
+best = []                                       # [decay, member], sorted desc
+for i in range(0, len(flat), 2):
+    m = flat[i]
+    ts = float(flat[i + 1])
+    d = 1.0 / (1.0 + (now - ts) / hl)
+    if len(best) < k or d > best[-1][0]:        # bounded top-k, no full sort
+        pos = len(best)
+        while pos > 0 and best[pos - 1][0] < d:
+            pos -= 1
+        best.insert(pos, [d, m])
+        if len(best) > k:
+            best.pop()
+reply = []
+for d, m in best:
+    reply.append(m)
+    reply.append(int(d * 1000000 + 0.5))
+```
+
 ## See also
 
 - [`UPYTHON.EVALSHA`](UPYTHON.EVALSHA.md) — run a cached script by digest.

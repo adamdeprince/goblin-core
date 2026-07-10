@@ -153,6 +153,42 @@ OK
 Goblin Core also ships this as a native, single-op command — no interpreter, no
 script cache: [`GOBLIN.CAD key expected`](GOBLIN.CAD.md).
 
+## Real-time leaderboard rescoring
+
+A heavier, stateful example: a leaderboard whose stored score is each member's
+last-activity timestamp, *rescored on read* by recency —
+`decay = 1 / (1 + age / half_life)`, deliberately no transcendentals — returning
+the top `k` most-recent members. The top-k is kept in a bounded insertion-sorted
+array, so the work is O(n·k), not a full sort of the board. `ARGV` is
+`now, half_life, k`; the reply is `[member, round(decay·1e6), …]`, most recent first.
+
+```lua
+-- KEYS[1] = leaderboard (score = last-activity unix ts); ARGV = now, half_life, k
+local now, hl, k = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+local flat = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
+local best, bestn = {}, 0
+for i = 1, #flat, 2 do
+  local m = flat[i]
+  local ts = tonumber(flat[i + 1])
+  local d = 1.0 / (1.0 + (now - ts) / hl)
+  if bestn < k or d > best[bestn].s then       -- bounded top-k, no full sort
+    local pos = (bestn < k) and bestn + 1 or bestn
+    while pos > 1 and best[pos - 1].s < d do
+      best[pos] = best[pos - 1]
+      pos = pos - 1
+    end
+    best[pos] = {m = m, s = d}
+    if bestn < k then bestn = bestn + 1 end
+  end
+end
+local result = {}
+for i = 1, bestn do
+  result[#result + 1] = best[i].m
+  result[#result + 1] = math.floor(best[i].s * 1000000 + 0.5)
+end
+return result
+```
+
 ## Sandbox
 
 The interpreter opens only `base`, `table`, `string`, `math`, `debug`, and a

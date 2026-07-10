@@ -169,6 +169,43 @@ Goblin Core also ships this as a native, single-op command — no interpreter:
 [`GOBLIN.CAD key expected`](GOBLIN.CAD.md), which replies `1` on a match and `0`
 otherwise, exactly like the script.
 
+## Real-time leaderboard rescoring
+
+A heavier example: a leaderboard whose stored score is each member's
+last-activity timestamp, *rescored on read* by recency —
+`decay = 1 / (1 + age / half_life)`, no transcendentals — returning the top `k`
+most-recent members. The top-k is kept in a bounded insertion-sorted List
+(O(n·k), not a full sort). `ARGV` is `now, half_life, k` (0-based Lists); the reply
+is `[member, round(decay·1e6), …]`, most recent first.
+
+```wren
+// KEYS[0] = leaderboard (score = last-activity unix ts); ARGV = now, half_life, k
+var now = Num.fromString(ARGV[0])
+var hl = Num.fromString(ARGV[1])
+var k = Num.fromString(ARGV[2])
+var flat = Redis.call(["zrange", KEYS[0], 0, -1, "WITHSCORES"])
+var best = []
+var i = 0
+while (i < flat.count) {
+  var m = flat[i]
+  var ts = Num.fromString(flat[i + 1])
+  var d = 1 / (1 + (now - ts) / hl)
+  if (best.count < k || d > best[best.count - 1][1]) {   // bounded top-k
+    var pos = best.count
+    while (pos > 0 && best[pos - 1][1] < d) pos = pos - 1
+    best.insert(pos, [m, d])
+    if (best.count > k) best.removeAt(best.count - 1)
+  }
+  i = i + 2
+}
+var result = []
+for (e in best) {
+  result.add(e[0])
+  result.add((e[1] * 1000000 + 0.5).floor)
+}
+return result
+```
+
 ## See also
 
 - [`WREN.EVALSHA`](WREN.EVALSHA.md) — run a cached Wren script by digest.
