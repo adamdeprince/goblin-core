@@ -6,6 +6,7 @@
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
 #include "goblin/core/upython_script.hpp"
+#include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
 
 #include <algorithm>
@@ -635,6 +636,24 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::upython_script;
       return {.command = std::move(command)};
+    case CommandType::quickjs_eval:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("quickjs.eval"));
+      }
+      command.type = CommandType::quickjs_eval;
+      return {.command = std::move(command)};
+    case CommandType::quickjs_evalsha:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("quickjs.evalsha"));
+      }
+      command.type = CommandType::quickjs_evalsha;
+      return {.command = std::move(command)};
+    case CommandType::quickjs_script:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("quickjs.script"));
+      }
+      command.type = CommandType::quickjs_script;
+      return {.command = std::move(command)};
     case CommandType::zadd:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
         return parse_error(wrong_arity("zadd"));
@@ -1098,6 +1117,30 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR This Redis command is not available");
       } else {
         options.upython_engine->script(command.args, out);
+      }
+      return;
+
+    case CommandType::quickjs_eval:
+      if (options.quickjs_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.quickjs_engine->eval(command.args, out);
+      }
+      return;
+
+    case CommandType::quickjs_evalsha:
+      if (options.quickjs_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.quickjs_engine->eval_sha(command.args, out);
+      }
+      return;
+
+    case CommandType::quickjs_script:
+      if (options.quickjs_engine == nullptr) {
+        resp::append_error(out, "ERR This Redis command is not available");
+      } else {
+        options.quickjs_engine->script(command.args, out);
       }
       return;
 

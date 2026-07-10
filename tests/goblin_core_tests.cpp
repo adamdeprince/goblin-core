@@ -6,6 +6,7 @@
 
 #include "goblin/core/rdb.hpp"
 #include "goblin/core/luau_script.hpp"
+#include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
@@ -3241,6 +3242,106 @@ void test_upython_without_engine_is_unavailable() {
   assert(!reply.empty() && reply.front() == '-');
 }
 
+// --- QuickJS scripting (QUICKJS.EVAL / QUICKJS.EVALSHA / QUICKJS.SCRIPT) ------
+
+std::string run_quickjs(goblin::core::Store& store,
+                        goblin::core::QuickJsEngine& engine,
+                        std::initializer_list<std::string_view> fields) {
+  std::vector<std::string_view> views(fields);
+  auto parsed = goblin::core::parse_command(views);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.quickjs_engine = &engine});
+  return out;
+}
+
+// QuickJS keeps one runtime/context, so all JavaScript assertions share a single
+// engine (and one Store); a script body runs inside a function, so `return`
+// produces the reply and declarations stay script-local.
+void test_quickjs_scripting() {
+  goblin::core::Store store;
+  goblin::core::QuickJsEngine engine(store);
+  auto& e = engine;
+
+  // A script produces its reply with `return`.
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return 1 + 2", "0"}) == ":3\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return 'hello'", "0"}) ==
+         "$5\r\nhello\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "var x = 5;", "0"}) == "$-1\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return true", "0"}) == ":1\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return false", "0"}) == "$-1\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return 3.5", "0"}) == "$3\r\n3.5\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return [1, 2, 3]", "0"}) ==
+         "*3\r\n:1\r\n:2\r\n:3\r\n");
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL", "return [0, 1, 2, 3].map(x => x * x)", "0"}) ==
+         "*4\r\n:0\r\n:1\r\n:4\r\n:9\r\n");
+  // Declarations stay script-local (the body runs inside a function).
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL",
+                      "var leaked = 7; return typeof globalThis.leaked", "0"}) ==
+         "$9\r\nundefined\r\n");
+  // KEYS / ARGV are 0-based arrays.
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return KEYS[0]", "1", "k1"}) ==
+         "$2\r\nk1\r\n");
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL", "return ARGV.reduce((a, b) => a + parseInt(b), 0)",
+                      "0", "10", "20", "12"}) == ":42\r\n");
+  // The redis helpers.
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return redis.status('GOOD')", "0"}) ==
+         "+GOOD\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return redis.error('My Error')", "0"}) ==
+         "-My Error\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return redis.sha1hex('')", "0"}) ==
+         "$40\r\nda39a3ee5e6b4b0d3255bfef95601890afd80709\r\n");
+
+  // redis.call, and the write is visible to a plain command.
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL", "return redis.call('zadd', KEYS[0], 1, 'a')", "1",
+                      "z"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "z", "a"}) == "$1\r\n1\r\n");
+  // try/catch recovers a command error; an uncaught one is a RESP error.
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL",
+                      "try { redis.call('zscore') } catch (e) { return 'caught' }",
+                      "0"}) == "$6\r\ncaught\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return redis.call('zscore')", "0"})
+             .front() == '-');
+  assert(run_quickjs(store, e, {"QUICKJS.EVAL", "return undefinedThing()", "0"})
+             .front() == '-');
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVAL",
+                      "return redis.call('quickjs.eval', 'return 1', '0')", "0"})
+             .front() == '-');
+
+  // SCRIPT LOAD / EVALSHA / EXISTS / FLUSH.
+  const auto load = run_quickjs(store, e, {"QUICKJS.SCRIPT", "LOAD", "return 42"});
+  assert(load.size() == 5 + 40 + 2);
+  const std::string sha = load.substr(5, 40);
+  assert(run_quickjs(store, e, {"QUICKJS.EVALSHA", sha, "0"}) == ":42\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.SCRIPT", "EXISTS", sha}) == "*1\r\n:1\r\n");
+  assert(run_quickjs(store, e,
+                     {"QUICKJS.EVALSHA", "ffffffffffffffffffffffffffffffffffffffff", "0"})
+             .rfind("-NOSCRIPT", 0) == 0);
+  assert(run_quickjs(store, e, {"QUICKJS.SCRIPT", "FLUSH"}) == "+OK\r\n");
+  assert(run_quickjs(store, e, {"QUICKJS.SCRIPT", "EXISTS", sha}) == "*1\r\n:0\r\n");
+  // LOAD rejects a syntax error without running.
+  assert(run_quickjs(store, e, {"QUICKJS.SCRIPT", "LOAD", "return 1 +"}).front() == '-');
+
+  // Distinct interpreter: JavaScript is a syntax error under PUC-Lua.
+  goblin::core::ScriptEngine puc(store);
+  assert(run_script(store, puc, {"EVAL", "return [0, 1, 2].map(x => x * x)", "0"})
+             .front() == '-');
+}
+
+void test_quickjs_without_engine_is_unavailable() {
+  goblin::core::Store store;
+  const auto reply = execute_fields(store, {"QUICKJS.EVAL", "return 1", "0"});
+  assert(!reply.empty() && reply.front() == '-');
+}
+
 int main() {
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
@@ -3342,6 +3443,8 @@ int main() {
   test_tcl_without_engine_is_unavailable();
   test_upython_scripting();
   test_upython_without_engine_is_unavailable();
+  test_quickjs_scripting();
+  test_quickjs_without_engine_is_unavailable();
 
   test_keyspace_storage_and_string_value();
   return 0;

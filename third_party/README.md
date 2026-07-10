@@ -95,6 +95,26 @@ exception on a command error (so `try/except` works); `redis.error`/`status`/
 `sha1hex`/`log` are also provided. KEYS/ARGV are 0-based lists. The GC heap is
 allocated lazily on the first script.
 
+## QuickJS (sixth interpreter, `QUICKJS.*` commands)
+
+`quickjs/` holds the four core sources of
+[quickjs-ng](https://github.com/quickjs-ng/quickjs) 0.15.1 (a maintained fork of
+Bellard's QuickJS) — `quickjs.c`, `libregexp.c`, `libunicode.c`, and `dtoa.c` —
+with their headers and `LICENSE`. It is a small, complete JavaScript (ES2023)
+engine. It builds as its own C11 static library (`goblin_qjs`); its `JS_`-prefixed
+symbols collide with nothing else. **`quickjs-libc.c` is deliberately not
+vendored** — that is the file/os/network layer — so the embedded engine is pure
+computation plus the host binding, with no way to reach the host.
+
+JavaScript has no top-level return, so a `QUICKJS.EVAL` script body runs **inside
+a function**: `return <value>` produces the reply and any declaration stays
+script-local (no leakage through the shared context). The host bindings live on a
+`redis` global: `redis.call(cmd, ...args)` / `redis.pcall(...)` re-enter the
+command pipeline (`call` throws a JS `Error` on a command error, so `try/catch`
+works; `pcall` returns `{ err }`), plus `redis.error`/`status`/`sha1hex`/`log`.
+KEYS/ARGV are **0-based** arrays. The runtime is sandboxed with a memory limit and
+a maximum stack size, and is created lazily on the first script.
+
 ## What is *not* vendored
 
 The `EVAL` / `EVALSHA` / `SCRIPT` commands, the `redis` / `server` Lua API table

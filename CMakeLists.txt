@@ -195,6 +195,31 @@ if(NOT MSVC)
   target_compile_options(goblin_upy PRIVATE -w)
 endif()
 
+# Vendored QuickJS (the quickjs-ng fork, https://github.com/quickjs-ng/quickjs),
+# the JavaScript engine powering the QUICKJS.* command family. Only the four core
+# sources are built -- the quickjs-libc.c file-/os-binding module is deliberately
+# left out for the sandbox. Pure C11, built as its own static library with
+# warnings off; its symbols are JS_-prefixed C symbols and collide with nothing.
+add_library(goblin_qjs STATIC
+  third_party/quickjs/quickjs.c
+  third_party/quickjs/libregexp.c
+  third_party/quickjs/libunicode.c
+  third_party/quickjs/dtoa.c)
+target_include_directories(goblin_qjs PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quickjs)
+target_compile_definitions(goblin_qjs PRIVATE _GNU_SOURCE)
+set_target_properties(goblin_qjs PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED ON
+  POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+  target_compile_options(goblin_qjs PRIVATE -w)
+endif()
+# QuickJS uses libm, and pthreads for its atomics surface; propagate both so the
+# final binary links them (a no-op on macOS, required on Linux).
+find_package(Threads REQUIRED)
+target_link_libraries(goblin_qjs PUBLIC m Threads::Threads)
+
 add_library(goblin_core
   src/command.cpp
   src/luau_script.cpp
@@ -207,7 +232,8 @@ add_library(goblin_core
   src/store.cpp
   src/tcl_script.cpp
   src/upython_script.cpp
-  src/wren_script.cpp)
+  src/wren_script.cpp
+  src/quickjs_script.cpp)
 
 target_compile_features(goblin_core PUBLIC cxx_std_23)
 set_target_properties(goblin_core PROPERTIES
@@ -223,7 +249,7 @@ target_include_directories(goblin_core
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
-target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy)
+target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs)
 
 # The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
 # vendored runtime's headers off the shared target include path and hand each
@@ -240,6 +266,8 @@ set_source_files_properties(src/tcl_script.cpp PROPERTIES
 set_source_files_properties(src/upython_script.cpp PROPERTIES
   INCLUDE_DIRECTORIES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/micropython;${CMAKE_CURRENT_SOURCE_DIR}/third_party/micropython/micropython_embed;${CMAKE_CURRENT_SOURCE_DIR}/third_party/micropython/micropython_embed/port")
+set_source_files_properties(src/quickjs_script.cpp PROPERTIES
+  INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quickjs)
 
 # Enable the CRC32C hardware instruction used by the snapshot checksum on x86
 # (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
@@ -379,6 +407,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
   set_tests_properties(goblin_core_upython_scripting
     PROPERTIES TIMEOUT 60)
 
+  # End-to-end JavaScript scripting (QUICKJS.EVAL / QUICKJS.EVALSHA /
+  # QUICKJS.SCRIPT), including that it is a distinct interpreter from the others.
+  add_test(
+    NAME goblin_core_quickjs_scripting
+    COMMAND
+      ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/quickjs_scripting.py
+      --goblin-bin $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_quickjs_scripting
+    PROPERTIES TIMEOUT 60)
+
   if(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS)
     find_program(REDIS_SERVER_EXECUTABLE NAMES redis-server)
     if(REDIS_SERVER_EXECUTABLE)
@@ -412,7 +451,7 @@ endif()
 include(CMakePackageConfigHelpers)
 
 install(
-  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy
+  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs
   EXPORT goblinCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

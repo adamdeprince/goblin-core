@@ -14,6 +14,7 @@ class LuauEngine;
 class WrenEngine;
 class TclEngine;
 class UPythonEngine;
+class QuickJsEngine;
 
 enum class CommandType {
   ping,
@@ -32,6 +33,9 @@ enum class CommandType {
   upython_eval,
   upython_evalsha,
   upython_script,
+  quickjs_eval,
+  quickjs_evalsha,
+  quickjs_script,
   zadd,
   zcard,
   zrange,
@@ -121,6 +125,8 @@ struct CommandExecutionOptions {
   TclEngine* tcl_engine{nullptr};
   // The MicroPython counterpart, for UPYTHON.EVAL / UPYTHON.EVALSHA / UPYTHON.SCRIPT.
   UPythonEngine* upython_engine{nullptr};
+  // The QuickJS counterpart, for QUICKJS.EVAL / QUICKJS.EVALSHA / QUICKJS.SCRIPT.
+  QuickJsEngine* quickjs_engine{nullptr};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);
