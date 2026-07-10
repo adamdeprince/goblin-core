@@ -54,13 +54,21 @@ class QuickJsEngine {
 
  private:
   void ensure_vm();
-  bool run(std::string_view body, std::span<const std::string_view> keys,
+  // Compile the wrapped body to a serialized QuickJS bytecode blob (what the
+  // cache stores). A syntax error writes a RESP error to `out` and returns false.
+  bool compile_to_bytecode(std::string_view body, std::string& bytecode,
+                           std::string& out);
+  // Deserialize a cached bytecode blob and execute it against the given
+  // KEYS/ARGV, appending the RESP reply. No parse/compile on this path.
+  bool run(std::string_view bytecode, std::span<const std::string_view> keys,
            std::span<const std::string_view> argv, std::string& out);
   bool compile_ok(std::string_view body, std::string& out);
 
   Store& store_;
   JSRuntime* runtime_ = nullptr;
   JSContext* context_ = nullptr;
+  // 40-hex SHA1 of the source -> precompiled bytecode blob. Caching the compiled
+  // form (not the source) is what makes EVALSHA skip the parse/compile step.
   std::unordered_map<std::string, std::string> scripts_;
   std::span<const std::string_view> current_keys_;
   std::span<const std::string_view> current_argv_;

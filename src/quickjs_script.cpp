@@ -404,7 +404,39 @@ void QuickJsEngine::ensure_vm() {
   JS_FreeValue(context_, global);
 }
 
-bool QuickJsEngine::run(std::string_view body,
+bool QuickJsEngine::compile_to_bytecode(std::string_view body,
+                                        std::string& bytecode, std::string& out) {
+  ensure_vm();
+  if (context_ == nullptr) {
+    resp::append_error(out, "ERR could not initialize scripting engine");
+    return false;
+  }
+  const std::string wrapped = wrap_body(body);
+  // Compile only -- do not run -- so a syntax error is a compile error, and the
+  // resulting function-bytecode object can be serialized for the cache.
+  JSValue compiled =
+      JS_Eval(context_, wrapped.data(), wrapped.size(), "<quickjs>",
+              JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+  if (JS_IsException(compiled)) {
+    JS_FreeValue(context_, compiled);
+    resp::append_error(out, "ERR Error compiling script: " +
+                                sanitize_line(exception_message(context_)));
+    return false;
+  }
+  std::size_t size = 0;
+  uint8_t* buf =
+      JS_WriteObject(context_, &size, compiled, JS_WRITE_OBJ_BYTECODE);
+  JS_FreeValue(context_, compiled);
+  if (buf == nullptr) {
+    resp::append_error(out, "ERR could not serialize script bytecode");
+    return false;
+  }
+  bytecode.assign(reinterpret_cast<const char*>(buf), size);
+  js_free(context_, buf);
+  return true;
+}
+
+bool QuickJsEngine::run(std::string_view bytecode,
                         std::span<const std::string_view> keys,
                         std::span<const std::string_view> argv,
                         std::string& out) {
@@ -434,24 +466,23 @@ bool QuickJsEngine::run(std::string_view body,
   JS_SetPropertyStr(context_, global, "ARGV", argv_array);
   JS_FreeValue(context_, global);
 
-  const std::string wrapped = wrap_body(body);
-  // Compile first so a syntax error is reported as a (non-cacheable) compile
-  // error rather than a runtime error, then run the compiled function.
-  JSValue compiled =
-      JS_Eval(context_, wrapped.data(), wrapped.size(), "<quickjs>",
-              JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-  if (JS_IsException(compiled)) {
-    JS_FreeValue(context_, compiled);
-    resp::append_error(out, "ERR Error compiling script: " +
-                                sanitize_line(exception_message(context_)));
-    return false;
+  // Reconstitute the precompiled function from its bytecode blob (no parse or
+  // compile) and execute it. This is the EVALSHA / cached-EVAL fast path.
+  JSValue fn = JS_ReadObject(context_,
+                             reinterpret_cast<const uint8_t*>(bytecode.data()),
+                             bytecode.size(), JS_READ_OBJ_BYTECODE);
+  if (JS_IsException(fn)) {
+    JS_FreeValue(context_, fn);
+    resp::append_error(
+        out, ensure_error_code(sanitize_line(exception_message(context_))));
+    return true;
   }
-  JSValue result = JS_EvalFunction(context_, compiled);  // consumes `compiled`
+  JSValue result = JS_EvalFunction(context_, fn);  // consumes `fn`
   if (JS_IsException(result)) {
     JS_FreeValue(context_, result);
     resp::append_error(
         out, ensure_error_code(sanitize_line(exception_message(context_))));
-    return true;  // compiled but threw at runtime -- still cacheable
+    return true;
   }
   js_value_to_resp(context_, result, out);
   JS_FreeValue(context_, result);
@@ -459,23 +490,11 @@ bool QuickJsEngine::run(std::string_view body,
 }
 
 bool QuickJsEngine::compile_ok(std::string_view body, std::string& out) {
-  ensure_vm();
-  if (context_ == nullptr) {
-    resp::append_error(out, "ERR could not initialize scripting engine");
+  std::string bytecode;
+  if (!compile_to_bytecode(body, bytecode, out)) {
     return false;
   }
-  const std::string wrapped = wrap_body(body);
-  JSValue compiled =
-      JS_Eval(context_, wrapped.data(), wrapped.size(), "<quickjs>",
-              JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-  if (JS_IsException(compiled)) {
-    JS_FreeValue(context_, compiled);
-    resp::append_error(out, "ERR Error compiling script: " +
-                                sanitize_line(exception_message(context_)));
-    return false;
-  }
-  JS_FreeValue(context_, compiled);
-  scripts_[sha1_hex(body)] = std::string(body);
+  scripts_[sha1_hex(body)] = std::move(bytecode);
   return true;
 }
 
@@ -492,8 +511,20 @@ void QuickJsEngine::eval(std::span<const std::string_view> args,
     return;
   }
   const std::string_view body = args[0];
-  if (run(body, keys, argv, out)) {
-    scripts_.emplace(sha1_hex(body), std::string(body));
+  const std::string sha = sha1_hex(body);
+  // Compile once and cache the bytecode; a repeat EVAL of the same source then
+  // takes the same no-recompile path as EVALSHA.
+  if (const auto it = scripts_.find(sha); it != scripts_.end()) {
+    (void)run(it->second, keys, argv, out);
+    return;
+  }
+  std::string bytecode;
+  if (!compile_to_bytecode(body, bytecode, out)) {
+    return;
+  }
+  const bool ran = run(bytecode, keys, argv, out);
+  if (ran) {
+    scripts_.emplace(sha, std::move(bytecode));
   }
 }
 
@@ -516,8 +547,7 @@ void QuickJsEngine::eval_sha(std::span<const std::string_view> args,
                        "NOSCRIPT No matching script. Please use QUICKJS.EVAL.");
     return;
   }
-  const std::string body = it->second;
-  (void)run(body, keys, argv, out);
+  (void)run(it->second, keys, argv, out);  // cached bytecode -- no recompile
 }
 
 void QuickJsEngine::script(std::span<const std::string_view> args,
