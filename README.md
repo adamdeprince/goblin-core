@@ -243,6 +243,20 @@ cmake --install build-release --prefix /usr/local
 ./build-release/goblin-core --port 6379
 ```
 
+**Shared-memory rings (the fast path).** Pass `--ring <path> <size>` (repeatable) to
+accept requests over io_uring-style SQ/CQ ring buffers in shared memory instead of
+sockets — no syscall, no network stack on the request path:
+
+```sh
+./build-release/goblin-core --port 6379 --ring /tmp/a 4kb --ring /tmp/b 1mb
+redis-cli-ring /tmp/a SET foo bar     # the proof-of-concept ring client
+```
+
+With rings the server busy-polls them in priority order (the first can starve the
+second, by design) and pegs a core at 100%; with no rings it stays event-driven and
+idle-cheap. A one-header C++ client (`goblin/core/ring_client.hpp`) drives a ring in
+a few lines. Full details: **[docs/ring-buffers.md](docs/ring-buffers.md)**.
+
 `--rank-cache` enables the exact member-id-to-score-location cache for faster
 `ZRANK` lookups at roughly 4 bytes per member. It is off by default because it
 adds update/remove maintenance work. `--rank-cache-mode off|exact|block-hint`

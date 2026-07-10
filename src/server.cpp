@@ -4,6 +4,7 @@
 #include "goblin/core/luau_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
@@ -42,6 +43,16 @@ struct Client {
   std::size_t output_offset{0};
   bool read_backpressured{false};
   bool close_after_write{false};
+};
+
+// Server-side state for one shared-memory ring: the mapping plus a RESP parser
+// and reply buffer, mirroring a network Client but reading from the SQ and writing
+// to the CQ instead of a socket.
+struct RingEndpoint {
+  ring::Mapping mapping;
+  RespParser parser;
+  std::string output;
+  std::vector<std::string_view> fields;
 };
 
 void close_fd(int fd) noexcept {
@@ -370,6 +381,87 @@ void accept_clients(int listener,
   return !client.close_after_write;
 }
 
+// Ring mode. Create every configured ring (the server is the reader/creator),
+// then busy-poll them in priority order: process one SQ record from the
+// highest-priority non-empty ring and restart the scan, so a busy ring starves
+// the ones below it. Only when every ring is empty do we run one non-blocking
+// network pass and cpu_relax(). Returns false if a ring could not be created.
+template <class NetFn>
+[[nodiscard]] bool run_rings(const ServerConfig& config, Store& store,
+                             std::atomic_bool& running, ScriptEngine& script_engine,
+                             LuauEngine& luau_engine, WrenEngine& wren_engine,
+                             TclEngine& tcl_engine, UPythonEngine& upython_engine,
+                             QuickJsEngine& quickjs_engine,
+                             NetFn&& network_iteration) {
+  std::vector<RingEndpoint> rings;
+  rings.reserve(config.rings.size());
+  for (const auto& rc : config.rings) {
+    const std::uint64_t cap = ring::capacity_for(rc.bytes);
+    auto mapping = ring::Mapping::create(rc.path.c_str(), cap, cap);
+    if (!mapping) {
+      std::cerr << "goblin-core: failed to create ring " << rc.path << ": "
+                << std::strerror(errno) << '\n';
+      return false;
+    }
+    std::cout << "goblin-core: ring " << rc.path << " ready (" << cap
+              << " bytes/direction)\n";
+    rings.push_back(RingEndpoint{.mapping = std::move(*mapping)});
+  }
+  std::cout << "goblin-core: ring mode -- busy-polling " << rings.size()
+            << " ring(s) ahead of the network (100% CPU by design)\n"
+            << std::flush;
+
+  const CommandExecutionOptions exec_options{
+      .output_reserve_limit = config.max_output_buffer_bytes,
+      .script_engine = &script_engine,
+      .luau_engine = &luau_engine,
+      .wren_engine = &wren_engine,
+      .tcl_engine = &tcl_engine,
+      .upython_engine = &upython_engine,
+      .quickjs_engine = &quickjs_engine};
+
+  // Drain one SQ record from `ep`, run whatever commands it completes, and push
+  // the replies onto the CQ. Returns false when the ring's SQ was empty.
+  const auto process_ring = [&](RingEndpoint& ep) -> bool {
+    ring::Consumer sq = ep.mapping.sq_consumer();
+    const auto record = sq.peek();
+    if (!record) {
+      return false;
+    }
+    ep.parser.append(*record);
+    sq.pop();
+    while (ep.parser.pop_into(ep.fields)) {
+      handle_command_into(store, ep.fields, ep.output, exec_options);
+    }
+    if (ep.parser.has_error()) {
+      resp::append_error(ep.output, ep.parser.error());
+      ep.parser.clear();  // resync the byte stream after a protocol error
+    }
+    if (!ep.output.empty()) {
+      ep.mapping.cq_producer().send(
+          ep.output, [&] { return !running.load(std::memory_order_relaxed); });
+      ep.output.clear();
+    }
+    return true;
+  };
+
+  while (running.load(std::memory_order_relaxed)) {
+    bool progressed = false;
+    for (RingEndpoint& ep : rings) {
+      if (process_ring(ep)) {
+        progressed = true;
+        break;  // restart from the highest-priority ring
+      }
+    }
+    if (progressed) {
+      continue;  // a busy high-priority ring starves the lower ones -- by design
+    }
+    network_iteration(0);  // every ring empty -> now service the network
+    ring::cpu_relax();     // PAUSE / yield: let remote cores publish into our pages
+  }
+  return true;
+}
+
 }  // namespace
 
 Server::Server(ServerConfig config, Store& store)
@@ -396,6 +488,7 @@ int Server::run() {
   if (!listener) {
     return 1;
   }
+  const int listener_fd = *listener;
 
   std::vector<Client> clients;
   running_ = true;
@@ -418,7 +511,11 @@ int Server::run() {
   // due, so the poll below returns immediately to sweep again.
   constexpr std::size_t kActiveExpireBudget = 1000;
 
-  while (running_) {
+  // One pass over the network: reap a finished background save, do a bounded
+  // active-expiration sweep, then poll() (blocking up to max_timeout_ms) and
+  // service ready clients and new connections. In ring mode this is invoked only
+  // when every ring is empty, always with a timeout of 0 (never blocking).
+  const auto network_iteration = [&](int max_timeout_ms) {
     if (auto outcome = store_.reap_background_save()) {
       if (outcome->ok) {
         std::cout << "goblin-core: background save of " << outcome->path
@@ -430,9 +527,7 @@ int Server::run() {
       }
     }
 
-    // Active expiration: reclaim untouched keys whose TTL has passed, even with
-    // no client accessing them. Nothing to do (and no clock read) when empty.
-    int poll_timeout = 1000;
+    int poll_timeout = max_timeout_ms;
     if (!store_.ttl_empty()) {
       if (store_.active_expire(store_.now_ms(), kActiveExpireBudget) ==
           kActiveExpireBudget) {
@@ -442,7 +537,7 @@ int Server::run() {
 
     std::vector<pollfd> pollfds;
     pollfds.reserve(clients.size() + 1);
-    pollfds.push_back(pollfd{.fd = *listener, .events = POLLIN, .revents = 0});
+    pollfds.push_back(pollfd{.fd = listener_fd, .events = POLLIN, .revents = 0});
     for (auto& client : clients) {
       update_read_backpressure(client, config_);
       short events = 0;
@@ -458,10 +553,11 @@ int Server::run() {
     const int ready = ::poll(pollfds.data(), pollfds.size(), poll_timeout);
     if (ready < 0) {
       if (errno == EINTR) {
-        continue;
+        return;
       }
       std::cerr << "goblin-core: poll failed: " << std::strerror(errno) << '\n';
-      break;
+      running_ = false;
+      return;
     }
 
     std::vector<unsigned char> close_client(clients.size(), 0);
@@ -517,14 +613,27 @@ int Server::run() {
     }
 
     if ((pollfds[0].revents & POLLIN) != 0) {
-      accept_clients(*listener, clients, config_);
+      accept_clients(listener_fd, clients, config_);
     }
+  };
+
+  if (config_.rings.empty()) {
+    // No rings: the ordinary event-driven server. poll() blocks, so an idle
+    // server costs no CPU.
+    while (running_) {
+      network_iteration(1000);
+    }
+  } else if (!run_rings(config_, store_, running_, script_engine, luau_engine,
+                        wren_engine, tcl_engine, upython_engine, quickjs_engine,
+                        network_iteration)) {
+    close_fd(listener_fd);
+    return 1;
   }
 
   for (const auto& client : clients) {
     close_fd(client.fd);
   }
-  close_fd(*listener);
+  close_fd(listener_fd);
 
   return 0;
 }

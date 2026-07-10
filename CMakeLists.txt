@@ -322,6 +322,16 @@ set_target_properties(goblin_core_server PROPERTIES
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 
+# Proof-of-concept ring-buffer client. Only needs the header-only ring client, but
+# links goblin_core for its include path.
+add_executable(goblin_core_ring_cli src/ring_cli.cpp)
+target_link_libraries(goblin_core_ring_cli PRIVATE goblin_core)
+set_target_properties(goblin_core_ring_cli PROPERTIES
+  OUTPUT_NAME redis-cli-ring
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+
 if(GOBLIN_CORE_BUILD_BENCHMARKS)
   add_executable(goblin_core_microbench benchmarks/microbench.cpp)
   target_link_libraries(goblin_core_microbench PRIVATE goblin_core)
@@ -342,6 +352,19 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  # End-to-end ring buffer: fork+exec the server with a ring, drive it through the
+  # header-only RingClient across two processes.
+  add_executable(goblin_core_ring_test tests/ring_roundtrip_test.cpp)
+  target_link_libraries(goblin_core_ring_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_ring_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_ring_roundtrip
+    COMMAND goblin_core_ring_test $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_ring_roundtrip PROPERTIES TIMEOUT 60)
 
   add_test(
     NAME goblin_core_output_backpressure

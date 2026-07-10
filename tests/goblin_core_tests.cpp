@@ -9,6 +9,8 @@
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/ring_buffer.hpp"
+#include "goblin/core/ring_client.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
 #include "goblin/core/tcl_script.hpp"
@@ -4003,7 +4005,112 @@ void test_evalsha_runs_cached_script() {
   { goblin::core::QuickJsEngine e(store); check(run_quickjs, store, e, "QUICKJS.", "return 42"); }
 }
 
+void test_ring_size_parsing() {
+  namespace ring = goblin::core::ring;
+  assert(ring::parse_size("4096") == 4096);
+  assert(ring::parse_size("4kb") == 4096);
+  assert(ring::parse_size("4k") == 4096);
+  assert(ring::parse_size("1mb") == 1024u * 1024);
+  assert(ring::parse_size("1MB") == 1024u * 1024);  // case-insensitive
+  assert(ring::parse_size("2g") == 2ull * 1024 * 1024 * 1024);
+  assert(ring::parse_size("512b") == 512);
+  assert(ring::parse_size("512") == 512);
+  assert(!ring::parse_size(""));
+  assert(!ring::parse_size("abc"));
+  assert(!ring::parse_size("4tb"));   // unknown suffix
+  assert(!ring::parse_size("kb"));    // no digits
+  // Capacity rounds up to a power-of-two page multiple.
+  const auto ps = ring::page_size();
+  assert(std::has_single_bit(ring::capacity_for(1)));
+  assert(ring::capacity_for(1) == ps);
+  assert(ring::capacity_for(ps + 1) == ps * 2);
+  assert(std::has_single_bit(ring::capacity_for(1000000)) &&
+         ring::capacity_for(1000000) >= 1000000);
+}
+
+void test_ring_buffer_roundtrip() {
+  namespace ring = goblin::core::ring;
+  const std::string path = "/tmp/goblin-ring-test-" + std::to_string(::getpid()) + ".bin";
+  ::unlink(path.c_str());
+  const std::uint64_t cap = ring::capacity_for(4096);
+  auto server = ring::Mapping::create(path.c_str(), cap, cap);
+  assert(server && server->valid());
+  auto client = ring::Mapping::open(path.c_str());
+  assert(client && client->valid());
+
+  const auto never = [] { return false; };
+  auto producer = client->sq_producer();   // client writes the SQ
+  auto consumer = server->sq_consumer();    // server reads the SQ
+
+  // Empty ring reads nothing.
+  assert(!consumer.has_record());
+  assert(!consumer.peek());
+
+  // Round-trip many small messages; each payload must be contiguous and start on
+  // a cache-line boundary.
+  for (int i = 0; i < 5000; ++i) {
+    const std::string msg = "*1\r\n$4\r\nPING\r\n#" + std::to_string(i);
+    producer.send(msg, never);
+    const auto got = consumer.peek();
+    assert(got && *got == msg);
+    assert(reinterpret_cast<std::uintptr_t>(got->data()) % ring::kCacheLine == 0);
+    consumer.pop();
+    assert(!consumer.has_record());
+  }
+
+  // A payload larger than one record splits into several. It must still fit in the
+  // ring in one shot (this is a single-threaded test, so nothing drains while we
+  // send): max_record_payload + a bit forces two records that together fit.
+  const std::string big(producer.max_record_payload() + 100, 'x');
+  producer.send(big, never);
+  std::string reassembled;
+  while (consumer.has_record()) {
+    reassembled.append(*consumer.peek());
+    consumer.pop();
+  }
+  assert(reassembled == big);
+
+  // Cross the ring boundary many times to exercise the WRAP filler path.
+  for (int i = 0; i < 20000; ++i) {
+    const std::string msg(300, static_cast<char>('a' + (i % 26)));
+    producer.send(msg, never);
+    const auto got = consumer.peek();
+    assert(got && *got == msg);
+    consumer.pop();
+  }
+
+  // The other direction (CQ) works symmetrically.
+  auto cq_prod = server->cq_producer();
+  auto cq_cons = client->cq_consumer();
+  cq_prod.send("+OK\r\n", never);
+  const auto reply = cq_cons.peek();
+  assert(reply && *reply == "+OK\r\n");
+  cq_cons.pop();
+
+  ::unlink(path.c_str());
+}
+
+void test_ring_reply_framing() {
+  namespace ring = goblin::core::ring;
+  // A complete reply reports its exact length; a truncated one is incomplete.
+  assert(ring::reply_end("+OK\r\n") == 5);
+  assert(ring::reply_end(":42\r\n") == 5);
+  assert(ring::reply_end("-ERR bad\r\n") == 10);
+  assert(ring::reply_end("$3\r\nbar\r\n") == 9);
+  assert(ring::reply_end("$-1\r\n") == 5);           // null bulk
+  assert(ring::reply_end("*2\r\n$3\r\nfoo\r\n:7\r\n") == 17);
+  assert(!ring::reply_end("$3\r\nba"));              // bulk body not all there
+  assert(!ring::reply_end("*2\r\n$3\r\nfoo\r\n"));    // array missing an element
+  assert(!ring::reply_end("+OK\r"));                 // no terminator yet
+  // Encoding matches the RESP array-of-bulk-strings wire form.
+  const std::string_view args[] = {"SET", "k", "v"};
+  assert(ring::encode_command(args) == "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n");
+}
+
 int main() {
+  test_ring_size_parsing();
+  test_ring_buffer_roundtrip();
+  test_ring_reply_framing();
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
   test_swiss_table_collision_probe_and_growth();

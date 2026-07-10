@@ -1,3 +1,4 @@
+#include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/server.hpp"
 #include "goblin/core/simd.hpp"
 #include "goblin/core/store.hpp"
@@ -107,7 +108,8 @@ void print_usage(std::string_view program) {
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
-            << "       [--initial-output-buffer-kib KIB]\n";
+            << "       [--initial-output-buffer-kib KIB]\n"
+            << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n";
 }
 
 }  // namespace
@@ -153,6 +155,25 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.unix_socket_path = argv[++i];
+      continue;
+    }
+
+    if (arg == "--ring") {
+      // Two tokens: a file path and a size (bytes, or with a kb/mb/gb suffix).
+      // Repeatable; ring order is priority order (first is highest, lowest latency).
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --ring requires PATH and SIZE\n";
+        return 2;
+      }
+      const std::string path = argv[++i];
+      const std::string_view size_text = argv[++i];
+      const auto size = goblin::core::ring::parse_size(size_text);
+      if (!size || *size == 0) {
+        std::cerr << "goblin-core: invalid --ring size: " << size_text << '\n';
+        return 2;
+      }
+      config.rings.push_back(
+          goblin::core::RingConfig{.path = path, .bytes = *size});
       continue;
     }
 

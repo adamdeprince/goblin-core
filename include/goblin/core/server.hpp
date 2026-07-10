@@ -4,10 +4,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace goblin::core {
 
 class Store;
+
+// One shared-memory ring buffer, from `--ring <path> <bytes>`. `bytes` is the
+// requested capacity per direction; it is rounded up to a power-of-two page
+// multiple when the ring is created (see ring_buffer.hpp).
+struct RingConfig {
+  std::string path;
+  std::uint64_t bytes{0};
+};
 
 struct ServerConfig {
   std::string bind_address{"127.0.0.1"};
@@ -19,6 +28,10 @@ struct ServerConfig {
   std::size_t max_output_buffer_bytes{1024U * 1024U};
   std::size_t resume_output_buffer_bytes{256U * 1024U};
   std::size_t initial_output_buffer_bytes{0};
+  // Shared-memory rings, highest priority first. When non-empty the server
+  // busy-polls these before touching the network (and spins at 100% CPU by
+  // design); when empty it runs the ordinary low-CPU poll() loop.
+  std::vector<RingConfig> rings{};
 };
 
 class Server {

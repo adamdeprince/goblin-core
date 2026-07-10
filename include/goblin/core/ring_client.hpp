@@ -1,0 +1,183 @@
+#pragma once
+
+// A header-only client for the shared-memory ring buffers (see ring_buffer.hpp).
+//
+// It is the reference for how to talk to a ring: encode a RESP command, push it
+// onto the SQ (submission queue), then busy-poll the CQ (completion queue) for the
+// reply. Being header-only, it doubles as a tiny test/benchmark harness -- just
+// `#include` it, `RingClient::open("/tmp/a")`, and call `command({"SET","k","v"})`.
+//
+// A ring is single-writer/single-reader, so at most one RingClient may drive a
+// given ring file at a time (the server is the single reader on the other side).
+
+#include "goblin/core/ring_buffer.hpp"
+
+#include <chrono>
+#include <cstdint>
+#include <initializer_list>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace goblin::core::ring {
+
+// Encode a command as a RESP array of bulk strings (the wire form redis clients
+// send): *<n>\r\n $<len>\r\n<arg>\r\n ...
+[[nodiscard]] inline std::string encode_command(
+    std::span<const std::string_view> args) {
+  std::string out;
+  out.reserve(16 * args.size());
+  out.push_back('*');
+  out.append(std::to_string(args.size()));
+  out.append("\r\n");
+  for (const std::string_view arg : args) {
+    out.push_back('$');
+    out.append(std::to_string(arg.size()));
+    out.append("\r\n");
+    out.append(arg);
+    out.append("\r\n");
+  }
+  return out;
+}
+
+// The byte length of the first complete RESP reply in `s` starting at `pos`, or
+// nullopt if `s` does not yet hold a whole reply. Recurses through arrays. Handles
+// the RESP2 reply types the server emits: + - : $ *.
+[[nodiscard]] inline std::optional<std::size_t> reply_end(std::string_view s,
+                                                          std::size_t pos = 0) {
+  if (pos >= s.size()) {
+    return std::nullopt;
+  }
+  const std::size_t eol = s.find("\r\n", pos);
+  if (eol == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const std::size_t line_end = eol + 2;
+  const auto parse_count = [&](long long& out) -> bool {
+    const std::string_view digits = s.substr(pos + 1, eol - (pos + 1));
+    const auto [ptr, ec] =
+        std::from_chars(digits.data(), digits.data() + digits.size(), out);
+    return ec == std::errc{} && ptr == digits.data() + digits.size();
+  };
+  switch (s[pos]) {
+    case '+':
+    case '-':
+    case ':':
+      return line_end;
+    case '$': {
+      long long len = 0;
+      if (!parse_count(len)) {
+        return std::nullopt;
+      }
+      if (len < 0) {
+        return line_end;  // null bulk string
+      }
+      const std::size_t need = line_end + static_cast<std::size_t>(len) + 2;
+      return need <= s.size() ? std::optional<std::size_t>(need) : std::nullopt;
+    }
+    case '*': {
+      long long n = 0;
+      if (!parse_count(n)) {
+        return std::nullopt;
+      }
+      if (n < 0) {
+        return line_end;  // null array
+      }
+      std::size_t cur = line_end;
+      for (long long i = 0; i < n; ++i) {
+        const auto sub = reply_end(s, cur);
+        if (!sub) {
+          return std::nullopt;
+        }
+        cur = *sub;
+      }
+      return cur;
+    }
+    default:
+      return line_end;  // unknown type: treat the line as the whole reply
+  }
+}
+
+class RingClient {
+ public:
+  // Open an existing ring file. Retries briefly so a client may be started right
+  // after the server (the file appears and is initialized asynchronously).
+  [[nodiscard]] static std::optional<RingClient> open(
+      const char* path,
+      std::chrono::milliseconds wait = std::chrono::milliseconds(2000)) {
+    const auto deadline = std::chrono::steady_clock::now() + wait;
+    for (;;) {
+      if (auto m = Mapping::open(path)) {
+        return RingClient(std::move(*m));
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return std::nullopt;
+      }
+      cpu_relax();
+    }
+  }
+
+  // Push raw request bytes onto the SQ (they need not be a whole command; the
+  // server reassembles the byte stream). Spins for space if the ring is full.
+  void send_raw(std::string_view bytes,
+                std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    sq_.send(bytes, [&] { return std::chrono::steady_clock::now() >= deadline; });
+  }
+
+  void send(std::span<const std::string_view> args) {
+    send_raw(encode_command(args));
+  }
+
+  // Busy-poll the CQ until a full RESP reply is available, then return it. nullopt
+  // on timeout. Extra bytes (e.g. a pipelined next reply) are retained for the
+  // following call.
+  [[nodiscard]] std::optional<std::string> read_reply(
+      std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+      if (const auto end = reply_end(pending_)) {
+        std::string reply = pending_.substr(0, *end);
+        pending_.erase(0, *end);
+        return reply;
+      }
+      if (auto rec = cq_.peek()) {
+        pending_.append(*rec);
+        cq_.pop();
+        continue;  // re-check without pausing -- more may be ready
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return std::nullopt;
+      }
+      cpu_relax();
+    }
+  }
+
+  // Send one command and return its reply (the common request/response call).
+  [[nodiscard]] std::optional<std::string> command(
+      std::span<const std::string_view> args) {
+    send(args);
+    return read_reply();
+  }
+  [[nodiscard]] std::optional<std::string> command(
+      std::initializer_list<std::string_view> args) {
+    return command(std::span<const std::string_view>(args.begin(), args.size()));
+  }
+
+  [[nodiscard]] const Mapping& mapping() const noexcept { return mapping_; }
+
+ private:
+  explicit RingClient(Mapping&& m)
+      : mapping_(std::move(m)),
+        sq_(mapping_.sq_producer()),
+        cq_(mapping_.cq_consumer()) {}
+
+  Mapping mapping_;
+  Producer sq_;
+  Consumer cq_;
+  std::string pending_;  // CQ bytes not yet consumed as a whole reply
+};
+
+}  // namespace goblin::core::ring
