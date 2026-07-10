@@ -207,6 +207,52 @@ The full language comparison — this table plus a heavier leaderboard-rescore
 workload, where the six interpreters separate by ~6× — is in
 **[BENCHMARK-LANGUAGES.md](BENCHMARK-LANGUAGES.md)**.
 
+## Scripting: native idioms vs Lua
+
+Compare-and-delete is one of a family of Redis idioms that Goblin Core ships as
+native `GOBLIN.*` commands — each one exists precisely because Redis's own answer
+is a Lua script. The native form calls the store's C++ primitives directly (no
+interpreter, no re-entry into the command processor); the Lua form runs the same
+logic through the embedded PUC-Lua 5.1 VM via `redis.call`. This table pits each
+native command against the exact Lua idiom it replaces (verbatim from the
+[command docs](docs/commands/goblin.md)), with the script `SCRIPT LOAD`-compiled
+once so the Lua numbers are `EVALSHA` execution, not compilation.
+
+`benchmarks/idiom_native_vs_lua.py`, one connection, median of 5 rounds, all over
+a **Unix domain socket**. Two numbers per form: **sequential** (one request at a
+time — the per-op round trip) and **pipelined** (256 in flight — round trip
+amortized, so server-side cost dominates). Native and Lua are verified to return
+the same reply for the same input before timing. The **`×` columns are the
+native/Lua throughput ratio** — the host-independent result; the absolute µs/op
+are from the local development machine (macOS, one client-bound connection), so
+read the ratios, not the absolute throughput. Lower µs is better.
+
+| command | idiom it replaces (`redis.call`s) | native seq | Lua seq | seq **×** | native p256 | Lua p256 | pipe **×** |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| [`GOBLIN.CAD`](docs/commands/GOBLIN.CAD.md) | `get` → `del` | `10.7` | `12.4` | `1.16×` | `1.45` | `3.23` | **`2.22×`** |
+| [`GOBLIN.CAEXPIRE`](docs/commands/GOBLIN.CAEXPIRE.md) | `get` → `pexpire` | `18.5` | `23.0` | `1.25×` | `8.47` | `11.8` | `1.39×` |
+| [`GOBLIN.CAS`](docs/commands/GOBLIN.CAS.md) | `get` → `set KEEPTTL` | `11.7` | `16.7` | `1.43×` | `3.18` | `7.04` | **`2.21×`** |
+| [`GOBLIN.ZWINDOW`](docs/commands/GOBLIN.ZWINDOW.md) | `zremrangebyscore` → `zcard` → `zadd` → `expire` | `18.2` | `29.3` | **`1.61×`** | `8.63` | `17.9` | **`2.07×`** |
+| [`GOBLIN.INCRBOUND`](docs/commands/GOBLIN.INCRBOUND.md) | `get` → `incrby` | `13.1` | `20.0` | `1.52×` | `4.69` | `9.94` | **`2.12×`** |
+| [`GOBLIN.DECRPOS`](docs/commands/GOBLIN.DECRPOS.md) | `get` → `decr` | `12.7` | `19.2` | `1.52×` | `4.16` | `9.16` | **`2.20×`** |
+| [`GOBLIN.HCAD`](docs/commands/GOBLIN.HCAD.md) | `hget` → `hdel` | `19.0` | `25.3` | `1.33×` | `9.08` | `14.1` | `1.55×` |
+| [`GOBLIN.HSETGT`](docs/commands/GOBLIN.HSETGT.md) | `hget` → `hset` | `13.5` | `20.3` | `1.50×` | `4.67` | `9.97` | **`2.14×`** |
+| [`GOBLIN.CLAIM`](docs/commands/GOBLIN.CLAIM.md) | `set NX EX` → `get` | `31.3` | `38.0` | `1.21×` | `19.4` | `26.7` | `1.38×` |
+
+**The native command wins on every idiom, and the gap widens when pipelined** —
+where the round trip is amortized and pure server-side cost is left. On the
+compare-then-write string ops (`CAD`, `CAS`, `INCRBOUND`, `DECRPOS`, `HSETGT`) the
+native form does ~`2.1–2.2×` the throughput of the precompiled Lua: it fuses the
+read, the compare, and the conditional write into one op — the compare is
+allocation-free (an in-place `view_equals`), and the write reuses the slot the read
+already found — where the script pays VM dispatch and a `redis.call` boundary per
+step. `ZWINDOW` shows the biggest sequential win (`1.61×`): the Lua makes **four**
+`redis.call`s, while the native command holds the sorted set across evict → count →
+add in a **single keyspace lookup**. The two commands that lean on an existing TTL
+walk (`CAEXPIRE`, `CLAIM`) narrow to ~`1.4×` pipelined — the expiry bookkeeping is
+the same work either way, so less of the per-op cost is interpreter overhead the
+native form can shed.
+
 ## Persistence
 
 Same 1M-member dataset loaded into each engine; each saves and loads its own
@@ -363,7 +409,10 @@ command's former position in the chain.
   Differing configs are the most common way a benchmark gets contested; the file
   is published here.
 - **Host:** AMD Ryzen Threadripper PRO 5995WX (128 logical CPUs,
-  GCC 16.1.0); every figure in this document. Server and client pinned to
+  GCC 16.1.0); every figure in this document — except the
+  [native-idioms-vs-Lua](#scripting-native-idioms-vs-lua) table, whose absolute
+  µs/op are from the local dev machine (macOS) and whose native/Lua **ratios** are
+  the host-independent result. Server and client pinned to
   separate cores;
   throughput/latency are best-or-median of repeated runs on the idle machine.
 - **RSS** via `ps -o rss`, measured after load and `GOBLIN.OPTIMIZE`;
@@ -392,6 +441,9 @@ which share the server flags):
   probe with `c++ -O2 -std=c++20 -o write_tail_latency
   benchmarks/write_tail_latency.cpp`).
 - Persistence: `benchmarks/persistence.py --engine ... --members N`.
+- Native `GOBLIN.*` idioms vs their Lua scripts (one Goblin server, over UDS):
+  `benchmarks/idiom_native_vs_lua.py --goblin-bin build/goblin-core [--keys N
+  --rounds R --pipeline D]`.
 
 Example engine set: `--engine goblin:goblin:build-release/goblin-core --engine
 redis724:redis:<redis-7.2.4>/src/redis-server --engine
