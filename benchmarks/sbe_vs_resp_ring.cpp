@@ -25,6 +25,9 @@
 #ifdef __linux__
 #include <sched.h>
 #endif
+#if defined(__x86_64__)
+#include <x86intrin.h>  // __rdtscp
+#endif
 
 using clk = std::chrono::steady_clock;
 using goblin::core::SbeRingClient;
@@ -34,15 +37,52 @@ namespace {
 clk::time_point after(double s) {
   return clk::now() + std::chrono::duration_cast<clk::duration>(std::chrono::duration<double>(s));
 }
+
+// Per-op timing reads the CPU cycle counter, not clock_gettime: rdtscp on x86 is ~7 ns and
+// cycle-resolution (the invariant TSC counts at a constant rate regardless of the core's
+// boost clock), versus ~25 ns of call overhead and coarser quantization from steady_clock.
+// arm64 reads the generic timer (cntvct_el0 -- only 24 MHz on Apple Silicon, so no finer
+// there). Calibrated once against steady_clock on x86.
+double g_ns_per_tick = 1.0;
+[[gnu::always_inline]] inline std::uint64_t hw_ticks() {
+#if defined(__x86_64__)
+  unsigned aux;
+  return __rdtscp(&aux);
+#elif defined(__aarch64__)
+  std::uint64_t v;
+  __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+  return v;
+#else
+  return static_cast<std::uint64_t>(clk::now().time_since_epoch().count());
+#endif
+}
+void calibrate_hw_ticks() {
+#if defined(__aarch64__)
+  std::uint64_t f;
+  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+  g_ns_per_tick = 1e9 / static_cast<double>(f);
+#elif defined(__x86_64__)
+  const auto c0 = clk::now();
+  const std::uint64_t t0 = hw_ticks();
+  while (clk::now() - c0 < std::chrono::milliseconds(200)) {
+  }
+  const std::uint64_t t1 = hw_ticks();
+  const auto c1 = clk::now();
+  g_ns_per_tick = std::chrono::duration<double, std::nano>(c1 - c0).count() /
+                  static_cast<double>(t1 - t0);
+#endif
+}
+
 template <class Op>
 void measure(const char* label, Op&& op) {
   for (auto w = after(0.3); clk::now() < w;) op();      // warmup
   std::vector<long long> ns;
-  ns.reserve(4'000'000);
+  ns.reserve(8'000'000);
   for (auto end = after(3.0); clk::now() < end;) {
-    const auto a = clk::now();
+    const std::uint64_t a = hw_ticks();
     op();
-    ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - a).count());
+    const std::uint64_t b = hw_ticks();
+    ns.push_back(static_cast<long long>(static_cast<double>(b - a) * g_ns_per_tick));
   }
   std::sort(ns.begin(), ns.end());
   const std::size_t n = ns.size();
@@ -82,6 +122,9 @@ int main(int argc, char** argv) {
 #ifdef __linux__
   { cpu_set_t set; CPU_ZERO(&set); CPU_SET(3, &set); (void)::sched_setaffinity(0, sizeof(set), &set); }
 #endif
+  // macOS: no core pinning -- raise the client's busy-poll priority too.
+  goblin::core::ring::set_busy_poll_thread_realtime();
+  calibrate_hw_ticks();  // calibrate the cycle counter on the (now-pinned) measuring core
 
   auto resp = RingClient::open(resp_ring.c_str(), std::chrono::seconds(5));
   auto sbe = SbeRingClient::open(sbe_ring.c_str(), std::chrono::seconds(5));

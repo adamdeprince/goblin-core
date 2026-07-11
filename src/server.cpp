@@ -637,6 +637,10 @@ template <class NetFn>
     return true;
   };
 
+  // macOS has no core pinning; raise this busy-poll thread's priority so the scheduler
+  // stops parking it mid-spin (a no-op elsewhere -- Linux uses taskset/isolcpus).
+  ring::set_busy_poll_thread_realtime();
+
   // Idle spins between ring requests: running network_iteration (poll + active
   // expire) every empty loop is a p99 footgun for pure-ring clients. Service the
   // network every 64th idle pass; rings still starve it by design when busy.

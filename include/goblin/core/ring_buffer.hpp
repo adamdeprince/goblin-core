@@ -57,9 +57,21 @@
 #include <immintrin.h>
 #endif
 
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
+
 namespace goblin::core::ring {
 
+// Cache-line size for false-sharing avoidance. Apple Silicon (M-series) uses 128-byte
+// L1/L2 lines and prefetches 128-byte pairs, so a 64-byte stride would still let the
+// producer's and consumer's indices share a prefetch pair and ping-pong; x86 is 64.
+#if defined(__APPLE__) && defined(__aarch64__)
+inline constexpr std::size_t kCacheLine = 128;
+#else
 inline constexpr std::size_t kCacheLine = 64;
+#endif
 inline constexpr std::uint32_t kMagic = 0x474E5247;  // 'GRNG'
 inline constexpr std::uint32_t kVersion = 1;
 
@@ -90,6 +102,16 @@ inline void cpu_relax() noexcept {
   __asm__ __volatile__("dbar 0" ::: "memory");
 #else
   __asm__ __volatile__("" ::: "memory");
+#endif
+}
+
+// macOS: request USER_INTERACTIVE QoS so the scheduler keeps this busy-poll on a
+// performance core at high priority. Apple Silicon has no core pinning; QoS is the
+// idiomatic lever -- unlike THREAD_TIME_CONSTRAINT (which throttles a spin loop) or two
+// SCHED_FIFO spinners (which contend for the few P-cores). Best-effort; a no-op off macOS.
+inline void set_busy_poll_thread_realtime() noexcept {
+#if defined(__APPLE__)
+  (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
 }
 
