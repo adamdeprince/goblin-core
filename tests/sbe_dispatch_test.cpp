@@ -4,8 +4,10 @@
 // ZRANK) end to end, including native-double scores and the Nil/Double/Int/Status/
 // Error reply selection.
 
+#include "goblin/core/command.hpp"
 #include "goblin/core/sbe_dispatch.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 
 #include "goblin_sbe/Append.h"
@@ -76,6 +78,10 @@
 #include "goblin_sbe/GoblinZWindow.h"
 #include "goblin_sbe/GoblinOptimize.h"
 #include "goblin_sbe/Info.h"
+#include "goblin_sbe/Eval.h"
+#include "goblin_sbe/EvalSha.h"
+#include "goblin_sbe/RespValueReply.h"
+#include "goblin_sbe/Script.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -417,13 +423,26 @@ std::string info_frame() {
   char buf[64]; sbe::Info z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
   return framed(buf, static_cast<std::uint32_t>(sbe::Info::sbeBlockAndHeaderLength()));
 }
+std::string eval_frame(std::uint8_t lang, std::string_view script,
+                       const std::vector<std::string_view>& keys,
+                       const std::vector<std::string_view>& args) {
+  char buf[8192]; sbe::Eval z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.language(lang);
+  auto& kg = z.keysCount(static_cast<std::uint16_t>(keys.size()));
+  for (const auto& k : keys) kg.next().putKey(k.data(), sv32(k));
+  auto& ag = z.argsCount(static_cast<std::uint16_t>(args.size()));
+  for (const auto& a : args) ag.next().putArg(a.data(), sv32(a));
+  z.putScript(script.data(), sv32(script));
+  return fin(buf, z);
+}
 
 // Dispatch a frame, assert it is fully consumed, hand the reply header + message to
 // `check`.
 template <class Check>
-void dispatch(Store& store, const std::string& frame, Check&& check) {
+void dispatch(Store& store, const std::string& frame, Check&& check,
+              const CommandExecutionOptions& options = {}) {
   std::string out;
-  const std::size_t consumed = sbe_dispatch_one(store, frame, out);
+  const std::size_t consumed = sbe_dispatch_one(store, frame, out, options);
   assert(consumed == frame.size());
   assert(!out.empty());
   std::uint32_t len = 0;
@@ -440,6 +459,25 @@ Msg decode(sbe::MessageHeader& hdr, char* msg, std::uint32_t len) {
   Msg m;
   m.wrapForDecode(msg, sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(), len);
   return m;
+}
+
+// Decode a RespValueReply into its flattened pre-order nodes.
+struct TNode { std::uint8_t type; std::int64_t iv; std::uint32_t cc; std::string bytes; };
+std::vector<TNode> decode_resp_value(sbe::MessageHeader& h, char* m, std::uint32_t l) {
+  auto r = decode<sbe::RespValueReply>(h, m, l);
+  std::vector<TNode> out;
+  auto& g = r.nodes();
+  while (g.hasNext()) {
+    g.next();
+    TNode n;
+    n.type = g.type();
+    n.iv = g.intValue();
+    n.cc = g.childCount();
+    const auto b = g.getBytesAsStringView();
+    n.bytes.assign(b.data(), b.size());
+    out.push_back(std::move(n));
+  }
+  return out;
 }
 
 }  // namespace
@@ -812,6 +850,44 @@ int main() {
     assert(!s.empty() && s.find("used_memory") != std::string_view::npos);
   });
 
+  // ---- Scripting (batch 7): EVAL over Lua, RESP results flattened to RespValueReply ----
+  ScriptEngine lua(store);
+  CommandExecutionOptions script_opts;
+  script_opts.script_engine = &lua;  // language 0 = Lua
+  // return 1 -> [int 1]
+  dispatch(store, eval_frame(0, "return 1", {}, {}), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto n = decode_resp_value(h, m, l);
+    assert(n.size() == 1 && n[0].type == 1 && n[0].iv == 1);
+  }, script_opts);
+  // return 'hi' -> [bulk "hi"]
+  dispatch(store, eval_frame(0, "return 'hi'", {}, {}), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto n = decode_resp_value(h, m, l);
+    assert(n.size() == 1 && n[0].type == 2 && n[0].bytes == "hi");
+  }, script_opts);
+  // return {1,2,3} -> [array(cc=3), int, int, int]
+  dispatch(store, eval_frame(0, "return {1,2,3}", {}, {}), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto n = decode_resp_value(h, m, l);
+    assert(n.size() == 4 && n[0].type == 5 && n[0].cc == 3);
+    assert(n[1].type == 1 && n[1].iv == 1 && n[3].iv == 3);
+  }, script_opts);
+  // nested: return {1, {2, 3}} -> [array(2), int1, array(2), int2, int3]
+  dispatch(store, eval_frame(0, "return {1, {2, 3}}", {}, {}), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto n = decode_resp_value(h, m, l);
+    assert(n.size() == 5 && n[0].type == 5 && n[0].cc == 2);
+    assert(n[2].type == 5 && n[2].cc == 2 && n[4].iv == 3);
+  }, script_opts);
+  // KEYS/ARGV + redis.call: the script SETs, then GET confirms the store changed
+  dispatch(store, eval_frame(0, "return redis.call('set', KEYS[1], ARGV[1])", {"sk"}, {"sv"}),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             const auto n = decode_resp_value(h, m, l);
+             assert(n.size() == 1 && n[0].bytes == "OK");
+           }, script_opts);
+  dispatch(store, key_frame<sbe::Get>("sk"), bulk_is("sv"));
+  // No engine configured -> ErrorReply
+  dispatch(store, eval_frame(0, "return 1", {}, {}), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
+  });
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -828,9 +904,9 @@ int main() {
     const std::string a = zcard_frame("board");
     const std::string b = ping_frame();
     std::string out;
-    assert(sbe_dispatch_one(store, a + b, out) == a.size());
+    assert(sbe_dispatch_one(store, a + b, out, CommandExecutionOptions{}) == a.size());
   }
 
-  std::puts("sbe dispatch OK: + admin OPTIMIZE/INFO (63 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: + scripting EVAL (flattened RespValue) -> full command surface");
   return 0;
 }

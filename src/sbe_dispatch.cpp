@@ -1,9 +1,15 @@
 #include "goblin/core/sbe_dispatch.hpp"
 
 #include "goblin/core/command.hpp"
+#include "goblin/core/luau_script.hpp"
+#include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/string_value.hpp"
+#include "goblin/core/tcl_script.hpp"
+#include "goblin/core/upython_script.hpp"
+#include "goblin/core/wren_script.hpp"
 
 #include "goblin_sbe/Append.h"
 #include "goblin_sbe/ArrayReply.h"
@@ -78,6 +84,11 @@
 // Admin (batch 6)
 #include "goblin_sbe/GoblinOptimize.h"
 #include "goblin_sbe/Info.h"
+// Scripting (batch 7)
+#include "goblin_sbe/Eval.h"
+#include "goblin_sbe/EvalSha.h"
+#include "goblin_sbe/RespValueReply.h"
+#include "goblin_sbe/Script.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -168,6 +179,9 @@ constexpr std::uint16_t kGoblinHSetGt = sbe::GoblinHSetGt::sbeTemplateId();
 constexpr std::uint16_t kGoblinClaim = sbe::GoblinClaim::sbeTemplateId();
 constexpr std::uint16_t kGoblinOptimize = sbe::GoblinOptimize::sbeTemplateId();
 constexpr std::uint16_t kInfo = sbe::Info::sbeTemplateId();
+constexpr std::uint16_t kEval = sbe::Eval::sbeTemplateId();
+constexpr std::uint16_t kEvalSha = sbe::EvalSha::sbeTemplateId();
+constexpr std::uint16_t kScript = sbe::Script::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -387,11 +401,149 @@ void reply_nullable_array(std::string& out, const std::vector<Opt>& items) {
   out.append(rbuf.data(), kSbeLenPrefix + total);
 }
 
+// --- Scripting (EVAL / EVALSHA / SCRIPT) ---------------------------------------
+
+enum class ScriptOp { eval, eval_sha, script };
+
+// Run a script verb on the engine selected by `lang`, writing its RESP reply to
+// `resp`. Returns false if that language's engine is not configured. The generic
+// lambda works because every engine exposes the same eval/eval_sha/script(args, out).
+bool run_script(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp op,
+                std::span<const std::string_view> args, std::string& resp) {
+  const auto call = [&](auto* engine) -> bool {
+    if (engine == nullptr) return false;
+    switch (op) {
+      case ScriptOp::eval: engine->eval(args, resp); break;
+      case ScriptOp::eval_sha: engine->eval_sha(args, resp); break;
+      case ScriptOp::script: engine->script(args, resp); break;
+    }
+    return true;
+  };
+  switch (lang) {
+    case 0: return call(o.script_engine);   // Lua
+    case 1: return call(o.luau_engine);
+    case 2: return call(o.wren_engine);
+    case 3: return call(o.tcl_engine);
+    case 4: return call(o.upython_engine);
+    case 5: return call(o.quickjs_engine);
+    default: return false;
+  }
+}
+
+// A flattened RESP node (pre-order); `bytes` views into the engine's RESP buffer.
+struct RespNode {
+  std::uint8_t type;  // 0 nil 1 int 2 bulk 3 status 4 error 5 array 6 map
+  std::int64_t int_value;
+  std::uint32_t child_count;
+  std::string_view bytes;
+};
+
+[[nodiscard]] long long parse_ll_line(std::string_view line) {
+  long long v = 0;
+  std::from_chars(line.data(), line.data() + line.size(), v);
+  return v;
+}
+
+// Parse one RESP value at d[pos] into pre-order nodes; return the position after it.
+std::size_t parse_resp(std::string_view d, std::size_t pos, std::vector<RespNode>& nodes) {
+  if (pos >= d.size()) return d.size();
+  const char t = d[pos++];
+  const std::size_t eol = d.find("\r\n", pos);
+  if (eol == std::string_view::npos) return d.size();
+  const std::string_view line = d.substr(pos, eol - pos);
+  const std::size_t after = eol + 2;
+  switch (t) {
+    case ':': nodes.push_back({1, parse_ll_line(line), 0, {}}); return after;
+    case '+': nodes.push_back({3, 0, 0, line}); return after;
+    case '-': nodes.push_back({4, 0, 0, line}); return after;
+    case '_': nodes.push_back({0, 0, 0, {}}); return after;  // RESP3 null
+    case '$': {
+      const long long len = parse_ll_line(line);
+      if (len < 0) { nodes.push_back({0, 0, 0, {}}); return after; }  // $-1 null
+      nodes.push_back({2, 0, 0, d.substr(after, static_cast<std::size_t>(len))});
+      return after + static_cast<std::size_t>(len) + 2;
+    }
+    case '*':
+    case '~': {  // array / set
+      const long long n = parse_ll_line(line);
+      if (n < 0) { nodes.push_back({0, 0, 0, {}}); return after; }  // *-1 null
+      nodes.push_back({5, 0, static_cast<std::uint32_t>(n), {}});
+      std::size_t p = after;
+      for (long long i = 0; i < n; ++i) p = parse_resp(d, p, nodes);
+      return p;
+    }
+    case '%': {  // map: n pairs -> 2n child nodes
+      const long long n = parse_ll_line(line);
+      nodes.push_back({6, 0, static_cast<std::uint32_t>(n < 0 ? 0 : n), {}});
+      std::size_t p = after;
+      for (long long i = 0; i < n * 2; ++i) p = parse_resp(d, p, nodes);
+      return p;
+    }
+    default:  // #bool  ,double  (bignum ... -> pass the raw line through as a bulk
+      nodes.push_back({2, 0, 0, line});
+      return after;
+  }
+}
+
+void reply_resp_value(std::string& out, const std::vector<RespNode>& nodes) {
+  if (nodes.size() > kMaxGroup) {
+    reply_error(out, "ERR", "script reply too large for the SBE wire");
+    return;
+  }
+  std::size_t body = 4;  // group header
+  for (const auto& n : nodes) body += 13 + 4 + n.bytes.size();  // type1+int8+cc4 + varData
+  std::vector<char>& rbuf =
+      array_scratch(kSbeLenPrefix + sbe::MessageHeader::encodedLength() + body + 16);
+  sbe::RespValueReply r;
+  r.wrapAndApplyHeader(rbuf.data(), kSbeLenPrefix, rbuf.size());
+  auto& g = r.nodesCount(static_cast<std::uint16_t>(nodes.size()));
+  for (const auto& n : nodes) {
+    g.next().type(n.type).intValue(n.int_value).childCount(n.child_count)
+        .putBytes(n.bytes.data(), static_cast<std::uint32_t>(n.bytes.size()));
+  }
+  const std::uint32_t total =
+      static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + r.encodedLength());
+  std::memcpy(rbuf.data(), &total, kSbeLenPrefix);
+  out.append(rbuf.data(), kSbeLenPrefix + total);
+}
+
+// Run `eargs` on the engine, flatten its RESP reply into a RespValueReply.
+void run_and_reply(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp op,
+                   std::span<const std::string_view> eargs, std::string& out) {
+  static thread_local std::string resp;
+  resp.clear();
+  if (!run_script(o, lang, op, eargs, resp)) {
+    reply_error(out, "ERR", "This Redis command is not available");
+    return;
+  }
+  static thread_local std::vector<RespNode> nodes;
+  nodes.clear();
+  parse_resp(resp, 0, nodes);
+  reply_resp_value(out, nodes);
+}
+
+// EVAL / EVALSHA share this: reconstruct the engine's [code, numkeys, keys..., args...]
+// argument vector (the engines re-parse numkeys) and run it.
+void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp op,
+                   std::string_view code, const std::vector<std::string_view>& keys,
+                   const std::vector<std::string_view>& argv, std::string& out) {
+  static thread_local std::string numkeys;
+  numkeys = std::to_string(keys.size());
+  static thread_local std::vector<std::string_view> eargs;
+  eargs.clear();
+  eargs.push_back(code);
+  eargs.push_back(numkeys);
+  eargs.insert(eargs.end(), keys.begin(), keys.end());
+  eargs.insert(eargs.end(), argv.begin(), argv.end());
+  run_and_reply(o, lang, op, eargs, out);
+}
+
 // Decode the request identified by `tid` straight out of `buf`, apply it to the
 // store, and append the typed SBE reply. This is the per-command pattern every new
 // command follows: wrapForDecode -> read native fields -> Store call -> reply<...>.
 void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
-            std::uint16_t block_length, std::uint16_t version, std::string& out) {
+            std::uint16_t block_length, std::uint16_t version, std::string& out,
+            const CommandExecutionOptions& options) {
   switch (tid) {
     case kPing:
       reply<sbe::StatusReply>(out, [](sbe::StatusReply& r) { r.putStatus("PONG", 4); });
@@ -1335,6 +1487,50 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       reply_bulk(out, render_server_info(store));
       break;
 
+    case kEval: {
+      sbe::Eval e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::uint8_t lang = e.language();
+      static thread_local std::vector<std::string_view> keys, argv;
+      keys.clear();
+      argv.clear();
+      auto& kg = e.keys();
+      while (kg.hasNext()) { kg.next(); keys.push_back(kg.getKeyAsStringView()); }
+      auto& ag = e.args();
+      while (ag.hasNext()) { ag.next(); argv.push_back(ag.getArgAsStringView()); }
+      const std::string_view script = e.getScriptAsStringView();
+      eval_dispatch(options, lang, ScriptOp::eval, script, keys, argv, out);
+      break;
+    }
+
+    case kEvalSha: {
+      sbe::EvalSha e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::uint8_t lang = e.language();
+      static thread_local std::vector<std::string_view> keys, argv;
+      keys.clear();
+      argv.clear();
+      auto& kg = e.keys();
+      while (kg.hasNext()) { kg.next(); keys.push_back(kg.getKeyAsStringView()); }
+      auto& ag = e.args();
+      while (ag.hasNext()) { ag.next(); argv.push_back(ag.getArgAsStringView()); }
+      const std::string_view sha = e.getShaAsStringView();
+      eval_dispatch(options, lang, ScriptOp::eval_sha, sha, keys, argv, out);
+      break;
+    }
+
+    case kScript: {
+      sbe::Script s;
+      s.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::uint8_t lang = s.language();
+      static thread_local std::vector<std::string_view> sargs;
+      sargs.clear();
+      auto& ag = s.args();
+      while (ag.hasNext()) { ag.next(); sargs.push_back(ag.getArgAsStringView()); }
+      run_and_reply(options, lang, ScriptOp::script, sargs, out);
+      break;
+    }
+
     default:
       reply_error(out, "ERR", "unknown command over the SBE wire");
       break;
@@ -1343,7 +1539,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
 
 }  // namespace
 
-std::size_t sbe_dispatch_one(Store& store, std::string_view bytes, std::string& out) {
+std::size_t sbe_dispatch_one(Store& store, std::string_view bytes, std::string& out,
+                             const CommandExecutionOptions& options) {
   if (bytes.size() < kSbeLenPrefix) {
     return 0;  // not even a length yet
   }
@@ -1362,7 +1559,7 @@ std::size_t sbe_dispatch_one(Store& store, std::string_view bytes, std::string& 
 
   try {
     sbe::MessageHeader hdr(buf, buflen);
-    handle(store, hdr.templateId(), buf, buflen, hdr.blockLength(), hdr.version(), out);
+    handle(store, hdr.templateId(), buf, buflen, hdr.blockLength(), hdr.version(), out, options);
   } catch (const std::exception&) {
     // Malformed / hostile frame (a bad length or var-data size trips SBE's bounds
     // check): consume it and resync, never crash.

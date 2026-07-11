@@ -88,6 +88,19 @@
       <data  name="value"   id="2" type="varData"/>
     </group>
   </sbe:message>
+  <!-- A script's arbitrary, possibly nested RESP result. SBE groups do not nest
+       arbitrarily, so the tree is flattened into a pre-order node sequence: each
+       array/map node declares childCount direct children that follow it. type:
+       0 nil, 1 int(intValue), 2 bulk(bytes), 3 status(bytes), 4 error(bytes),
+       5 array(childCount), 6 map(childCount pairs -> 2*childCount child nodes). -->
+  <sbe:message name="RespValueReply" id="10" description="flattened RESP tree (EVAL / EVALSHA)">
+    <group name="nodes" id="1" dimensionType="groupSizeEncoding">
+      <field name="type"       id="1" type="uint8"/>
+      <field name="intValue"   id="2" type="int64"/>
+      <field name="childCount" id="3" type="uint32"/>
+      <data  name="bytes"      id="4" type="varData"/>
+    </group>
+  </sbe:message>
 
   <!-- ================= Request messages (ids 16+, appended densely) ============== -->
   <sbe:message name="Ping" id="16" description="PING -> StatusReply PONG"/>
@@ -406,4 +419,35 @@
     <data  name="key"     id="2" type="varData"/>
   </sbe:message>
   <sbe:message name="Info" id="78" description="INFO -> BulkReply (server/memory fields)"/>
+
+  <!-- ========================= Scripting (batch 7, ids 79-81) ================== -->
+  <!-- One message per verb, with a language byte selecting the engine: 0 Lua,
+       1 Luau, 2 Wren, 3 Tcl, 4 MicroPython, 5 QuickJS. keys/args are native groups
+       (no numkeys to parse). Reply: RespValueReply (the script's RESP result). -->
+  <sbe:message name="Eval" id="79" description="EVAL/lang.EVAL script numkeys keys args -> RespValueReply">
+    <field name="language" id="1" type="uint8"/>
+    <group name="keys" id="2" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+    <group name="args" id="3" dimensionType="groupSizeEncoding">
+      <data name="arg" id="1" type="varData"/>
+    </group>
+    <data name="script" id="4" type="varData"/>
+  </sbe:message>
+  <sbe:message name="EvalSha" id="80" description="EVALSHA/lang.EVALSHA sha numkeys keys args -> RespValueReply">
+    <field name="language" id="1" type="uint8"/>
+    <group name="keys" id="2" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+    <group name="args" id="3" dimensionType="groupSizeEncoding">
+      <data name="arg" id="1" type="varData"/>
+    </group>
+    <data name="sha" id="4" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Script" id="81" description="SCRIPT/lang.SCRIPT subcommand args -> RespValueReply">
+    <field name="language" id="1" type="uint8"/>
+    <group name="args" id="2" dimensionType="groupSizeEncoding">
+      <data name="arg" id="1" type="varData"/>
+    </group>
+  </sbe:message>
 </sbe:messageSchema>

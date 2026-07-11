@@ -469,7 +469,7 @@ template <class NetFn>
       std::size_t off = 0;
       for (;;) {
         const std::size_t consumed = sbe_dispatch_one(
-            store, std::string_view(ep.inbuf).substr(off), ep.output);
+            store, std::string_view(ep.inbuf).substr(off), ep.output, exec_options);
         if (consumed == 0) {
           break;
         }
