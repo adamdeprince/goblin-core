@@ -5,7 +5,10 @@ benchmarked — **Redis 7.2.4, Redis 8.8, Valkey 9.1, and Dragonfly** — on bot
 memory consumption and single-core throughput. It holds a sorted set in **roughly
 half** the resident set of legacy Redis, stays the leanest of the field at every
 scale, and leads every sorted-set and hash operation measured. See the
-[x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md).
+[x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md),
+and — for a real-world run at scale — the
+[Lichess leaderboard replay](blogs/lichess-leaderboard.md): every rated game in Lichess
+history, 14.3 billion `ZADD`s into one sorted set, held in about half the memory of Redis.
 The initial implementation focuses on sorted sets and hashes with a vector-backed
 layout and a small RESP command surface.
 
