@@ -574,9 +574,82 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
 // Decode the request identified by `tid` straight out of `buf`, apply it to the
 // store, and append the typed SBE reply. This is the per-command pattern every new
 // command follows: wrapForDecode -> read native fields -> Store call -> reply<...>.
+// ---- WRONGTYPE guard -------------------------------------------------------
+// A key holds at most one type (one unified namespace), so a command that operates on
+// a specific type must be rejected when the key already holds a different one -- this
+// is command.cpp's central command_requires_type() check, mirrored for the SBE path.
+// It is not cosmetic: the store's typed accessors assume the caller already checked
+// (get_or_create_zset only *asserts* the type, and the assert is compiled out in a
+// release build), so a wrong-type command would reinterpret the wrong union member and
+// corrupt memory. SET/SETNX/MSET (clobber or create), MGET/DEL/EXISTS/TYPE/TTL
+// (type-agnostic), scripts, and the introspection/admin GOBLIN.* commands are exempt.
+[[nodiscard]] std::optional<KeyType> sbe_requires_type(std::uint16_t tid) {
+  switch (tid) {
+    case kZAdd: case kZCard: case kZScore: case kZRank: case kZRevRank:
+    case kZRem: case kZRemRangeByScore: case kZRange:
+    case kGoblinTdRescore: case kGoblinZWindow:
+      return KeyType::Zset;
+    case kHSet: case kHSetNx: case kHGet: case kHMGet: case kHDel:
+    case kHGetAll: case kHKeys: case kHVals: case kHLen: case kHExists:
+    case kHStrLen: case kHIncrBy: case kGoblinHCad: case kGoblinHSetGt:
+      return KeyType::Hash;
+    case kGet: case kGetSet: case kGetDel: case kStrLen: case kAppend:
+    case kIncr: case kDecr: case kIncrBy: case kDecrBy: case kIncrByFloat:
+    case kGetRange: case kSetRange:
+    case kGoblinCad: case kGoblinCaExpire: case kGoblinCas:
+    case kGoblinIncrEx: case kGoblinIncrBound: case kGoblinDecrPos:
+      return KeyType::String;
+    default:
+      return std::nullopt;
+  }
+}
+
+// The key a type-specific request operates on, for the WRONGTYPE check. For every
+// guarded message except the five below, the key is the leading varData -- at
+// header + block, encoded as [uint32 length][bytes] (the varData composite) -- so it
+// decodes generically without the message class. ZADD/ZREM/HSET/HMGET/HDEL lay the key
+// *after* their group; those return nullopt here and are guarded inline in the handler
+// (where the key is already decoded past the group). nullopt also for a truncated frame
+// (dropped downstream). Never emit a bogus key: a wrong offset would guard the wrong key.
+[[nodiscard]] std::optional<std::string_view> sbe_leading_key(
+    std::uint16_t tid, const char* buf, std::uint16_t block_length, std::uint64_t buflen) {
+  switch (tid) {
+    case kZAdd: case kZRem: case kHSet: case kHMGet: case kHDel:
+      return std::nullopt;  // key trails a group -> guarded inline in the handler
+    default:
+      break;
+  }
+  const std::size_t pos = static_cast<std::size_t>(kBodyOffset) + block_length;
+  if (pos + sizeof(std::uint32_t) > buflen) return std::nullopt;
+  std::uint32_t len = 0;
+  std::memcpy(&len, buf + pos, sizeof(len));
+  if (static_cast<std::uint64_t>(pos) + sizeof(len) + len > buflen) return std::nullopt;
+  return std::string_view(buf + pos + sizeof(len), len);
+}
+
+// Reply WRONGTYPE and return true when `key` exists holding a type other than
+// `required` (so the handler must stop); false when it is absent or the right type.
+[[nodiscard]] bool wrong_type(Store& store, KeyType required, std::string_view key,
+                              std::string& out) {
+  if (const auto actual = store.key_type(key); actual && *actual != required) {
+    reply_error(out, "WRONGTYPE", kWrongTypeMsg);
+    return true;
+  }
+  return false;
+}
+
 void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
             std::uint16_t block_length, std::uint16_t version, std::string& out,
             const CommandExecutionOptions& options) {
+  // Reject a command aimed at the wrong key type before it reaches a typed store
+  // accessor (see sbe_requires_type). The five group-then-key messages carry the key
+  // after their group, so they self-check inside their case with wrong_type().
+  if (const auto required = sbe_requires_type(tid)) {
+    if (const auto key = sbe_leading_key(tid, buf, block_length, buflen)) {
+      if (wrong_type(store, *required, *key, out)) return;
+    }
+  }
+
   switch (tid) {
     case kPing:
       reply<sbe::StatusReply>(out, [](sbe::StatusReply& r) { r.putStatus("PONG", 4); });
@@ -595,7 +668,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         group.next();
         members.emplace_back(group.score(), group.getMemberAsStringView());
       }
-      const std::string_view key = z.getKeyAsStringView();
+      const std::string_view key = z.getKeyAsStringView();  // key trails the group
+      if (wrong_type(store, KeyType::Zset, key, out)) break;
       long long added = 0;
       for (const auto& [score, member] : members) {
         added += store.zadd(key, score, member);  // native double, no re-parse
@@ -999,7 +1073,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         }
         entries.emplace_back(f, v);
       }
-      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view key = h.getKeyAsStringView();  // key trails the group
+      if (wrong_type(store, KeyType::Hash, key, out)) break;
       if (too_big) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
@@ -1048,7 +1123,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         g.next();
         fields.push_back(g.getFieldAsStringView());
       }
-      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view key = h.getKeyAsStringView();  // key trails the group
+      if (wrong_type(store, KeyType::Hash, key, out)) break;
       static thread_local std::vector<std::optional<std::string_view>> values;
       values.clear();
       for (const auto& f : fields) values.push_back(store.hget(key, f));
@@ -1066,7 +1142,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         g.next();
         fields.push_back(g.getFieldAsStringView());
       }
-      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view key = h.getKeyAsStringView();  // key trails the group
+      if (wrong_type(store, KeyType::Hash, key, out)) break;
       long long removed = 0;
       for (const auto& f : fields) removed += store.hdel(key, f) ? 1 : 0;
       reply_int(out, removed);
@@ -1173,7 +1250,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         g.next();
         members.push_back(g.getMemberAsStringView());
       }
-      const std::string_view key = z.getKeyAsStringView();
+      const std::string_view key = z.getKeyAsStringView();  // key trails the group
+      if (wrong_type(store, KeyType::Zset, key, out)) break;
       reply_int(out, store.zrem(key, std::span<const std::string_view>(members)));
       break;
     }
@@ -1343,7 +1421,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       static thread_local std::vector<std::pair<std::string_view, double>> best;
       best.clear();
       best.reserve(std::min<std::size_t>(k, 4096));
-      const auto push = [&best, k](std::string_view name, double s) {
+      const auto push = [k](std::string_view name, double s) {  // `best` is static: use it directly, don't capture
         std::size_t j = 0;
         if (best.size() < k) {
           best.emplace_back(name, s);

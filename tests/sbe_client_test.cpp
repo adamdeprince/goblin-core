@@ -6,6 +6,7 @@
 
 #include "goblin/core/sbe_ring_client.hpp"
 
+#include <csignal>  // kill / SIGTERM (not transitively included via <sys/wait.h> on macOS)
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>

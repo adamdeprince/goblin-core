@@ -30,8 +30,11 @@ find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(_goblin_core src/goblin_core_ext.cpp)
 target_compile_features(_goblin_core PRIVATE cxx_std_23)
-# The header-only ring client lives in the parent repo's include/ tree.
-target_include_directories(_goblin_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# The header-only SBE ring client lives in the parent repo's include/ tree; the
+# generated SBE codecs it includes (goblin_sbe/*.h) live under sbe/generated/.
+target_include_directories(_goblin_core PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../sbe/generated)
 
 # Drop the extension into the package directory so it is importable in place.
 set_target_properties(_goblin_core PROPERTIES

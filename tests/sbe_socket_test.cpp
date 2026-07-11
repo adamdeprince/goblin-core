@@ -14,6 +14,7 @@
 #include "goblin_sbe/StatusReply.h"
 #include "goblin_sbe/ZAdd.h"
 
+#include <csignal>  // kill / SIGTERM (not transitively included via <sys/wait.h> on macOS)
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>

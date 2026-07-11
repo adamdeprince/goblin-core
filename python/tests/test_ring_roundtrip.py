@@ -17,10 +17,12 @@ sys.path.insert(0, os.path.join(REPO, "python"))
 from goblin_core import Redis, ResponseError  # noqa: E402
 
 
-def start_server(binary, ring_path, sock_path):
+def start_server(binary, ring_paths, sock_path):
+    cmd = [binary, "--unixsocket", sock_path]
+    for ring_path in ring_paths:
+        cmd += ["--ring", ring_path, "64kb"]
     proc = subprocess.Popen(
-        [binary, "--unixsocket", sock_path, "--ring", ring_path, "64kb"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return proc
 
@@ -33,8 +35,11 @@ def main():
 
     tmp = tempfile.mkdtemp(prefix="goblin-py-")
     ring_path = os.path.join(tmp, "ring")
+    # A ring is a single-writer channel and the SBE handshake is per-connection, so a
+    # second concurrent client needs its own ring rather than sharing the first one.
+    ring2_path = os.path.join(tmp, "ring2")
     sock_path = os.path.join(tmp, "sock")
-    proc = start_server(binary, ring_path, sock_path)
+    proc = start_server(binary, [ring_path, ring2_path], sock_path)
     try:
         r = Redis(ring_path, connect_timeout=5.0)
 
@@ -126,8 +131,8 @@ def main():
         except ResponseError as exc:
             assert "WRONGTYPE" in str(exc)
 
-        # decode_responses gives str out
-        r2 = Redis(ring_path, decode_responses=True)
+        # decode_responses gives str out (its own ring -- see ring2_path above)
+        r2 = Redis(ring2_path, decode_responses=True)
         r2.set("d", "hello")
         assert r2.get("d") == "hello"
         assert r2.type("d") == "string"

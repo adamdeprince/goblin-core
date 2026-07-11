@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <stdexcept>
 #include <iosfwd>
 #include <memory>
 #include <new>
@@ -580,7 +581,13 @@ class Keyspace {
   [[nodiscard]] ZSet& get_or_create_zset(std::string_view key,
                                          const ZSetOptions* zset_options) {
     if (const auto id = find_id(key)) {
-      assert(types_[*id] == static_cast<std::uint8_t>(KeyType::Zset));
+      // The dispatch layer (command.cpp / sbe_dispatch.cpp) rejects a wrong-type key
+      // with WRONGTYPE before we get here. Defence in depth: never reinterpret the
+      // union member on a type mismatch -- in a release build the assert vanishes and
+      // that is silent memory corruption. Fail loud instead of relying on the assert.
+      if (types_[*id] != static_cast<std::uint8_t>(KeyType::Zset)) {
+        throw std::logic_error("get_or_create_zset on a key that is not a zset");
+      }
       return objects_[*id].zset;
     }
     const auto id = create_key(key, KeyType::Zset);
@@ -608,7 +615,11 @@ class Keyspace {
   }
   [[nodiscard]] Hash& get_or_create_hash(std::string_view key) {
     if (const auto id = find_id(key)) {
-      assert(types_[*id] == static_cast<std::uint8_t>(KeyType::Hash));
+      // See get_or_create_zset: fail loud on a type mismatch rather than reinterpret
+      // the union in a release build (where the assert is compiled out).
+      if (types_[*id] != static_cast<std::uint8_t>(KeyType::Hash)) {
+        throw std::logic_error("get_or_create_hash on a key that is not a hash");
+      }
       return *objects_[*id].hash;
     }
     const auto id = create_key(key, KeyType::Hash);

@@ -1,18 +1,21 @@
 """goblin_core -- a redis-py-shaped client that talks to goblin-core over a
-shared-memory ring buffer instead of a socket.
+shared-memory ring buffer instead of a socket, speaking the SBE binary wire.
 
     from goblin_core import Redis
     r = Redis("/tmp/a", decode_responses=True)   # server: goblin-core --ring /tmp/a 64kb
     r.set("user:42", "alice")
     r.get("user:42")            # 'alice'
 
-The transport, the busy-poll (with the PAUSE/YIELD relax hint), and RESP parsing
-live in the C++ extension (`_goblin_core`); this module is the ergonomic surface.
+The transport, the busy-poll (with the PAUSE/YIELD relax hint), and the SBE
+encode/decode live in the C++ extension (`_goblin_core`), which wraps the C++
+SbeRingClient; this module is the ergonomic surface that turns each redis-py call
+into one already-encoded command for it.
 
-Only the redis-py methods whose commands goblin-core actually implements are
-provided -- there is no `lpush`/`sadd`/`xadd`, because the server has no lists,
-sets, or streams. A few `GOBLIN.*` native commands are exposed as extensions, and
-`execute_command(*args)` reaches anything the server understands.
+SBE is typed per command, so this is a drop-in *only* for what goblin-core actually
+implements: the redis-py methods below plus the `GOBLIN.*` natives. There is no
+`lpush`/`sadd`/`xadd` (the server has no lists, sets, or streams), and
+`execute_command(*args)` reaches only commands goblin-core supports -- not the whole
+redis verb set.
 """
 from __future__ import annotations
 
@@ -79,8 +82,12 @@ class Redis:
         decode_responses: bool = False,
         connect_timeout: float = 2.0,
         command_timeout: float = 5.0,
+        client_buffer_bytes: int = 16 * 1024,
     ) -> None:
-        self._client = _goblin_core.Client(ring_path, int(connect_timeout * 1000))
+        # client_buffer_bytes is a floor: the C++ client grows it silently to the
+        # ring's capacity if the ring is larger, so a full record always fits.
+        self._client = _goblin_core.Client(
+            ring_path, int(connect_timeout * 1000), int(client_buffer_bytes))
         self._decode_responses = decode_responses
         self._timeout_ms = int(command_timeout * 1000)
         self._ring_path = ring_path
@@ -90,7 +97,11 @@ class Redis:
 
     # -- the low-level path everything else is built on -------------------------
     def execute_command(self, *args: EncodableT) -> Any:
-        """Encode and run one command; return the raw parsed reply (undecoded)."""
+        """Run one command over SBE; return the raw reply (undecoded).
+
+        args[0] is the command name; it is dispatched to the matching SBE message,
+        so only commands goblin-core implements are reachable (see the module docstring).
+        """
         return self._client.execute_command([_encode(a) for a in args], self._timeout_ms)
 
     def _decode(self, obj: Any) -> Any:
