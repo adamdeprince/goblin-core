@@ -55,6 +55,14 @@
 #include "goblin_sbe/HStrLen.h"
 #include "goblin_sbe/HVals.h"
 #include "goblin_sbe/NullableArrayReply.h"
+#include "goblin_sbe/Echo.h"
+#include "goblin_sbe/GetRange.h"
+#include "goblin_sbe/MGet.h"
+#include "goblin_sbe/MSet.h"
+#include "goblin_sbe/SetRange.h"
+#include "goblin_sbe/ZRem.h"
+#include "goblin_sbe/ZRemRangeByScore.h"
+#include "goblin_sbe/ZRevRank.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -123,11 +131,12 @@ std::string key_member_frame(std::string_view key, std::string_view member) {
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
-std::string zrange_frame(std::string_view key, long long start, long long stop, bool with_scores) {
+std::string zrange_frame(std::string_view key, long long start, long long stop, bool with_scores,
+                         bool rev = false) {
   char buf[512];
   sbe::ZRange z;
   z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
-  z.start(start).stop(stop).withScores(with_scores ? 1 : 0).rev(0);
+  z.start(start).stop(stop).withScores(with_scores ? 1 : 0).rev(rev ? 1 : 0);
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
@@ -269,6 +278,65 @@ std::string big_hset_frame(std::string_view key, std::string_view field, const s
       .putValue(value.data(), static_cast<std::uint32_t>(value.size()));
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
   return framed(buf.data(), static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zrem_frame(std::string_view key, const std::vector<std::string_view>& members) {
+  char buf[4096];
+  sbe::ZRem z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& g = z.membersCount(static_cast<std::uint16_t>(members.size()));
+  for (const auto& m : members) g.next().putMember(m.data(), static_cast<std::uint32_t>(m.size()));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zremrangebyscore_frame(std::string_view key, double min, bool min_excl, double max,
+                                   bool max_excl) {
+  char buf[512];
+  sbe::ZRemRangeByScore z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.min(min).minExclusive(min_excl ? 1 : 0).max(max).maxExclusive(max_excl ? 1 : 0);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string getrange_frame(std::string_view key, long long start, long long end) {
+  char buf[512];
+  sbe::GetRange z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.start(start).end(end);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string setrange_frame(std::string_view key, long long byte_offset, std::string_view value) {
+  char buf[4096];
+  sbe::SetRange z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.byteOffset(byte_offset);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string mset_frame(const std::vector<std::pair<std::string_view, std::string_view>>& pairs) {
+  char buf[4096];
+  sbe::MSet z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& g = z.pairsCount(static_cast<std::uint16_t>(pairs.size()));
+  for (const auto& [k, v] : pairs) {
+    g.next().putKey(k.data(), static_cast<std::uint32_t>(k.size()))
+            .putValue(v.data(), static_cast<std::uint32_t>(v.size()));
+  }
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string echo_frame(std::string_view message) {
+  char buf[4096];
+  sbe::Echo z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putMessage(message.data(), static_cast<std::uint32_t>(message.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
 // Dispatch a frame, assert it is fully consumed, hand the reply header + message to
@@ -537,6 +605,52 @@ int main() {
   dispatch(store, hfields_frame<sbe::HDel>("h", {"f1", "f2", "nope"}), int_is(2));
   dispatch(store, key_frame<sbe::HLen>("h"), int_is(1));  // f3 remains
 
+  // ---- Standard tail (batch 4) ----
+  dispatch(store, zadd_frame("lb", {{1.0, "a"}, {2.0, "b"}, {3.0, "c"}}), int_is(3));
+  // ZREVRANK: the highest score is rank 0
+  dispatch(store, key_member_frame<sbe::ZRevRank>("lb", "c"), int_is(0));
+  dispatch(store, key_member_frame<sbe::ZRevRank>("lb", "a"), int_is(2));
+  dispatch(store, key_member_frame<sbe::ZRevRank>("lb", "ghost"), is_nil);
+  // ZREVRANGE via ZRange rev=1 -> reverse order [c, b, a]
+  dispatch(store, zrange_frame("lb", 0, -1, false, true), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    auto r = decode<sbe::ArrayReply>(h, m, l);
+    std::vector<std::string> got;
+    auto& g = r.items();
+    while (g.hasNext()) { g.next(); const auto v = g.getValueAsStringView(); got.emplace_back(v.data(), v.size()); }
+    assert((got == std::vector<std::string>{"c", "b", "a"}));
+  });
+  // ZREM
+  dispatch(store, zrem_frame("lb", {"a", "b"}), int_is(2));
+  dispatch(store, key_frame<sbe::ZCard>("lb"), int_is(1));  // c remains
+  // ZREMRANGEBYSCORE [2,3] inclusive removes b and c
+  dispatch(store, zadd_frame("z2", {{1.0, "a"}, {2.0, "b"}, {3.0, "c"}, {4.0, "d"}}), int_is(4));
+  dispatch(store, zremrangebyscore_frame("z2", 2.0, false, 3.0, false), int_is(2));
+  dispatch(store, key_frame<sbe::ZCard>("z2"), int_is(2));  // a, d remain
+  // GETRANGE / SETRANGE
+  dispatch(store, set_frame("gr", "Hello World"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, getrange_frame("gr", 0, 4), bulk_is("Hello"));
+  dispatch(store, setrange_frame("gr", 6, "Redis"), int_is(11));
+  dispatch(store, key_frame<sbe::Get>("gr"), bulk_is("Hello Redis"));
+  // MSET / MGET (nullable array)
+  dispatch(store, mset_frame({{"m1", "v1"}, {"m2", "v2"}}), status_is("OK"));
+  dispatch(store, key_frame<sbe::Get>("m1"), bulk_is("v1"));
+  dispatch(store, keys_frame<sbe::MGet>({"m1", "m2", "missing"}),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::NullableArrayReply>(h, m, l);
+             std::vector<std::optional<std::string>> got;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const bool present = g.present() != 0;
+               const auto v = g.getValueAsStringView();
+               if (present) got.emplace_back(std::string(v.data(), v.size()));
+               else got.emplace_back(std::nullopt);
+             }
+             assert(got.size() == 3 && got[0] == "v1" && got[1] == "v2" && !got[2].has_value());
+           });
+  // ECHO
+  dispatch(store, echo_frame("hi there"), bulk_is("hi there"));
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -556,6 +670,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: zset + string + keyspace/TTL + hash (42 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: zset + string + keyspace/TTL + hash + tail (50 commands) -> Store (no parse) -> generic reply");
   return 0;
 }

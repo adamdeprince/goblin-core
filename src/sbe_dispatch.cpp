@@ -53,6 +53,15 @@
 #include "goblin_sbe/HStrLen.h"
 #include "goblin_sbe/HVals.h"
 #include "goblin_sbe/NullableArrayReply.h"
+// Standard-command tail (batch 4)
+#include "goblin_sbe/Echo.h"
+#include "goblin_sbe/GetRange.h"
+#include "goblin_sbe/MGet.h"
+#include "goblin_sbe/MSet.h"
+#include "goblin_sbe/SetRange.h"
+#include "goblin_sbe/ZRem.h"
+#include "goblin_sbe/ZRemRangeByScore.h"
+#include "goblin_sbe/ZRevRank.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -64,6 +73,7 @@
 #include <exception>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -118,6 +128,14 @@ constexpr std::uint16_t kHLen = sbe::HLen::sbeTemplateId();
 constexpr std::uint16_t kHExists = sbe::HExists::sbeTemplateId();
 constexpr std::uint16_t kHStrLen = sbe::HStrLen::sbeTemplateId();
 constexpr std::uint16_t kHIncrBy = sbe::HIncrBy::sbeTemplateId();
+constexpr std::uint16_t kZRevRank = sbe::ZRevRank::sbeTemplateId();
+constexpr std::uint16_t kZRem = sbe::ZRem::sbeTemplateId();
+constexpr std::uint16_t kZRemRangeByScore = sbe::ZRemRangeByScore::sbeTemplateId();
+constexpr std::uint16_t kGetRange = sbe::GetRange::sbeTemplateId();
+constexpr std::uint16_t kSetRange = sbe::SetRange::sbeTemplateId();
+constexpr std::uint16_t kMSet = sbe::MSet::sbeTemplateId();
+constexpr std::uint16_t kMGet = sbe::MGet::sbeTemplateId();
+constexpr std::uint16_t kEcho = sbe::Echo::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -308,9 +326,11 @@ void reply_scored_array(std::string& out,
   out.append(rbuf.data(), kSbeLenPrefix + total);
 }
 
-// HMGET / MGET -> an array whose elements may individually be nil (present=0).
-void reply_nullable_array(std::string& out,
-                          const std::vector<std::optional<std::string_view>>& items) {
+// HMGET / MGET -> an array whose elements may individually be nil (present=0). Opt is
+// std::optional<std::string_view> (HMGET, zero-copy store views) or
+// std::optional<std::string> (MGET, joined values) -- both expose ->data()/->size().
+template <class Opt>
+void reply_nullable_array(std::string& out, const std::vector<Opt>& items) {
   if (items.size() > kMaxGroup) {
     reply_error(out, "ERR", "result too large for one SBE array reply");
     return;
@@ -909,6 +929,136 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       } else {
         reply_error(out, "ERR", "hash value is not an integer or out of range");
       }
+      break;
+    }
+
+    case kZRevRank: {
+      sbe::ZRevRank z;
+      z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = z.getKeyAsStringView();
+      const std::string_view member = z.getMemberAsStringView();
+      const auto rank = store.zrevrank(key, member);
+      if (rank) {
+        reply_int(out, static_cast<long long>(*rank));
+      } else {
+        reply_nil(out);
+      }
+      break;
+    }
+
+    case kZRem: {
+      sbe::ZRem z;
+      z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> members;
+      members.clear();
+      auto& g = z.members();
+      while (g.hasNext()) {
+        g.next();
+        members.push_back(g.getMemberAsStringView());
+      }
+      const std::string_view key = z.getKeyAsStringView();
+      reply_int(out, store.zrem(key, std::span<const std::string_view>(members)));
+      break;
+    }
+
+    case kZRemRangeByScore: {
+      sbe::ZRemRangeByScore z;
+      z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const double min = z.min();
+      const bool min_excl = z.minExclusive() != 0;
+      const double max = z.max();
+      const bool max_excl = z.maxExclusive() != 0;
+      const std::string_view key = z.getKeyAsStringView();
+      reply_int(out, store.zremrangebyscore(key, min, min_excl, max, max_excl));
+      break;
+    }
+
+    case kGetRange: {
+      sbe::GetRange g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long start = g.start();
+      const long long end = g.end();
+      reply_bulk(out, store.getrange(g.getKeyAsStringView(), start, end));
+      break;
+    }
+
+    case kSetRange: {
+      sbe::SetRange s;
+      s.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long offset = s.byteOffset();
+      const std::string_view key = s.getKeyAsStringView();
+      const std::string_view value = s.getValueAsStringView();
+      if (offset < 0) {
+        reply_error(out, "ERR", "offset is out of range");
+        break;
+      }
+      const auto len = store.setrange(key, static_cast<std::size_t>(offset), value);
+      if (len) {
+        reply_int(out, static_cast<long long>(*len));
+      } else {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+      }
+      break;
+    }
+
+    case kMSet: {
+      sbe::MSet m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::pair<std::string_view, std::string_view>> pairs;
+      pairs.clear();
+      bool too_big = false;
+      auto& g = m.pairs();
+      while (g.hasNext()) {
+        g.next();
+        const auto k = g.getKeyAsStringView();
+        const auto v = g.getValueAsStringView();
+        if (v.size() > Store::max_value_bytes()) too_big = true;
+        pairs.emplace_back(k, v);
+      }
+      if (too_big) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      for (const auto& [k, v] : pairs) store.set(k, v);
+      reply_status(out, "OK");
+      break;
+    }
+
+    case kMGet: {
+      sbe::MGet m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> keys;
+      keys.clear();
+      auto& g = m.keys();
+      while (g.hasNext()) {
+        g.next();
+        keys.push_back(g.getKeyAsStringView());
+      }
+      const bool has_ttl = !store.ttl_empty();
+      const auto now = has_ttl ? store.now_ms() : std::uint64_t{0};
+      static thread_local std::vector<std::optional<std::string>> values;
+      values.clear();
+      for (const auto& k : keys) {
+        if (has_ttl) (void)store.purge_if_expired(k, now);
+        const auto v = store.get(k);  // nil for a missing or non-string key
+        if (v) {
+          std::string s;
+          s.reserve(v->size());
+          s.append(v->head);
+          s.append(v->tail);
+          values.push_back(std::move(s));
+        } else {
+          values.push_back(std::nullopt);
+        }
+      }
+      reply_nullable_array(out, values);
+      break;
+    }
+
+    case kEcho: {
+      sbe::Echo e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_bulk(out, e.getMessageAsStringView());
       break;
     }
 

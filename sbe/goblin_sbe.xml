@@ -290,4 +290,51 @@
     <data  name="key"   id="2" type="varData"/>
     <data  name="field" id="3" type="varData"/>
   </sbe:message>
+
+  <!-- ================ Standard-command tail (batch 4, ids 58-65) ================ -->
+  <sbe:message name="ZRevRank" id="58" description="ZREVRANK key member -> IntReply | NilReply">
+    <data name="key"    id="1" type="varData"/>
+    <data name="member" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ZRem" id="59" description="ZREM key member... -> IntReply (count removed)">
+    <group name="members" id="1" dimensionType="groupSizeEncoding">
+      <data name="member" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <!-- Native score bounds (min/max may be +/-inf); the exclusive flags are the "("
+       markers RESP parses from the ASCII form. -> IntReply -->
+  <sbe:message name="ZRemRangeByScore" id="60" description="ZREMRANGEBYSCORE key min max">
+    <field name="min"          id="1" type="double"/>
+    <field name="minExclusive" id="2" type="uint8"/>
+    <field name="max"          id="3" type="double"/>
+    <field name="maxExclusive" id="4" type="uint8"/>
+    <data  name="key"          id="5" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="GetRange" id="61" description="GETRANGE key start end -> BulkReply">
+    <field name="start" id="1" type="int64"/>
+    <field name="end"   id="2" type="int64"/>
+    <data  name="key"   id="3" type="varData"/>
+  </sbe:message>
+  <!-- `byteOffset` not `offset`: SBE flyweights already have a built-in offset(). -->
+  <sbe:message name="SetRange" id="62" description="SETRANGE key offset value -> IntReply | ErrorReply">
+    <field name="byteOffset" id="1" type="int64"/>
+    <data  name="key"        id="2" type="varData"/>
+    <data  name="value"      id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="MSet" id="63" description="MSET key value... -> StatusReply">
+    <group name="pairs" id="1" dimensionType="groupSizeEncoding">
+      <data name="key"   id="1" type="varData"/>
+      <data name="value" id="2" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="MGet" id="64" description="MGET key... -> NullableArrayReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="Echo" id="65" description="ECHO message -> BulkReply">
+    <data name="message" id="1" type="varData"/>
+  </sbe:message>
 </sbe:messageSchema>
