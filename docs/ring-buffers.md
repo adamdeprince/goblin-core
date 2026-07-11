@@ -145,3 +145,5 @@ another language or embed the producer/consumer directly.
 - [`goblin/core/ring_client.hpp`](../include/goblin/core/ring_client.hpp) — the
   header-only client.
 - [`src/ring_cli.cpp`](../src/ring_cli.cpp) — `redis-cli-ring`, a worked client.
+- [`python/`](../python/README.md) — `goblin_core`, a redis-py-compatible Python
+  client (nanobind) that drives a ring from Python.

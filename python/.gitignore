@@ -1,0 +1,8 @@
+# Build artifacts
+build/
+*.so
+*.dylib
+*.pyd
+__pycache__/
+*.egg-info/
+.venv/

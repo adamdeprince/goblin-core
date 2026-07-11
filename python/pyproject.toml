@@ -1,0 +1,25 @@
+# Editable/wheel build via scikit-build-core + nanobind. For a plain CMake build
+# (no pip), see CMakeLists.txt. Either way you need nanobind >= 2.12.
+#
+#   pip install ./python          # builds the extension and installs goblin_core
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "goblin-core"
+version = "0.1.0"
+description = "redis-py-compatible client for goblin-core over shared-memory ring buffers"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Goblin Reactor" }]
+keywords = ["redis", "ring-buffer", "shared-memory", "nanobind", "io_uring"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["goblin_core"]
+
+[tool.scikit-build.cmake]
+version = ">=3.25"
