@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Goblin Core SBE (Simple Binary Encoding) wire schema - the binary alternative to
+  RESP, switched on by the GOBL magic. Codegen is a maintainer step (like
+  `capnp compile` / gperf): run SbeTool on this file to regenerate the header-only
+  C++ codecs under sbe/generated/. Ordinary builds only compile the generated
+  headers - SBE C++ has no runtime library.
+
+  BACKWARD-COMPATIBLE EXTENSION (goblin adds commands weekly - this is the rule):
+    * templateId is a PERMANENT command id. A new command takes the next unused id,
+      APPENDED. Never renumber, never reuse a retired id. This file is the ledger.
+    * Fields within a message are APPEND-ONLY: a new arg is appended (a fixed field
+      after the block, or a group / var-data after the existing ones) tagged
+      sinceVersion="V". SBE decoders read the wire's blockLength and skip anything
+      they do not know, so a new server and an old client interoperate untouched.
+    * Bump the schema `version` on each additive change.
+    * Replies are a small fixed generic set reused by every command, so adding a
+      command is usually one request message + one handler + one test line.
+
+  ID PLAN:
+    * Reply messages (server -> client): ids 1-15 (generic, reused everywhere).
+    * Request messages (client -> server): ids 16+, appended densely so the
+      server's templateId switch compiles to a jump table.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="goblin_sbe"
+                   id="7"
+                   version="0"
+                   semanticVersion="1.0"
+                   description="Goblin Core SBE wire (binary alternative to RESP)"
+                   byteOrder="littleEndian">
+  <types>
+    <composite name="messageHeader" description="SBE message header (8 bytes)">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="templateId"  primitiveType="uint16"/>
+      <type name="schemaId"    primitiveType="uint16"/>
+      <type name="version"     primitiveType="uint16"/>
+    </composite>
+    <composite name="groupSizeEncoding" description="repeating-group dimensions">
+      <type name="blockLength" primitiveType="uint16"/>
+      <!-- SBE caps numInGroup at uint16 (65535 elements per group). A reply larger
+           than that (a huge-leaderboard ZRANGE 0 -1) must paginate/chunk; the
+           dispatch guards against overflow rather than truncating silently. -->
+      <type name="numInGroup"  primitiveType="uint16"/>
+    </composite>
+    <composite name="varData" description="variable-length byte string (binary-safe)">
+      <type name="length"  primitiveType="uint32" maxValue="1073741824"/>
+      <type name="varData" primitiveType="uint8" length="0"/>
+    </composite>
+  </types>
+
+  <!-- ================= Reply messages (ids 1-15, generic, reused) ================= -->
+  <!-- The vocabulary command.cpp actually emits: error / integer / bulk / null-bulk /
+       simple-string / array / withscores. Doubles ride native (no restringify).
+       Reserved-but-not-yet-defined: BulkReply=6 (added with the first command that
+       returns a single bulk string, e.g. GET). -->
+  <sbe:message name="NilReply"    id="1" description="null bulk (key/member absent)"/>
+  <sbe:message name="StatusReply" id="2" description="simple string, e.g. OK / PONG">
+    <data name="status" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ErrorReply"  id="3" description="error code + message">
+    <data name="code"    id="1" type="varData"/>
+    <data name="message" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="IntReply"    id="4" description="integer reply">
+    <field name="value" id="1" type="int64"/>
+  </sbe:message>
+  <sbe:message name="DoubleReply" id="5" description="native double reply (e.g. ZSCORE)">
+    <field name="value" id="1" type="double"/>
+  </sbe:message>
+  <sbe:message name="ArrayReply"  id="7" description="array of bulk strings (e.g. ZRANGE)">
+    <group name="items" id="1" dimensionType="groupSizeEncoding">
+      <data name="value" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="ScoredArrayReply" id="8" description="(member, native score) pairs (ZRANGE WITHSCORES)">
+    <group name="items" id="1" dimensionType="groupSizeEncoding">
+      <field name="score"  id="1" type="double"/>
+      <data  name="member" id="2" type="varData"/>
+    </group>
+  </sbe:message>
+
+  <!-- ================= Request messages (ids 16+, appended densely) ============== -->
+  <sbe:message name="Ping" id="16" description="PING -> StatusReply PONG"/>
+
+  <!-- ZADD key [score member]... : flags byte, members group, then the key. -->
+  <sbe:message name="ZAdd" id="17" description="ZADD key [score member]... -> IntReply">
+    <field name="flags" id="1" type="uint8"/>
+    <group name="members" id="2" dimensionType="groupSizeEncoding">
+      <field name="score" id="1" type="double"/>
+      <data  name="member" id="2" type="varData"/>
+    </group>
+    <data name="key" id="3" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="ZCard" id="18" description="ZCARD key -> IntReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="ZScore" id="19" description="ZSCORE key member -> DoubleReply | NilReply">
+    <data name="key"    id="1" type="varData"/>
+    <data name="member" id="2" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="ZRank" id="20" description="ZRANK key member -> IntReply | NilReply">
+    <data name="key"    id="1" type="varData"/>
+    <data name="member" id="2" type="varData"/>
+  </sbe:message>
+
+  <!-- ZRANGE key start stop [WITHSCORES]: fixed block (start, stop, flags) then key.
+       withScores=0 -> ArrayReply; withScores=1 -> ScoredArrayReply (native doubles).
+       The `rev` flag folds in ZREVRANGE. -->
+  <sbe:message name="ZRange" id="21" description="ZRANGE/ZREVRANGE key start stop [WITHSCORES]">
+    <field name="start"      id="1" type="int64"/>
+    <field name="stop"       id="2" type="int64"/>
+    <field name="withScores" id="3" type="uint8"/>
+    <field name="rev"        id="4" type="uint8"/>
+    <data  name="key"        id="5" type="varData"/>
+  </sbe:message>
+</sbe:messageSchema>

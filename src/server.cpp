@@ -1,11 +1,15 @@
 #include "goblin/core/server.hpp"
 
 #include "goblin/core/command.hpp"
+#include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/luau_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/script.hpp"
+#ifdef GOBLIN_HAS_SBE
+#include "goblin/core/sbe_dispatch.hpp"
+#endif
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
 #include "goblin/core/upython_script.hpp"
@@ -48,9 +52,15 @@ struct Client {
 // Server-side state for one shared-memory ring: the mapping plus a RESP parser
 // and reply buffer, mirroring a network Client but reading from the SQ and writing
 // to the CQ instead of a socket.
+// A ring/socket endpoint speaks RESP or the SBE binary wire, decided by the first
+// 4 bytes (see goblin_protocol.hpp). `undecided` until enough bytes arrive.
+enum class RingProto { undecided, resp, sbe };
+
 struct RingEndpoint {
   ring::Mapping mapping;
+  RingProto proto{RingProto::undecided};
   RespParser parser;
+  std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
   std::string output;
   std::vector<std::string_view> fields;
 };
@@ -428,15 +438,60 @@ template <class NetFn>
     if (!record) {
       return false;
     }
-    ep.parser.append(*record);
+    ep.inbuf.append(*record);
     sq.pop();
-    while (ep.parser.pop_into(ep.fields)) {
-      handle_command_into(store, ep.fields, ep.output, exec_options);
+
+    // Decide the protocol from the first 8 bytes: "GOBLINS!" -> the SBE binary wire,
+    // else RESP. Decide RESP the moment the prefix diverges so a short inline RESP
+    // command is never stalled waiting for a full magic that will not arrive.
+    if (ep.proto == RingProto::undecided) {
+#ifdef GOBLIN_HAS_SBE
+      switch (match_goblin_magic(ep.inbuf)) {
+        case MagicMatch::need_more:
+          return true;  // matches so far but incomplete -> wait for the next record
+        case MagicMatch::yes:
+          ep.proto = RingProto::sbe;
+          ep.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
+          break;
+        case MagicMatch::no:
+          ep.proto = RingProto::resp;
+          break;
+      }
+#else
+      ep.proto = RingProto::resp;
+#endif
     }
-    if (ep.parser.has_error()) {
-      resp::append_error(ep.output, ep.parser.error());
-      ep.parser.clear();  // resync the byte stream after a protocol error
+
+#ifdef GOBLIN_HAS_SBE
+    if (ep.proto == RingProto::sbe) {
+      // Frame and dispatch every complete SBE message in the accumulator; a partial
+      // trailing message stays buffered for the next record.
+      std::size_t off = 0;
+      for (;;) {
+        const std::size_t consumed = sbe_dispatch_one(
+            store, std::string_view(ep.inbuf).substr(off), ep.output);
+        if (consumed == 0) {
+          break;
+        }
+        off += consumed;
+      }
+      if (off > 0) {
+        ep.inbuf.erase(0, off);
+      }
+    } else
+#endif
+    {
+      ep.parser.append(ep.inbuf);
+      ep.inbuf.clear();
+      while (ep.parser.pop_into(ep.fields)) {
+        handle_command_into(store, ep.fields, ep.output, exec_options);
+      }
+      if (ep.parser.has_error()) {
+        resp::append_error(ep.output, ep.parser.error());
+        ep.parser.clear();  // resync the byte stream after a protocol error
+      }
     }
+
     if (!ep.output.empty()) {
       ep.mapping.cq_producer().send(
           ep.output, [&] { return !running.load(std::memory_order_relaxed); });

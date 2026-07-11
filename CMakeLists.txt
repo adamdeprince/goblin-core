@@ -308,6 +308,41 @@ if(GPERF_EXECUTABLE)
     VERBATIM)
 endif()
 
+# SBE (Simple Binary Encoding) wire (sbe/goblin_sbe.xml): the "GOBL"-magic binary
+# alternative to RESP. SBE C++ is header-only -- there is NO runtime library to
+# find_package; ordinary builds just compile the checked-in generated codecs under
+# sbe/generated/ (a maintainer step regenerates them with SbeTool, the same pattern
+# as gperf -> command_hash.hpp). Enabled whenever those headers are present.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated/goblin_sbe/ZAdd.h)
+  add_library(goblin_sbe_headers INTERFACE)
+  # SYSTEM so the machine-generated headers do not trip goblin_core's strict warnings;
+  # BUILD_INTERFACE only -- the generated headers are server-internal, not shipped API.
+  target_include_directories(goblin_sbe_headers SYSTEM INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated>)
+  target_link_libraries(goblin_core PRIVATE goblin_sbe_headers)
+  target_compile_definitions(goblin_core PRIVATE GOBLIN_HAS_SBE=1)
+  target_sources(goblin_core PRIVATE src/sbe_dispatch.cpp)
+  set_source_files_properties(src/sbe_dispatch.cpp PROPERTIES COMPILE_OPTIONS "-Wno-pedantic")
+  # goblin_core is a static lib in the install export, so even this header-only
+  # INTERFACE dep must be a member of the same export set (it installs nothing).
+  install(TARGETS goblin_sbe_headers EXPORT goblinCoreTargets)
+  message(STATUS "goblin-core: SBE wire enabled (header-only, sbe/generated)")
+
+  find_program(JAVA_EXECUTABLE java)
+  find_file(SBE_JAR sbe-all.jar PATHS $ENV{HOME}/tools /opt/sbe NO_DEFAULT_PATH)
+  if(JAVA_EXECUTABLE AND SBE_JAR)
+    add_custom_target(goblin_core_regen_sbe
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated
+      COMMAND ${JAVA_EXECUTABLE} -Dsbe.target.language=Cpp
+              -Dsbe.output.dir=${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated
+              -jar ${SBE_JAR} ${CMAKE_CURRENT_SOURCE_DIR}/sbe/goblin_sbe.xml
+      COMMENT "Regenerating sbe/generated/ from goblin_sbe.xml (SbeTool)"
+      VERBATIM)
+  endif()
+else()
+  message(STATUS "goblin-core: sbe/generated not present; building without the SBE wire")
+endif()
+
 if(MSVC)
   target_compile_options(goblin_core PRIVATE /W4)
 else()
@@ -352,6 +387,15 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  # SBE dispatch test (framed request -> Store -> generic reply).
+  if(TARGET goblin_sbe_headers)
+    add_executable(goblin_core_sbe_test tests/sbe_dispatch_test.cpp)
+    target_link_libraries(goblin_core_sbe_test PRIVATE goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_sbe_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_sbe COMMAND goblin_core_sbe_test)
+  endif()
 
   # End-to-end ring buffer: fork+exec the server with a ring, drive it through the
   # header-only RingClient across two processes.

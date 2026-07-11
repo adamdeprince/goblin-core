@@ -1,0 +1,117 @@
+// RESP vs SBE latency over the shared-memory ring, same server. Two rings on one
+// server: RESP (ring_client.hpp) and the SBE binary wire (sbe_ring_client.hpp,
+// switched on by the GOBL magic). Measures the pure protocol delta -- fixed framing
+// overhead (PING) and native-vs-parsed scores (ZADD 1 and 10 members).
+//
+//   sbe_vs_resp_ring <path-to-goblin-core>
+
+#include "goblin/core/ring_client.hpp"
+#include "goblin/core/sbe_ring_client.hpp"
+
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cstdio>
+#include <csignal>
+#include <cstring>
+#include <numeric>
+#include <string>
+#include <vector>
+
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
+
+using clk = std::chrono::steady_clock;
+using goblin::core::SbeRingClient;
+using goblin::core::ring::RingClient;
+
+namespace {
+clk::time_point after(double s) {
+  return clk::now() + std::chrono::duration_cast<clk::duration>(std::chrono::duration<double>(s));
+}
+template <class Op>
+void measure(const char* label, Op&& op) {
+  for (auto w = after(0.3); clk::now() < w;) op();      // warmup
+  std::vector<long long> ns;
+  ns.reserve(4'000'000);
+  for (auto end = after(3.0); clk::now() < end;) {
+    const auto a = clk::now();
+    op();
+    ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - a).count());
+  }
+  std::sort(ns.begin(), ns.end());
+  const std::size_t n = ns.size();
+  const double mean = std::accumulate(ns.begin(), ns.end(), 0.0) / n / 1000.0;
+  std::printf("%-18s  mean=%6.3f  p50=%6.3f  p90=%6.3f  p99=%6.3f  min=%6.3f us   (n=%zu)\n",
+              label, mean, ns[n / 2] / 1000.0, ns[std::size_t(n * 0.90)] / 1000.0,
+              ns[std::size_t(n * 0.99)] / 1000.0, ns[0] / 1000.0, n);
+}
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc < 2) { std::fprintf(stderr, "usage: sbe_vs_resp_ring <goblin-core>\n"); return 2; }
+  const char* server = argv[1];
+  const std::string tag = std::to_string(::getpid());
+  const std::string resp_ring = "/tmp/gcbench-resp-" + tag + ".ring";
+  const std::string sbe_ring = "/tmp/gcbench-sbe-" + tag + ".ring";
+  const std::string sock = "/tmp/gcbench-" + tag + ".sock";
+  ::unlink(resp_ring.c_str());
+  ::unlink(sbe_ring.c_str());
+
+  const pid_t pid = ::fork();
+  assert(pid >= 0);
+  if (pid == 0) {
+    const int dn = ::open("/dev/null", O_WRONLY);
+    if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
+#ifdef __linux__
+    // Pin the busy-polling server to core 2 (falls through if taskset is absent).
+    ::execl("/usr/bin/taskset", "taskset", "-c", "2", server, "--unixsocket", sock.c_str(),
+            "--ring", resp_ring.c_str(), "1mb", "--ring", sbe_ring.c_str(), "1mb",
+            static_cast<char*>(nullptr));
+#endif
+    ::execl(server, server, "--unixsocket", sock.c_str(),
+            "--ring", resp_ring.c_str(), "1mb",
+            "--ring", sbe_ring.c_str(), "1mb", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+#ifdef __linux__
+  { cpu_set_t set; CPU_ZERO(&set); CPU_SET(3, &set); (void)::sched_setaffinity(0, sizeof(set), &set); }
+#endif
+
+  auto resp = RingClient::open(resp_ring.c_str(), std::chrono::seconds(5));
+  auto sbe = SbeRingClient::open(sbe_ring.c_str(), std::chrono::seconds(5));
+  assert(resp && sbe);
+
+  std::puts("PING -- nothing to parse; measures pure framing overhead:");
+  const std::vector<std::string_view> ping_cmd = {"PING"};
+  measure("  RESP", [&] { (void)resp->command(ping_cmd); });
+  measure("  SBE", [&] { (void)sbe->ping(); });
+
+  std::puts("\nZADD, 1 member -- one score parsed (RESP) vs native double (SBE):");
+  const std::vector<std::string_view> zadd1 = {"ZADD", "k", "1.5", "m0"};
+  const std::vector<SbeRingClient::Scored> sbe1 = {{1.5, "m0"}};
+  measure("  RESP", [&] { (void)resp->command(zadd1); });
+  measure("  SBE", [&] { (void)sbe->zadd("k", sbe1); });
+
+  std::puts("\nZADD, 10 members -- 10 scores parsed (RESP) vs 10 native doubles (SBE):");
+  std::vector<std::string_view> zadd10 = {"ZADD", "k"};
+  static const char* scores[10] = {"1.1","2.2","3.3","4.4","5.5","6.6","7.7","8.8","9.9","10.1"};
+  static const char* mems[10]   = {"m0","m1","m2","m3","m4","m5","m6","m7","m8","m9"};
+  for (int i = 0; i < 10; ++i) { zadd10.push_back(scores[i]); zadd10.push_back(mems[i]); }
+  std::vector<SbeRingClient::Scored> sbe10;
+  for (int i = 0; i < 10; ++i) sbe10.push_back({1.1 * (i + 1), mems[i]});
+  measure("  RESP", [&] { (void)resp->command(zadd10); });
+  measure("  SBE", [&] { (void)sbe->zadd("k", sbe10); });
+
+  ::kill(pid, SIGTERM);
+  int status = 0;
+  ::waitpid(pid, &status, 0);
+  ::unlink(resp_ring.c_str());
+  ::unlink(sbe_ring.c_str());
+  ::unlink(sock.c_str());
+  return 0;
+}
