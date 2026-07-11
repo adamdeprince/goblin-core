@@ -1365,11 +1365,21 @@ void execute_command_into(Store& store,
 
     case CommandType::hset: {
       const auto& key = command.args[0];
-      long long added = 0;
-      for (std::size_t i = 1; i < command.args.size(); i += 2) {
-        added += store.hset(key, command.args[i], command.args[i + 1]);
+      // Common case: HSET k f v -- skip the multi-field vector.
+      if (command.args.size() == 3) {
+        resp::append_integer(
+            out, store.hset(key, command.args[1], command.args[2]));
+        return;
       }
-      resp::append_integer(out, added);
+      // Multi-field: one keyspace lookup, reserve, then set each pair.
+      static thread_local std::vector<std::pair<std::string_view, std::string_view>>
+          pairs;
+      pairs.clear();
+      pairs.reserve((command.args.size() - 1) / 2);
+      for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
+        pairs.emplace_back(command.args[i], command.args[i + 1]);
+      }
+      resp::append_integer(out, store.hset_many(key, pairs));
       return;
     }
 

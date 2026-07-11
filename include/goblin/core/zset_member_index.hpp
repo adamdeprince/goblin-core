@@ -264,6 +264,49 @@ class MemberIndex {
     return {&slots_[index].meta, true};
   }
 
+  // Single-hash upsert: one existence probe, and on miss one insert-slot probe
+  // after ensuring capacity. `on_existing(meta)` runs for a hit; `make_meta()`
+  // runs only on insert (so the caller can push storage only when needed).
+  // Returns true if a new slot was inserted.
+  template <class OnExisting, class MakeMeta>
+  bool find_or_emplace(std::string_view member, OnExisting&& on_existing,
+                       MakeMeta&& make_meta) {
+    const auto hash = hash_member(member);
+    if (capacity_ != 0) {
+      const auto existing = find_index_with_hash(member, hash);
+      if (existing != npos) {
+        on_existing(slots_[existing].meta);
+        return false;
+      }
+    }
+    ensure_capacity_for_insert();
+    // Rehash (if any) preserves absence; hash is still valid for bucketing.
+    const auto index = find_insert_index(hash);
+    const auto old_control = control_[index];
+    slots_[index].meta = make_meta();
+    set_control(index, fingerprint(hash));
+    ++size_;
+    if (old_control == kDeleted) {
+      --tombstones_;
+    }
+    return true;
+  }
+
+  // Insert a member the caller has already proven absent (e.g. HSETNX after a
+  // negative find). One hash + one insert-slot probe; no existence walk.
+  void insert_absent(std::string_view member, Meta meta) {
+    ensure_capacity_for_insert();
+    const auto hash = hash_member(member);
+    const auto index = find_insert_index(hash);
+    const auto old_control = control_[index];
+    slots_[index].meta = meta;
+    set_control(index, fingerprint(hash));
+    ++size_;
+    if (old_control == kDeleted) {
+      --tombstones_;
+    }
+  }
+
   bool erase(std::string_view member) {
     const auto index = find_index(member);
     if (index == npos) {
@@ -297,6 +340,15 @@ class MemberIndex {
     for (size_type i = 0; i < capacity_; ++i) {
       writer.u32(static_cast<std::uint32_t>(slots_[i].meta.get()));
     }
+  }
+
+  // Empty the table in place (Hash freelist recycle, cleanup_after_removal).
+  void clear() {
+    control_.clear();
+    slots_.clear();
+    size_ = 0;
+    tombstones_ = 0;
+    capacity_ = 0;
   }
 
   // Restore a table dumped by write_accelerator(). growth_ is left as
@@ -407,14 +459,6 @@ class MemberIndex {
       hash ^= hash >> std::numeric_limits<hash_type>::digits;
     }
     return static_cast<hash_type>(hash);
-  }
-
-  void clear() {
-    control_.clear();
-    slots_.clear();
-    size_ = 0;
-    tombstones_ = 0;
-    capacity_ = 0;
   }
 
   void ensure_capacity_for_insert() {

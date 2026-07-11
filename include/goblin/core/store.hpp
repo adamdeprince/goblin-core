@@ -481,7 +481,10 @@ class Keyspace {
  public:
   explicit Keyspace(HashOptions hash_options)
       : index_(&storage_), hash_options_(hash_options) {}
-  ~Keyspace() { destroy_all(); }
+  ~Keyspace() {
+    destroy_all();
+    drain_hash_freelist();
+  }
   Keyspace(const Keyspace&) = delete;
   Keyspace& operator=(const Keyspace&) = delete;
   // Movable (an empty store is move-assigned in a few places). The member index
@@ -492,17 +495,20 @@ class Keyspace {
         index_(std::move(other.index_)),
         objects_(std::move(other.objects_)),
         types_(std::move(other.types_)),
-        hash_options_(other.hash_options_) {
+        hash_options_(other.hash_options_),
+        hash_freelist_(std::move(other.hash_freelist_)) {
     index_.set_members(&storage_);
   }
   Keyspace& operator=(Keyspace&& other) noexcept {
     if (this != &other) {
       destroy_all();
+      drain_hash_freelist();
       storage_ = std::move(other.storage_);
       index_ = std::move(other.index_);
       objects_ = std::move(other.objects_);
       types_ = std::move(other.types_);
       hash_options_ = other.hash_options_;
+      hash_freelist_ = std::move(other.hash_freelist_);
       index_.set_members(&storage_);
     }
     return *this;
@@ -623,11 +629,12 @@ class Keyspace {
       return *objects_[*id].hash;
     }
     const auto id = create_key(key, KeyType::Hash);
-    objects_[id].hash = new Hash(hash_options_);
+    objects_[id].hash = alloc_hash();
     return *objects_[id].hash;
   }
   [[nodiscard]] Hash& place_loaded_hash(std::string_view key, Hash&& hash) {
     const auto id = create_key(key, KeyType::Hash);
+    // Loaded hashes keep their own options/growth; take ownership of the object.
     objects_[id].hash = new Hash(std::move(hash));
     return *objects_[id].hash;
   }
@@ -785,7 +792,8 @@ class Keyspace {
         objects_[id].zset.~ZSet();
         break;
       case KeyType::Hash:
-        delete objects_[id].hash;
+        recycle_hash(objects_[id].hash);
+        objects_[id].hash = nullptr;
         break;
     }
   }
@@ -803,6 +811,7 @@ class Keyspace {
         break;
       case KeyType::Hash:
         objects_[dst].hash = objects_[src].hash;
+        objects_[src].hash = nullptr;
         break;
     }
   }
@@ -811,6 +820,30 @@ class Keyspace {
     for (std::uint64_t id = 0; id < types_.size(); ++id) {
       destroy_object(id);
     }
+  }
+
+  // Reuse emptied Hash objects across key lifetimes so create/delete churn does
+  // not thrash the allocator and recycled objects stay hot in cache.
+  [[nodiscard]] Hash* alloc_hash() {
+    if (!hash_freelist_.empty()) {
+      Hash* h = hash_freelist_.back();
+      hash_freelist_.pop_back();
+      return h;  // already clear()'d on recycle
+    }
+    return new Hash(hash_options_);
+  }
+  void recycle_hash(Hash* h) noexcept {
+    if (h == nullptr) {
+      return;
+    }
+    h->clear();
+    hash_freelist_.push_back(h);
+  }
+  void drain_hash_freelist() noexcept {
+    for (Hash* h : hash_freelist_) {
+      delete h;
+    }
+    hash_freelist_.clear();
   }
 
   void maybe_compact() {
@@ -845,6 +878,7 @@ class Keyspace {
   std::deque<KeyObjectSlot> objects_;
   std::vector<std::uint8_t> types_;
   HashOptions hash_options_;
+  std::vector<Hash*> hash_freelist_;
 };
 
 struct StoreOptions {
@@ -863,6 +897,9 @@ struct StoreOptions {
   // saving is ~flat with size, but the O(n) blob scan makes ZSCORE ~2.5x at 32
   // and perverse (>6x) by 128, so we promote to the O(log n) structure there.
   std::size_t zset_listpack_max_entries{32};
+  // Max fields a hash keeps as a compact listpack before promoting to
+  // swiss+arena (0 disables). Same knee as zsets: O(n) scan is fine to 32.
+  std::size_t hash_listpack_max_entries{32};
   // Zsets created before the overflow table are kept in a small inline table
   // for fast key resolution on multi-key workloads.
   std::size_t inline_zset_limit{32};
@@ -1184,6 +1221,11 @@ class Store {
 
   [[nodiscard]] int hset(std::string_view key, std::string_view field,
                          std::string_view value);
+  // Multi-field HSET: one keyspace lookup, optional reserve, then set each pair.
+  // Returns the number of newly created fields (Redis HSET integer reply).
+  [[nodiscard]] long long hset_many(
+      std::string_view key,
+      std::span<const std::pair<std::string_view, std::string_view>> fields);
   [[nodiscard]] int hsetnx(std::string_view key, std::string_view field,
                            std::string_view value);
   [[nodiscard]] std::optional<std::string_view> hget(

@@ -2382,6 +2382,78 @@ void test_zset_listpack_mode() {
   assert(shrink.score("m11") == 11.0);
 }
 
+// Hash listpack: tiny hashes stay as one blob, promote past the threshold, and
+// demote on compact/shrink -- same dual as zsets. Entry is u16 field/value lens.
+void test_hash_listpack_mode() {
+  using goblin::core::Hash;
+  using goblin::core::HashOptions;
+  using goblin::core::HashListpack;
+
+  static_assert(sizeof(HashListpack) == sizeof(void*));
+
+  // Direct blob ops.
+  HashListpack lp;
+  assert(lp.set("a", "1", 8).added);
+  assert(!lp.set("a", "2", 8).added);  // update
+  assert(lp.get("a") == "2");
+  assert(lp.set("b", "xx", 8).added);
+  assert(lp.size() == 2 && lp.contains("b"));
+  assert(lp.erase("a") && !lp.contains("a") && lp.size() == 1);
+  // Empty field/value are legal.
+  assert(lp.set("", "", 8).added);
+  assert(lp.get("") == "" && lp.size() == 2);
+  // Past max_entries signals promotion.
+  HashListpack limit;
+  for (int i = 0; i < 4; ++i) {
+    assert(limit.set("f" + std::to_string(i), "v", 4).added);
+  }
+  assert(limit.set("overflow", "v", 4).needs_full);
+
+  // Hash dual-rep with a low threshold.
+  const HashOptions opts8{.listpack_max_entries = 8};
+  Hash h(opts8);
+  assert(h.set("name", "alice") == 1);
+  assert(h.set("age", "30") == 1);
+  assert(h.set("name", "bob") == 0);
+  assert(h.size() == 2 && h.get("name") == "bob");
+  assert(h.field_index_capacity() == 0);  // still listpack
+
+  // Grow past the limit -> promotes; ops stay correct.
+  for (int i = 0; i < 20; ++i) {
+    assert(h.set("f" + std::to_string(i), "v" + std::to_string(i)) == 1);
+  }
+  assert(h.size() == 22);
+  assert(h.get("name") == "bob" && h.get("f10") == "v10");
+  assert(h.field_index_capacity() > 0);
+
+  // Shrink back below the limit and compact -> demotes to listpack.
+  for (int i = 0; i < 16; ++i) {
+    assert(h.erase("f" + std::to_string(i)));
+  }
+  assert(h.size() == 6);
+  h.compact();
+  assert(h.field_index_capacity() == 0);
+  assert(h.get("name") == "bob" && h.get("f19") == "v19");
+
+  // Save/load round-trip keeps a small hash as listpack (no swiss).
+  Hash small(opts8);
+  assert(small.set("x", "1") == 1 && small.set("y", "2") == 1);
+  assert(small.field_index_capacity() == 0);
+  std::string buffer;
+  goblin::core::snapshot::Writer writer(buffer);
+  small.save(writer, /*with_accelerator=*/false);
+  goblin::core::snapshot::Reader reader(buffer);
+  Hash loaded = Hash::load(reader, /*use_accelerator=*/false, opts8);
+  assert(loaded.field_index_capacity() == 0);
+  assert(loaded.size() == 2 && loaded.get("x") == "1" && loaded.get("y") == "2");
+
+  // Value-grow rewrite (different length) works on the listpack path.
+  Hash grow(opts8);
+  assert(grow.set("k", "ab") == 1);
+  assert(grow.set("k", "abcdefgh") == 0);
+  assert(grow.get("k") == "abcdefgh");
+}
+
 void test_block_hint_rank_cache_lazy_offset_repair() {
   goblin::core::ZSetMemberStorage storage;
   goblin::core::ZSetScoreIndex index(
@@ -4168,6 +4240,7 @@ int main() {
   test_compact_listpack();
   test_key_arena();
   test_zset_listpack_mode();
+  test_hash_listpack_mode();
   test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();

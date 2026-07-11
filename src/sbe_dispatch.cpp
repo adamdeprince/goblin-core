@@ -1060,6 +1060,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kHSet: {
       sbe::HSet h;
       h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      // Key trails the entries group on the wire, so we must scan entries first.
       static thread_local std::vector<std::pair<std::string_view, std::string_view>> entries;
       entries.clear();
       bool too_big = false;
@@ -1073,15 +1074,16 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         }
         entries.emplace_back(f, v);
       }
-      const std::string_view key = h.getKeyAsStringView();  // key trails the group
+      const std::string_view key = h.getKeyAsStringView();
+      // Fuse WRONGTYPE with the create path: one keyspace probe. wrong_type()
+      // only rejects non-hash existing keys; absent keys fall through to
+      // hset_many → get_or_create_hash.
       if (wrong_type(store, KeyType::Hash, key, out)) break;
       if (too_big) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      long long added = 0;
-      for (const auto& [f, v] : entries) added += store.hset(key, f, v);
-      reply_int(out, added);
+      reply_int(out, store.hset_many(key, entries));
       break;
     }
 

@@ -15,15 +15,16 @@
 
 namespace goblin::core {
 
-// Packed field+value storage for a hash. Each entry stores its field bytes
-// immediately followed by its value bytes as one contiguous blob in a chunked
-// arena, addressed by a single struct-of-arrays reference:
+// Packed field+value storage for a hash. Each entry is addressed by a
+// struct-of-arrays reference:
 //
-//     offset (u32) + field_len (u16) + value_len (u16)  = 8 bytes / field
+//     field_offset (u32) + value_offset (u32) + field_len (u16) + value_len (u16)
+//         = 12 bytes / field
 //
-// (Leaner than the zset's 14-byte member reference: one offset locates both the
-// field and the value, no f64 score, no score-text cache.) The field bytes back
-// the field->id swiss index (view(id)); the value bytes back HGET.
+// Fresh inserts place field and value contiguously (value_offset = field_offset +
+// field_len) for HGET locality. A value *grow* re-appends only the value bytes and
+// leaves the field where it is -- no re-copy of the field on the update path.
+// Same-or-smaller value updates still overwrite in place.
 //
 // Both field and value are capped at 64 KiB - 1 (the u16 length, same as zset
 // members). Larger values belong in a blob store (goblin-store.dev) with the
@@ -32,12 +33,13 @@ namespace goblin::core {
 // The arena chunk size is configurable (--hash-chunk-bytes): a power of two at
 // least kMinChunkBytes (large enough to hold the biggest field+value blob).
 // Smaller chunks lower the floor for hashes of big blobs; larger chunks reduce
-// boundary skips. A blob never straddles a chunk (so value() is contiguous).
+// boundary skips. A blob never straddles a chunk (so field()/value() are
+// contiguous).
 //
-// Fragmentation: a same-or-smaller value update overwrites in place (no arena
-// growth); a larger value re-appends the blob and orphans the old bytes; a
-// removed field orphans its blob. Orphaned (dead) bytes are tracked so the Hash
-// can auto-compact once they exceed the live bytes.
+// Fragmentation: a same-or-smaller value update overwrites in place; a larger
+// value re-appends the value only and orphans the old value bytes; a removed
+// field orphans field+value. Orphaned (dead) bytes are tracked so the Hash can
+// auto-compact once they exceed the live bytes.
 class HashStorage {
  public:
   using size_type = std::size_t;
@@ -63,8 +65,8 @@ class HashStorage {
   }
 
   [[nodiscard]] size_type chunk_bytes() const noexcept { return chunk_bytes_; }
-  [[nodiscard]] bool empty() const noexcept { return offsets_.empty(); }
-  [[nodiscard]] size_type size() const noexcept { return offsets_.size(); }
+  [[nodiscard]] bool empty() const noexcept { return field_offsets_.empty(); }
+  [[nodiscard]] size_type size() const noexcept { return field_offsets_.size(); }
   [[nodiscard]] size_type byte_size() const noexcept { return used_bytes_; }
   [[nodiscard]] size_type dead_bytes() const noexcept { return dead_bytes_; }
   [[nodiscard]] size_type live_bytes() const noexcept {
@@ -74,18 +76,21 @@ class HashStorage {
     return committed_bytes_;
   }
   [[nodiscard]] size_type ref_capacity() const noexcept {
-    return offsets_.capacity();
+    return field_offsets_.capacity();
   }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
-    return byte_capacity() + offsets_.capacity() * sizeof(std::uint32_t) +
+    return byte_capacity() +
+           field_offsets_.capacity() * sizeof(std::uint32_t) +
+           value_offsets_.capacity() * sizeof(std::uint32_t) +
            field_lengths_.capacity() * sizeof(std::uint16_t) +
            value_lengths_.capacity() * sizeof(std::uint16_t) +
            chunks_.capacity() * sizeof(std::shared_ptr<char[]>);
   }
 
   void reserve(size_type field_count) {
-    offsets_.reserve(field_count);
+    field_offsets_.reserve(field_count);
+    value_offsets_.reserve(field_count);
     field_lengths_.reserve(field_count);
     value_lengths_.reserve(field_count);
   }
@@ -94,70 +99,84 @@ class HashStorage {
     chunks_.reserve((byte_count + chunk_bytes_ - 1) / chunk_bytes_);
   }
 
-  // Append a new field with its value; returns its field id (0-based, dense).
-  [[nodiscard]] std::uint32_t push_back(std::string_view field,
-                                        std::string_view value) {
-    if (offsets_.size() >= std::numeric_limits<std::uint32_t>::max()) {
-      throw std::length_error("hash field id space exhausted");
-    }
-    const auto offset = append_blob(field, value);
-    offsets_.push_back(offset);
-    field_lengths_.push_back(static_cast<std::uint16_t>(field.size()));
-    value_lengths_.push_back(static_cast<std::uint16_t>(value.size()));
-    return static_cast<std::uint32_t>(offsets_.size() - 1);
+  // Drop every field ref and arena byte; keep chunk/growth config. Used when
+  // recycling a Hash object through the keyspace freelist.
+  void clear() noexcept {
+    chunks_.clear();
+    field_offsets_.clear();
+    value_offsets_.clear();
+    field_lengths_.clear();
+    value_lengths_.clear();
+    next_offset_ = 0;
+    used_bytes_ = 0;
+    dead_bytes_ = 0;
+    active_bytes_ = 0;
+    committed_bytes_ = 0;
   }
 
-  // Replace an existing field's value (the field bytes are unchanged). Fits in
-  // place when the new value is no longer than the old one -- no arena growth;
-  // otherwise the blob is re-appended and the old blob orphaned.
+  // Append a new field with its value; returns its field id (0-based, dense).
+  // Places field||value contiguously for cache-local HGET.
+  [[nodiscard]] std::uint32_t push_back(std::string_view field,
+                                        std::string_view value) {
+    if (field_offsets_.size() >= std::numeric_limits<std::uint32_t>::max()) {
+      throw std::length_error("hash field id space exhausted");
+    }
+    const auto field_off = append_bytes(field, value);
+    field_offsets_.push_back(field_off);
+    value_offsets_.push_back(field_off + static_cast<std::uint32_t>(field.size()));
+    field_lengths_.push_back(static_cast<std::uint16_t>(field.size()));
+    value_lengths_.push_back(static_cast<std::uint16_t>(value.size()));
+    return static_cast<std::uint32_t>(field_offsets_.size() - 1);
+  }
+
+  // Replace an existing field's value (the field bytes are never moved). Fits in
+  // place when the new value is no longer than the old one; otherwise only the
+  // value is re-appended and the old value bytes are orphaned.
   void set_value(std::uint32_t field_id, std::string_view value) {
-    assert(field_id < offsets_.size());
+    assert(field_id < field_offsets_.size());
     if (value.size() > kMaxValueBytes) {
       throw std::length_error(
           "hash value too large (max 64 KiB; use a blob store for larger)");
     }
     const size_type old_value_len = value_lengths_[field_id];
     if (value.size() <= old_value_len) {
-      const auto value_offset = offsets_[field_id] + field_lengths_[field_id];
       if (!value.empty()) {
-        std::memcpy(chunk_ptr(value_offset), value.data(), value.size());
+        std::memcpy(chunk_ptr(value_offsets_[field_id]), value.data(), value.size());
       }
       dead_bytes_ += old_value_len - value.size();
       value_lengths_[field_id] = static_cast<std::uint16_t>(value.size());
       return;
     }
-    const size_type old_blob =
-        static_cast<size_type>(field_lengths_[field_id]) + old_value_len;
-    const auto field = view(field_id);
-    const auto offset = append_blob(field, value);
-    offsets_[field_id] = offset;
+    // Grow: re-append value only; field stays put.
+    dead_bytes_ += old_value_len;
+    const auto new_off = append_bytes({}, value);
+    value_offsets_[field_id] = new_off;
     value_lengths_[field_id] = static_cast<std::uint16_t>(value.size());
-    dead_bytes_ += old_blob;
   }
 
   // The field bytes (also what the swiss index compares against).
   [[nodiscard]] std::string_view view(std::uint32_t field_id) const noexcept {
-    assert(field_id < offsets_.size());
+    assert(field_id < field_offsets_.size());
     const auto length = field_lengths_[field_id];
-    return length == 0 ? std::string_view{}
-                       : std::string_view(chunk_ptr(offsets_[field_id]), length);
+    return length == 0
+               ? std::string_view{}
+               : std::string_view(chunk_ptr(field_offsets_[field_id]), length);
   }
 
-  // The value bytes (stored immediately after the field bytes).
+  // The value bytes (may be contiguous with the field after insert, or relocated
+  // after a grow).
   [[nodiscard]] std::string_view value(std::uint32_t field_id) const noexcept {
-    assert(field_id < offsets_.size());
+    assert(field_id < field_offsets_.size());
     const auto value_len = value_lengths_[field_id];
     return value_len == 0
                ? std::string_view{}
-               : std::string_view(
-                     chunk_ptr(offsets_[field_id] + field_lengths_[field_id]),
-                     value_len);
+               : std::string_view(chunk_ptr(value_offsets_[field_id]), value_len);
   }
 
-  // Account a to-be-removed field's blob as dead (the Hash swap-removes it out
-  // of the index; its bytes stay in the arena until compact).
+  // Account a to-be-removed field's field+value bytes as dead (the Hash
+  // swap-removes it out of the index; bytes stay until compact).
   void orphan(std::uint32_t field_id) noexcept {
-    assert(field_id < offsets_.size());
+    assert(field_id < field_offsets_.size());
     dead_bytes_ += static_cast<size_type>(field_lengths_[field_id]) +
                    value_lengths_[field_id];
   }
@@ -165,15 +184,17 @@ class HashStorage {
   // Copy a field's reference over another's (swap-remove moves the last field
   // into a removed slot).
   void copy_ref(std::uint32_t dst, std::uint32_t src) noexcept {
-    assert(dst < offsets_.size() && src < offsets_.size());
-    offsets_[dst] = offsets_[src];
+    assert(dst < field_offsets_.size() && src < field_offsets_.size());
+    field_offsets_[dst] = field_offsets_[src];
+    value_offsets_[dst] = value_offsets_[src];
     field_lengths_[dst] = field_lengths_[src];
     value_lengths_[dst] = value_lengths_[src];
   }
 
   void pop_back() noexcept {
-    assert(!offsets_.empty());
-    offsets_.pop_back();
+    assert(!field_offsets_.empty());
+    field_offsets_.pop_back();
+    value_offsets_.pop_back();
     field_lengths_.pop_back();
     value_lengths_.pop_back();
   }
@@ -186,9 +207,11 @@ class HashStorage {
     return chunks_[offset >> chunk_shift_].get() + (offset & chunk_mask_);
   }
 
-  // Append (field || value) contiguously and return the blob's global offset.
-  [[nodiscard]] std::uint32_t append_blob(std::string_view field,
-                                          std::string_view value) {
+  // Append `field` then `value` (either may be empty) as one contiguous run and
+  // return the global offset of the first byte written. Used for fresh inserts
+  // (both non-empty) and value-grow (field empty).
+  [[nodiscard]] std::uint32_t append_bytes(std::string_view field,
+                                           std::string_view value) {
     if (field.size() > kMaxFieldBytes) {
       throw std::length_error("hash field too large (max 64 KiB)");
     }
@@ -197,14 +220,17 @@ class HashStorage {
           "hash value too large (max 64 KiB; use a blob store for larger)");
     }
     const auto total = field.size() + value.size();
+    if (total == 0) {
+      // Empty field and empty value: no arena bytes; offset is unused for reads
+      // of zero length, but must be a valid slot index into chunks_ on a later
+      // in-place grow -- use next_offset_ without advancing when total==0.
+      return static_cast<std::uint32_t>(next_offset_);
+    }
     if (next_offset_ >
         static_cast<size_type>(std::numeric_limits<std::uint32_t>::max()) -
             total - (chunk_bytes_ - 1)) {
       throw std::length_error("hash arena exhausted");
     }
-    // Reserve the blob's bytes in the growable, page-aligned arena (each block
-    // owns a chunk_bytes logical slot, so chunk_ptr's shift/mask addressing is
-    // unchanged; the active block grows to fit and a blob never straddles).
     const auto r = reserve_run_bytes(chunks_, next_offset_, active_bytes_,
                                      committed_bytes_, chunk_bytes_, chunk_shift_,
                                      chunk_mask_, growth_, kInitialArenaBytes,
@@ -222,7 +248,8 @@ class HashStorage {
   }
 
   std::vector<std::shared_ptr<char[]>> chunks_;
-  std::vector<std::uint32_t> offsets_;
+  std::vector<std::uint32_t> field_offsets_;
+  std::vector<std::uint32_t> value_offsets_;
   std::vector<std::uint16_t> field_lengths_;
   std::vector<std::uint16_t> value_lengths_;
   size_type next_offset_{0};

@@ -826,6 +826,7 @@ namespace {
   return HashOptions{
       .member_index_growth = options.member_index_growth,
       .chunk_bytes = options.hash_chunk_bytes,
+      .listpack_max_entries = options.hash_listpack_max_entries,
   };
 }
 
@@ -953,6 +954,23 @@ void Store::place_loaded_hash(std::string key, Hash&& hash) {
 int Store::hset(std::string_view key, std::string_view field,
                 std::string_view value) {
   return get_or_create_hash(key).set(field, value);
+}
+
+long long Store::hset_many(
+    std::string_view key,
+    std::span<const std::pair<std::string_view, std::string_view>> fields) {
+  if (fields.empty()) {
+    return 0;
+  }
+  auto& hash = get_or_create_hash(key);
+  // Upper bound: every pair may be a new field. Over-reserve is cheap; a mid-batch
+  // rehash is not.
+  hash.reserve_additional(fields.size());
+  long long added = 0;
+  for (const auto& [field, value] : fields) {
+    added += hash.set(field, value);
+  }
+  return added;
 }
 
 int Store::hsetnx(std::string_view key, std::string_view field,
@@ -2057,7 +2075,13 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           snapshot::Reader reader(operands);
           auto key = std::string(reader.str());
           Hash hash =
-              Hash::load(reader, hash_use_accelerator, options_.hash_chunk_bytes);
+              Hash::load(reader, hash_use_accelerator,
+                         HashOptions{
+                             .member_index_growth = options_.member_index_growth,
+                             .chunk_bytes = options_.hash_chunk_bytes,
+                             .listpack_max_entries =
+                                 options_.hash_listpack_max_entries,
+                         });
           stats.members += hash.size();
           place_loaded_hash(std::move(key), std::move(hash));
           ++stats.keys;
