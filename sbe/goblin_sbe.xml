@@ -337,4 +337,65 @@
   <sbe:message name="Echo" id="65" description="ECHO message -> BulkReply">
     <data name="message" id="1" type="varData"/>
   </sbe:message>
+
+  <!-- =================== GOBLIN.* native commands (batch 5, ids 66-76) ========== -->
+  <sbe:message name="GoblinCad" id="66" description="GOBLIN.CAD key token -> IntReply (1/0)">
+    <data name="key"   id="1" type="varData"/>
+    <data name="token" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinCaExpire" id="67" description="GOBLIN.CAEXPIRE key token ms -> IntReply">
+    <field name="ms"    id="1" type="int64"/>
+    <data  name="key"   id="2" type="varData"/>
+    <data  name="token" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinCas" id="68" description="GOBLIN.CAS key token value -> StatusReply OK | IntReply 0">
+    <data name="key"   id="1" type="varData"/>
+    <data name="token" id="2" type="varData"/>
+    <data name="value" id="3" type="varData"/>
+  </sbe:message>
+  <!-- mode: 0 LINEAR, 1 EXP, 2 STEP. Native now/hl/k; reply carries native weights. -->
+  <sbe:message name="GoblinTdRescore" id="69" description="GOBLIN.TD_LEADERBOARD_RESCORE -> ScoredArrayReply">
+    <field name="now"  id="1" type="double"/>
+    <field name="hl"   id="2" type="double"/>
+    <field name="k"    id="3" type="int64"/>
+    <field name="mode" id="4" type="uint8"/>
+    <data  name="key"  id="5" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinIncrEx" id="70" description="GOBLIN.INCREX key seconds -> IntReply | ErrorReply">
+    <field name="seconds" id="1" type="int64"/>
+    <data  name="key"     id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinZWindow" id="71" description="GOBLIN.ZWINDOW key now window limit member -> IntReply">
+    <field name="now"    id="1" type="double"/>
+    <field name="window" id="2" type="double"/>
+    <field name="limit"  id="3" type="int64"/>
+    <data  name="key"    id="4" type="varData"/>
+    <data  name="member" id="5" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinIncrBound" id="72" description="GOBLIN.INCRBOUND key delta max -> IntReply">
+    <field name="delta" id="1" type="int64"/>
+    <field name="max"   id="2" type="int64"/>
+    <data  name="key"   id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinDecrPos" id="73" description="GOBLIN.DECRPOS key -> IntReply (new or -1)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinHCad" id="74" description="GOBLIN.HCAD key field expected -> IntReply (1/0)">
+    <data name="key"      id="1" type="varData"/>
+    <data name="field"    id="2" type="varData"/>
+    <data name="expected" id="3" type="varData"/>
+  </sbe:message>
+  <!-- value stays a byte string (the exact form stored); the server parses it to a
+       double only for the greater-than comparison, matching RESP. -->
+  <sbe:message name="GoblinHSetGt" id="75" description="GOBLIN.HSETGT key field value -> IntReply | ErrorReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="field" id="2" type="varData"/>
+    <data name="value" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GoblinClaim" id="76" description="GOBLIN.CLAIM claimKey resultKey token seconds -> BulkReply | NilReply | ErrorReply">
+    <field name="seconds"   id="1" type="int64"/>
+    <data  name="claimKey"  id="2" type="varData"/>
+    <data  name="resultKey" id="3" type="varData"/>
+    <data  name="token"     id="4" type="varData"/>
+  </sbe:message>
 </sbe:messageSchema>

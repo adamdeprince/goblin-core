@@ -62,12 +62,27 @@
 #include "goblin_sbe/ZRem.h"
 #include "goblin_sbe/ZRemRangeByScore.h"
 #include "goblin_sbe/ZRevRank.h"
+// GOBLIN.* natives (batch 5)
+#include "goblin_sbe/GoblinCad.h"
+#include "goblin_sbe/GoblinCaExpire.h"
+#include "goblin_sbe/GoblinCas.h"
+#include "goblin_sbe/GoblinClaim.h"
+#include "goblin_sbe/GoblinDecrPos.h"
+#include "goblin_sbe/GoblinHCad.h"
+#include "goblin_sbe/GoblinHSetGt.h"
+#include "goblin_sbe/GoblinIncrBound.h"
+#include "goblin_sbe/GoblinIncrEx.h"
+#include "goblin_sbe/GoblinTdRescore.h"
+#include "goblin_sbe/GoblinZWindow.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
 #include "goblin_sbe/ZRank.h"
 #include "goblin_sbe/ZScore.h"
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -136,6 +151,17 @@ constexpr std::uint16_t kSetRange = sbe::SetRange::sbeTemplateId();
 constexpr std::uint16_t kMSet = sbe::MSet::sbeTemplateId();
 constexpr std::uint16_t kMGet = sbe::MGet::sbeTemplateId();
 constexpr std::uint16_t kEcho = sbe::Echo::sbeTemplateId();
+constexpr std::uint16_t kGoblinCad = sbe::GoblinCad::sbeTemplateId();
+constexpr std::uint16_t kGoblinCaExpire = sbe::GoblinCaExpire::sbeTemplateId();
+constexpr std::uint16_t kGoblinCas = sbe::GoblinCas::sbeTemplateId();
+constexpr std::uint16_t kGoblinTdRescore = sbe::GoblinTdRescore::sbeTemplateId();
+constexpr std::uint16_t kGoblinIncrEx = sbe::GoblinIncrEx::sbeTemplateId();
+constexpr std::uint16_t kGoblinZWindow = sbe::GoblinZWindow::sbeTemplateId();
+constexpr std::uint16_t kGoblinIncrBound = sbe::GoblinIncrBound::sbeTemplateId();
+constexpr std::uint16_t kGoblinDecrPos = sbe::GoblinDecrPos::sbeTemplateId();
+constexpr std::uint16_t kGoblinHCad = sbe::GoblinHCad::sbeTemplateId();
+constexpr std::uint16_t kGoblinHSetGt = sbe::GoblinHSetGt::sbeTemplateId();
+constexpr std::uint16_t kGoblinClaim = sbe::GoblinClaim::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -1059,6 +1085,223 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::Echo e;
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       reply_bulk(out, e.getMessageAsStringView());
+      break;
+    }
+
+    case kGoblinCad: {
+      sbe::GoblinCad g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view token = g.getTokenAsStringView();
+      reply_int(out, store.compare_and_delete(key, token) ? 1 : 0);
+      break;
+    }
+
+    case kGoblinCaExpire: {
+      sbe::GoblinCaExpire g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long ms = g.ms();
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view token = g.getTokenAsStringView();
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, ms, 1);
+      if (!when) {
+        reply_error(out, "ERR", "invalid expire time");
+        break;
+      }
+      reply_int(out, store.compare_and_expire(key, token, *when, now) ? 1 : 0);
+      break;
+    }
+
+    case kGoblinCas: {
+      sbe::GoblinCas g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view token = g.getTokenAsStringView();
+      const std::string_view value = g.getValueAsStringView();
+      if (value.size() > Store::max_value_bytes()) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      if (store.compare_and_set(key, token, value)) {
+        reply_status(out, "OK");  // KEEPTTL swap
+      } else {
+        reply_int(out, 0);  // token did not match
+      }
+      break;
+    }
+
+    case kGoblinTdRescore: {
+      sbe::GoblinTdRescore t;
+      t.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const double now_v = t.now();
+      const double hl = t.hl();
+      const long long k_parsed = t.k();
+      const std::uint8_t mode = t.mode();  // 0 LINEAR, 1 EXP, 2 STEP
+      const std::string_view key = t.getKeyAsStringView();
+      if (mode > 2) {
+        reply_error(out, "ERR", "mode must be LINEAR, EXP or STEP");
+        break;
+      }
+      const double inv = 1.0 / hl;
+      const double cutoff = now_v - hl;
+      const std::size_t k = k_parsed > 0 ? static_cast<std::size_t>(k_parsed) : 0;
+      // Bounded top-k kept sorted descending (same insertion sort as command.cpp),
+      // holding member views straight from the store -- no per-entry copy. Native
+      // decayed weights ride back in the ScoredArrayReply, no restringify.
+      static thread_local std::vector<std::pair<std::string_view, double>> best;
+      best.clear();
+      best.reserve(std::min<std::size_t>(k, 4096));
+      const auto push = [&best, k](std::string_view name, double s) {
+        std::size_t j = 0;
+        if (best.size() < k) {
+          best.emplace_back(name, s);
+          j = best.size() - 1;
+        } else if (k > 0 && s > best[k - 1].second) {
+          best[k - 1] = {name, s};
+          j = k - 1;
+        } else {
+          return;
+        }
+        while (j > 0 && best[j].second > best[j - 1].second) {
+          std::swap(best[j], best[j - 1]);
+          --j;
+        }
+      };
+      if (k > 0) {
+        store.for_each_zset_entry(key, [&](std::string_view member, double score) {
+          const double age = now_v - score;
+          double decayed;
+          switch (mode) {
+            case 0: decayed = 1.0 / (1.0 + age * inv); break;      // LINEAR
+            case 1: decayed = std::pow(0.5, age * inv); break;     // EXP
+            default: decayed = score >= cutoff ? 1.0 : 0.0; break;  // STEP
+          }
+          push(member, decayed);
+        });
+      }
+      reply_scored_array(out, best);
+      break;
+    }
+
+    case kGoblinIncrEx: {
+      sbe::GoblinIncrEx g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long seconds = g.seconds();
+      const std::string_view key = g.getKeyAsStringView();
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, seconds, 1000);
+      if (!when) {
+        reply_error(out, "ERR", "invalid expire time");
+        break;
+      }
+      reply_int_or_range_error(out, store.incr_expire(key, *when, now));
+      break;
+    }
+
+    case kGoblinZWindow: {
+      sbe::GoblinZWindow g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const double now_v = g.now();
+      const double window = g.window();
+      const long long limit = g.limit();
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view member = g.getMemberAsStringView();
+      if (window > 9.0e15 || window < -9.0e15) {
+        reply_error(out, "ERR", "invalid expire time");
+        break;
+      }
+      const std::uint64_t clock = store.now_ms();
+      const auto when = compute_when_ms(clock, static_cast<long long>(window), 1000);
+      if (!when) {
+        reply_error(out, "ERR", "invalid expire time");
+        break;
+      }
+      const double cutoff = now_v - window;
+      reply_int(out, store.zwindow(key, now_v, cutoff, limit, member, *when, clock) ? 1 : 0);
+      break;
+    }
+
+    case kGoblinIncrBound: {
+      sbe::GoblinIncrBound g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long delta = g.delta();
+      const long long max = g.max();
+      reply_int_or_range_error(out, store.incr_bound(g.getKeyAsStringView(), delta, max));
+      break;
+    }
+
+    case kGoblinDecrPos: {
+      sbe::GoblinDecrPos g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int_or_range_error(out, store.decr_positive(g.getKeyAsStringView()));
+      break;
+    }
+
+    case kGoblinHCad: {
+      sbe::GoblinHCad g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view field = g.getFieldAsStringView();
+      const std::string_view expected = g.getExpectedAsStringView();
+      reply_int(out, store.hash_compare_and_delete(key, field, expected) ? 1 : 0);
+      break;
+    }
+
+    case kGoblinHSetGt: {
+      sbe::GoblinHSetGt g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = g.getKeyAsStringView();
+      const std::string_view field = g.getFieldAsStringView();
+      const std::string_view value = g.getValueAsStringView();
+      double parsed = 0;
+      const char* first = value.data();
+      const char* last = first + value.size();
+      const auto res = std::from_chars(first, last, parsed);
+      if (res.ptr != last || res.ec == std::errc::invalid_argument) {
+        reply_error(out, "ERR", kErrNotFloat);
+        break;
+      }
+      const auto result = store.hash_set_if_greater(key, field, parsed, value);
+      if (!result) {
+        reply_error(out, "ERR", "hash value is not a float");
+        break;
+      }
+      reply_int(out, *result ? 1 : 0);
+      break;
+    }
+
+    case kGoblinClaim: {
+      sbe::GoblinClaim g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long seconds = g.seconds();
+      const std::string_view claim_key = g.getClaimKeyAsStringView();
+      const std::string_view result_key = g.getResultKeyAsStringView();
+      const std::string_view token = g.getTokenAsStringView();
+      if (seconds <= 0) {
+        reply_error(out, "ERR", "invalid expire time in 'goblin.claim' command");
+        break;
+      }
+      if (token.size() > Store::max_value_bytes()) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      const auto now = store.now_ms();
+      const auto when = compute_when_ms(now, seconds, 1000);
+      if (!when) {
+        reply_error(out, "ERR", "invalid expire time in 'goblin.claim' command");
+        break;
+      }
+      const auto outcome = store.claim(claim_key, result_key, token, *when, now);
+      if (outcome.claimed) {
+        reply_bulk(out, "CLAIMED");
+      } else if (outcome.result_wrongtype) {
+        reply_error(out, "WRONGTYPE", kWrongTypeMsg);
+      } else if (outcome.result) {
+        reply_bulk(out, *outcome.result);
+      } else {
+        reply_nil(out);
+      }
       break;
     }
 

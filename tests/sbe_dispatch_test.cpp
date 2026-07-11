@@ -63,6 +63,17 @@
 #include "goblin_sbe/ZRem.h"
 #include "goblin_sbe/ZRemRangeByScore.h"
 #include "goblin_sbe/ZRevRank.h"
+#include "goblin_sbe/GoblinCad.h"
+#include "goblin_sbe/GoblinCaExpire.h"
+#include "goblin_sbe/GoblinCas.h"
+#include "goblin_sbe/GoblinClaim.h"
+#include "goblin_sbe/GoblinDecrPos.h"
+#include "goblin_sbe/GoblinHCad.h"
+#include "goblin_sbe/GoblinHSetGt.h"
+#include "goblin_sbe/GoblinIncrBound.h"
+#include "goblin_sbe/GoblinIncrEx.h"
+#include "goblin_sbe/GoblinTdRescore.h"
+#include "goblin_sbe/GoblinZWindow.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -337,6 +348,63 @@ std::string echo_frame(std::string_view message) {
   z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
   z.putMessage(message.data(), static_cast<std::uint32_t>(message.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string fin(char* buf, Msg& z) {  // finish: length prefix from the codec's length
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+auto sv32 = [](std::string_view s) { return static_cast<std::uint32_t>(s.size()); };
+
+std::string cad_frame(std::string_view key, std::string_view token) {
+  char buf[512]; sbe::GoblinCad z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), sv32(key)); z.putToken(token.data(), sv32(token));
+  return fin(buf, z);
+}
+std::string caexpire_frame(std::string_view key, std::string_view token, long long ms) {
+  char buf[512]; sbe::GoblinCaExpire z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.ms(ms); z.putKey(key.data(), sv32(key)); z.putToken(token.data(), sv32(token));
+  return fin(buf, z);
+}
+std::string cas_frame(std::string_view key, std::string_view token, std::string_view value) {
+  char buf[4096]; sbe::GoblinCas z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), sv32(key)); z.putToken(token.data(), sv32(token)); z.putValue(value.data(), sv32(value));
+  return fin(buf, z);
+}
+std::string tdrescore_frame(std::string_view key, double now, double hl, long long k, std::uint8_t mode) {
+  char buf[512]; sbe::GoblinTdRescore z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.now(now).hl(hl).k(k).mode(mode); z.putKey(key.data(), sv32(key));
+  return fin(buf, z);
+}
+std::string increx_frame(std::string_view key, long long seconds) {
+  char buf[512]; sbe::GoblinIncrEx z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.seconds(seconds); z.putKey(key.data(), sv32(key));
+  return fin(buf, z);
+}
+std::string zwindow_frame(std::string_view key, double now, double window, long long limit, std::string_view member) {
+  char buf[512]; sbe::GoblinZWindow z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.now(now).window(window).limit(limit); z.putKey(key.data(), sv32(key)); z.putMember(member.data(), sv32(member));
+  return fin(buf, z);
+}
+std::string incrbound_frame(std::string_view key, long long delta, long long max) {
+  char buf[512]; sbe::GoblinIncrBound z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.delta(delta).max(max); z.putKey(key.data(), sv32(key));
+  return fin(buf, z);
+}
+std::string hcad_frame(std::string_view key, std::string_view field, std::string_view expected) {
+  char buf[512]; sbe::GoblinHCad z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), sv32(key)); z.putField(field.data(), sv32(field)); z.putExpected(expected.data(), sv32(expected));
+  return fin(buf, z);
+}
+std::string hsetgt_frame(std::string_view key, std::string_view field, std::string_view value) {
+  char buf[512]; sbe::GoblinHSetGt z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), sv32(key)); z.putField(field.data(), sv32(field)); z.putValue(value.data(), sv32(value));
+  return fin(buf, z);
+}
+std::string claim_frame(std::string_view ck, std::string_view rk, std::string_view token, long long seconds) {
+  char buf[512]; sbe::GoblinClaim z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.seconds(seconds); z.putClaimKey(ck.data(), sv32(ck)); z.putResultKey(rk.data(), sv32(rk)); z.putToken(token.data(), sv32(token));
+  return fin(buf, z);
 }
 
 // Dispatch a frame, assert it is fully consumed, hand the reply header + message to
@@ -651,6 +719,72 @@ int main() {
   // ECHO
   dispatch(store, echo_frame("hi there"), bulk_is("hi there"));
 
+  // ---- GOBLIN.* natives (batch 5) ----
+  // CAD: delete only on a token match
+  dispatch(store, set_frame("lock", "tok1"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, cad_frame("lock", "wrong"), int_is(0));
+  dispatch(store, cad_frame("lock", "tok1"), int_is(1));
+  dispatch(store, key_frame<sbe::Get>("lock"), is_nil);
+  // CAEXPIRE: renew TTL only on a token match
+  dispatch(store, set_frame("lk", "t"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, caexpire_frame("lk", "t", 5000), int_is(1));
+  dispatch(store, caexpire_frame("lk", "wrong", 5000), int_is(0));
+  // CAS: OK on swap (KEEPTTL), 0 on mismatch
+  dispatch(store, set_frame("cx", "v1"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, cas_frame("cx", "v1", "v2"), status_is("OK"));
+  dispatch(store, key_frame<sbe::Get>("cx"), bulk_is("v2"));
+  dispatch(store, cas_frame("cx", "wrong", "v3"), int_is(0));
+  // TD_LEADERBOARD_RESCORE LINEAR: native weights, top-2 [a:1.0, b:0.5]
+  dispatch(store, zadd_frame("ldr", {{100.0, "a"}, {90.0, "b"}, {80.0, "c"}}), int_is(3));
+  dispatch(store, tdrescore_frame("ldr", 100.0, 10.0, 2, 0),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::ScoredArrayReply>(h, m, l);
+             std::vector<std::pair<std::string, double>> got;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const double s = g.score();
+               const auto mm = g.getMemberAsStringView();
+               got.emplace_back(std::string(mm.data(), mm.size()), s);
+             }
+             assert(got.size() == 2);
+             assert(got[0].first == "a" && got[0].second == 1.0);
+             assert(got[1].first == "b" && got[1].second == 0.5);
+           });
+  // INCREX: increments and arms a TTL on first write
+  dispatch(store, increx_frame("rl", 60), int_is(1));
+  dispatch(store, increx_frame("rl", 60), int_is(2));
+  dispatch(store, key_frame<sbe::Ttl>("rl"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::IntReply>(h, m, l).value() > 0);
+  });
+  // ZWINDOW: admit up to the limit within the window
+  dispatch(store, zwindow_frame("win", 100.0, 10.0, 2, "r1"), int_is(1));
+  dispatch(store, zwindow_frame("win", 100.0, 10.0, 2, "r2"), int_is(1));
+  dispatch(store, zwindow_frame("win", 100.0, 10.0, 2, "r3"), int_is(0));  // full
+  // INCRBOUND: admit if the result stays <= max, else -1
+  dispatch(store, set_frame("q", "5"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, incrbound_frame("q", 3, 10), int_is(8));
+  dispatch(store, incrbound_frame("q", 5, 10), int_is(-1));  // 8 + 5 > 10
+  // DECRPOS: reserve while > 0, else -1
+  dispatch(store, set_frame("stock", "2"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, key_frame<sbe::GoblinDecrPos>("stock"), int_is(1));
+  dispatch(store, key_frame<sbe::GoblinDecrPos>("stock"), int_is(0));
+  dispatch(store, key_frame<sbe::GoblinDecrPos>("stock"), int_is(-1));
+  // HCAD: delete a hash field only on match
+  dispatch(store, hset_frame("hl2", {{"f", "tok"}}), int_is(1));
+  dispatch(store, hcad_frame("hl2", "f", "wrong"), int_is(0));
+  dispatch(store, hcad_frame("hl2", "f", "tok"), int_is(1));
+  // HSETGT: set only if greater (value stored as the exact string)
+  dispatch(store, hset_frame("hw", {{"ts", "100"}}), int_is(1));
+  dispatch(store, hsetgt_frame("hw", "ts", "90"), int_is(0));
+  dispatch(store, hsetgt_frame("hw", "ts", "150"), int_is(1));
+  dispatch(store, key_field_frame<sbe::HGet>("hw", "ts"), bulk_is("150"));
+  // CLAIM: first wins (CLAIMED); later reads the result slot
+  dispatch(store, claim_frame("ck", "rk", "tok1", 60), bulk_is("CLAIMED"));
+  dispatch(store, claim_frame("ck", "rk", "tok2", 60), is_nil);  // held, result empty
+  dispatch(store, set_frame("rk", "done"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, claim_frame("ck", "rk", "tok3", 60), bulk_is("done"));
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -670,6 +804,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: zset + string + keyspace/TTL + hash + tail (50 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: + GOBLIN.* natives (61 commands) -> Store (no parse) -> generic reply");
   return 0;
 }
