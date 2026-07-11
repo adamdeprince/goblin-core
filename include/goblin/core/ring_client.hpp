@@ -110,6 +110,17 @@ class RingClient {
     const auto deadline = std::chrono::steady_clock::now() + wait;
     for (;;) {
       if (auto m = Mapping::open(path)) {
+        // Reconnect handshake (symmetric with SbeRingClient::open): claim a fresh epoch
+        // and wait for the server to drain the ring -- discarding whatever a dead
+        // predecessor left (unread replies, a half-parsed command) -- and ack, so we
+        // start clean regardless of how the previous client on this ring exited.
+        const std::uint64_t epoch = m->request_reconnect();
+        while (!m->reconnect_acked(epoch)) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            return std::nullopt;
+          }
+          cpu_relax();
+        }
         return RingClient(std::move(*m));
       }
       if (std::chrono::steady_clock::now() >= deadline) {

@@ -156,6 +156,14 @@ class SbeRingClient {
     const auto deadline = std::chrono::steady_clock::now() + wait;
     for (;;) {
       if (auto m = ring::Mapping::open(path)) {
+        // Reconnect handshake: claim a fresh epoch and wait for the server to drain the
+        // ring (discarding whatever a dead predecessor left in flight) and ack it, so we
+        // always start from a clean SQ/CQ no matter how the previous client exited.
+        const std::uint64_t epoch = m->request_reconnect();
+        while (!m->reconnect_acked(epoch)) {
+          if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
+          ring::cpu_relax();
+        }
         SbeRingClient c(std::move(*m), buffer_size);
         c.sq_.send(std::string_view(kGoblinMagicBytes, sizeof(kGoblinMagicBytes)),
                    [] { return false; });

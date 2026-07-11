@@ -161,7 +161,14 @@ struct alignas(kCacheLine) Header {
   std::uint64_t cq_capacity;  // power of two
   std::uint64_t sq_offset;    // file offset of SQ data
   std::uint64_t cq_offset;    // file offset of CQ data
-  std::uint64_t reserved;
+  // Reconnect handshake. A client bumps `epoch` on (re)connect; the server, seeing
+  // epoch != epoch_ack, drains both queues (discarding whatever a dead predecessor
+  // left in flight), re-arms protocol detection, and echoes the value into
+  // `epoch_ack` so the client knows it may proceed. This recovers a ring a client
+  // abandoned mid-crash without restarting the server. Client owns `epoch`, server
+  // owns `epoch_ack`; both read-mostly, so sharing the config line is fine.
+  std::uint64_t epoch;
+  std::uint64_t epoch_ack;
   // Each index on its own cache line: the producer writes one, the consumer the
   // other, and they must not share a line or every publish bounces the cache.
   alignas(kCacheLine) std::uint64_t sq_head;  // consumer (server) owns
@@ -370,6 +377,52 @@ class Mapping {
     return Consumer(&header_->cq_head, &header_->cq_tail, cq_, cq_cap_);
   }
 
+  // ---- reconnect handshake (see Header::epoch) -------------------------------
+  // Client: request a fresh connection -- bump the epoch and return the new value.
+  // The caller then spins on reconnect_acked() before using the ring, so the server
+  // has drained any dead predecessor's leftovers first.
+  [[nodiscard]] std::uint64_t request_reconnect() const noexcept {
+    auto ref = std::atomic_ref<std::uint64_t>(header_->epoch);
+    const std::uint64_t next = ref.load(std::memory_order_relaxed) + 1;
+    ref.store(next, std::memory_order_release);
+    return next;
+  }
+  // Client: has the server drained and acked this epoch? The acquire pairs with the
+  // server's release ack, so its drain stores are visible once this returns true.
+  [[nodiscard]] bool reconnect_acked(std::uint64_t epoch) const noexcept {
+    return std::atomic_ref<std::uint64_t>(header_->epoch_ack).load(
+               std::memory_order_acquire) == epoch;
+  }
+  // Server: the epoch a client is requesting, and the one we last acked.
+  [[nodiscard]] std::uint64_t requested_epoch() const noexcept {
+    return std::atomic_ref<std::uint64_t>(header_->epoch).load(
+        std::memory_order_acquire);
+  }
+  [[nodiscard]] std::uint64_t acked_epoch() const noexcept {
+    return std::atomic_ref<std::uint64_t>(header_->epoch_ack).load(
+        std::memory_order_relaxed);
+  }
+  // Server: publish the ack (release, so the client sees the drain the instant it
+  // observes the ack).
+  void ack_epoch(std::uint64_t epoch) const noexcept {
+    std::atomic_ref<std::uint64_t>(header_->epoch_ack)
+        .store(epoch, std::memory_order_release);
+  }
+  // Server: discard everything a dead client left -- any unconsumed request
+  // (sq_head := sq_tail) and any unread reply (cq_tail := cq_head). Safe because the
+  // handshake keeps the new client quiescent (spinning on the ack) and the old one is
+  // gone, so sq_tail and cq_head are stable; the server owns sq_head and cq_tail.
+  void drain_for_reconnect() const noexcept {
+    const std::uint64_t sqt = std::atomic_ref<std::uint64_t>(header_->sq_tail).load(
+        std::memory_order_acquire);
+    std::atomic_ref<std::uint64_t>(header_->sq_head)
+        .store(sqt, std::memory_order_relaxed);
+    const std::uint64_t cqh = std::atomic_ref<std::uint64_t>(header_->cq_head).load(
+        std::memory_order_acquire);
+    std::atomic_ref<std::uint64_t>(header_->cq_tail)
+        .store(cqh, std::memory_order_relaxed);
+  }
+
   // Create (or re-create) a ring file and initialize it. The server calls this.
   // `sq_cap`/`cq_cap` must be powers of two >= one page.
   [[nodiscard]] static std::optional<Mapping> create(const char* path,
@@ -396,7 +449,8 @@ class Mapping {
     h->cq_capacity = cq_cap;
     h->sq_offset = header_bytes();
     h->cq_offset = header_bytes() + sq_cap;
-    h->reserved = 0;
+    h->epoch = 0;
+    h->epoch_ack = 0;
     std::atomic_ref<std::uint64_t>(h->sq_head).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->sq_tail).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->cq_head).store(0, std::memory_order_relaxed);

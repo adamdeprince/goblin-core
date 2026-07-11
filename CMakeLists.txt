@@ -414,6 +414,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
     add_test(NAME goblin_core_sbe_client
       COMMAND goblin_core_sbe_client_test $<TARGET_FILE:goblin_core_server>)
     set_tests_properties(goblin_core_sbe_client PROPERTIES TIMEOUT 60)
+
+    # A client that SIGKILLs mid-operation leaves the ring dirty; a fresh client must
+    # reconnect and recover it with no server restart (the ring reconnect handshake).
+    add_executable(goblin_core_sbe_reconnect_test tests/sbe_reconnect_test.cpp)
+    target_link_libraries(goblin_core_sbe_reconnect_test PRIVATE goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_sbe_reconnect_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_sbe_reconnect
+      COMMAND goblin_core_sbe_reconnect_test $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_sbe_reconnect PROPERTIES TIMEOUT 60)
   endif()
 
   # End-to-end ring buffer: fork+exec the server with a ring, drive it through the
@@ -428,6 +438,19 @@ if(GOBLIN_CORE_BUILD_TESTS)
     NAME goblin_core_ring_roundtrip
     COMMAND goblin_core_ring_test $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_ring_roundtrip PROPERTIES TIMEOUT 60)
+
+  # A RESP RingClient that SIGKILLs mid-operation leaves the ring dirty; a fresh client
+  # must reconnect and recover it with no server restart (RESP side of the epoch handshake).
+  add_executable(goblin_core_ring_reconnect_test tests/ring_reconnect_test.cpp)
+  target_link_libraries(goblin_core_ring_reconnect_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_ring_reconnect_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_ring_reconnect
+    COMMAND goblin_core_ring_reconnect_test $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_ring_reconnect PROPERTIES TIMEOUT 60)
 
   add_test(
     NAME goblin_core_output_backpressure

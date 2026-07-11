@@ -500,6 +500,20 @@ template <class NetFn>
   // Drain one SQ record from `ep`, run whatever commands it completes, and push
   // the replies onto the CQ. Returns false when the ring's SQ was empty.
   const auto process_ring = [&](RingEndpoint& ep) -> bool {
+    // Reconnect handshake: a newly-opened client bumps the ring epoch and spins until
+    // we ack. When it moves, discard whatever a dead predecessor abandoned in the ring
+    // (an unconsumed request, an unread reply), re-arm protocol detection, and ack so
+    // the client may proceed -- recovering a messily-crashed connection with no restart.
+    if (const std::uint64_t epoch = ep.mapping.requested_epoch();
+        epoch != ep.mapping.acked_epoch()) {
+      ep.mapping.drain_for_reconnect();
+      ep.proto = RingProto::undecided;
+      ep.inbuf.clear();
+      ep.output.clear();
+      ep.parser.clear();
+      ep.mapping.ack_epoch(epoch);
+    }
+
     ring::Consumer sq = ep.mapping.sq_consumer();
     const auto record = sq.peek();
     if (!record) {
@@ -560,8 +574,14 @@ template <class NetFn>
     }
 
     if (!ep.output.empty()) {
-      ep.mapping.cq_producer().send(
-          ep.output, [&] { return !running.load(std::memory_order_relaxed); });
+      // Abort the push if shutting down, or if a new client is requesting a reconnect
+      // -- otherwise a dead client that stopped reading (a full CQ) would wedge us here
+      // forever, and no newcomer could ever be serviced. The reply is dropped (it was
+      // for the departed client) and the next iteration drains and re-arms the ring.
+      ep.mapping.cq_producer().send(ep.output, [&] {
+        return !running.load(std::memory_order_relaxed) ||
+               ep.mapping.requested_epoch() != ep.mapping.acked_epoch();
+      });
       ep.output.clear();
     }
     return true;
