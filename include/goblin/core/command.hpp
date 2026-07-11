@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace goblin::core {
 
@@ -146,6 +147,11 @@ struct CommandExecutionOptions {
 // The INFO text (server/memory fields), for callers that reply it directly (e.g. the
 // SBE dispatch) rather than through a Command.
 [[nodiscard]] std::string render_server_info(const Store& store);
+
+// GOBLIN.MEMORY's flat [name, value, ...] fields for a zset/hash key, or nullopt if
+// the key is neither. The SBE dispatch shapes these into a map reply.
+[[nodiscard]] std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
+                                                                          std::string_view key);
 
 void execute_command_into(Store& store,
                           const Command& command,

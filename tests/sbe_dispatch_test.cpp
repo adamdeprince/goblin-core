@@ -82,6 +82,10 @@
 #include "goblin_sbe/EvalSha.h"
 #include "goblin_sbe/RespValueReply.h"
 #include "goblin_sbe/Script.h"
+#include "goblin_sbe/GoblinLoad.h"
+#include "goblin_sbe/GoblinMemory.h"
+#include "goblin_sbe/GoblinSave.h"
+#include "goblin_sbe/MapReply.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -93,6 +97,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <string>
@@ -433,6 +438,16 @@ std::string eval_frame(std::uint8_t lang, std::string_view script,
   auto& ag = z.argsCount(static_cast<std::uint16_t>(args.size()));
   for (const auto& a : args) ag.next().putArg(a.data(), sv32(a));
   z.putScript(script.data(), sv32(script));
+  return fin(buf, z);
+}
+std::string save_frame(std::string_view path, bool accel) {
+  char buf[512]; sbe::GoblinSave z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.accel(accel ? 1 : 0); z.putPath(path.data(), sv32(path));
+  return fin(buf, z);
+}
+std::string load_frame(std::string_view path) {
+  char buf[512]; sbe::GoblinLoad z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putPath(path.data(), sv32(path));
   return fin(buf, z);
 }
 
@@ -888,6 +903,42 @@ int main() {
     assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
   });
 
+  // ---- Admin persistence (batch 8): everything on SBE ----
+  // GOBLIN.MEMORY on a zset -> MapReply of stats; a missing or string key -> Nil
+  dispatch(store, zadd_frame("memz", {{1.0, "a"}, {2.0, "b"}}), int_is(2));
+  dispatch(store, key_frame<sbe::GoblinMemory>("memz"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    auto r = decode<sbe::MapReply>(h, m, l);
+    std::map<std::string, std::string> kv;
+    auto& g = r.entries();
+    while (g.hasNext()) {
+      g.next();
+      const auto k = g.getKeyAsStringView();
+      const auto v = g.getValueAsStringView();
+      kv.emplace(std::string(k.data(), k.size()), std::string(v.data(), v.size()));
+    }
+    assert(kv.at("member_count") == "2");
+    assert(kv.count("total_allocated_bytes") == 1);
+  });
+  dispatch(store, key_frame<sbe::GoblinMemory>("nosuchkey"), is_nil);
+  dispatch(store, set_frame("strk", "v"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, key_frame<sbe::GoblinMemory>("strk"), is_nil);  // MEMORY on a string -> nil
+  // GOBLIN.LOAD: a missing file and a garbage file both -> ErrorReply
+  dispatch(store, load_frame("/tmp/goblin-sbe-no-such-snapshot"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
+  });
+  {
+    std::ofstream bad("/tmp/goblin-sbe-bad-snapshot", std::ios::binary);
+    bad << "not a valid goblin snapshot";
+    bad.close();
+    dispatch(store, load_frame("/tmp/goblin-sbe-bad-snapshot"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+      assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
+    });
+  }
+  // GOBLIN.SAVE -> StatusReply (forks a background save; done last)
+  dispatch(store, save_frame("/tmp/goblin-sbe-test-save.gdb", true), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::StatusReply>(h, m, l).getStatusAsStringView() == "Background saving started");
+  });
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -907,6 +958,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out, CommandExecutionOptions{}) == a.size());
   }
 
-  std::puts("sbe dispatch OK: + scripting EVAL (flattened RespValue) -> full command surface");
+  std::puts("sbe dispatch OK: + MEMORY(map)/SAVE/LOAD -> the entire command surface is on SBE");
   return 0;
 }

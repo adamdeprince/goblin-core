@@ -89,6 +89,11 @@
 #include "goblin_sbe/EvalSha.h"
 #include "goblin_sbe/RespValueReply.h"
 #include "goblin_sbe/Script.h"
+// Admin persistence (batch 8)
+#include "goblin_sbe/GoblinLoad.h"
+#include "goblin_sbe/GoblinMemory.h"
+#include "goblin_sbe/GoblinSave.h"
+#include "goblin_sbe/MapReply.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -99,6 +104,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -182,6 +188,9 @@ constexpr std::uint16_t kInfo = sbe::Info::sbeTemplateId();
 constexpr std::uint16_t kEval = sbe::Eval::sbeTemplateId();
 constexpr std::uint16_t kEvalSha = sbe::EvalSha::sbeTemplateId();
 constexpr std::uint16_t kScript = sbe::Script::sbeTemplateId();
+constexpr std::uint16_t kGoblinMemory = sbe::GoblinMemory::sbeTemplateId();
+constexpr std::uint16_t kGoblinSave = sbe::GoblinSave::sbeTemplateId();
+constexpr std::uint16_t kGoblinLoad = sbe::GoblinLoad::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -394,6 +403,30 @@ void reply_nullable_array(std::string& out, const std::vector<Opt>& items) {
     } else {
       g.present(0).putValue("", 0);
     }
+  }
+  const std::uint32_t total =
+      static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + r.encodedLength());
+  std::memcpy(rbuf.data(), &total, kSbeLenPrefix);
+  out.append(rbuf.data(), kSbeLenPrefix + total);
+}
+
+// GOBLIN.MEMORY -> key/value pairs, from a flat [name, value, ...] field list.
+void reply_map(std::string& out, const std::vector<std::string>& kv) {
+  const std::size_t pairs = kv.size() / 2;
+  if (pairs > kMaxGroup) {
+    reply_error(out, "ERR", "map reply too large for the SBE wire");
+    return;
+  }
+  std::size_t body = 4;  // group header
+  for (const auto& s : kv) body += 4 + s.size();  // each string is one varData
+  std::vector<char>& rbuf =
+      array_scratch(kSbeLenPrefix + sbe::MessageHeader::encodedLength() + body + 16);
+  sbe::MapReply r;
+  r.wrapAndApplyHeader(rbuf.data(), kSbeLenPrefix, rbuf.size());
+  auto& g = r.entriesCount(static_cast<std::uint16_t>(pairs));
+  for (std::size_t i = 0; i + 1 < kv.size(); i += 2) {
+    g.next().putKey(kv[i].data(), static_cast<std::uint32_t>(kv[i].size()))
+        .putValue(kv[i + 1].data(), static_cast<std::uint32_t>(kv[i + 1].size()));
   }
   const std::uint32_t total =
       static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + r.encodedLength());
@@ -1528,6 +1561,55 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       auto& ag = s.args();
       while (ag.hasNext()) { ag.next(); sargs.push_back(ag.getArgAsStringView()); }
       run_and_reply(options, lang, ScriptOp::script, sargs, out);
+      break;
+    }
+
+    case kGoblinMemory: {
+      sbe::GoblinMemory g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto fields = goblin_memory_fields(store, g.getKeyAsStringView());
+      if (fields) {
+        reply_map(out, *fields);
+      } else {
+        reply_nil(out);
+      }
+      break;
+    }
+
+    case kGoblinSave: {
+      sbe::GoblinSave g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const bool accel = g.accel() != 0;
+      const std::string_view path = g.getPathAsStringView();
+      switch (store.start_background_save(std::string(path), accel)) {
+        case Store::SaveStart::Started:
+          reply_status(out, "Background saving started");
+          break;
+        case Store::SaveStart::AlreadyRunning:
+          reply_error(out, "ERR", "background save already in progress");
+          break;
+        case Store::SaveStart::ForkFailed:
+          reply_error(out, "ERR", "cannot fork for background save");
+          break;
+      }
+      break;
+    }
+
+    case kGoblinLoad: {
+      sbe::GoblinLoad g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      std::ifstream file(std::string(g.getPathAsStringView()), std::ios::binary);
+      if (!file) {
+        reply_error(out, "ERR", "cannot open snapshot file for reading");
+        break;
+      }
+      try {
+        const auto stats = store.load(file);
+        reply_int(out, static_cast<long long>(stats.keys));
+      } catch (const std::exception& error) {
+        const std::string msg = std::string("snapshot load failed: ") + error.what();
+        reply_error(out, "ERR", msg);
+      }
       break;
     }
 

@@ -207,7 +207,7 @@ struct ScoreBound {
   return true;
 }
 
-[[nodiscard]] std::string memory_stats_response(const ZSetMemoryStats& stats) {
+[[nodiscard]] std::vector<std::string> memory_stats_fields(const ZSetMemoryStats& stats) {
   std::vector<std::string> fields;
   fields.reserve(36);
 
@@ -242,15 +242,16 @@ struct ScoreBound {
   add("score_index_allocated_bytes", stats.score_index_allocated_bytes);
   add("total_allocated_bytes", stats.total_allocated_bytes);
 
-  std::vector<std::string_view> views;
-  views.reserve(fields.size());
-  for (const auto& field : fields) {
-    views.push_back(field);
-  }
+  return fields;
+}
+
+[[nodiscard]] std::string memory_stats_response(const ZSetMemoryStats& stats) {
+  const auto fields = memory_stats_fields(stats);
+  const std::vector<std::string_view> views(fields.begin(), fields.end());
   return resp::array(views);
 }
 
-[[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats) {
+[[nodiscard]] std::vector<std::string> hash_memory_stats_fields(const HashMemoryStats& stats) {
   std::vector<std::string> fields;
   auto add = [&fields](std::string_view name, std::size_t value) {
     fields.emplace_back(name);
@@ -263,11 +264,12 @@ struct ScoreBound {
   add("field_index_allocated_bytes", stats.field_index_allocated_bytes);
   add("total_allocated_bytes", stats.total_allocated_bytes);
 
-  std::vector<std::string_view> views;
-  views.reserve(fields.size());
-  for (const auto& field : fields) {
-    views.push_back(field);
-  }
+  return fields;
+}
+
+[[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats) {
+  const auto fields = hash_memory_stats_fields(stats);
+  const std::vector<std::string_view> views(fields.begin(), fields.end());
   return resp::array(views);
 }
 
@@ -1086,6 +1088,16 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
 // Public accessor for the INFO text so the SBE dispatch can reply it without
 // duplicating build_info_string (which stays an internal helper here).
 std::string render_server_info(const Store& store) { return build_info_string(store); }
+
+// GOBLIN.MEMORY's flat [name, value, ...] fields for a zset or hash key (nullopt if
+// the key is neither), so the SBE dispatch can shape them into a map reply and the
+// RESP path into an array -- one field list, two encodings.
+std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
+                                                             std::string_view key) {
+  if (const auto z = store.zset_memory_stats(key)) return memory_stats_fields(*z);
+  if (const auto h = store.hash_memory_stats(key)) return hash_memory_stats_fields(*h);
+  return std::nullopt;
+}
 
 void execute_command_into(Store& store,
                           const Command& command,
