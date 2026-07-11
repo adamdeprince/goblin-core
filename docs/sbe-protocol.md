@@ -76,9 +76,18 @@ truncating silently (huge ranges must paginate).
 
 ### Request messages (client → server), ids 16+
 
-One per command, appended densely. Implemented so far (zset slice): `Ping` (16),
-`ZAdd` (17), `ZCard` (18), `ZScore` (19), `ZRank` (20), `ZRange` (21). The rest of the
-command surface is being rolled out a dozen at a time.
+One per command, appended densely (ids 16–81). The whole command surface is on the
+wire: strings, keyspace/TTL, hash, zset, the eleven `GOBLIN.*` natives, admin
+(`OPTIMIZE`, `INFO`), and scripting. `EVAL`/`EVALSHA`/`SCRIPT` are three messages
+(`Eval` 79, `EvalSha` 80, `Script` 81) carrying a `language` byte (0 Lua … 5 QuickJS)
+that selects the engine; a script's arbitrary, possibly nested RESP result comes back
+as the flattened `RespValueReply` (id 10). `ZREVRANGE` is `ZRange` with `rev=1`.
+
+Deferred (RESP-only for now): `GOBLIN.MEMORY` (its stats-field builder must be split
+out of `memory_stats_response`), `GOBLIN.SAVE`/`GOBLIN.LOAD` (fork / file I/O).
+
+The reply set has grown to ten: the eight above plus `NullableArrayReply` (id 9, for
+`HMGET`/`MGET` per-element nils) and `RespValueReply` (id 10).
 
 ## Backward-compatible extension
 
