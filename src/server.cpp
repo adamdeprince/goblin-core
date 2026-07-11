@@ -391,16 +391,18 @@ void accept_clients(int listener,
                                UPythonEngine& upython_engine,
                                QuickJsEngine& quickjs_engine,
                                const ServerConfig& config) {
-  char buffer[16 * 1024];
+  const std::size_t bufsize = config.client_read_buffer_bytes != 0 ? config.client_read_buffer_bytes : 16 * 1024;
+  static thread_local std::vector<char> buffer;
+  if (buffer.size() < bufsize) buffer.resize(bufsize);
 
   for (;;) {
     if (client.read_backpressured) {
       return true;
     }
 
-    const auto received = ::recv(client.fd, buffer, sizeof(buffer), 0);
+    const auto received = ::recv(client.fd, buffer.data(), bufsize, 0);
     if (received > 0) {
-      client.inbuf.append(buffer, static_cast<std::size_t>(received));
+      client.inbuf.append(buffer.data(), static_cast<std::size_t>(received));
 
       if (!process_buffered_commands(client, store, script_engine, luau_engine,
                                      wren_engine, tcl_engine, upython_engine,

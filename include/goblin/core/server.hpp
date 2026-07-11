@@ -28,6 +28,9 @@ struct ServerConfig {
   std::size_t max_output_buffer_bytes{1024U * 1024U};
   std::size_t resume_output_buffer_bytes{256U * 1024U};
   std::size_t initial_output_buffer_bytes{0};
+  // Per-connection socket read buffer (the chunk each recv() fills). Configurable so
+  // an operator can trade memory for fewer syscalls on large-message workloads.
+  std::size_t client_read_buffer_bytes{16U * 1024U};
   // Shared-memory rings, highest priority first. When non-empty the server
   // busy-polls these before touching the network (and spins at 100% CPU by
   // design); when empty it runs the ordinary low-CPU poll() loop.

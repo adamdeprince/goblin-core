@@ -109,6 +109,7 @@ void print_usage(std::string_view program) {
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
+            << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n";
 }
 
@@ -327,6 +328,20 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.initial_output_buffer_bytes = *bytes;
+      continue;
+    }
+
+    if (arg == "--client-read-buffer-kib") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_kib(argv[++i]);
+      if (!bytes || *bytes == 0) {
+        std::cerr << "goblin-core: invalid client read buffer KiB\n";
+        return 2;
+      }
+      config.client_read_buffer_bytes = *bytes;
       continue;
     }
 
