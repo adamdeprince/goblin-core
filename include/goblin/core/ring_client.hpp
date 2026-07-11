@@ -148,6 +148,10 @@ class RingClient {
   [[nodiscard]] std::optional<std::string> read_reply(
       std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    // Amortize the deadline clock read across spins (same rationale as
+    // SbeRingClient::read_frame): the empty-CQ wait is the p99 path, and a
+    // steady_clock sample every pause is a large fraction of a sub-µs RTT.
+    unsigned spins = 0;
     for (;;) {
       if (const auto end = reply_end(pending_)) {
         std::string reply = pending_.substr(0, *end);
@@ -159,7 +163,7 @@ class RingClient {
         cq_.pop();
         continue;  // re-check without pausing -- more may be ready
       }
-      if (std::chrono::steady_clock::now() >= deadline) {
+      if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline) {
         return std::nullopt;
       }
       cpu_relax();

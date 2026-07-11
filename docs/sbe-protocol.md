@@ -24,6 +24,28 @@ for latency- and size-sensitive clients (e.g. HFT over the shared-memory ring): 
 and counts ride as **native `double` / `int64`** rather than ASCII, so neither side
 parses or re-stringifies numbers, and the server dispatches straight out of the buffer.
 
+### Latency over the ring
+
+Measured by [`benchmarks/sbe_vs_resp_ring.cpp`](../benchmarks/sbe_vs_resp_ring.cpp) — both
+protocols on one server, client and server pinned to separate cores (host `naamah` — an
+AMD Ryzen Threadripper PRO 5995WX, 64C/128T, x86-64; a many-core workstation part, not a
+single-thread speed champion — which makes the sub-microsecond round trips notable).
+Figures are the **median** round-trip over a 3-second window (~1–5 M samples per op). SBE runs ~1.7–2.0× faster than RESP over the *same* ring; the delta is pure protocol —
+no ASCII number parsing on either side, and the server dispatches on a jump table over the
+template id.
+
+| operation | SBE | RESP |
+|---|---:|---:|
+| `PING` | 0.13 µs | 0.26 µs |
+| `ZADD`, 1 member | 0.21 µs | 0.43 µs |
+| `ZADD`, 10 members | 0.93 µs | 1.60 µs |
+| `HSET`, 1 field | 0.23 µs | 0.41 µs |
+| `HSET`, 10 fields | 0.71 µs | 1.24 µs |
+
+The single-element ops hold p99 within ~0.1 µs of the median. (The *mean* is noise on a
+shared host — occasional preemption of the busy-poll pulls it several times above the
+median — so the median is the figure to read.)
+
 ## Encoding
 
 Messages use [Simple Binary Encoding](https://github.com/aeron-io/simple-binary-encoding)

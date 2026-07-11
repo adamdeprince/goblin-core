@@ -199,47 +199,57 @@ inline void put_u32(char* p, std::uint32_t v) noexcept {
 
 // A single-consumer view over one direction. Reads records the producer has
 // published; skips WRAP fillers so every payload it returns is contiguous.
+//
+// We deliberately do *not* cache the producer's tail: reconnect's drain can
+// rewind cq_tail (cq_tail := cq_head), so a stale high snapshot would invent
+// phantom records. The win here is cheaper: after advance_to_record succeeds,
+// head_pos_ holds the data record's absolute position so peek/pop share one
+// head load instead of three.
 class Consumer {
  public:
   Consumer() = default;
   Consumer(std::uint64_t* head, std::uint64_t* tail, char* data,
            std::uint64_t capacity) noexcept
       : head_(head), tail_(tail), data_(data), capacity_(capacity),
-        mask_(capacity - 1) {}
+        mask_(capacity - 1),
+        // We own head: seed the local cursor so empty-spin peeks never re-load it.
+        head_pos_(std::atomic_ref<std::uint64_t>(*head).load(
+            std::memory_order_relaxed)) {}
 
   // Is there a published data record to read?
-  [[nodiscard]] bool has_record() const noexcept { return advance_to_record(); }
+  [[nodiscard]] bool has_record() noexcept { return advance_to_record(); }
 
   // The next record's payload, as a contiguous view into the ring, or nullopt
   // when empty. Valid until pop().
-  [[nodiscard]] std::optional<std::string_view> peek() const noexcept {
+  [[nodiscard]] std::optional<std::string_view> peek() noexcept {
     if (!advance_to_record()) {
       return std::nullopt;
     }
-    const std::uint64_t h = load_head();
+    const std::uint64_t h = head_pos_;
     const char* base = data_ + (h & mask_);
     const std::uint32_t len = detail::get_u32(base);
     return std::string_view(base + kCacheLine, len);
   }
 
   // Discard the data record most recently peek()'d, freeing its space.
-  void pop() const noexcept {
-    const std::uint64_t h = load_head();
+  void pop() noexcept {
+    const std::uint64_t h = head_pos_;
     const std::uint32_t len = detail::get_u32(data_ + (h & mask_));
-    store_head(h + kCacheLine + align_up(len, kCacheLine));
+    const std::uint64_t next = h + kCacheLine + align_up(len, kCacheLine);
+    store_head(next);
+    head_pos_ = next;
   }
 
  private:
-  [[nodiscard]] std::uint64_t load_head() const noexcept {
-    return std::atomic_ref<std::uint64_t>(*head_).load(std::memory_order_relaxed);
-  }
   void store_head(std::uint64_t v) const noexcept {
     std::atomic_ref<std::uint64_t>(*head_).store(v, std::memory_order_release);
   }
   // Advance past any WRAP fillers; true once a data record sits at head.
-  [[nodiscard]] bool advance_to_record() const noexcept {
+  // Uses head_pos_ as the sole head cursor (we are the single consumer) so the
+  // empty-spin path is just an acquire load of the remote tail.
+  [[nodiscard]] bool advance_to_record() noexcept {
+    std::uint64_t h = head_pos_;
     for (;;) {
-      const std::uint64_t h = load_head();
       const std::uint64_t t = std::atomic_ref<std::uint64_t>(*tail_).load(
           std::memory_order_acquire);
       if (h == t) {
@@ -247,9 +257,12 @@ class Consumer {
       }
       const std::uint64_t off = h & mask_;
       if (detail::get_u32(data_ + off + sizeof(std::uint32_t)) == kFlagWrap) {
-        store_head(h + (capacity_ - off));  // jump to the ring boundary (offset 0)
+        h += capacity_ - off;  // jump to the ring boundary (offset 0)
+        store_head(h);
+        head_pos_ = h;
         continue;
       }
+      head_pos_ = h;
       return true;
     }
   }
@@ -259,10 +272,16 @@ class Consumer {
   char* data_ = nullptr;
   std::uint64_t capacity_ = 0;
   std::uint64_t mask_ = 0;
+  std::uint64_t head_pos_ = 0;
 };
 
 // A single-producer view over one direction. Writes payloads as cache-aligned
 // records, splitting anything larger than a single record across several.
+//
+// SPSC optimization: `cached_head_` is a local snapshot of the consumer's head,
+// refreshed only when free space looks tight. A 1 MiB ring almost never hits
+// that path on the latency bench, so the hot try_push avoids an acquire load of
+// the remote head line on every publish (twice per round trip).
 class Producer {
  public:
   Producer() = default;
@@ -273,7 +292,14 @@ class Producer {
         // A record uses one control line plus the padded payload; cap a single
         // record at half the ring so at least two can coexist (pipelining) and no
         // single record needs a fully-drained ring.
-        max_payload_(capacity / 2 - kCacheLine) {}
+        max_payload_(capacity / 2 - kCacheLine),
+        // Seed from live indices so a reconnect-drain (which moves head/tail
+        // under us) is recovered on the next free-space miss rather than left
+        // with a stale zero cache forever.
+        cached_head_(std::atomic_ref<std::uint64_t>(*head).load(
+            std::memory_order_relaxed)),
+        tail_pos_(std::atomic_ref<std::uint64_t>(*tail).load(
+            std::memory_order_relaxed)) {}
 
   [[nodiscard]] std::uint64_t max_record_payload() const noexcept {
     return max_payload_;
@@ -286,30 +312,38 @@ class Producer {
   // the filler and the record together.
   [[nodiscard]] bool try_push(std::string_view payload) noexcept {
     const std::uint64_t padded = kCacheLine + align_up(payload.size(), kCacheLine);
-    std::uint64_t t = std::atomic_ref<std::uint64_t>(*tail_).load(
-        std::memory_order_relaxed);
-    const std::uint64_t h = std::atomic_ref<std::uint64_t>(*head_).load(
-        std::memory_order_acquire);
+    std::uint64_t t = tail_pos_;
     const std::uint64_t off = t & mask_;
     const std::uint64_t to_end = capacity_ - off;
     const std::uint64_t need = padded > to_end ? to_end + padded : padded;
-    if (capacity_ - (t - h) < need) {
-      return false;  // not enough free space (counting any wrap filler)
+    if (capacity_ - (t - cached_head_) < need) {
+      // Looks full against the local head snapshot: re-acquire the consumer's
+      // head (pairs with its release store of free space) and recheck.
+      cached_head_ = std::atomic_ref<std::uint64_t>(*head_).load(
+          std::memory_order_acquire);
+      if (capacity_ - (t - cached_head_) < need) {
+        return false;
+      }
     }
     if (padded > to_end) {
       // Record will not fit before the end: drop a WRAP filler that fills to the
       // boundary, then continue at offset 0.
       char* filler = data_ + off;
-      detail::put_u32(filler, 0);
-      detail::put_u32(filler + sizeof(std::uint32_t), kFlagWrap);
+      // One 8-byte store: length 0 | flag WRAP in the low/high 32-bit LE words.
+      const std::uint64_t wrap_ctrl =
+          (static_cast<std::uint64_t>(kFlagWrap) << 32);
+      std::memcpy(filler, &wrap_ctrl, sizeof(wrap_ctrl));
       t += to_end;  // now (t & mask_) == 0
     }
     char* base = data_ + (t & mask_);
-    detail::put_u32(base, static_cast<std::uint32_t>(payload.size()));
-    detail::put_u32(base + sizeof(std::uint32_t), kFlagData);
+    // One 8-byte store: payload length | flag DATA (0). Avoids two put_u32s.
+    const std::uint64_t ctrl = static_cast<std::uint32_t>(payload.size()) |
+                               (static_cast<std::uint64_t>(kFlagData) << 32);
+    std::memcpy(base, &ctrl, sizeof(ctrl));
     std::memcpy(base + kCacheLine, payload.data(), payload.size());
-    std::atomic_ref<std::uint64_t>(*tail_).store(t + padded,
-                                                 std::memory_order_release);
+    const std::uint64_t next = t + padded;
+    std::atomic_ref<std::uint64_t>(*tail_).store(next, std::memory_order_release);
+    tail_pos_ = next;
     return true;
   }
 
@@ -318,6 +352,16 @@ class Producer {
   // shutdown or a client-side timeout.
   template <class StopFn>
   void send(std::string_view payload, StopFn&& stop) noexcept {
+    // Hot path: one record (every PING / small ZADD). Avoid the chunking loop.
+    if (payload.size() <= max_payload_) {
+      while (!try_push(payload)) {
+        cpu_relax();
+        if (stop()) {
+          return;
+        }
+      }
+      return;
+    }
     while (!payload.empty()) {
       const std::size_t chunk =
           payload.size() < max_payload_ ? payload.size() : max_payload_;
@@ -339,6 +383,8 @@ class Producer {
   std::uint64_t capacity_ = 0;
   std::uint64_t mask_ = 0;
   std::uint64_t max_payload_ = 0;
+  std::uint64_t cached_head_ = 0;
+  std::uint64_t tail_pos_ = 0;
 };
 
 // Owns the mmap'd regions of one ring file. Move-only; unmaps on destruction.

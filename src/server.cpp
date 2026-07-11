@@ -62,11 +62,24 @@ struct Client {
 // to the CQ instead of a socket.
 struct RingEndpoint {
   ring::Mapping mapping;
+  // Long-lived views: Producer's cached_head_ only pays off if the object
+  // survives across replies (recreating cq_producer() every record re-seeds it).
+  // Rebind both after drain_for_reconnect so local cursors match the new indices.
+  ring::Consumer sq;
+  ring::Producer cq;
   RingProto proto{RingProto::undecided};
   RespParser parser;
   std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
   std::string output;
   std::vector<std::string_view> fields;
+  // Local mirror of mapping.acked_epoch(); avoids a second shared-memory load on
+  // every empty poll of the reconnect check.
+  std::uint64_t acked_epoch{0};
+
+  void rebind_ring_views() noexcept {
+    sq = mapping.sq_consumer();
+    cq = mapping.cq_producer();
+  }
 };
 
 void close_fd(int fd) noexcept {
@@ -483,6 +496,7 @@ template <class NetFn>
     std::cout << "goblin-core: ring " << rc.path << " ready (" << cap
               << " bytes/direction)\n";
     rings.push_back(RingEndpoint{.mapping = std::move(*mapping)});
+    rings.back().rebind_ring_views();
   }
   std::cout << "goblin-core: ring mode -- busy-polling " << rings.size()
             << " ring(s) ahead of the network (100% CPU by design)\n"
@@ -505,27 +519,28 @@ template <class NetFn>
     // (an unconsumed request, an unread reply), re-arm protocol detection, and ack so
     // the client may proceed -- recovering a messily-crashed connection with no restart.
     if (const std::uint64_t epoch = ep.mapping.requested_epoch();
-        epoch != ep.mapping.acked_epoch()) {
+        epoch != ep.acked_epoch) {
       ep.mapping.drain_for_reconnect();
       ep.proto = RingProto::undecided;
       ep.inbuf.clear();
       ep.output.clear();
       ep.parser.clear();
       ep.mapping.ack_epoch(epoch);
+      ep.acked_epoch = epoch;
+      ep.rebind_ring_views();  // local head/tail caches track the drained indices
     }
 
-    ring::Consumer sq = ep.mapping.sq_consumer();
-    const auto record = sq.peek();
+    const auto record = ep.sq.peek();
     if (!record) {
       return false;
     }
-    ep.inbuf.append(*record);
-    sq.pop();
 
     // Decide the protocol from the first 8 bytes: "GOBLINS!" -> the SBE binary wire,
     // else RESP. Decide RESP the moment the prefix diverges so a short inline RESP
     // command is never stalled waiting for a full magic that will not arrive.
     if (ep.proto == RingProto::undecided) {
+      ep.inbuf.append(*record);
+      ep.sq.pop();
 #ifdef GOBLIN_HAS_SBE
       switch (match_goblin_magic(ep.inbuf)) {
         case MagicMatch::need_more:
@@ -541,27 +556,62 @@ template <class NetFn>
 #else
       ep.proto = RingProto::resp;
 #endif
+      // Magic may have been alone in the record; fall through to drain whatever
+      // remains in inbuf (or nothing).
+    } else {
+#ifdef GOBLIN_HAS_SBE
+      // Hot path (protocol already decided, no carry-over): dispatch SBE frames
+      // straight out of the ring record -- no inbuf memcpy. Partial trailing
+      // bytes fall back into inbuf for the next record.
+      if (ep.proto == RingProto::sbe && ep.inbuf.empty()) {
+        std::size_t off = 0;
+        for (;;) {
+          const std::size_t consumed = sbe_dispatch_one(
+              store, std::string_view(*record).substr(off), ep.output, exec_options);
+          if (consumed == 0) {
+            break;
+          }
+          off += consumed;
+        }
+        if (off == record->size()) {
+          ep.sq.pop();
+        } else if (off > 0) {
+          ep.inbuf.assign(record->data() + off, record->size() - off);
+          ep.sq.pop();
+        } else {
+          // Incomplete first frame: buffer the whole record.
+          ep.inbuf.assign(record->data(), record->size());
+          ep.sq.pop();
+        }
+      } else
+#endif
+      {
+        ep.inbuf.append(*record);
+        ep.sq.pop();
+      }
     }
 
 #ifdef GOBLIN_HAS_SBE
     if (ep.proto == RingProto::sbe) {
-      // Frame and dispatch every complete SBE message in the accumulator; a partial
-      // trailing message stays buffered for the next record.
-      std::size_t off = 0;
-      for (;;) {
-        const std::size_t consumed = sbe_dispatch_one(
-            store, std::string_view(ep.inbuf).substr(off), ep.output, exec_options);
-        if (consumed == 0) {
-          break;
+      // Frame and dispatch every complete SBE message still in the accumulator
+      // (carry-over from a prior partial frame, or bytes left after magic strip).
+      if (!ep.inbuf.empty()) {
+        std::size_t off = 0;
+        for (;;) {
+          const std::size_t consumed = sbe_dispatch_one(
+              store, std::string_view(ep.inbuf).substr(off), ep.output, exec_options);
+          if (consumed == 0) {
+            break;
+          }
+          off += consumed;
         }
-        off += consumed;
-      }
-      if (off > 0) {
-        ep.inbuf.erase(0, off);
+        if (off > 0) {
+          ep.inbuf.erase(0, off);
+        }
       }
     } else
 #endif
-    {
+    if (ep.proto == RingProto::resp) {
       ep.parser.append(ep.inbuf);
       ep.inbuf.clear();
       while (ep.parser.pop_into(ep.fields)) {
@@ -578,15 +628,19 @@ template <class NetFn>
       // -- otherwise a dead client that stopped reading (a full CQ) would wedge us here
       // forever, and no newcomer could ever be serviced. The reply is dropped (it was
       // for the departed client) and the next iteration drains and re-arms the ring.
-      ep.mapping.cq_producer().send(ep.output, [&] {
+      ep.cq.send(ep.output, [&] {
         return !running.load(std::memory_order_relaxed) ||
-               ep.mapping.requested_epoch() != ep.mapping.acked_epoch();
+               ep.mapping.requested_epoch() != ep.acked_epoch;
       });
       ep.output.clear();
     }
     return true;
   };
 
+  // Idle spins between ring requests: running network_iteration (poll + active
+  // expire) every empty loop is a p99 footgun for pure-ring clients. Service the
+  // network every 64th idle pass; rings still starve it by design when busy.
+  unsigned idle_spins = 0;
   while (running.load(std::memory_order_relaxed)) {
     bool progressed = false;
     for (RingEndpoint& ep : rings) {
@@ -596,9 +650,12 @@ template <class NetFn>
       }
     }
     if (progressed) {
+      idle_spins = 0;
       continue;  // a busy high-priority ring starves the lower ones -- by design
     }
-    network_iteration(0);  // every ring empty -> now service the network
+    if ((++idle_spins & 63u) == 0) {
+      network_iteration(0);  // sparse network pass while rings are quiet
+    }
     ring::cpu_relax();     // PAUSE / yield: let remote cores publish into our pages
   }
   return true;

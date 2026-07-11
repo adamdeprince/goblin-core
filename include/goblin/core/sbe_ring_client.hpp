@@ -103,7 +103,6 @@
 #include "goblin_sbe/Script.h"
 
 #include <algorithm>
-#include <any>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -180,33 +179,38 @@ class SbeRingClient {
 
   // ---- connection ------------------------------------------------------------
   [[nodiscard]] bool ping(ms timeout = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Ping>(0);
+    auto m = build<goblin_sbe::Ping>(0);
     finish(m, timeout);
-    return reply_is<goblin_sbe::StatusReply>() &&
-           decode<goblin_sbe::StatusReply>().getStatusAsStringView() == "PONG";
+    // Single header walk (reply_is + decode each re-parse the header).
+    const auto h = reply_header();
+    if (h.templateId() != goblin_sbe::StatusReply::sbeTemplateId()) return false;
+    goblin_sbe::StatusReply r;
+    r.wrapForDecode(last_frame_.data(), goblin_sbe::MessageHeader::encodedLength(),
+                    h.blockLength(), h.version(), last_frame_.size());
+    return r.getStatusAsStringView() == "PONG";
   }
   [[nodiscard]] std::string echo(std::string_view message, ms timeout = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Echo>(message.size());
+    auto m = build<goblin_sbe::Echo>(message.size());
     m.putMessage(message.data(), u32(message.size()));
     finish(m, timeout);
     return as_bulk();
   }
   [[nodiscard]] std::string info(ms timeout = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Info>(0);
+    auto m = build<goblin_sbe::Info>(0);
     finish(m, timeout);
     return as_bulk();
   }
 
   // ---- strings ---------------------------------------------------------------
   [[nodiscard]] std::optional<std::string> get(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Get>(key.size());
+    auto m = build<goblin_sbe::Get>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_bulk_or_nil();
   }
   SetReply set(std::string_view key, std::string_view value, const SetOptions& o = {},
                ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Set>(key.size() + value.size());
+    auto m = build<goblin_sbe::Set>(key.size() + value.size());
     std::uint8_t flags = 0;
     if (o.nx) flags |= 0x01;
     if (o.xx) flags |= 0x02;
@@ -223,21 +227,21 @@ class SbeRingClient {
     return r;  // NilReply -> {false, nullopt}
   }
   [[nodiscard]] std::optional<std::string> getset(std::string_view key, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GetSet>(key.size() + value.size());
+    auto m = build<goblin_sbe::GetSet>(key.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putValue(value.data(), u32(value.size()));
     finish(m, t);
     return as_bulk_or_nil();
   }
   [[nodiscard]] long long setnx(std::string_view key, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::SetNx>(key.size() + value.size());
+    auto m = build<goblin_sbe::SetNx>(key.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putValue(value.data(), u32(value.size()));
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] std::optional<std::string> getdel(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GetDel>(key.size());
+    auto m = build<goblin_sbe::GetDel>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_bulk_or_nil();
@@ -246,7 +250,7 @@ class SbeRingClient {
     return key_int<goblin_sbe::StrLen>(key, t);
   }
   [[nodiscard]] long long append(std::string_view key, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Append>(key.size() + value.size());
+    auto m = build<goblin_sbe::Append>(key.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putValue(value.data(), u32(value.size()));
     finish(m, t);
@@ -261,21 +265,21 @@ class SbeRingClient {
     return delta_key_int<goblin_sbe::DecrBy>(delta, key, t);
   }
   [[nodiscard]] std::string incrbyfloat(std::string_view key, double delta, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::IncrByFloat>(key.size());
+    auto m = build<goblin_sbe::IncrByFloat>(key.size());
     m.delta(delta);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_bulk();
   }
   [[nodiscard]] std::string getrange(std::string_view key, long long start, long long end, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GetRange>(key.size());
+    auto m = build<goblin_sbe::GetRange>(key.size());
     m.start(start).end(end);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_bulk();
   }
   [[nodiscard]] long long setrange(std::string_view key, long long offset, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::SetRange>(key.size() + value.size());
+    auto m = build<goblin_sbe::SetRange>(key.size() + value.size());
     m.byteOffset(offset);
     m.putKey(key.data(), u32(key.size()));
     m.putValue(value.data(), u32(value.size()));
@@ -285,7 +289,7 @@ class SbeRingClient {
   void mset(std::span<const std::pair<std::string_view, std::string_view>> pairs, ms t = kDefaultTimeout) {
     std::size_t need = 0;
     for (const auto& [k, v] : pairs) need += k.size() + v.size();
-    auto& m = build<goblin_sbe::MSet>(need);
+    auto m = build<goblin_sbe::MSet>(need);
     auto& g = m.pairsCount(u16(pairs.size()));
     for (const auto& [k, v] : pairs)
       g.next().putKey(k.data(), u32(k.size())).putValue(v.data(), u32(v.size()));
@@ -293,24 +297,24 @@ class SbeRingClient {
     (void)as_status();
   }
   [[nodiscard]] std::vector<std::optional<std::string>> mget(std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
-    auto& m = key_group<goblin_sbe::MGet>(keys);
+    auto m = key_group<goblin_sbe::MGet>(keys);
     finish(m, t);
     return as_nullable_array();
   }
 
   // ---- keyspace / TTL --------------------------------------------------------
   [[nodiscard]] long long del(std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
-    auto& m = key_group<goblin_sbe::Del>(keys);
+    auto m = key_group<goblin_sbe::Del>(keys);
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] long long exists(std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
-    auto& m = key_group<goblin_sbe::Exists>(keys);
+    auto m = key_group<goblin_sbe::Exists>(keys);
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] std::string type(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::Type>(key.size());
+    auto m = build<goblin_sbe::Type>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_status();
@@ -337,7 +341,7 @@ class SbeRingClient {
   [[nodiscard]] long long hset(std::string_view key, std::span<const std::pair<std::string_view, std::string_view>> fv, ms t = kDefaultTimeout) {
     std::size_t need = key.size();
     for (const auto& [f, v] : fv) need += f.size() + v.size();
-    auto& m = build<goblin_sbe::HSet>(need);
+    auto m = build<goblin_sbe::HSet>(need);
     auto& g = m.entriesCount(u16(fv.size()));
     for (const auto& [f, v] : fv)
       g.next().putField(f.data(), u32(f.size())).putValue(v.data(), u32(v.size()));
@@ -346,7 +350,7 @@ class SbeRingClient {
     return as_int();
   }
   [[nodiscard]] long long hsetnx(std::string_view key, std::string_view field, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::HSetNx>(key.size() + field.size() + value.size());
+    auto m = build<goblin_sbe::HSetNx>(key.size() + field.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putField(field.data(), u32(field.size()));
     m.putValue(value.data(), u32(value.size()));
@@ -354,22 +358,22 @@ class SbeRingClient {
     return as_int();
   }
   [[nodiscard]] std::optional<std::string> hget(std::string_view key, std::string_view field, ms t = kDefaultTimeout) {
-    auto& m = key_field<goblin_sbe::HGet>(key, field);
+    auto m = key_field<goblin_sbe::HGet>(key, field);
     finish(m, t);
     return as_bulk_or_nil();
   }
   [[nodiscard]] std::vector<std::optional<std::string>> hmget(std::string_view key, std::span<const std::string_view> fields, ms t = kDefaultTimeout) {
-    auto& m = field_group<goblin_sbe::HMGet>(key, fields);
+    auto m = field_group<goblin_sbe::HMGet>(key, fields);
     finish(m, t);
     return as_nullable_array();
   }
   [[nodiscard]] long long hdel(std::string_view key, std::span<const std::string_view> fields, ms t = kDefaultTimeout) {
-    auto& m = field_group<goblin_sbe::HDel>(key, fields);
+    auto m = field_group<goblin_sbe::HDel>(key, fields);
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] std::vector<std::pair<std::string, std::string>> hgetall(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::HGetAll>(key.size());
+    auto m = build<goblin_sbe::HGetAll>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     const auto flat = as_array();
@@ -378,30 +382,30 @@ class SbeRingClient {
     return out;
   }
   [[nodiscard]] std::vector<std::string> hkeys(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::HKeys>(key.size());
+    auto m = build<goblin_sbe::HKeys>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_array();
   }
   [[nodiscard]] std::vector<std::string> hvals(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::HVals>(key.size());
+    auto m = build<goblin_sbe::HVals>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_array();
   }
   [[nodiscard]] long long hlen(std::string_view key, ms t = kDefaultTimeout) { return key_int<goblin_sbe::HLen>(key, t); }
   [[nodiscard]] long long hexists(std::string_view key, std::string_view field, ms t = kDefaultTimeout) {
-    auto& m = key_field<goblin_sbe::HExists>(key, field);
+    auto m = key_field<goblin_sbe::HExists>(key, field);
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] long long hstrlen(std::string_view key, std::string_view field, ms t = kDefaultTimeout) {
-    auto& m = key_field<goblin_sbe::HStrLen>(key, field);
+    auto m = key_field<goblin_sbe::HStrLen>(key, field);
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] long long hincrby(std::string_view key, std::string_view field, long long delta, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::HIncrBy>(key.size() + field.size());
+    auto m = build<goblin_sbe::HIncrBy>(key.size() + field.size());
     m.delta(delta);
     m.putKey(key.data(), u32(key.size()));
     m.putField(field.data(), u32(field.size()));
@@ -413,7 +417,7 @@ class SbeRingClient {
   [[nodiscard]] long long zadd(std::string_view key, std::span<const Scored> members, ms t = kDefaultTimeout) {
     std::size_t need = key.size();
     for (const auto& [s, mem] : members) need += mem.size();
-    auto& m = build<goblin_sbe::ZAdd>(need);
+    auto m = build<goblin_sbe::ZAdd>(need);
     m.flags(0);
     auto& g = m.membersCount(u16(members.size()));
     for (const auto& [s, mem] : members) g.next().score(s).putMember(mem.data(), u32(mem.size()));
@@ -423,24 +427,24 @@ class SbeRingClient {
   }
   [[nodiscard]] long long zcard(std::string_view key, ms t = kDefaultTimeout) { return key_int<goblin_sbe::ZCard>(key, t); }
   [[nodiscard]] std::optional<double> zscore(std::string_view key, std::string_view member, ms t = kDefaultTimeout) {
-    auto& m = key_member<goblin_sbe::ZScore>(key, member);
+    auto m = key_member<goblin_sbe::ZScore>(key, member);
     finish(m, t);
     return as_double_or_nil();
   }
   [[nodiscard]] std::optional<long long> zrank(std::string_view key, std::string_view member, ms t = kDefaultTimeout) {
-    auto& m = key_member<goblin_sbe::ZRank>(key, member);
+    auto m = key_member<goblin_sbe::ZRank>(key, member);
     finish(m, t);
     return as_int_or_nil();
   }
   [[nodiscard]] std::optional<long long> zrevrank(std::string_view key, std::string_view member, ms t = kDefaultTimeout) {
-    auto& m = key_member<goblin_sbe::ZRevRank>(key, member);
+    auto m = key_member<goblin_sbe::ZRevRank>(key, member);
     finish(m, t);
     return as_int_or_nil();
   }
   [[nodiscard]] long long zrem(std::string_view key, std::span<const std::string_view> members, ms t = kDefaultTimeout) {
     std::size_t need = key.size();
     for (const auto& mem : members) need += mem.size();
-    auto& m = build<goblin_sbe::ZRem>(need);
+    auto m = build<goblin_sbe::ZRem>(need);
     auto& g = m.membersCount(u16(members.size()));
     for (const auto& mem : members) g.next().putMember(mem.data(), u32(mem.size()));
     m.putKey(key.data(), u32(key.size()));
@@ -448,33 +452,33 @@ class SbeRingClient {
     return as_int();
   }
   [[nodiscard]] long long zremrangebyscore(std::string_view key, double min, bool min_excl, double max, bool max_excl, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::ZRemRangeByScore>(key.size());
+    auto m = build<goblin_sbe::ZRemRangeByScore>(key.size());
     m.min(min).minExclusive(min_excl ? 1 : 0).max(max).maxExclusive(max_excl ? 1 : 0);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] std::vector<std::string> zrange(std::string_view key, long long start, long long stop, bool rev = false, ms t = kDefaultTimeout) {
-    auto& m = zrange_build(key, start, stop, false, rev);
+    auto m = zrange_build(key, start, stop, false, rev);
     finish(m, t);
     return as_array();
   }
   [[nodiscard]] std::vector<std::pair<std::string, double>> zrange_withscores(std::string_view key, long long start, long long stop, bool rev = false, ms t = kDefaultTimeout) {
-    auto& m = zrange_build(key, start, stop, true, rev);
+    auto m = zrange_build(key, start, stop, true, rev);
     finish(m, t);
     return as_scored_array();
   }
 
   // ---- GOBLIN.* natives ------------------------------------------------------
   [[nodiscard]] long long cad(std::string_view key, std::string_view token, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinCad>(key.size() + token.size());
+    auto m = build<goblin_sbe::GoblinCad>(key.size() + token.size());
     m.putKey(key.data(), u32(key.size()));
     m.putToken(token.data(), u32(token.size()));
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] long long caexpire(std::string_view key, std::string_view token, long long ms_, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinCaExpire>(key.size() + token.size());
+    auto m = build<goblin_sbe::GoblinCaExpire>(key.size() + token.size());
     m.ms(ms_);
     m.putKey(key.data(), u32(key.size()));
     m.putToken(token.data(), u32(token.size()));
@@ -483,7 +487,7 @@ class SbeRingClient {
   }
   // CAS: true on a KEEPTTL swap (+OK), false on a token mismatch (0).
   [[nodiscard]] bool cas(std::string_view key, std::string_view token, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinCas>(key.size() + token.size() + value.size());
+    auto m = build<goblin_sbe::GoblinCas>(key.size() + token.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putToken(token.data(), u32(token.size()));
     m.putValue(value.data(), u32(value.size()));
@@ -493,21 +497,21 @@ class SbeRingClient {
   }
   [[nodiscard]] std::vector<std::pair<std::string, double>> td_leaderboard_rescore(
       std::string_view key, double now, double hl, long long k, std::uint8_t mode, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinTdRescore>(key.size());
+    auto m = build<goblin_sbe::GoblinTdRescore>(key.size());
     m.now(now).hl(hl).k(k).mode(mode);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_scored_array();
   }
   [[nodiscard]] long long increx(std::string_view key, long long seconds, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinIncrEx>(key.size());
+    auto m = build<goblin_sbe::GoblinIncrEx>(key.size());
     m.seconds(seconds);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int();
   }
   [[nodiscard]] long long zwindow(std::string_view key, double now, double window, long long limit, std::string_view member, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinZWindow>(key.size() + member.size());
+    auto m = build<goblin_sbe::GoblinZWindow>(key.size() + member.size());
     m.now(now).window(window).limit(limit);
     m.putKey(key.data(), u32(key.size()));
     m.putMember(member.data(), u32(member.size()));
@@ -515,7 +519,7 @@ class SbeRingClient {
     return as_int();
   }
   [[nodiscard]] long long incrbound(std::string_view key, long long delta, long long max, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinIncrBound>(key.size());
+    auto m = build<goblin_sbe::GoblinIncrBound>(key.size());
     m.delta(delta).max(max);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
@@ -523,7 +527,7 @@ class SbeRingClient {
   }
   [[nodiscard]] long long decrpos(std::string_view key, ms t = kDefaultTimeout) { return key_int<goblin_sbe::GoblinDecrPos>(key, t); }
   [[nodiscard]] long long hcad(std::string_view key, std::string_view field, std::string_view expected, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinHCad>(key.size() + field.size() + expected.size());
+    auto m = build<goblin_sbe::GoblinHCad>(key.size() + field.size() + expected.size());
     m.putKey(key.data(), u32(key.size()));
     m.putField(field.data(), u32(field.size()));
     m.putExpected(expected.data(), u32(expected.size()));
@@ -531,7 +535,7 @@ class SbeRingClient {
     return as_int();
   }
   [[nodiscard]] long long hsetgt(std::string_view key, std::string_view field, std::string_view value, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinHSetGt>(key.size() + field.size() + value.size());
+    auto m = build<goblin_sbe::GoblinHSetGt>(key.size() + field.size() + value.size());
     m.putKey(key.data(), u32(key.size()));
     m.putField(field.data(), u32(field.size()));
     m.putValue(value.data(), u32(value.size()));
@@ -540,7 +544,7 @@ class SbeRingClient {
   }
   // CLAIM: "CLAIMED"/the stored result on a bulk reply, nullopt on nil.
   [[nodiscard]] std::optional<std::string> claim(std::string_view claim_key, std::string_view result_key, std::string_view token, long long seconds, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinClaim>(claim_key.size() + result_key.size() + token.size());
+    auto m = build<goblin_sbe::GoblinClaim>(claim_key.size() + result_key.size() + token.size());
     m.seconds(seconds);
     m.putClaimKey(claim_key.data(), u32(claim_key.size()));
     m.putResultKey(result_key.data(), u32(result_key.size()));
@@ -551,27 +555,27 @@ class SbeRingClient {
 
   // ---- admin -----------------------------------------------------------------
   [[nodiscard]] std::optional<std::vector<std::pair<std::string, std::string>>> memory(std::string_view key, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinMemory>(key.size());
+    auto m = build<goblin_sbe::GoblinMemory>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_map_or_nil();
   }
   [[nodiscard]] std::optional<long long> optimize(std::string_view key, double density = 0.0, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinOptimize>(key.size());
+    auto m = build<goblin_sbe::GoblinOptimize>(key.size());
     m.density(density);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int_or_nil();
   }
   [[nodiscard]] std::string save(std::string_view path, bool accel = true, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinSave>(path.size());
+    auto m = build<goblin_sbe::GoblinSave>(path.size());
     m.accel(accel ? 1 : 0);
     m.putPath(path.data(), u32(path.size()));
     finish(m, t);
     return as_status();
   }
   [[nodiscard]] long long load(std::string_view path, ms t = kDefaultTimeout) {
-    auto& m = build<goblin_sbe::GoblinLoad>(path.size());
+    auto m = build<goblin_sbe::GoblinLoad>(path.size());
     m.putPath(path.data(), u32(path.size()));
     finish(m, t);
     return as_int();
@@ -589,7 +593,7 @@ class SbeRingClient {
   [[nodiscard]] RespValue script(std::span<const std::string_view> args, Language lang = Language::lua, ms t = kDefaultTimeout) {
     std::size_t need = 0;
     for (const auto& a : args) need += a.size();
-    auto& m = build<goblin_sbe::Script>(need);
+    auto m = build<goblin_sbe::Script>(need);
     m.language(static_cast<std::uint8_t>(lang));
     auto& ag = m.argsCount(u16(args.size()));
     for (const auto& a : args) ag.next().putArg(a.data(), u32(a.size()));
@@ -609,60 +613,61 @@ class SbeRingClient {
   static std::uint32_t u32(std::size_t n) { return static_cast<std::uint32_t>(n); }
   static std::uint16_t u16(std::size_t n) { return static_cast<std::uint16_t>(n); }
 
-  // Ensure the send buffer holds a request whose var-data totals `payload` bytes.
+  // Wrap a stack-local SBE flyweight over sendbuf_. Flyweights are just
+  // (buffer, offset, length) — no heap, no type erasure. Returning by value
+  // keeps the hot path free of std::any emplace/cast.
   template <class Msg>
-  Msg& build(std::size_t payload) {
+  Msg build(std::size_t payload) {
     if (sendbuf_.size() < payload + 512) sendbuf_.resize(payload + 512);
-    msg_holder_.template emplace<Msg>();
-    Msg& m = std::any_cast<Msg&>(msg_holder_);
+    Msg m;
     m.wrapAndApplyHeader(sendbuf_.data(), kSbeLenPrefix, sendbuf_.size());
     return m;
   }
 
   // Common request shapes.
   template <class Msg>
-  Msg& key_group(std::span<const std::string_view> keys) {
+  Msg key_group(std::span<const std::string_view> keys) {
     std::size_t need = 0;
     for (const auto& k : keys) need += k.size();
-    Msg& m = build<Msg>(need);
+    Msg m = build<Msg>(need);
     auto& g = m.keysCount(u16(keys.size()));
     for (const auto& k : keys) g.next().putKey(k.data(), u32(k.size()));
     return m;
   }
   template <class Msg>
-  Msg& field_group(std::string_view key, std::span<const std::string_view> fields) {
+  Msg field_group(std::string_view key, std::span<const std::string_view> fields) {
     std::size_t need = key.size();
     for (const auto& f : fields) need += f.size();
-    Msg& m = build<Msg>(need);
+    Msg m = build<Msg>(need);
     auto& g = m.fieldsCount(u16(fields.size()));
     for (const auto& f : fields) g.next().putField(f.data(), u32(f.size()));
     m.putKey(key.data(), u32(key.size()));
     return m;
   }
   template <class Msg>
-  Msg& key_member(std::string_view key, std::string_view member) {
-    Msg& m = build<Msg>(key.size() + member.size());
+  Msg key_member(std::string_view key, std::string_view member) {
+    Msg m = build<Msg>(key.size() + member.size());
     m.putKey(key.data(), u32(key.size()));
     m.putMember(member.data(), u32(member.size()));
     return m;
   }
   template <class Msg>
-  Msg& key_field(std::string_view key, std::string_view field) {
-    Msg& m = build<Msg>(key.size() + field.size());
+  Msg key_field(std::string_view key, std::string_view field) {
+    Msg m = build<Msg>(key.size() + field.size());
     m.putKey(key.data(), u32(key.size()));
     m.putField(field.data(), u32(field.size()));
     return m;
   }
   template <class Msg>
   long long key_int(std::string_view key, ms t) {
-    Msg& m = build<Msg>(key.size());
+    Msg m = build<Msg>(key.size());
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int();
   }
   template <class Msg>
   long long delta_key_int(long long delta, std::string_view key, ms t) {
-    Msg& m = build<Msg>(key.size());
+    Msg m = build<Msg>(key.size());
     m.delta(delta);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
@@ -670,14 +675,14 @@ class SbeRingClient {
   }
   template <class Msg>
   long long expire_impl(std::string_view key, long long amount, std::uint8_t flags, ms t) {
-    Msg& m = build<Msg>(key.size());
+    Msg m = build<Msg>(key.size());
     m.amount(amount).flags(flags);
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int();
   }
-  goblin_sbe::ZRange& zrange_build(std::string_view key, long long start, long long stop, bool ws, bool rev) {
-    auto& m = build<goblin_sbe::ZRange>(key.size());
+  goblin_sbe::ZRange zrange_build(std::string_view key, long long start, long long stop, bool ws, bool rev) {
+    auto m = build<goblin_sbe::ZRange>(key.size());
     m.start(start).stop(stop).withScores(ws ? 1 : 0).rev(rev ? 1 : 0);
     m.putKey(key.data(), u32(key.size()));
     return m;
@@ -688,7 +693,7 @@ class SbeRingClient {
     std::size_t need = code.size();
     for (const auto& k : keys) need += k.size();
     for (const auto& a : args) need += a.size();
-    Msg& m = build<Msg>(need);
+    Msg m = build<Msg>(need);
     m.language(static_cast<std::uint8_t>(lang));
     auto& kg = m.keysCount(u16(keys.size()));
     for (const auto& k : keys) kg.next().putKey(k.data(), u32(k.size()));
@@ -736,9 +741,19 @@ class SbeRingClient {
   [[noreturn]] void unexpected() { throw std::runtime_error("SbeRingClient: unexpected reply type"); }
 
   [[nodiscard]] long long as_int() {
-    throw_if_error();
-    if (!reply_is<goblin_sbe::IntReply>()) unexpected();
-    return decode<goblin_sbe::IntReply>().value();
+    // One header read: error check + type check + decode (was 3× reply_header).
+    const auto h = reply_header();
+    const auto tid = h.templateId();
+    if (tid == goblin_sbe::ErrorReply::sbeTemplateId()) {
+      auto e = decode<goblin_sbe::ErrorReply>();
+      throw std::runtime_error(std::string(e.getCodeAsStringView()) + " " +
+                               std::string(e.getMessageAsStringView()));
+    }
+    if (tid != goblin_sbe::IntReply::sbeTemplateId()) unexpected();
+    goblin_sbe::IntReply m;
+    m.wrapForDecode(last_frame_.data(), goblin_sbe::MessageHeader::encodedLength(),
+                    h.blockLength(), h.version(), last_frame_.size());
+    return m.value();
   }
   [[nodiscard]] std::optional<long long> as_int_or_nil() {
     throw_if_error();
@@ -863,8 +878,38 @@ class SbeRingClient {
 
   void read_frame(ms timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    // Amortize the deadline clock read: a syscall/VDSO every spin dominates the
+    // empty-CQ wait (the p99 path). Check every 64 pauses; 5 s timeouts stay exact
+    // enough (64 * ~30 ns pause << 1 ms of slack).
+    unsigned spins = 0;
     for (;;) {
-      if (const auto rec = cq_.peek()) { cqbuf_.append(*rec); cq_.pop(); }
+      if (const auto rec = cq_.peek()) {
+        // Hot path: empty accumulator + one CQ record holds a whole frame.
+        // Copy once into last_frame_ and skip the cqbuf_ append/erase round-trip
+        // (two memcpys + string bookkeeping per reply).
+        if (cqbuf_.empty()) {
+          const auto& bytes = *rec;
+          if (bytes.size() >= kSbeLenPrefix) {
+            std::uint32_t len = 0;
+            std::memcpy(&len, bytes.data(), kSbeLenPrefix);
+            const std::size_t frame = kSbeLenPrefix + static_cast<std::size_t>(len);
+            if (bytes.size() == frame) {
+              last_frame_.assign(bytes.data() + kSbeLenPrefix, len);
+              cq_.pop();
+              return;
+            }
+            if (bytes.size() > frame) {
+              // Record holds a full frame plus pipelined leftover.
+              last_frame_.assign(bytes.data() + kSbeLenPrefix, len);
+              cqbuf_.assign(bytes.data() + frame, bytes.size() - frame);
+              cq_.pop();
+              return;
+            }
+          }
+        }
+        cqbuf_.append(*rec);
+        cq_.pop();
+      }
       if (cqbuf_.size() >= kSbeLenPrefix) {
         std::uint32_t len = 0;
         std::memcpy(&len, cqbuf_.data(), kSbeLenPrefix);
@@ -874,7 +919,7 @@ class SbeRingClient {
           return;
         }
       }
-      if (std::chrono::steady_clock::now() >= deadline)
+      if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline)
         throw std::runtime_error("SbeRingClient: timed out waiting for a reply");
       ring::cpu_relax();
     }
@@ -886,7 +931,6 @@ class SbeRingClient {
   std::vector<char> sendbuf_;  // growable request buffer (values up to 64 KiB)
   std::string cqbuf_;          // CQ byte accumulator
   std::string last_frame_;     // the last reply's SBE message (prefix stripped)
-  std::any msg_holder_;        // holds the flyweight for the in-flight request
 };
 
 }  // namespace goblin::core

@@ -1,7 +1,8 @@
 // RESP vs SBE latency over the shared-memory ring, same server. Two rings on one
 // server: RESP (ring_client.hpp) and the SBE binary wire (sbe_ring_client.hpp,
 // switched on by the GOBL magic). Measures the pure protocol delta -- fixed framing
-// overhead (PING) and native-vs-parsed scores (ZADD 1 and 10 members).
+// overhead (PING), native-vs-parsed scores (ZADD 1 and 10 members), and typed vs
+// text field/value writes (HSET 1 and 10 fields).
 //
 //   sbe_vs_resp_ring <path-to-goblin-core>
 
@@ -106,6 +107,22 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 10; ++i) sbe10.push_back({1.1 * (i + 1), mems[i]});
   measure("  RESP", [&] { (void)resp->command(zadd10); });
   measure("  SBE", [&] { (void)sbe->zadd("k", sbe10); });
+
+  std::puts("\nHSET, 1 field -- one field/value pair (RESP text vs SBE typed):");
+  std::vector<std::string_view> hset1 = {"HSET", "h", "f0", "v0"};
+  std::vector<std::pair<std::string_view, std::string_view>> sbe_h1 = {{"f0", "v0"}};
+  measure("  RESP", [&] { (void)resp->command(hset1); });
+  measure("  SBE", [&] { (void)sbe->hset("h", sbe_h1); });
+
+  std::puts("\nHSET, 10 fields -- ten field/value pairs:");
+  std::vector<std::string_view> hset10 = {"HSET", "h"};
+  static const char* hf[10] = {"f0","f1","f2","f3","f4","f5","f6","f7","f8","f9"};
+  static const char* hv[10] = {"v0","v1","v2","v3","v4","v5","v6","v7","v8","v9"};
+  for (int i = 0; i < 10; ++i) { hset10.push_back(hf[i]); hset10.push_back(hv[i]); }
+  std::vector<std::pair<std::string_view, std::string_view>> sbe_h10;
+  for (int i = 0; i < 10; ++i) sbe_h10.push_back({hf[i], hv[i]});
+  measure("  RESP", [&] { (void)resp->command(hset10); });
+  measure("  SBE", [&] { (void)sbe->hset("h", sbe_h10); });
 
   ::kill(pid, SIGTERM);
   int status = 0;
