@@ -143,6 +143,10 @@ struct CommandExecutionOptions {
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);
 
+// The INFO text (server/memory fields), for callers that reply it directly (e.g. the
+// SBE dispatch) rather than through a Command.
+[[nodiscard]] std::string render_server_info(const Store& store);
+
 void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,

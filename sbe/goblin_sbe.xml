@@ -398,4 +398,12 @@
     <data  name="resultKey" id="3" type="varData"/>
     <data  name="token"     id="4" type="varData"/>
   </sbe:message>
+
+  <!-- ======================== Admin (batch 6, ids 77-78) ======================= -->
+  <!-- density <= 0 means "use the default packing density" (the RESP form omits it). -->
+  <sbe:message name="GoblinOptimize" id="77" description="GOBLIN.OPTIMIZE key [density] -> IntReply | NilReply | ErrorReply">
+    <field name="density" id="1" type="double"/>
+    <data  name="key"     id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Info" id="78" description="INFO -> BulkReply (server/memory fields)"/>
 </sbe:messageSchema>

@@ -1083,6 +1083,10 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   return {.command = std::move(command)};
 }
 
+// Public accessor for the INFO text so the SBE dispatch can reply it without
+// duplicating build_info_string (which stays an internal helper here).
+std::string render_server_info(const Store& store) { return build_info_string(store); }
+
 void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,

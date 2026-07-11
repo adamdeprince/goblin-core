@@ -1,5 +1,6 @@
 #include "goblin/core/sbe_dispatch.hpp"
 
+#include "goblin/core/command.hpp"
 #include "goblin/core/sbe_frame.hpp"
 #include "goblin/core/store.hpp"
 #include "goblin/core/string_value.hpp"
@@ -74,6 +75,9 @@
 #include "goblin_sbe/GoblinIncrEx.h"
 #include "goblin_sbe/GoblinTdRescore.h"
 #include "goblin_sbe/GoblinZWindow.h"
+// Admin (batch 6)
+#include "goblin_sbe/GoblinOptimize.h"
+#include "goblin_sbe/Info.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -162,6 +166,8 @@ constexpr std::uint16_t kGoblinDecrPos = sbe::GoblinDecrPos::sbeTemplateId();
 constexpr std::uint16_t kGoblinHCad = sbe::GoblinHCad::sbeTemplateId();
 constexpr std::uint16_t kGoblinHSetGt = sbe::GoblinHSetGt::sbeTemplateId();
 constexpr std::uint16_t kGoblinClaim = sbe::GoblinClaim::sbeTemplateId();
+constexpr std::uint16_t kGoblinOptimize = sbe::GoblinOptimize::sbeTemplateId();
+constexpr std::uint16_t kInfo = sbe::Info::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -1304,6 +1310,30 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       break;
     }
+
+    case kGoblinOptimize: {
+      sbe::GoblinOptimize g;
+      g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const double density = g.density();
+      const std::string_view key = g.getKeyAsStringView();
+      // density <= 0 means "omitted" -> the default; anything above 1 is invalid.
+      const double d = density <= 0.0 ? kDefaultMemberIndexDensity : density;
+      if (d > 1.0) {
+        reply_error(out, "ERR", "packing density must be in (0, 1]");
+        break;
+      }
+      const auto reclaimed = store.optimize(key, d);
+      if (reclaimed) {
+        reply_int(out, static_cast<long long>(*reclaimed));
+      } else {
+        reply_nil(out);
+      }
+      break;
+    }
+
+    case kInfo:
+      reply_bulk(out, render_server_info(store));
+      break;
 
     default:
       reply_error(out, "ERR", "unknown command over the SBE wire");

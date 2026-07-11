@@ -74,6 +74,8 @@
 #include "goblin_sbe/GoblinIncrEx.h"
 #include "goblin_sbe/GoblinTdRescore.h"
 #include "goblin_sbe/GoblinZWindow.h"
+#include "goblin_sbe/GoblinOptimize.h"
+#include "goblin_sbe/Info.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -405,6 +407,15 @@ std::string claim_frame(std::string_view ck, std::string_view rk, std::string_vi
   char buf[512]; sbe::GoblinClaim z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
   z.seconds(seconds); z.putClaimKey(ck.data(), sv32(ck)); z.putResultKey(rk.data(), sv32(rk)); z.putToken(token.data(), sv32(token));
   return fin(buf, z);
+}
+std::string optimize_frame(std::string_view key, double density) {
+  char buf[512]; sbe::GoblinOptimize z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.density(density); z.putKey(key.data(), sv32(key));
+  return fin(buf, z);
+}
+std::string info_frame() {
+  char buf[64]; sbe::Info z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  return framed(buf, static_cast<std::uint32_t>(sbe::Info::sbeBlockAndHeaderLength()));
 }
 
 // Dispatch a frame, assert it is fully consumed, hand the reply header + message to
@@ -785,6 +796,22 @@ int main() {
   dispatch(store, set_frame("rk", "done"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
   dispatch(store, claim_frame("ck", "rk", "tok3", 60), bulk_is("done"));
 
+  // ---- Admin (batch 6) ----
+  // OPTIMIZE a zset -> IntReply; missing key -> Nil; density > 1 -> Error
+  dispatch(store, zadd_frame("opt", {{1.0, "a"}, {2.0, "b"}}), int_is(2));
+  dispatch(store, optimize_frame("opt", 0.0), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::IntReply>(h, m, l).value() >= 0);  // default density
+  });
+  dispatch(store, optimize_frame("missingkey", 0.0), is_nil);
+  dispatch(store, optimize_frame("opt", 1.5), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
+  });
+  // INFO -> a non-empty bulk with known fields
+  dispatch(store, info_frame(), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto s = decode<sbe::BulkReply>(h, m, l).getValueAsStringView();
+    assert(!s.empty() && s.find("used_memory") != std::string_view::npos);
+  });
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -804,6 +831,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: + GOBLIN.* natives (61 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: + admin OPTIMIZE/INFO (63 commands) -> Store (no parse) -> generic reply");
   return 0;
 }
