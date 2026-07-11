@@ -30,6 +30,18 @@
 #include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
 #include "goblin_sbe/StrLen.h"
+#include "goblin_sbe/Del.h"
+#include "goblin_sbe/Exists.h"
+#include "goblin_sbe/Expire.h"
+#include "goblin_sbe/ExpireAt.h"
+#include "goblin_sbe/ExpireTime.h"
+#include "goblin_sbe/PExpire.h"
+#include "goblin_sbe/PExpireAt.h"
+#include "goblin_sbe/PExpireTime.h"
+#include "goblin_sbe/PTtl.h"
+#include "goblin_sbe/Persist.h"
+#include "goblin_sbe/Ttl.h"
+#include "goblin_sbe/Type.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -151,6 +163,28 @@ std::string set_frame(std::string_view key, std::string_view value, std::uint8_t
   z.flags(flags).expireMode(mode).expireValue(expire_value);
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
   z.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string keys_frame(const std::vector<std::string_view>& keys) {
+  char buf[4096];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& g = z.keysCount(static_cast<std::uint16_t>(keys.size()));
+  for (const auto& k : keys) {
+    g.next().putKey(k.data(), static_cast<std::uint32_t>(k.size()));
+  }
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string expire_frame(long long amount, std::uint8_t flags, std::string_view key) {
+  char buf[512];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.amount(amount).flags(flags);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
@@ -304,6 +338,51 @@ int main() {
   dispatch(store, set_frame("fresh", "z", 0x04), bulk_is("v"));
   dispatch(store, key_frame<sbe::Get>("fresh"), bulk_is("z"));
 
+  // ---- Keyspace / TTL (batch 2) ----
+  auto status_is = [](std::string_view want) {
+    return [want](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+      assert(decode<sbe::StatusReply>(h, m, l).getStatusAsStringView() == want);
+    };
+  };
+  dispatch(store, set_frame("ka", "1"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, set_frame("kb", "2"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  // EXISTS counts present keys; TYPE reports the kind
+  dispatch(store, keys_frame<sbe::Exists>({"ka", "kb", "missing"}), int_is(2));
+  dispatch(store, key_frame<sbe::Type>("ka"), status_is("string"));
+  dispatch(store, key_frame<sbe::Type>("board"), status_is("zset"));
+  dispatch(store, key_frame<sbe::Type>("missing"), status_is("none"));
+  // EXPIRE sets a ttl; TTL/PTTL/EXPIRETIME read it; PERSIST clears it
+  dispatch(store, expire_frame<sbe::Expire>(1000, 0, "ka"), int_is(1));
+  dispatch(store, key_frame<sbe::Ttl>("ka"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    const auto t = decode<sbe::IntReply>(h, m, l).value();
+    assert(t > 0 && t <= 1000);
+  });
+  dispatch(store, key_frame<sbe::PTtl>("ka"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::IntReply>(h, m, l).value() > 0);
+  });
+  dispatch(store, key_frame<sbe::ExpireTime>("ka"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::IntReply>(h, m, l).value() > 0);  // a future unix time
+  });
+  dispatch(store, key_frame<sbe::Persist>("ka"), int_is(1));
+  dispatch(store, key_frame<sbe::Ttl>("ka"), int_is(-1));       // exists, no ttl
+  dispatch(store, key_frame<sbe::Ttl>("missing"), int_is(-2));  // no key
+  // EXPIRE flags: GT rejects a smaller expiry, GT+LT is incompatible
+  dispatch(store, expire_frame<sbe::Expire>(1000, 0, "kb"), int_is(1));
+  dispatch(store, expire_frame<sbe::Expire>(10, 0x04, "kb"), int_is(0));  // GT and 10 < 1000
+  dispatch(store, expire_frame<sbe::Expire>(5, 0x0C, "kb"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");  // GT | LT
+  });
+  // All four expire variants apply (PEXPIRE ms-relative, *AT absolute)
+  dispatch(store, expire_frame<sbe::PExpire>(500000, 0, "ka"), int_is(1));
+  dispatch(store, expire_frame<sbe::ExpireAt>(4102444800LL, 0, "ka"), int_is(1));      // ~year 2100 s
+  dispatch(store, expire_frame<sbe::PExpireAt>(4102444800000LL, 0, "kb"), int_is(1));  // ~year 2100 ms
+  dispatch(store, key_frame<sbe::PExpireTime>("kb"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::IntReply>(h, m, l).value() > 0);
+  });
+  // DEL removes; EXISTS then sees nothing
+  dispatch(store, keys_frame<sbe::Del>({"ka", "kb"}), int_is(2));
+  dispatch(store, keys_frame<sbe::Exists>({"ka", "kb"}), int_is(0));
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -323,6 +402,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: zset + string core (18 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: zset + string + keyspace/TTL (30 commands) -> Store (no parse) -> generic reply");
   return 0;
 }

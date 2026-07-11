@@ -173,4 +173,59 @@
     <field name="delta" id="1" type="double"/>
     <data  name="key"   id="2" type="varData"/>
   </sbe:message>
+
+  <!-- ===================== Keyspace / TTL (batch 2, ids 34-45) ================== -->
+  <sbe:message name="Del"    id="34" description="DEL key... -> IntReply (count removed)">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="Exists" id="35" description="EXISTS key... -> IntReply (count present)">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="Type"   id="36" description="TYPE key -> StatusReply (string/zset/hash/none)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+
+  <!-- EXPIRE family: native amount + flags (0x01 NX, 0x02 XX, 0x04 GT, 0x08 LT,
+       matching store.hpp ExpireFlag). EXPIRE/EXPIREAT are seconds, PEXPIRE/PEXPIREAT
+       milliseconds; the *AT variants are absolute. -> IntReply | ErrorReply. -->
+  <sbe:message name="Expire"    id="37" description="EXPIRE key seconds [flags]">
+    <field name="amount" id="1" type="int64"/>
+    <field name="flags"  id="2" type="uint8"/>
+    <data  name="key"    id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="PExpire"   id="38" description="PEXPIRE key ms [flags]">
+    <field name="amount" id="1" type="int64"/>
+    <field name="flags"  id="2" type="uint8"/>
+    <data  name="key"    id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ExpireAt"  id="39" description="EXPIREAT key ts-seconds [flags]">
+    <field name="amount" id="1" type="int64"/>
+    <field name="flags"  id="2" type="uint8"/>
+    <data  name="key"    id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="PExpireAt" id="40" description="PEXPIREAT key ts-ms [flags]">
+    <field name="amount" id="1" type="int64"/>
+    <field name="flags"  id="2" type="uint8"/>
+    <data  name="key"    id="3" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="Ttl"         id="41" description="TTL key -> IntReply (seconds; -1/-2)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="PTtl"        id="42" description="PTTL key -> IntReply (ms; -1/-2)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Persist"     id="43" description="PERSIST key -> IntReply (0/1)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ExpireTime"  id="44" description="EXPIRETIME key -> IntReply (unix seconds; -1/-2)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="PExpireTime" id="45" description="PEXPIRETIME key -> IntReply (unix ms; -1/-2)">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
 </sbe:messageSchema>

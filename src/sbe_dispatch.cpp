@@ -26,6 +26,19 @@
 #include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
 #include "goblin_sbe/StrLen.h"
+// Keyspace / TTL (batch 2)
+#include "goblin_sbe/Del.h"
+#include "goblin_sbe/Exists.h"
+#include "goblin_sbe/Expire.h"
+#include "goblin_sbe/ExpireAt.h"
+#include "goblin_sbe/ExpireTime.h"
+#include "goblin_sbe/PExpire.h"
+#include "goblin_sbe/PExpireAt.h"
+#include "goblin_sbe/PExpireTime.h"
+#include "goblin_sbe/PTtl.h"
+#include "goblin_sbe/Persist.h"
+#include "goblin_sbe/Ttl.h"
+#include "goblin_sbe/Type.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -67,6 +80,18 @@ constexpr std::uint16_t kDecr = sbe::Decr::sbeTemplateId();
 constexpr std::uint16_t kIncrBy = sbe::IncrBy::sbeTemplateId();
 constexpr std::uint16_t kDecrBy = sbe::DecrBy::sbeTemplateId();
 constexpr std::uint16_t kIncrByFloat = sbe::IncrByFloat::sbeTemplateId();
+constexpr std::uint16_t kDel = sbe::Del::sbeTemplateId();
+constexpr std::uint16_t kExists = sbe::Exists::sbeTemplateId();
+constexpr std::uint16_t kType = sbe::Type::sbeTemplateId();
+constexpr std::uint16_t kExpire = sbe::Expire::sbeTemplateId();
+constexpr std::uint16_t kPExpire = sbe::PExpire::sbeTemplateId();
+constexpr std::uint16_t kExpireAt = sbe::ExpireAt::sbeTemplateId();
+constexpr std::uint16_t kPExpireAt = sbe::PExpireAt::sbeTemplateId();
+constexpr std::uint16_t kTtl = sbe::Ttl::sbeTemplateId();
+constexpr std::uint16_t kPTtl = sbe::PTtl::sbeTemplateId();
+constexpr std::uint16_t kPersist = sbe::Persist::sbeTemplateId();
+constexpr std::uint16_t kExpireTime = sbe::ExpireTime::sbeTemplateId();
+constexpr std::uint16_t kPExpireTime = sbe::PExpireTime::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -132,6 +157,35 @@ void reply_int_or_range_error(std::string& out, std::optional<long long> v) {
   } else {
     reply_error(out, "ERR", kErrNotInteger);
   }
+}
+
+void reply_status(std::string& out, std::string_view s) {
+  reply<sbe::StatusReply>(out, [&](sbe::StatusReply& r) {
+    r.putStatus(s.data(), static_cast<std::uint32_t>(s.size()));
+  });
+}
+
+// EXPIRE / PEXPIRE / EXPIREAT / PEXPIREAT: native amount + flags. `relative` adds to
+// now (EXPIRE/PEXPIRE); false is absolute (the *AT variants). `unit_ms` is 1000 for
+// the second-granularity commands, 1 for the millisecond ones. Mirrors command.cpp.
+void handle_expire(Store& store, bool relative, long long unit_ms, long long amount,
+                   unsigned flags, std::string_view key, std::string& out) {
+  if ((flags & ExpireFlag::kNx) &&
+      (flags & (ExpireFlag::kXx | ExpireFlag::kGt | ExpireFlag::kLt))) {
+    reply_error(out, "ERR", "NX and XX, GT or LT options at the same time are not compatible");
+    return;
+  }
+  if ((flags & ExpireFlag::kGt) && (flags & ExpireFlag::kLt)) {
+    reply_error(out, "ERR", "GT and LT options at the same time are not compatible");
+    return;
+  }
+  const auto now = store.now_ms();
+  const auto when = compute_when_ms(relative ? now : 0, amount, unit_ms);
+  if (!when) {
+    reply_error(out, "ERR", "invalid expire time");
+    return;
+  }
+  reply_int(out, store.expire_at_ms(key, *when, now, flags) ? 1 : 0);
 }
 
 // Array replies are variable-length, so unlike the fixed reply<> scratch they build
@@ -520,6 +574,122 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       } else {
         reply_error(out, "ERR", kErrNotFloat);
       }
+      break;
+    }
+
+    case kDel: {
+      sbe::Del d;
+      d.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      long long removed = 0;
+      auto& keys = d.keys();
+      while (keys.hasNext()) {
+        keys.next();
+        removed += store.del(keys.getKeyAsStringView()) ? 1 : 0;
+      }
+      reply_int(out, removed);
+      break;
+    }
+
+    case kExists: {
+      sbe::Exists e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const bool has_ttl = !store.ttl_empty();
+      const auto now = has_ttl ? store.now_ms() : std::uint64_t{0};
+      long long count = 0;
+      auto& keys = e.keys();
+      while (keys.hasNext()) {
+        keys.next();
+        const std::string_view key = keys.getKeyAsStringView();
+        if (has_ttl) {
+          (void)store.purge_if_expired(key, now);
+        }
+        count += store.exists(key) ? 1 : 0;
+      }
+      reply_int(out, count);
+      break;
+    }
+
+    case kType: {
+      sbe::Type t;
+      t.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto type = store.key_type(t.getKeyAsStringView());
+      std::string_view name = "none";
+      if (type) {
+        switch (*type) {
+          case KeyType::String: name = "string"; break;
+          case KeyType::Zset: name = "zset"; break;
+          case KeyType::Hash: name = "hash"; break;
+        }
+      }
+      reply_status(out, name);
+      break;
+    }
+
+    case kExpire: {
+      sbe::Expire e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long amount = e.amount();
+      const unsigned flags = e.flags();
+      handle_expire(store, true, 1000, amount, flags, e.getKeyAsStringView(), out);
+      break;
+    }
+    case kPExpire: {
+      sbe::PExpire e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long amount = e.amount();
+      const unsigned flags = e.flags();
+      handle_expire(store, true, 1, amount, flags, e.getKeyAsStringView(), out);
+      break;
+    }
+    case kExpireAt: {
+      sbe::ExpireAt e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long amount = e.amount();
+      const unsigned flags = e.flags();
+      handle_expire(store, false, 1000, amount, flags, e.getKeyAsStringView(), out);
+      break;
+    }
+    case kPExpireAt: {
+      sbe::PExpireAt e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long amount = e.amount();
+      const unsigned flags = e.flags();
+      handle_expire(store, false, 1, amount, flags, e.getKeyAsStringView(), out);
+      break;
+    }
+
+    case kTtl: {
+      sbe::Ttl t;
+      t.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto ms = store.pttl_ms(t.getKeyAsStringView(), store.now_ms());
+      reply_int(out, ms < 0 ? ms : (ms + 500) / 1000);  // TTL rounds to seconds
+      break;
+    }
+    case kPTtl: {
+      sbe::PTtl t;
+      t.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, store.pttl_ms(t.getKeyAsStringView(), store.now_ms()));
+      break;
+    }
+
+    case kPersist: {
+      sbe::Persist p;
+      p.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, store.persist(p.getKeyAsStringView()) ? 1 : 0);
+      break;
+    }
+
+    case kExpireTime: {
+      sbe::ExpireTime e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto ms = store.expiretime_ms(e.getKeyAsStringView());
+      reply_int(out, ms < 0 ? ms : ms / 1000);  // EXPIRETIME in seconds
+      break;
+    }
+    case kPExpireTime: {
+      sbe::PExpireTime e;
+      e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, store.expiretime_ms(e.getKeyAsStringView()));
       break;
     }
 
