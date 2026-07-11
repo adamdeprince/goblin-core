@@ -8,15 +8,28 @@
 #include "goblin/core/sbe_frame.hpp"
 #include "goblin/core/store.hpp"
 
+#include "goblin_sbe/Append.h"
 #include "goblin_sbe/ArrayReply.h"
+#include "goblin_sbe/BulkReply.h"
+#include "goblin_sbe/Decr.h"
+#include "goblin_sbe/DecrBy.h"
 #include "goblin_sbe/DoubleReply.h"
 #include "goblin_sbe/ErrorReply.h"
+#include "goblin_sbe/Get.h"
+#include "goblin_sbe/GetDel.h"
+#include "goblin_sbe/GetSet.h"
+#include "goblin_sbe/Incr.h"
+#include "goblin_sbe/IncrBy.h"
+#include "goblin_sbe/IncrByFloat.h"
 #include "goblin_sbe/IntReply.h"
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/NilReply.h"
 #include "goblin_sbe/Ping.h"
 #include "goblin_sbe/ScoredArrayReply.h"
+#include "goblin_sbe/Set.h"
+#include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
+#include "goblin_sbe/StrLen.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -89,6 +102,55 @@ std::string zrange_frame(std::string_view key, long long start, long long stop, 
   z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
   z.start(start).stop(stop).withScores(with_scores ? 1 : 0).rev(0);
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string key_frame(std::string_view key) {
+  char buf[512];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string key_value_frame(std::string_view key, std::string_view value) {
+  char buf[4096];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string idelta_key_frame(long long delta, std::string_view key) {
+  char buf[512];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.delta(delta);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string incrbyfloat_frame(double delta, std::string_view key) {
+  char buf[512];
+  sbe::IncrByFloat z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.delta(delta);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string set_frame(std::string_view key, std::string_view value, std::uint8_t flags = 0,
+                      std::uint8_t mode = 0, long long expire_value = 0) {
+  char buf[4096];
+  sbe::Set z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.flags(flags).expireMode(mode).expireValue(expire_value);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
@@ -185,6 +247,63 @@ int main() {
     assert(!r.items().hasNext());
   });
 
+  // ---- String core (batch 1) ----
+  auto is_nil = [](sbe::MessageHeader& h, char*, std::uint32_t) {
+    assert(h.templateId() == sbe::NilReply::sbeTemplateId());
+  };
+  auto bulk_is = [](std::string_view want) {
+    return [want](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+      assert(decode<sbe::BulkReply>(h, m, l).getValueAsStringView() == want);
+    };
+  };
+  auto int_is = [](long long want) {
+    return [want](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+      assert(decode<sbe::IntReply>(h, m, l).value() == want);
+    };
+  };
+
+  // SET/GET, Nil on miss
+  dispatch(store, set_frame("s", "hello"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::StatusReply>(h, m, l).getStatusAsStringView() == "OK");
+  });
+  dispatch(store, key_frame<sbe::Get>("s"), bulk_is("hello"));
+  dispatch(store, key_frame<sbe::Get>("absent"), is_nil);
+  // STRLEN, APPEND
+  dispatch(store, key_frame<sbe::StrLen>("s"), int_is(5));
+  dispatch(store, key_value_frame<sbe::Append>("s", " world"), int_is(11));
+  dispatch(store, key_frame<sbe::Get>("s"), bulk_is("hello world"));
+  // GETSET returns old, GETDEL returns then removes
+  dispatch(store, key_value_frame<sbe::GetSet>("s", "new"), bulk_is("hello world"));
+  dispatch(store, key_frame<sbe::GetDel>("s"), bulk_is("new"));
+  dispatch(store, key_frame<sbe::Get>("s"), is_nil);
+  // SETNX: sets once, then no-op
+  dispatch(store, key_value_frame<sbe::SetNx>("fresh", "v"), int_is(1));
+  dispatch(store, key_value_frame<sbe::SetNx>("fresh", "v2"), int_is(0));
+  // INCR / DECR / INCRBY / DECRBY
+  dispatch(store, key_frame<sbe::Incr>("cnt"), int_is(1));
+  dispatch(store, key_frame<sbe::Incr>("cnt"), int_is(2));
+  dispatch(store, idelta_key_frame<sbe::IncrBy>(10, "cnt"), int_is(12));
+  dispatch(store, key_frame<sbe::Decr>("cnt"), int_is(11));
+  dispatch(store, idelta_key_frame<sbe::DecrBy>(5, "cnt"), int_is(6));
+  // INCR on a non-integer -> ErrorReply ERR
+  dispatch(store, set_frame("word", "abc"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
+  dispatch(store, key_frame<sbe::Incr>("word"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
+  });
+  // INCRBYFLOAT (native double in, formatted bulk out) -- compare numerically
+  dispatch(store, incrbyfloat_frame(2.5, "f"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(std::stod(std::string(decode<sbe::BulkReply>(h, m, l).getValueAsStringView())) == 2.5);
+  });
+  dispatch(store, incrbyfloat_frame(0.5, "f"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(std::stod(std::string(decode<sbe::BulkReply>(h, m, l).getValueAsStringView())) == 3.0);
+  });
+  // SET NX on an existing key and SET XX on a missing key both no-op -> Nil
+  dispatch(store, set_frame("fresh", "x", 0x01), is_nil);       // NX, exists
+  dispatch(store, set_frame("ghostkey", "x", 0x02), is_nil);    // XX, missing
+  // SET ... GET returns the prior value ("fresh" still holds "v") and overwrites
+  dispatch(store, set_frame("fresh", "z", 0x04), bulk_is("v"));
+  dispatch(store, key_frame<sbe::Get>("fresh"), bulk_is("z"));
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -204,6 +323,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: zset scalar + array patterns -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: zset + string core (18 commands) -> Store (no parse) -> generic reply");
   return 0;
 }

@@ -68,6 +68,9 @@
   <sbe:message name="DoubleReply" id="5" description="native double reply (e.g. ZSCORE)">
     <field name="value" id="1" type="double"/>
   </sbe:message>
+  <sbe:message name="BulkReply"   id="6" description="one bulk string (e.g. GET)">
+    <data name="value" id="1" type="varData"/>
+  </sbe:message>
   <sbe:message name="ArrayReply"  id="7" description="array of bulk strings (e.g. ZRANGE)">
     <group name="items" id="1" dimensionType="groupSizeEncoding">
       <data name="value" id="1" type="varData"/>
@@ -116,5 +119,58 @@
     <field name="withScores" id="3" type="uint8"/>
     <field name="rev"        id="4" type="uint8"/>
     <data  name="key"        id="5" type="varData"/>
+  </sbe:message>
+
+  <!-- ===================== String commands (batch 1, ids 22-33) ================= -->
+  <sbe:message name="Get"    id="22" description="GET key -> BulkReply | NilReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+
+  <!-- SET key value [NX|XX] [GET] [EX|PX|EXAT|PXAT n | KEEPTTL]. flags bits:
+       0x01 NX, 0x02 XX, 0x04 GET, 0x08 KEEPTTL. expireMode: 0 none, 1 EX, 2 PX,
+       3 EXAT, 4 PXAT (expireValue is the amount). -> StatusReply | BulkReply | NilReply -->
+  <sbe:message name="Set" id="23" description="SET key value [opts]">
+    <field name="flags"       id="1" type="uint8"/>
+    <field name="expireMode"  id="2" type="uint8"/>
+    <field name="expireValue" id="3" type="int64"/>
+    <data  name="key"         id="4" type="varData"/>
+    <data  name="value"       id="5" type="varData"/>
+  </sbe:message>
+
+  <sbe:message name="GetSet" id="24" description="GETSET key value -> BulkReply | NilReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="value" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SetNx"  id="25" description="SETNX key value -> IntReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="value" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="GetDel" id="26" description="GETDEL key -> BulkReply | NilReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="StrLen" id="27" description="STRLEN key -> IntReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Append" id="28" description="APPEND key value -> IntReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="value" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Incr"   id="29" description="INCR key -> IntReply | ErrorReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="Decr"   id="30" description="DECR key -> IntReply | ErrorReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="IncrBy" id="31" description="INCRBY key delta -> IntReply | ErrorReply">
+    <field name="delta" id="1" type="int64"/>
+    <data  name="key"   id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="DecrBy" id="32" description="DECRBY key delta -> IntReply | ErrorReply">
+    <field name="delta" id="1" type="int64"/>
+    <data  name="key"   id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="IncrByFloat" id="33" description="INCRBYFLOAT key delta -> BulkReply | ErrorReply">
+    <field name="delta" id="1" type="double"/>
+    <data  name="key"   id="2" type="varData"/>
   </sbe:message>
 </sbe:messageSchema>
