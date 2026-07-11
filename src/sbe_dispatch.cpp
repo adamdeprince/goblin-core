@@ -39,6 +39,20 @@
 #include "goblin_sbe/Persist.h"
 #include "goblin_sbe/Ttl.h"
 #include "goblin_sbe/Type.h"
+// Hash (batch 3)
+#include "goblin_sbe/HDel.h"
+#include "goblin_sbe/HExists.h"
+#include "goblin_sbe/HGet.h"
+#include "goblin_sbe/HGetAll.h"
+#include "goblin_sbe/HIncrBy.h"
+#include "goblin_sbe/HKeys.h"
+#include "goblin_sbe/HLen.h"
+#include "goblin_sbe/HMGet.h"
+#include "goblin_sbe/HSet.h"
+#include "goblin_sbe/HSetNx.h"
+#include "goblin_sbe/HStrLen.h"
+#include "goblin_sbe/HVals.h"
+#include "goblin_sbe/NullableArrayReply.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -92,6 +106,18 @@ constexpr std::uint16_t kPTtl = sbe::PTtl::sbeTemplateId();
 constexpr std::uint16_t kPersist = sbe::Persist::sbeTemplateId();
 constexpr std::uint16_t kExpireTime = sbe::ExpireTime::sbeTemplateId();
 constexpr std::uint16_t kPExpireTime = sbe::PExpireTime::sbeTemplateId();
+constexpr std::uint16_t kHSet = sbe::HSet::sbeTemplateId();
+constexpr std::uint16_t kHSetNx = sbe::HSetNx::sbeTemplateId();
+constexpr std::uint16_t kHGet = sbe::HGet::sbeTemplateId();
+constexpr std::uint16_t kHMGet = sbe::HMGet::sbeTemplateId();
+constexpr std::uint16_t kHDel = sbe::HDel::sbeTemplateId();
+constexpr std::uint16_t kHGetAll = sbe::HGetAll::sbeTemplateId();
+constexpr std::uint16_t kHKeys = sbe::HKeys::sbeTemplateId();
+constexpr std::uint16_t kHVals = sbe::HVals::sbeTemplateId();
+constexpr std::uint16_t kHLen = sbe::HLen::sbeTemplateId();
+constexpr std::uint16_t kHExists = sbe::HExists::sbeTemplateId();
+constexpr std::uint16_t kHStrLen = sbe::HStrLen::sbeTemplateId();
+constexpr std::uint16_t kHIncrBy = sbe::HIncrBy::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -275,6 +301,33 @@ void reply_scored_array(std::string& out,
   auto& g = r.itemsCount(static_cast<std::uint16_t>(items.size()));
   for (const auto& [m, s] : items) {
     g.next().score(s).putMember(m.data(), static_cast<std::uint32_t>(m.size()));  // native double
+  }
+  const std::uint32_t total =
+      static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + r.encodedLength());
+  std::memcpy(rbuf.data(), &total, kSbeLenPrefix);
+  out.append(rbuf.data(), kSbeLenPrefix + total);
+}
+
+// HMGET / MGET -> an array whose elements may individually be nil (present=0).
+void reply_nullable_array(std::string& out,
+                          const std::vector<std::optional<std::string_view>>& items) {
+  if (items.size() > kMaxGroup) {
+    reply_error(out, "ERR", "result too large for one SBE array reply");
+    return;
+  }
+  std::size_t body = 4;  // group header
+  for (const auto& it : items) body += 1 + 4 + (it ? it->size() : 0);  // present + len + bytes
+  std::vector<char>& rbuf = array_scratch(kSbeLenPrefix + sbe::MessageHeader::encodedLength() + body + 16);
+  sbe::NullableArrayReply r;
+  r.wrapAndApplyHeader(rbuf.data(), kSbeLenPrefix, rbuf.size());
+  auto& g = r.itemsCount(static_cast<std::uint16_t>(items.size()));
+  for (const auto& it : items) {
+    g.next();
+    if (it) {
+      g.present(1).putValue(it->data(), static_cast<std::uint32_t>(it->size()));
+    } else {
+      g.present(0).putValue("", 0);
+    }
   }
   const std::uint32_t total =
       static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + r.encodedLength());
@@ -690,6 +743,172 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::PExpireTime e;
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       reply_int(out, store.expiretime_ms(e.getKeyAsStringView()));
+      break;
+    }
+
+    case kHSet: {
+      sbe::HSet h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::pair<std::string_view, std::string_view>> entries;
+      entries.clear();
+      bool too_big = false;
+      auto& g = h.entries();
+      while (g.hasNext()) {
+        g.next();
+        const auto f = g.getFieldAsStringView();
+        const auto v = g.getValueAsStringView();
+        if (f.size() > Store::max_value_bytes() || v.size() > Store::max_value_bytes()) {
+          too_big = true;
+        }
+        entries.emplace_back(f, v);
+      }
+      const std::string_view key = h.getKeyAsStringView();
+      if (too_big) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      long long added = 0;
+      for (const auto& [f, v] : entries) added += store.hset(key, f, v);
+      reply_int(out, added);
+      break;
+    }
+
+    case kHSetNx: {
+      sbe::HSetNx h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view field = h.getFieldAsStringView();
+      const std::string_view value = h.getValueAsStringView();
+      if (field.size() > Store::max_value_bytes() || value.size() > Store::max_value_bytes()) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      reply_int(out, store.hsetnx(key, field, value));
+      break;
+    }
+
+    case kHGet: {
+      sbe::HGet h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view field = h.getFieldAsStringView();
+      const auto v = store.hget(key, field);
+      if (v) {
+        reply_bulk(out, *v);
+      } else {
+        reply_nil(out);
+      }
+      break;
+    }
+
+    case kHMGet: {
+      sbe::HMGet h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> fields;
+      fields.clear();
+      auto& g = h.fields();
+      while (g.hasNext()) {
+        g.next();
+        fields.push_back(g.getFieldAsStringView());
+      }
+      const std::string_view key = h.getKeyAsStringView();
+      static thread_local std::vector<std::optional<std::string_view>> values;
+      values.clear();
+      for (const auto& f : fields) values.push_back(store.hget(key, f));
+      reply_nullable_array(out, values);
+      break;
+    }
+
+    case kHDel: {
+      sbe::HDel h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> fields;
+      fields.clear();
+      auto& g = h.fields();
+      while (g.hasNext()) {
+        g.next();
+        fields.push_back(g.getFieldAsStringView());
+      }
+      const std::string_view key = h.getKeyAsStringView();
+      long long removed = 0;
+      for (const auto& f : fields) removed += store.hdel(key, f) ? 1 : 0;
+      reply_int(out, removed);
+      break;
+    }
+
+    case kHGetAll: {
+      sbe::HGetAll h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      static thread_local std::vector<std::string_view> flat;
+      flat.clear();
+      store.hash_for_each(key, [&](std::string_view f, std::string_view v) {
+        flat.push_back(f);
+        flat.push_back(v);
+      });
+      reply_array(out, flat);
+      break;
+    }
+
+    case kHKeys: {
+      sbe::HKeys h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      static thread_local std::vector<std::string_view> keys;
+      keys.clear();
+      store.hash_for_each(key, [&](std::string_view f, std::string_view) { keys.push_back(f); });
+      reply_array(out, keys);
+      break;
+    }
+
+    case kHVals: {
+      sbe::HVals h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      static thread_local std::vector<std::string_view> vals;
+      vals.clear();
+      store.hash_for_each(key, [&](std::string_view, std::string_view v) { vals.push_back(v); });
+      reply_array(out, vals);
+      break;
+    }
+
+    case kHLen: {
+      sbe::HLen h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, static_cast<long long>(store.hlen(h.getKeyAsStringView())));
+      break;
+    }
+
+    case kHExists: {
+      sbe::HExists h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view field = h.getFieldAsStringView();
+      reply_int(out, store.hexists(key, field) ? 1 : 0);
+      break;
+    }
+
+    case kHStrLen: {
+      sbe::HStrLen h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view field = h.getFieldAsStringView();
+      reply_int(out, static_cast<long long>(store.hstrlen(key, field).value_or(0)));
+      break;
+    }
+
+    case kHIncrBy: {
+      sbe::HIncrBy h;
+      h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const long long delta = h.delta();
+      const std::string_view key = h.getKeyAsStringView();
+      const std::string_view field = h.getFieldAsStringView();
+      const auto result = store.hincrby(key, field, delta);
+      if (result) {
+        reply_int(out, *result);
+      } else {
+        reply_error(out, "ERR", "hash value is not an integer or out of range");
+      }
       break;
     }
 

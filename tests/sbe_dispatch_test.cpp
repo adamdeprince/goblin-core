@@ -42,6 +42,19 @@
 #include "goblin_sbe/Persist.h"
 #include "goblin_sbe/Ttl.h"
 #include "goblin_sbe/Type.h"
+#include "goblin_sbe/HDel.h"
+#include "goblin_sbe/HExists.h"
+#include "goblin_sbe/HGet.h"
+#include "goblin_sbe/HGetAll.h"
+#include "goblin_sbe/HIncrBy.h"
+#include "goblin_sbe/HKeys.h"
+#include "goblin_sbe/HLen.h"
+#include "goblin_sbe/HMGet.h"
+#include "goblin_sbe/HSet.h"
+#include "goblin_sbe/HSetNx.h"
+#include "goblin_sbe/HStrLen.h"
+#include "goblin_sbe/HVals.h"
+#include "goblin_sbe/NullableArrayReply.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
 #include "goblin_sbe/ZRange.h"
@@ -53,6 +66,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -186,6 +201,74 @@ std::string expire_frame(long long amount, std::uint8_t flags, std::string_view 
   z.amount(amount).flags(flags);
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string hset_frame(std::string_view key,
+                       const std::vector<std::pair<std::string_view, std::string_view>>& pairs) {
+  char buf[4096];
+  sbe::HSet z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& g = z.entriesCount(static_cast<std::uint16_t>(pairs.size()));
+  for (const auto& [f, v] : pairs) {
+    g.next().putField(f.data(), static_cast<std::uint32_t>(f.size()))
+            .putValue(v.data(), static_cast<std::uint32_t>(v.size()));
+  }
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string hsetnx_frame(std::string_view key, std::string_view field, std::string_view value) {
+  char buf[4096];
+  sbe::HSetNx z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putField(field.data(), static_cast<std::uint32_t>(field.size()));
+  z.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string key_field_frame(std::string_view key, std::string_view field) {
+  char buf[512];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putField(field.data(), static_cast<std::uint32_t>(field.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+template <class Msg>
+std::string hfields_frame(std::string_view key, const std::vector<std::string_view>& fields) {
+  char buf[4096];
+  Msg z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& g = z.fieldsCount(static_cast<std::uint16_t>(fields.size()));
+  for (const auto& f : fields) {
+    g.next().putField(f.data(), static_cast<std::uint32_t>(f.size()));
+  }
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string hincrby_frame(std::string_view key, std::string_view field, long long delta) {
+  char buf[512];
+  sbe::HIncrBy z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.delta(delta);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putField(field.data(), static_cast<std::uint32_t>(field.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+// HSET with a single oversized value (heap buffer), for the 64 KiB cap.
+std::string big_hset_frame(std::string_view key, std::string_view field, const std::string& value) {
+  std::vector<char> buf(value.size() + 256);
+  sbe::HSet z;
+  z.wrapAndApplyHeader(buf.data(), kSbeLenPrefix, buf.size());
+  z.entriesCount(1).next().putField(field.data(), static_cast<std::uint32_t>(field.size()))
+      .putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf.data(), static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
 // Dispatch a frame, assert it is fully consumed, hand the reply header + message to
@@ -383,6 +466,77 @@ int main() {
   dispatch(store, keys_frame<sbe::Del>({"ka", "kb"}), int_is(2));
   dispatch(store, keys_frame<sbe::Exists>({"ka", "kb"}), int_is(0));
 
+  // ---- Hash (batch 3) ----
+  auto count_items = [](sbe::MessageHeader& h, char* m, std::uint32_t l) -> long long {
+    auto r = decode<sbe::ArrayReply>(h, m, l);
+    long long n = 0;
+    auto& g = r.items();
+    while (g.hasNext()) { g.next(); g.getValueAsStringView(); ++n; }
+    return n;
+  };
+  // HSET two fields; HGET, HLEN, HEXISTS, HSTRLEN
+  dispatch(store, hset_frame("h", {{"f1", "v1"}, {"f2", "v2"}}), int_is(2));
+  dispatch(store, key_field_frame<sbe::HGet>("h", "f1"), bulk_is("v1"));
+  dispatch(store, key_field_frame<sbe::HGet>("h", "nope"), is_nil);
+  dispatch(store, key_frame<sbe::HLen>("h"), int_is(2));
+  dispatch(store, key_field_frame<sbe::HExists>("h", "f2"), int_is(1));
+  dispatch(store, key_field_frame<sbe::HExists>("h", "nope"), int_is(0));
+  dispatch(store, key_field_frame<sbe::HStrLen>("h", "f1"), int_is(2));  // "v1"
+  // HSETNX sets once
+  dispatch(store, hsetnx_frame("h", "f3", "v3"), int_is(1));
+  dispatch(store, hsetnx_frame("h", "f3", "x"), int_is(0));
+  // HMGET -> nullable array [v1, nil, v3]
+  dispatch(store, hfields_frame<sbe::HMGet>("h", {"f1", "nope", "f3"}),
+           [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+             auto r = decode<sbe::NullableArrayReply>(hd, m, l);
+             std::vector<std::optional<std::string>> got;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const bool present = g.present() != 0;
+               const auto v = g.getValueAsStringView();  // always advance
+               if (present) got.emplace_back(std::string(v.data(), v.size()));
+               else got.emplace_back(std::nullopt);
+             }
+             assert(got.size() == 3);
+             assert(got[0] == "v1" && !got[1].has_value() && got[2] == "v3");
+           });
+  // HGETALL -> flat [field value]... (order-independent check)
+  dispatch(store, key_frame<sbe::HGetAll>("h"), [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+    auto r = decode<sbe::ArrayReply>(hd, m, l);
+    std::vector<std::string> flat;
+    auto& g = r.items();
+    while (g.hasNext()) { g.next(); const auto v = g.getValueAsStringView(); flat.emplace_back(v.data(), v.size()); }
+    assert(flat.size() == 6);
+    std::map<std::string, std::string> hv;
+    for (std::size_t i = 0; i + 1 < flat.size(); i += 2) hv[flat[i]] = flat[i + 1];
+    assert(hv["f1"] == "v1" && hv["f2"] == "v2" && hv["f3"] == "v3");
+  });
+  // HKEYS / HVALS -> 3 elements each
+  dispatch(store, key_frame<sbe::HKeys>("h"), [&](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+    assert(count_items(hd, m, l) == 3);
+  });
+  dispatch(store, key_frame<sbe::HVals>("h"), [&](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+    assert(count_items(hd, m, l) == 3);
+  });
+  // HINCRBY accumulates; on a non-integer field -> ErrorReply
+  dispatch(store, hincrby_frame("hc", "cnt", 5), int_is(5));
+  dispatch(store, hincrby_frame("hc", "cnt", 3), int_is(8));
+  dispatch(store, hset_frame("hc", {{"txt", "abc"}}), int_is(1));
+  dispatch(store, hincrby_frame("hc", "txt", 1), [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+    assert(decode<sbe::ErrorReply>(hd, m, l).getCodeAsStringView() == "ERR");
+  });
+  // A hash value over the 64 KiB cap -> ERR (existing clients see the error + reason)
+  {
+    const std::string big(70000, 'x');
+    dispatch(store, big_hset_frame("hbig", "f", big), [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+      assert(decode<sbe::ErrorReply>(hd, m, l).getCodeAsStringView() == "ERR");
+    });
+  }
+  // HDEL removes named fields
+  dispatch(store, hfields_frame<sbe::HDel>("h", {"f1", "f2", "nope"}), int_is(2));
+  dispatch(store, key_frame<sbe::HLen>("h"), int_is(1));  // f3 remains
+
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {
     std::string f = zcard_frame("k");
@@ -402,6 +556,6 @@ int main() {
     assert(sbe_dispatch_one(store, a + b, out) == a.size());
   }
 
-  std::puts("sbe dispatch OK: zset + string + keyspace/TTL (30 commands) -> Store (no parse) -> generic reply");
+  std::puts("sbe dispatch OK: zset + string + keyspace/TTL + hash (42 commands) -> Store (no parse) -> generic reply");
   return 0;
 }

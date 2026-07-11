@@ -82,6 +82,12 @@
       <data  name="member" id="2" type="varData"/>
     </group>
   </sbe:message>
+  <sbe:message name="NullableArrayReply" id="9" description="array whose elements may be nil (HMGET/MGET)">
+    <group name="items" id="1" dimensionType="groupSizeEncoding">
+      <field name="present" id="1" type="uint8"/>
+      <data  name="value"   id="2" type="varData"/>
+    </group>
+  </sbe:message>
 
   <!-- ================= Request messages (ids 16+, appended densely) ============== -->
   <sbe:message name="Ping" id="16" description="PING -> StatusReply PONG"/>
@@ -227,5 +233,61 @@
   </sbe:message>
   <sbe:message name="PExpireTime" id="45" description="PEXPIRETIME key -> IntReply (unix ms; -1/-2)">
     <data name="key" id="1" type="varData"/>
+  </sbe:message>
+
+  <!-- ========================= Hash commands (batch 3, ids 46-57) =============== -->
+  <!-- HSET key [field value]...: a group of (field, value) then the key (like ZADD). -->
+  <sbe:message name="HSet" id="46" description="HSET key [field value]... -> IntReply">
+    <group name="entries" id="1" dimensionType="groupSizeEncoding">
+      <data name="field" id="1" type="varData"/>
+      <data name="value" id="2" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HSetNx" id="47" description="HSETNX key field value -> IntReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="field" id="2" type="varData"/>
+    <data name="value" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HGet" id="48" description="HGET key field -> BulkReply | NilReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="field" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HMGet" id="49" description="HMGET key field... -> NullableArrayReply">
+    <group name="fields" id="1" dimensionType="groupSizeEncoding">
+      <data name="field" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HDel" id="50" description="HDEL key field... -> IntReply (count removed)">
+    <group name="fields" id="1" dimensionType="groupSizeEncoding">
+      <data name="field" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HGetAll" id="51" description="HGETALL key -> ArrayReply [field value]...">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HKeys" id="52" description="HKEYS key -> ArrayReply of fields">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HVals" id="53" description="HVALS key -> ArrayReply of values">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HLen" id="54" description="HLEN key -> IntReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HExists" id="55" description="HEXISTS key field -> IntReply (0/1)">
+    <data name="key"   id="1" type="varData"/>
+    <data name="field" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HStrLen" id="56" description="HSTRLEN key field -> IntReply">
+    <data name="key"   id="1" type="varData"/>
+    <data name="field" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HIncrBy" id="57" description="HINCRBY key field delta -> IntReply | ErrorReply">
+    <field name="delta" id="1" type="int64"/>
+    <data  name="key"   id="2" type="varData"/>
+    <data  name="field" id="3" type="varData"/>
   </sbe:message>
 </sbe:messageSchema>
