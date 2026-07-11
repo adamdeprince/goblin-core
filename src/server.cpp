@@ -9,6 +9,7 @@
 #include "goblin/core/script.hpp"
 #ifdef GOBLIN_HAS_SBE
 #include "goblin/core/sbe_dispatch.hpp"
+#include "goblin/core/sbe_frame.hpp"
 #endif
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
@@ -39,9 +40,16 @@ namespace {
 
 constexpr std::size_t kOutputCompactThreshold = 64 * 1024;
 
+// A ring or socket endpoint speaks RESP or the SBE binary wire, decided by the first
+// 8 bytes ("GOBLINS!" -> SBE, else RESP; see goblin_protocol.hpp). `undecided` until
+// enough bytes arrive.
+enum class RingProto { undecided, resp, sbe };
+
 struct Client {
   int fd{-1};
+  RingProto proto{RingProto::undecided};
   RespParser parser;
+  std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
   std::string output;
   std::vector<std::string_view> fields;
   std::size_t output_offset{0};
@@ -52,10 +60,6 @@ struct Client {
 // Server-side state for one shared-memory ring: the mapping plus a RESP parser
 // and reply buffer, mirroring a network Client but reading from the SQ and writing
 // to the CQ instead of a socket.
-// A ring/socket endpoint speaks RESP or the SBE binary wire, decided by the first
-// 4 bytes (see goblin_protocol.hpp). `undecided` until enough bytes arrive.
-enum class RingProto { undecided, resp, sbe };
-
 struct RingEndpoint {
   ring::Mapping mapping;
   RingProto proto{RingProto::undecided};
@@ -286,23 +290,66 @@ void accept_clients(int listener,
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
 
+  const CommandExecutionOptions exec_options{
+      .output_reserve_limit = config.max_output_buffer_bytes,
+      .script_engine = &script_engine,
+      .luau_engine = &luau_engine,
+      .wren_engine = &wren_engine,
+      .tcl_engine = &tcl_engine,
+      .upython_engine = &upython_engine,
+      .quickjs_engine = &quickjs_engine};
+
+  // Decide the protocol from the first 8 bytes ("GOBLINS!" -> SBE, else RESP),
+  // mirroring the ring. Decide RESP the moment the prefix diverges so a short inline
+  // command is never stalled waiting for a full magic.
+  if (client.proto == RingProto::undecided) {
+#ifdef GOBLIN_HAS_SBE
+    switch (match_goblin_magic(client.inbuf)) {
+      case MagicMatch::need_more:
+        return true;  // wait for the next read before deciding
+      case MagicMatch::yes:
+        client.proto = RingProto::sbe;
+        client.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
+        break;
+      case MagicMatch::no:
+        client.proto = RingProto::resp;
+        break;
+    }
+#else
+    client.proto = RingProto::resp;
+#endif
+  }
+
+#ifdef GOBLIN_HAS_SBE
+  if (client.proto == RingProto::sbe) {
+    // Frame and dispatch every complete SBE message; a partial trailing message stays
+    // buffered for the next read.
+    std::size_t off = 0;
+    while (!client.read_backpressured) {
+      const std::size_t consumed = sbe_dispatch_one(
+          store, std::string_view(client.inbuf).substr(off), client.output, exec_options);
+      if (consumed == 0) {
+        break;
+      }
+      off += consumed;
+      compact_output_if_needed(client);
+      update_read_backpressure(client, config);
+    }
+    if (off > 0) {
+      client.inbuf.erase(0, off);
+    }
+    return true;
+  }
+#endif
+
+  // RESP: move the accumulated bytes into the parser, then pop and dispatch.
+  client.parser.append(client.inbuf);
+  client.inbuf.clear();
   while (!client.read_backpressured) {
     if (!client.parser.pop_into(client.fields)) {
       break;
     }
-
-    handle_command_into(
-        store,
-        client.fields,
-        client.output,
-        CommandExecutionOptions{
-            .output_reserve_limit = config.max_output_buffer_bytes,
-            .script_engine = &script_engine,
-            .luau_engine = &luau_engine,
-            .wren_engine = &wren_engine,
-            .tcl_engine = &tcl_engine,
-            .upython_engine = &upython_engine,
-            .quickjs_engine = &quickjs_engine});
+    handle_command_into(store, client.fields, client.output, exec_options);
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
@@ -316,6 +363,24 @@ void accept_clients(int listener,
   }
 
   return true;
+}
+
+// Whether a client has a complete command buffered that can be dispatched without a
+// new socket read -- RESP frames queued in the parser, or a full SBE frame in inbuf.
+// Drives the post-backpressure drain loop; a partial SBE frame returns false so that
+// loop cannot spin.
+[[nodiscard]] bool has_buffered_work(const Client& client) {
+#ifdef GOBLIN_HAS_SBE
+  if (client.proto == RingProto::sbe) {
+    if (client.inbuf.size() < kSbeLenPrefix) {
+      return false;
+    }
+    std::uint32_t len = 0;
+    std::memcpy(&len, client.inbuf.data(), kSbeLenPrefix);
+    return client.inbuf.size() >= kSbeLenPrefix + len;
+  }
+#endif
+  return client.parser.has_queued_frames();
 }
 
 [[nodiscard]] bool read_client(Client& client, Store& store,
@@ -335,7 +400,7 @@ void accept_clients(int listener,
 
     const auto received = ::recv(client.fd, buffer, sizeof(buffer), 0);
     if (received > 0) {
-      client.parser.append(std::string_view(buffer, static_cast<std::size_t>(received)));
+      client.inbuf.append(buffer, static_cast<std::size_t>(received));
 
       if (!process_buffered_commands(client, store, script_engine, luau_engine,
                                      wren_engine, tcl_engine, upython_engine,
@@ -640,7 +705,7 @@ int Server::run() {
       }
 
       while (keep && !clients[i].read_backpressured &&
-             clients[i].parser.has_queued_frames()) {
+             has_buffered_work(clients[i])) {
         keep = process_buffered_commands(clients[i], store_, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
                                          upython_engine, quickjs_engine, config_);
