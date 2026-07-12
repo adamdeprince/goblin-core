@@ -5,6 +5,8 @@ stance behind the persistence items lives in the [README](README.md).
 
 ## Consume ZADD/ZREM from Kafka (native durable write log)
 
+**Target: July 27, 2026.**
+
 Goblin Core deliberately has no append-only write log; the README recommends
 putting a durable log such as Kafka in front of it. The planned follow-on is to
 let Goblin Core **consume `ZADD`/`ZREM` operations directly from a Kafka topic**,

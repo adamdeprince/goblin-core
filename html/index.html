@@ -8,7 +8,8 @@
   <meta property="og:title" content="Goblin Core — Redis semantics without Redis overhead">
   <meta property="og:description" content="Spend less on leaderboard infrastructure. Or build latency-sensitive systems with 220 ns request/reply round trips.">
   <meta property="og:image" content="goblin.png">
-  <link rel="icon" href="goblin.png" type="image/png">
+  <link rel="icon" href="goblin.png" type="image/png" sizes="1254x1254">
+  <link rel="apple-touch-icon" href="goblin.png">
   <title>Goblin Core — compact Redis semantics at serious speed</title>
   <style>
     :root {
@@ -171,6 +172,8 @@
       font: 760 .86rem/1.4 var(--mono);
     }
     .release-note strong { color: var(--acid-dark); }
+    .release-note span { display: block; }
+    .release-note span + span { margin-top: 4px; }
     .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
     .button {
       display: inline-flex;
@@ -254,6 +257,7 @@
     .bar-track { height: 30px; background: #e4e3dc; }
     .bar-fill { height: 100%; background: var(--ink); transform-origin: left; animation: grow .9s ease-out both; }
     .bar-row.goblin .bar-fill { background: var(--acid-dark); }
+    .bar-row.dragonfly .bar-fill { background: var(--ink); }
     .bar-row.redis8 .bar-fill { background: var(--cyan); }
     .bar-row.valkey .bar-fill { background: #79817a; }
     .bar-row.redis7 .bar-fill { background: var(--orange); }
@@ -324,9 +328,10 @@
     pre { margin: 0; padding: 23px; overflow-x: auto; font: .78rem/1.8 var(--mono); }
     .prompt { color: var(--acid); }
     .comment { color: #8f9388; }
-    .quick-links { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 16px; border: 1px solid var(--ink); }
-    .quick-links a { padding: 17px; border-right: 1px solid var(--ink); font-size: .79rem; font-weight: 800; text-decoration: none; }
-    .quick-links a:last-child { border: 0; }
+    .quick-links { display: grid; grid-template-columns: repeat(2, 1fr); margin-top: 16px; border: 1px solid var(--ink); }
+    .quick-links a { padding: 17px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); font-size: .79rem; font-weight: 800; text-decoration: none; }
+    .quick-links a:nth-child(2n) { border-right: 0; }
+    .quick-links a:nth-last-child(-n+2) { border-bottom: 0; }
     .quick-links a:hover { background: var(--acid); }
 
     footer { padding: 58px 0 28px; background: var(--dark); color: white; }
@@ -387,7 +392,7 @@
       .tradeoffs, .scope-lists { grid-template-columns: 1fr; gap: 36px; }
       .engine-step { padding: 24px; }
       .quick-links { grid-template-columns: 1fr; }
-      .quick-links a { border-right: 0; border-bottom: 1px solid var(--ink); }
+      .quick-links a, .quick-links a:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--ink); }
       .quick-links a:last-child { border-bottom: 0; }
       .footer-top, .footer-bottom { flex-direction: column; align-items: flex-start; }
       .footer-bottom { margin-top: 48px; }
@@ -425,7 +430,7 @@
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
         <p class="hero-copy">A compact server for sorted sets and hashes. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <p class="release-note"><strong>Coming July 20, 2026:</strong> Redis-compatible lists and Pub/Sub.</p>
+        <p class="release-note"><span><strong>Coming July 20, 2026:</strong> Redis-compatible lists and Pub/Sub.</span><span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span></p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
             Build from source
@@ -491,6 +496,7 @@
         <figure class="memory-figure">
           <figcaption>FINAL RESIDENT MEMORY / LOWER IS BETTER</figcaption>
           <div class="bar-row goblin"><div class="bar-label"><span>Goblin Core</span><strong>763.8 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:37.1%"></div></div></div>
+          <div class="bar-row dragonfly"><div class="bar-label"><span>Dragonfly</span><strong>1,187.8 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:57.7%"></div></div></div>
           <div class="bar-row redis8"><div class="bar-label"><span>Redis 8.8</span><strong>1,486.7 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:72.2%"></div></div></div>
           <div class="bar-row valkey"><div class="bar-label"><span>Valkey 9.1</span><strong>1,450.7 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:70.5%"></div></div></div>
           <div class="bar-row redis7"><div class="bar-label"><span>Redis 7.2.4</span><strong>2,058.6 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
@@ -502,7 +508,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">On Linux, pin client and server to separate cores. The client writes a typed SBE request into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
+        <p class="section-intro">On Linux, pin client and server to separate cores. The client writes a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -562,13 +568,15 @@
     <section class="scope">
       <div class="section-inner scope-grid">
         <div>
-          <p class="section-label">Scope, stated plainly</p>
-          <h2>Focused beats pretending.</h2>
-          <p class="section-intro">Goblin Core is not full Redis. It is a fast, compact implementation of the parts listed here, with explicit snapshots and Redis RDB import for sorted sets.</p>
+          <p class="section-label">Direction, stated plainly</p>
+          <h2>Redis semantics, without the old overhead.</h2>
+          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows, with lists and Pub/Sub arriving July 20, 2026.</p>
+          <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
+          <p class="section-intro">Keys and string values are limited to 64 KiB. Larger values belong in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Built for</h3><ul><li>Sorted sets and hashes</li><li>TTL strings and counters</li><li>Native atomic idioms</li><li>Six embedded script VMs</li><li>Explicit point-in-time snapshots</li></ul></div>
-          <div class="scope-list no"><h3>Not included</h3><ul><li>Replication or cluster mode</li><li>Automatic persistence or AOF</li><li>Pub/sub and transactions</li><li>Eviction policies</li><li>Every Redis key type</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, and strings</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No built-in replication</li><li>No cluster mode</li><li>Kafka for durable replay</li><li>Save/load for fast restarts</li></ul></div>
         </div>
       </div>
     </section>
@@ -593,7 +601,8 @@
           <div class="quick-links">
             <a href="README.html">Documentation →</a>
             <a href="PERFORMANCE_BRIEF.html">Architecture →</a>
-            <a href="RELEASE.html">Releases →</a>
+            <a href="RELEASE-HISTORY.html">Release history →</a>
+            <a href="https://github.com/adamdeprince/goblin-core/releases">Source releases →</a>
           </div>
         </div>
       </div>
