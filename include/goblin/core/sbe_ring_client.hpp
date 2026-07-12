@@ -921,7 +921,8 @@ class SbeRingClient {
       }
       if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline)
         throw std::runtime_error("SbeRingClient: timed out waiting for a reply");
-      ring::cpu_relax();
+      // Adaptive spin-then-park on the CQ tail (macOS); pure relax elsewhere.
+      cq_.wait_for_record();
     }
   }
 

@@ -58,22 +58,37 @@
 #endif
 
 #if defined(__APPLE__)
+#include <os/os_sync_wait_on_address.h>
 #include <pthread.h>
 #include <pthread/qos.h>
 #endif
 
 namespace goblin::core::ring {
 
-// Cache-line size for false-sharing avoidance. Apple Silicon (M-series) uses 128-byte
-// L1/L2 lines and prefetches 128-byte pairs, so a 64-byte stride would still let the
-// producer's and consumer's indices share a prefetch pair and ping-pong; x86 is 64.
-#if defined(__APPLE__) && defined(__aarch64__)
-inline constexpr std::size_t kCacheLine = 128;
-#else
+// Record control/payload alignment. 64 bytes is enough for record false-sharing
+// avoidance on every ISA we care about (x86 line = 64; Apple's 128-byte L2
+// prefetch does not require 128-byte *record* padding and costs bandwidth on
+// the tiny PING/ZADD-1 path).
 inline constexpr std::size_t kCacheLine = 64;
+// Index-word isolation. Apple Silicon L1/L2 lines are 128 bytes and the core
+// prefetches 128-byte pairs, so two 64-byte-adjacent indices still bounce.
+// Keep the four ring index words 128-byte-strided on Apple; 64 elsewhere.
+#if defined(__APPLE__) && defined(__aarch64__)
+inline constexpr std::size_t kIndexLine = 128;
+#else
+inline constexpr std::size_t kIndexLine = 64;
 #endif
 inline constexpr std::uint32_t kMagic = 0x474E5247;  // 'GRNG'
 inline constexpr std::uint32_t kVersion = 1;
+
+// Pure-spin budget before parking on a ring index (macOS). Must cover a healthy
+// sub-µs RTT with headroom for brief peer preemption -- parking too early turns
+// every round trip into a ~10–50 µs scheduler hop. ~1M iters is multi-ms of spin
+// at empty-poll cost; only a truly stalled peer (or idle server) parks.
+inline constexpr unsigned kAdaptiveSpinIters = 1u << 20;
+// Park timeout once we give up spinning. Bounds the tail when a peer is parked
+// or descheduled; stop()/deadline checks still fire because wait returns.
+inline constexpr std::uint64_t kAdaptiveWaitNs = 100'000;  // 100 µs
 
 // The system page size. mmap file offsets must be a multiple of it, so the header
 // region and every ring capacity are aligned to it. It is 4 KiB on x86, but 16 KiB
@@ -91,9 +106,16 @@ inline constexpr std::uint32_t kVersion = 1;
 // remote core writing our pages) makes progress, and so a busy-poll does not burn
 // the pipeline on failed speculation. The atomics carry the ordering; this is a
 // throughput/power hint only.
+//
+// Apple Silicon: do NOT use `yield` here. On Darwin a pure yield-spin is treated as
+// low-value work and the scheduler parks the thread for ~10–15 µs (the macOS ring
+// p99 cliff). A compiler barrier alone re-reads the atomic without volunteering
+// the core. x86 keeps PAUSE; other ARM keeps YIELD.
 inline void cpu_relax() noexcept {
 #if defined(__x86_64__) || defined(__i386__)
   _mm_pause();
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__arm__))
+  __asm__ __volatile__("" ::: "memory");
 #elif defined(__aarch64__) || defined(__arm__)
   __asm__ __volatile__("yield" ::: "memory");
 #elif defined(__loongarch__)
@@ -109,9 +131,40 @@ inline void cpu_relax() noexcept {
 // performance core at high priority. Apple Silicon has no core pinning; QoS is the
 // idiomatic lever -- unlike THREAD_TIME_CONSTRAINT (which throttles a spin loop) or two
 // SCHED_FIFO spinners (which contend for the few P-cores). Best-effort; a no-op off macOS.
+// Call on BOTH the server and the client threads that spin on a ring.
 inline void set_busy_poll_thread_realtime() noexcept {
 #if defined(__APPLE__)
-  (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+  // Relative priority -15 = highest within USER_INTERACTIVE (range -15..0).
+  (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, -15);
+#endif
+}
+
+// Wait while a ring index still equals `expected`. The hot path is pure spin
+// (sub-µs RTT). On macOS, after a long empty budget we briefly park with a
+// timeout so a descheduled peer does not pin a P-core forever.
+//
+// Intentionally timeout-based (no publish-side wake): a wake syscall on every
+// try_push/pop costs ~µs even with zero waiters and destroys the sub-µs path.
+// The timeout re-polls; a live peer almost never reaches this phase.
+//
+// `word` is the shared mmap address of a u64 index.
+inline void wait_while_equal(std::uint64_t* word, std::uint64_t expected,
+                             unsigned& spin) noexcept {
+  if (++spin < kAdaptiveSpinIters) {
+    cpu_relax();
+    return;
+  }
+  spin = 0;
+#if defined(__APPLE__)
+  // SHARED: client and server map the ring at different VAs; the kernel keys
+  // by physical page + offset.
+  (void)::os_sync_wait_on_address_with_timeout(
+      word, expected, sizeof(*word), OS_SYNC_WAIT_ON_ADDRESS_SHARED,
+      OS_CLOCK_MACH_ABSOLUTE_TIME, kAdaptiveWaitNs);
+#else
+  (void)word;
+  (void)expected;
+  cpu_relax();
 #endif
 }
 
@@ -176,7 +229,7 @@ inline void set_busy_poll_thread_realtime() noexcept {
 // The on-file header, overlaid on the mapped page. The index fields are plain
 // integers (zero-filled by ftruncate) accessed through std::atomic_ref, so there
 // is no cross-process atomic-construction question -- the storage is just bytes.
-struct alignas(kCacheLine) Header {
+struct alignas(kIndexLine) Header {
   std::uint32_t magic;       // written last on create; readers gate on it
   std::uint32_t version;
   std::uint64_t sq_capacity;  // power of two
@@ -191,14 +244,15 @@ struct alignas(kCacheLine) Header {
   // owns `epoch_ack`; both read-mostly, so sharing the config line is fine.
   std::uint64_t epoch;
   std::uint64_t epoch_ack;
-  // Each index on its own cache line: the producer writes one, the consumer the
-  // other, and they must not share a line or every publish bounces the cache.
-  alignas(kCacheLine) std::uint64_t sq_head;  // consumer (server) owns
-  alignas(kCacheLine) std::uint64_t sq_tail;  // producer (client) owns
-  alignas(kCacheLine) std::uint64_t cq_head;  // consumer (client) owns
-  alignas(kCacheLine) std::uint64_t cq_tail;  // producer (server) owns
+  // Each index on its own kIndexLine: the producer writes one, the consumer the
+  // other, and they must not share a line (or an Apple 128-byte prefetch pair)
+  // or every publish bounces the cache.
+  alignas(kIndexLine) std::uint64_t sq_head;  // consumer (server) owns
+  alignas(kIndexLine) std::uint64_t sq_tail;  // producer (client) owns
+  alignas(kIndexLine) std::uint64_t cq_head;  // consumer (client) owns
+  alignas(kIndexLine) std::uint64_t cq_tail;  // producer (server) owns
 };
-static_assert(sizeof(Header) == 5 * kCacheLine);
+static_assert(sizeof(Header) == 5 * kIndexLine);
 static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free);
 // sizeof(Header) fits in one page on every supported system (smallest page 4 KiB).
 
@@ -262,6 +316,19 @@ class Consumer {
     head_pos_ = next;
   }
 
+  // Adaptive wait until a published record appears (or the caller should recheck
+  // a stop/deadline). Spins briefly, then parks on the tail word (macOS).
+  void wait_for_record() noexcept {
+    const std::uint64_t h = head_pos_;
+    const std::uint64_t t = std::atomic_ref<std::uint64_t>(*tail_).load(
+        std::memory_order_acquire);
+    if (h != t) {
+      empty_spins_ = 0;
+      return;
+    }
+    wait_while_equal(tail_, t, empty_spins_);
+  }
+
  private:
   void store_head(std::uint64_t v) const noexcept {
     std::atomic_ref<std::uint64_t>(*head_).store(v, std::memory_order_release);
@@ -277,6 +344,7 @@ class Consumer {
       if (h == t) {
         return false;
       }
+      empty_spins_ = 0;  // saw work; reset adaptive park counter
       const std::uint64_t off = h & mask_;
       if (detail::get_u32(data_ + off + sizeof(std::uint32_t)) == kFlagWrap) {
         h += capacity_ - off;  // jump to the ring boundary (offset 0)
@@ -295,6 +363,7 @@ class Consumer {
   std::uint64_t capacity_ = 0;
   std::uint64_t mask_ = 0;
   std::uint64_t head_pos_ = 0;
+  unsigned empty_spins_ = 0;
 };
 
 // A single-producer view over one direction. Writes payloads as cache-aligned
@@ -366,6 +435,11 @@ class Producer {
     const std::uint64_t next = t + padded;
     std::atomic_ref<std::uint64_t>(*tail_).store(next, std::memory_order_release);
     tail_pos_ = next;
+    // Optional wake for a parked consumer (macOS). Only fires after the peer has
+    // exhausted its pure-spin budget; when nobody is waiting the kernel returns
+    // ENOENT. Still a syscall, so we only wake if the wait side has been used
+    // heavily -- see wait_while_equal. Unconditional wake costs ~µs/op and kills
+    // the sub-µs path, so the default wait is timeout-based (no wake required).
     return true;
   }
 
@@ -376,8 +450,12 @@ class Producer {
   void send(std::string_view payload, StopFn&& stop) noexcept {
     // Hot path: one record (every PING / small ZADD). Avoid the chunking loop.
     if (payload.size() <= max_payload_) {
+      unsigned spins = 0;
       while (!try_push(payload)) {
-        cpu_relax();
+        // Full ring: adaptive wait on the consumer's head advancing.
+        const std::uint64_t h = std::atomic_ref<std::uint64_t>(*head_).load(
+            std::memory_order_acquire);
+        wait_while_equal(head_, h, spins);
         if (stop()) {
           return;
         }
@@ -388,8 +466,11 @@ class Producer {
       const std::size_t chunk =
           payload.size() < max_payload_ ? payload.size() : max_payload_;
       const std::string_view piece = payload.substr(0, chunk);
+      unsigned spins = 0;
       while (!try_push(piece)) {
-        cpu_relax();
+        const std::uint64_t h = std::atomic_ref<std::uint64_t>(*head_).load(
+            std::memory_order_acquire);
+        wait_while_equal(head_, h, spins);
         if (stop()) {
           return;
         }

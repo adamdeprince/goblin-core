@@ -6,7 +6,9 @@ memory consumption and single-core throughput. It holds a sorted set in **roughl
 half** the resident set of legacy Redis, stays the leanest of the field at every
 scale, and leads every sorted-set and hash operation measured. See the
 [x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md),
-and — for a real-world run at scale — the
+and the [ring latency benchmarks](RING-BENCHMARKS.md) — a full request/reply round trip in
+about 220 ns over a shared-memory ring (written up in [this post](blogs/ring-latency.md)).
+For a real-world run at scale, see the
 [Lichess leaderboard replay](blogs/lichess-leaderboard.md): every rated game in Lichess
 history, 14.3 billion `ZADD`s into one sorted set, held in about half the memory of Redis.
 The initial implementation focuses on sorted sets and hashes with a vector-backed
@@ -255,6 +257,10 @@ sockets — no syscall, no network stack on the request path:
 redis-cli-ring /tmp/a SET foo bar     # the proof-of-concept ring client
 ```
 
+Transport and protocol are independent: both ordinary sockets and shared-memory
+rings support RESP and the SBE binary wire. An endpoint selects SBE with the
+one-time `GOBLINS!` handshake; otherwise it speaks RESP.
+
 With rings the server busy-polls them in priority order (the first can starve the
 second, by design) and pegs a core at 100%; with no rings it stays event-driven and
 idle-cheap. A one-header C++ client (`goblin/core/ring_client.hpp`) drives a ring in
@@ -439,9 +445,10 @@ Use the [release checklist](RELEASE.md) before publishing a tag.
 
 ## HTML Docs
 
-The build converts root Markdown docs into static HTML under `html/`.
-`README.md` becomes `html/index.html`, and Markdown links between docs are
-rewritten to HTML links with human-visible labels that do not end in `.md`.
+The build converts the project Markdown docs into static HTML under `html/`.
+`README.md` becomes `html/README.html`; the hand-authored `html/index.html`
+remains the site landing page. Markdown links between docs are rewritten to
+HTML links with human-visible labels that do not end in `.md`.
 
 ```sh
 python3 scripts/build_html_docs.py --output html

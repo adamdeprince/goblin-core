@@ -483,6 +483,10 @@ template <class NetFn>
                              TclEngine& tcl_engine, UPythonEngine& upython_engine,
                              QuickJsEngine& quickjs_engine,
                              NetFn&& network_iteration) {
+  // macOS: same QoS as the client so both busy-pollers stay on P-cores. No-op
+  // on Linux (pinning is done by the bench via taskset).
+  ring::set_busy_poll_thread_realtime();
+
   std::vector<RingEndpoint> rings;
   rings.reserve(config.rings.size());
   for (const auto& rc : config.rings) {
@@ -644,6 +648,11 @@ template <class NetFn>
   // Idle spins between ring requests: running network_iteration (poll + active
   // expire) every empty loop is a p99 footgun for pure-ring clients. Service the
   // network every 64th idle pass; rings still starve it by design when busy.
+  //
+  // Pure spin (no park): a multi-ring server cannot block on one SQ without
+  // missing the others. On Apple Silicon cpu_relax() is a compiler barrier (not
+  // YIELD), so the spin does not volunteer deschedule; the client's adaptive
+  // wait parks the other side of the handoff when the peer is stalled.
   unsigned idle_spins = 0;
   while (running.load(std::memory_order_relaxed)) {
     bool progressed = false;
@@ -660,7 +669,7 @@ template <class NetFn>
     if ((++idle_spins & 63u) == 0) {
       network_iteration(0);  // sparse network pass while rings are quiet
     }
-    ring::cpu_relax();     // PAUSE / yield: let remote cores publish into our pages
+    ring::cpu_relax();
   }
   return true;
 }

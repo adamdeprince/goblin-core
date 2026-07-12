@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets and hashes, with half the memory footprint of legacy Redis and a 220 ns shared-memory fast path.">
+  <meta name="theme-color" content="#11130f">
+  <meta property="og:title" content="Goblin Core — Redis semantics without Redis overhead">
+  <meta property="og:description" content="Spend less on leaderboard infrastructure. Or build latency-sensitive systems with 220 ns request/reply round trips.">
+  <meta property="og:image" content="goblin.png">
+  <link rel="icon" href="goblin.png" type="image/png">
+  <title>Goblin Core — compact Redis semantics at serious speed</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #12140f;
+      --paper: #f7f6f1;
+      --white: #fffefa;
+      --muted: #62645c;
+      --line: #d8d8cf;
+      --acid: #a6e22e;
+      --acid-dark: #548a08;
+      --cyan: #0b8897;
+      --orange: #ed6b2f;
+      --dark: #11130f;
+      --dark-soft: #1b1e17;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --serif: Georgia, "Times New Roman", serif;
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.55 var(--sans);
+      letter-spacing: 0;
+    }
+    a { color: inherit; }
+    img { display: block; max-width: 100%; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 100;
+      transform: translateY(-150%);
+      padding: 8px 12px;
+      background: var(--white);
+      border: 1px solid var(--ink);
+    }
+    .skip-link:focus { transform: none; }
+
+    .site-nav {
+      position: absolute;
+      inset: 0 0 auto;
+      z-index: 20;
+      border-bottom: 1px solid rgba(18, 20, 15, .16);
+    }
+    .nav-inner {
+      width: min(calc(100% - 40px), var(--max));
+      height: 76px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 28px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 850;
+      text-decoration: none;
+    }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      overflow: hidden;
+      border: 1px solid var(--ink);
+      border-radius: 50%;
+      background: var(--white);
+    }
+    .brand-mark img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scale(1.45) translateY(4%);
+    }
+    .brand span { font-family: var(--mono); font-size: .98rem; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-links a {
+      font-size: .86rem;
+      font-weight: 720;
+      text-decoration: none;
+    }
+    .nav-links a:not(.nav-cta):hover { color: var(--acid-dark); }
+    .nav-cta {
+      padding: 9px 14px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: white;
+    }
+    .nav-cta:hover { background: var(--orange); border-color: var(--orange); }
+
+    .hero {
+      position: relative;
+      min-height: min(780px, 89vh);
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      background: #faf9f5;
+    }
+    .hero-chicken {
+      position: absolute;
+      z-index: 0;
+      top: 40px;
+      right: max(-40px, calc((100vw - var(--max)) / 2 - 110px));
+      width: min(61vw, 760px);
+      height: calc(100% - 40px);
+      object-fit: cover;
+      object-position: 58% 42%;
+      filter: contrast(1.03);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      background: linear-gradient(90deg, #faf9f5 0%, #faf9f5 40%, rgba(250,249,245,.82) 52%, rgba(250,249,245,0) 73%);
+    }
+    .hero-inner {
+      position: relative;
+      z-index: 2;
+      width: min(calc(100% - 40px), var(--max));
+      min-height: min(780px, 89vh);
+      margin: 0 auto;
+      padding: 150px 0 72px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    .eyebrow {
+      margin: 0 0 22px;
+      color: var(--acid-dark);
+      font: 750 .76rem/1.2 var(--mono);
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: "// "; color: var(--orange); }
+    h1 {
+      max-width: 760px;
+      margin: 0;
+      font: 900 clamp(4rem, 9.5vw, 8.4rem)/.83 var(--sans);
+      letter-spacing: 0;
+    }
+    .hero-copy {
+      max-width: 660px;
+      margin: 30px 0 0;
+      font: 400 clamp(1.15rem, 2.1vw, 1.55rem)/1.42 var(--serif);
+    }
+    .hero-copy strong { font-family: var(--sans); font-size: .93em; }
+    .release-note {
+      margin: 22px 0 0;
+      padding-left: 13px;
+      border-left: 3px solid var(--orange);
+      font: 760 .86rem/1.4 var(--mono);
+    }
+    .release-note strong { color: var(--acid-dark); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+    .button {
+      display: inline-flex;
+      min-height: 46px;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: 10px 17px;
+      border: 1px solid var(--ink);
+      font-weight: 780;
+      text-decoration: none;
+    }
+    .button.primary { background: var(--ink); color: white; }
+    .button.primary:hover { background: var(--acid-dark); border-color: var(--acid-dark); }
+    .button.secondary { background: rgba(255,255,255,.72); }
+    .button.secondary:hover { background: var(--white); color: var(--cyan); }
+    .button svg { width: 18px; height: 18px; stroke-width: 2; }
+    .hero-note {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      margin-top: 26px;
+      color: var(--muted);
+      font: .75rem/1.4 var(--mono);
+    }
+    .hero-note span::before { content: "✓ "; color: var(--acid-dark); font-weight: 900; }
+
+    .proof-strip { background: var(--dark); color: white; }
+    .proof-grid {
+      width: min(100%, 1440px);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .proof {
+      min-height: 142px;
+      padding: 27px clamp(20px, 3vw, 48px);
+      border-right: 1px solid #373a32;
+    }
+    .proof:last-child { border-right: 0; }
+    .proof b { display: block; color: var(--acid); font: 850 clamp(1.75rem, 3vw, 2.7rem)/1 var(--mono); }
+    .proof:nth-child(3) b { color: #41c4d1; }
+    .proof:nth-child(4) b { color: #ff8a55; }
+    .proof span { display: block; margin-top: 10px; color: #c5c8be; font-size: .84rem; }
+
+    .section-inner { width: min(calc(100% - 40px), var(--max)); margin: 0 auto; }
+    .section-label { margin: 0 0 12px; color: var(--acid-dark); font: 750 .76rem/1.2 var(--mono); text-transform: uppercase; }
+    .section-label::before { content: "/ "; color: var(--orange); }
+    .section-title { max-width: 850px; margin: 0; font: 820 clamp(2.15rem, 5vw, 4.7rem)/.98 var(--sans); }
+    .section-intro { max-width: 690px; margin: 22px 0 0; color: var(--muted); font: 1.08rem/1.65 var(--serif); }
+
+    .paths { padding: 108px 0 118px; }
+    .path-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 62px;
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+    }
+    .path { padding: 42px 42px 46px 0; }
+    .path + .path { padding-left: 42px; padding-right: 0; border-left: 1px solid var(--ink); }
+    .path-num { display: block; margin-bottom: 62px; color: var(--muted); font: .78rem var(--mono); }
+    .path h3 { margin: 0; font: 800 clamp(1.65rem, 3vw, 2.6rem)/1.05 var(--sans); }
+    .path-lede { min-height: 96px; margin: 18px 0 32px; color: var(--muted); font-family: var(--serif); font-size: 1.06rem; }
+    .path dl { margin: 0; }
+    .path dl div { display: grid; grid-template-columns: 118px 1fr; padding: 12px 0; border-top: 1px solid var(--line); }
+    .path dt { color: var(--muted); font: .72rem var(--mono); text-transform: uppercase; }
+    .path dd { margin: 0; font-weight: 680; }
+    .path-link { display: inline-block; margin-top: 32px; color: var(--cyan); font-weight: 800; text-underline-offset: 4px; }
+
+    .case-study { padding: 108px 0; background: var(--white); border-block: 1px solid var(--line); }
+    .case-layout { display: grid; grid-template-columns: .84fr 1.16fr; gap: 80px; align-items: center; }
+    .case-kicker { color: var(--orange); font: 800 .77rem var(--mono); text-transform: uppercase; }
+    .case-study h2 { margin: 15px 0 24px; font: 840 clamp(2.5rem, 5vw, 5rem)/.94 var(--sans); }
+    .case-copy { color: var(--muted); font-family: var(--serif); font-size: 1.08rem; }
+    .text-link { color: var(--cyan); font-weight: 800; text-underline-offset: 4px; }
+    .memory-figure { margin: 0; }
+    .memory-figure figcaption { margin-bottom: 22px; color: var(--muted); font: .73rem var(--mono); }
+    .bar-row { margin-top: 18px; }
+    .bar-label { display: flex; justify-content: space-between; gap: 15px; margin-bottom: 7px; font: .77rem var(--mono); }
+    .bar-track { height: 30px; background: #e4e3dc; }
+    .bar-fill { height: 100%; background: var(--ink); transform-origin: left; animation: grow .9s ease-out both; }
+    .bar-row.goblin .bar-fill { background: var(--acid-dark); }
+    .bar-row.redis8 .bar-fill { background: var(--cyan); }
+    .bar-row.valkey .bar-fill { background: #79817a; }
+    .bar-row.redis7 .bar-fill { background: var(--orange); }
+    @keyframes grow { from { transform: scaleX(0); } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .bar-fill { animation: none; } }
+
+    .engine { padding: 112px 0; background: var(--dark); color: white; }
+    .engine .section-label { color: var(--acid); }
+    .engine .section-intro { color: #b7baaf; }
+    .engine-diagram {
+      display: grid;
+      grid-template-columns: 1fr 76px 1fr 76px 1fr;
+      align-items: stretch;
+      margin-top: 60px;
+      border: 1px solid #45483f;
+      background: var(--dark-soft);
+    }
+    .engine-step { min-height: 220px; padding: 30px; }
+    .engine-step small { color: var(--acid); font: .72rem var(--mono); }
+    .engine-step h3 { margin: 50px 0 12px; font-size: 1.32rem; }
+    .engine-step p { margin: 0; color: #aeb1a7; font-size: .9rem; }
+    .engine-arrow { display: grid; place-items: center; border-inline: 1px solid #45483f; color: var(--orange); font: 2rem var(--mono); }
+    .tradeoffs { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; margin-top: 56px; }
+    .tradeoff { border-top: 1px solid #45483f; padding-top: 23px; }
+    .tradeoff h3 { margin: 0 0 10px; font-size: 1rem; }
+    .tradeoff p { margin: 0; color: #aeb1a7; font-size: .9rem; }
+
+    .benchmarks { padding: 110px 0; }
+    .benchmark-wrap { margin-top: 58px; overflow-x: auto; border-block: 1px solid var(--ink); }
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    th, td { padding: 17px 14px; border-bottom: 1px solid var(--line); text-align: right; font: .84rem var(--mono); }
+    th:first-child, td:first-child { padding-left: 0; text-align: left; font-family: var(--sans); font-weight: 760; }
+    th { color: var(--muted); font-size: .68rem; text-transform: uppercase; }
+    td.winner { color: var(--acid-dark); font-weight: 900; }
+    tr:last-child td { border-bottom: 0; }
+    .method { margin: 18px 0 0; color: var(--muted); font: .73rem/1.55 var(--mono); }
+
+    .writing { padding: 108px 0; background: var(--white); border-top: 1px solid var(--line); }
+    .writing-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-top: 58px;
+      border-block: 1px solid var(--ink);
+    }
+    .post { padding: 36px 42px 40px 0; }
+    .post + .post { padding-right: 0; padding-left: 42px; border-left: 1px solid var(--ink); }
+    .post-meta { color: var(--muted); font: .72rem/1.4 var(--mono); text-transform: uppercase; }
+    .post h3 { margin: 34px 0 15px; font: 810 clamp(1.45rem, 2.5vw, 2.25rem)/1.08 var(--sans); }
+    .post p { margin: 0; color: var(--muted); font-family: var(--serif); }
+    .post a { display: inline-block; margin-top: 27px; color: var(--cyan); font-weight: 800; text-underline-offset: 4px; }
+
+    .scope { padding: 104px 0; background: #e9e8e1; border-block: 1px solid var(--line); }
+    .scope-grid { display: grid; grid-template-columns: .9fr 1.1fr; gap: 90px; }
+    .scope h2 { margin: 0; font: 830 clamp(2.4rem, 5vw, 4.8rem)/.96 var(--sans); }
+    .scope-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+    .scope-list h3 { margin: 0 0 22px; font: .77rem var(--mono); text-transform: uppercase; }
+    .scope-list ul { margin: 0; padding: 0; list-style: none; }
+    .scope-list li { padding: 11px 0; border-top: 1px solid #c8c8bf; font-size: .91rem; }
+    .scope-list.fit li::before { content: "+ "; color: var(--acid-dark); font-family: var(--mono); font-weight: 900; }
+    .scope-list.no li::before { content: "− "; color: var(--orange); font-family: var(--mono); font-weight: 900; }
+
+    .start { padding: 112px 0; background: var(--white); }
+    .start-layout { display: grid; grid-template-columns: .82fr 1.18fr; gap: 90px; align-items: start; }
+    .start h2 { margin: 0; font: 840 clamp(2.5rem, 5vw, 5rem)/.94 var(--sans); }
+    .start p { max-width: 470px; color: var(--muted); font-family: var(--serif); }
+    .terminal { overflow: hidden; border: 1px solid var(--ink); background: var(--dark); color: #f5f6f1; }
+    .terminal-head { padding: 10px 14px; border-bottom: 1px solid #3b3e36; color: #9da096; font: .69rem var(--mono); }
+    pre { margin: 0; padding: 23px; overflow-x: auto; font: .78rem/1.8 var(--mono); }
+    .prompt { color: var(--acid); }
+    .comment { color: #8f9388; }
+    .quick-links { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 16px; border: 1px solid var(--ink); }
+    .quick-links a { padding: 17px; border-right: 1px solid var(--ink); font-size: .79rem; font-weight: 800; text-decoration: none; }
+    .quick-links a:last-child { border: 0; }
+    .quick-links a:hover { background: var(--acid); }
+
+    footer { padding: 58px 0 28px; background: var(--dark); color: white; }
+    .footer-top { display: flex; justify-content: space-between; gap: 60px; align-items: flex-end; }
+    .footer-brand { max-width: 680px; }
+    .footer-brand h2 { margin: 0; font: 840 clamp(2.2rem, 5vw, 4.6rem)/.96 var(--sans); }
+    .footer-brand p { color: #b5b8ae; font-family: var(--serif); }
+    .footer-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 11px; min-width: 230px; }
+    .footer-actions a { color: var(--acid); font-weight: 760; text-underline-offset: 4px; }
+    .footer-bottom { display: flex; justify-content: space-between; gap: 25px; margin-top: 70px; padding-top: 22px; border-top: 1px solid #3a3d35; color: #96998f; font: .7rem var(--mono); }
+
+    @media (max-width: 900px) {
+      .nav-links a:not(.nav-cta) { display: none; }
+      .hero { min-height: 740px; }
+      .hero-inner { min-height: 740px; justify-content: flex-start; padding-top: 132px; }
+      .hero-chicken { top: auto; right: -70px; bottom: -90px; width: 590px; height: 590px; opacity: .78; }
+      .hero::after { background: linear-gradient(180deg, #faf9f5 0%, #faf9f5 47%, rgba(250,249,245,.28) 75%, rgba(250,249,245,0) 100%); }
+      .hero-copy { max-width: 590px; }
+      .proof-grid { grid-template-columns: 1fr 1fr; }
+      .proof:nth-child(2) { border-right: 0; }
+      .proof:nth-child(-n+2) { border-bottom: 1px solid #373a32; }
+      .case-layout, .scope-grid, .start-layout { grid-template-columns: 1fr; gap: 52px; }
+      .engine-diagram { grid-template-columns: 1fr; }
+      .engine-arrow { min-height: 55px; border-inline: 0; border-block: 1px solid #45483f; transform: rotate(90deg); }
+      .engine-step { min-height: 180px; }
+      .engine-step h3 { margin-top: 30px; }
+      .scope { padding: 85px 0; }
+      .scope-grid { gap: 48px; }
+    }
+
+    @media (max-width: 650px) {
+      .nav-inner, .section-inner, .hero-inner { width: min(calc(100% - 30px), var(--max)); }
+      .nav-inner { height: 66px; }
+      .brand-mark { width: 34px; height: 34px; }
+      .nav-cta { padding: 8px 11px; font-size: .76rem; }
+      .hero, .hero-inner { min-height: 700px; }
+      .hero-inner { padding-top: 112px; }
+      h1 { font-size: clamp(3.6rem, 19vw, 5.8rem); }
+      .hero-copy { margin-top: 22px; font-size: 1.07rem; }
+      .hero-note { display: none; }
+      .hero-chicken { right: -87px; bottom: -66px; width: 470px; height: 470px; }
+      .proof { min-height: 128px; padding: 24px 17px; }
+      .proof b { font-size: 1.65rem; }
+      .proof span { font-size: .73rem; }
+      .paths, .case-study, .engine, .benchmarks, .start { padding: 78px 0; }
+      .path-grid { grid-template-columns: 1fr; margin-top: 43px; }
+      .path, .path + .path { padding: 32px 0 38px; border-left: 0; }
+      .path + .path { border-top: 1px solid var(--ink); }
+      .path-num { margin-bottom: 32px; }
+      .path-lede { min-height: 0; }
+      .path dl div { grid-template-columns: 95px 1fr; }
+      .case-layout { gap: 44px; }
+      .writing { padding: 78px 0; }
+      .writing-grid { grid-template-columns: 1fr; margin-top: 43px; }
+      .post, .post + .post { padding: 31px 0 35px; border-left: 0; }
+      .post + .post { border-top: 1px solid var(--ink); }
+      .post h3 { margin-top: 24px; }
+      .tradeoffs, .scope-lists { grid-template-columns: 1fr; gap: 36px; }
+      .engine-step { padding: 24px; }
+      .quick-links { grid-template-columns: 1fr; }
+      .quick-links a { border-right: 0; border-bottom: 1px solid var(--ink); }
+      .quick-links a:last-child { border-bottom: 0; }
+      .footer-top, .footer-bottom { flex-direction: column; align-items: flex-start; }
+      .footer-bottom { margin-top: 48px; }
+    }
+
+    @media (max-width: 420px) {
+      .hero-actions { width: 100%; }
+      .hero-actions .button { width: 100%; }
+      .hero-chicken { right: -105px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <nav class="site-nav" aria-label="Primary navigation">
+    <div class="nav-inner">
+      <a class="brand" href="#top" aria-label="Goblin Core home">
+        <span class="brand-mark"><img src="goblin.png" alt=""></span>
+        <span>goblin_core</span>
+      </a>
+      <div class="nav-links">
+        <a href="#for-you">Use cases</a>
+        <a href="#proof">Benchmarks</a>
+        <a href="#writing">Blogs</a>
+        <a href="README.html">Docs</a>
+        <a class="nav-cta" href="https://github.com/adamdeprince/goblin-core">View on GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <img class="hero-chicken" src="goblin.png" alt="The Goblin Core chicken, a black-and-white Polish chicken">
+      <div class="hero-inner">
+        <p class="eyebrow">Redis semantics, specialized properly</p>
+        <h1>Goblin<br>Core</h1>
+        <p class="hero-copy">A compact server for sorted sets and hashes. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <p class="release-note"><strong>Coming July 20, 2026:</strong> Redis-compatible lists and Pub/Sub.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#start">
+            Build from source
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="button secondary" href="#proof">Read the numbers</a>
+        </div>
+        <div class="hero-note" aria-label="Project details">
+          <span>Apache 2.0</span><span>C++23</span><span>RESP compatible subset</span><span>Linux fast path</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="proof-strip" aria-label="Measured highlights">
+      <div class="proof-grid">
+        <div class="proof"><b>51 B</b><span>RSS per sorted-set member at 4M</span></div>
+        <div class="proof"><b>14.3B</b><span>real Lichess rating updates replayed</span></div>
+        <div class="proof"><b>220 ns</b><span>single-element SBE ring round trip</span></div>
+        <div class="proof"><b>392K</b><span>ZADD operations/sec on one core</span></div>
+      </div>
+    </section>
+
+    <section class="paths" id="for-you">
+      <div class="section-inner">
+        <p class="section-label">Two roads into the same engine</p>
+        <h2 class="section-title">Choose the overhead you are done paying.</h2>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <div class="path-grid">
+          <article class="path">
+            <span class="path-num">01 / GROWING PRODUCTS</span>
+            <h3>Your leaderboard should not become a fundraising event.</h3>
+            <p class="path-lede">When sorted sets and hashes are scaling faster than the budget, packed layouts turn infrastructure growth back into a product problem instead of a RAM bill.</p>
+            <dl>
+              <div><dt>Interface</dt><dd>RESP over TCP or Unix socket</dd></div>
+              <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
+              <div><dt>Measured</dt><dd>~35% less RAM than Redis 8.8</dd></div>
+            </dl>
+            <a class="path-link" href="blogs/lichess-leaderboard.html">See 14.3 billion updates →</a>
+          </article>
+          <article class="path">
+            <span class="path-num">02 / LATENCY-SENSITIVE SYSTEMS</span>
+            <h3>Assemble real infrastructure before you invent a protocol.</h3>
+            <p class="path-lede">Use known Redis-shaped operations over a shared-memory SBE ring. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
+            <dl>
+              <div><dt>Interface</dt><dd>SBE over shared-memory rings</dd></div>
+              <div><dt>Best at</dt><dd>Market data and execution-adjacent state</dd></div>
+              <div><dt>Measured</dt><dd>~220 ns HSET/ZADD round trip</dd></div>
+            </dl>
+            <a class="path-link" href="blogs/ring-latency.html">Inspect the latency path →</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="case-study">
+      <div class="section-inner case-layout">
+        <div>
+          <span class="case-kicker">Field test / Lichess</span>
+          <h2>One leaderboard. 21.6 million players.</h2>
+          <p class="case-copy">Every rated game in Lichess history became a <code>ZADD</code>: 14.3 billion updates across 12 years and 9 months. The final ordering matched Redis member for member and score for score. Goblin held it in 763.8 MB.</p>
+          <a class="text-link" href="blogs/lichess-leaderboard.html">Read the full replay and methodology →</a>
+        </div>
+        <figure class="memory-figure">
+          <figcaption>FINAL RESIDENT MEMORY / LOWER IS BETTER</figcaption>
+          <div class="bar-row goblin"><div class="bar-label"><span>Goblin Core</span><strong>763.8 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:37.1%"></div></div></div>
+          <div class="bar-row redis8"><div class="bar-label"><span>Redis 8.8</span><strong>1,486.7 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:72.2%"></div></div></div>
+          <div class="bar-row valkey"><div class="bar-label"><span>Valkey 9.1</span><strong>1,450.7 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:70.5%"></div></div></div>
+          <div class="bar-row redis7"><div class="bar-label"><span>Redis 7.2.4</span><strong>2,058.6 MB</strong></div><div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+        </figure>
+      </div>
+    </section>
+
+    <section class="engine">
+      <div class="section-inner">
+        <p class="section-label">The low-latency wire</p>
+        <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
+        <p class="section-intro">On Linux, pin client and server to separate cores. The client writes a typed SBE request into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
+        <div class="engine-diagram" aria-label="Shared memory request path">
+          <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
+          <div class="engine-arrow" aria-hidden="true">→</div>
+          <div class="engine-step"><small>02 / SHARED MEMORY</small><h3>SQ / CQ rings</h3><p>Cache-line-isolated indexes move requests and replies without the kernel.</p></div>
+          <div class="engine-arrow" aria-hidden="true">→</div>
+          <div class="engine-step"><small>03 / GOBLIN CORE</small><h3>Jump-table dispatch</h3><p>Known message types reach packed hashes and sorted sets with no tokenization.</p></div>
+        </div>
+        <div class="tradeoffs">
+          <div class="tradeoff"><h3>What the number means</h3><p>About 220 ns is a full, synchronous, unpipelined request and reply for a one-field <code>HSET</code> or one-member <code>ZADD</code> on a pinned Threadripper PRO 5995WX.</p></div>
+          <div class="tradeoff"><h3>What it costs</h3><p>The server busy-polls and owns a core. Linux core isolation provides the reliable low-latency deployment; macOS is useful for development but cannot offer the same scheduler control.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="benchmarks" id="proof">
+      <div class="section-inner">
+        <p class="section-label">Parity benchmark / one serving core</p>
+        <h2 class="section-title">Memory is the headline. Throughput comes with it.</h2>
+        <div class="benchmark-wrap">
+          <table>
+            <thead><tr><th>Operation</th><th>Goblin</th><th>Redis 7.2</th><th>Redis 8.8</th><th>Valkey 9.1</th><th>Dragonfly</th></tr></thead>
+            <tbody>
+              <tr><td>ZADD</td><td class="winner">392K</td><td>235K</td><td>232K</td><td>235K</td><td>251K</td></tr>
+              <tr><td>ZSCORE</td><td class="winner">581K</td><td>480K</td><td>470K</td><td>485K</td><td>406K</td></tr>
+              <tr><td>ZRANK</td><td class="winner">476K</td><td>332K</td><td>340K</td><td>353K</td><td>320K</td></tr>
+              <tr><td>ZRANGE (16)</td><td class="winner">433K</td><td>360K</td><td>365K</td><td>339K</td><td>257K</td></tr>
+              <tr><td>RSS bytes/member (4M)</td><td class="winner">51.0</td><td>103.2</td><td>78.2</td><td>84.3</td><td>54.6</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="method">Best of three, <code>redis-benchmark -P 16 -c 1</code>, dedicated AMD 5995WX host. Each engine uses its shipped allocator; Dragonfly limited to one proactor. <a href="BENCHMARKS.html">Full methodology and reproduction commands.</a></p>
+      </div>
+    </section>
+
+    <section class="writing" id="writing">
+      <div class="section-inner">
+        <p class="section-label">Field notes</p>
+        <h2 class="section-title">The workloads behind the numbers.</h2>
+        <p class="section-intro">Long-form notes on what was measured, why the workload matters, and where the design still has honest limits.</p>
+        <div class="writing-grid">
+          <article class="post">
+            <span class="post-meta">Leaderboard / Memory</span>
+            <h3>14.3 billion Lichess rating updates in one leaderboard</h3>
+            <p>Nearly thirteen years of real player ratings, replayed chronologically into one sorted set and checked against Redis member for member.</p>
+            <a href="blogs/lichess-leaderboard.html">Read the leaderboard story →</a>
+          </article>
+          <article class="post">
+            <span class="post-meta">Shared memory / Latency</span>
+            <h3>Sub-microsecond round trips on the shared-memory ring</h3>
+            <p>How SBE, busy polling, and a cache-line handoff bring synchronous Redis-shaped operations into triple-digit nanoseconds.</p>
+            <a href="blogs/ring-latency.html">Read the ring latency story →</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="scope">
+      <div class="section-inner scope-grid">
+        <div>
+          <p class="section-label">Scope, stated plainly</p>
+          <h2>Focused beats pretending.</h2>
+          <p class="section-intro">Goblin Core is not full Redis. It is a fast, compact implementation of the parts listed here, with explicit snapshots and Redis RDB import for sorted sets.</p>
+        </div>
+        <div class="scope-lists">
+          <div class="scope-list fit"><h3>Built for</h3><ul><li>Sorted sets and hashes</li><li>TTL strings and counters</li><li>Native atomic idioms</li><li>Six embedded script VMs</li><li>Explicit point-in-time snapshots</li></ul></div>
+          <div class="scope-list no"><h3>Not included</h3><ul><li>Replication or cluster mode</li><li>Automatic persistence or AOF</li><li>Pub/sub and transactions</li><li>Eviction policies</li><li>Every Redis key type</li></ul></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="start" id="start">
+      <div class="section-inner start-layout">
+        <div>
+          <p class="section-label">Source-only release</p>
+          <h2>Build it. Measure it.</h2>
+          <p>Goblin Core is Apache 2.0 licensed C++23. Start with the server over RESP, then opt into shared-memory rings only where owning the core makes sense.</p>
+        </div>
+        <div>
+          <div class="terminal" aria-label="Build commands">
+            <div class="terminal-head">~/goblin-core</div>
+            <pre><span class="prompt">$</span> git clone https://github.com/adamdeprince/goblin-core
+<span class="prompt">$</span> cd goblin-core
+<span class="prompt">$</span> cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+<span class="prompt">$</span> cmake --build build-release
+<span class="prompt">$</span> ctest --test-dir build-release --output-on-failure
+<span class="prompt">$</span> ./build-release/goblin-core --port 6379</pre>
+          </div>
+          <div class="quick-links">
+            <a href="README.html">Documentation →</a>
+            <a href="PERFORMANCE_BRIEF.html">Architecture →</a>
+            <a href="RELEASE.html">Releases →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="section-inner">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <p class="section-label">Built by Goblin Reactor</p>
+          <h2>Infrastructure should earn the hardware it occupies.</h2>
+          <p>Goblin Core is open source proof-of-work from Adam DePrince, a systems and performance specialist working across caching, market data, SIMD, and unusual hardware.</p>
+        </div>
+        <div class="footer-actions">
+          <a href="https://github.com/adamdeprince/goblin-core">GitHub repository →</a>
+          <a href="https://goblinreactor.com">Goblin Reactor consulting →</a>
+          <a href="https://github.com/adamdeprince/goblin-core/issues">Report an issue →</a>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>GOBLIN CORE / APACHE-2.0</span><span>The goblin is a chicken. Now you know.</span></div>
+    </div>
+  </footer>
+</body>
+</html>

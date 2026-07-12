@@ -166,7 +166,8 @@ class RingClient {
       if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline) {
         return std::nullopt;
       }
-      cpu_relax();
+      // Adaptive spin-then-park on the CQ tail (macOS); pure relax elsewhere.
+      cq_.wait_for_record();
     }
   }
 

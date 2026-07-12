@@ -44,6 +44,39 @@ The single-element ops hold p99 within ~0.1 µs of the median.
 
 ## Apple M4 Max
 
-_Pending — measured with the machine in high-power mode. (macOS has no `taskset`, so the
-client and server run unpinned; the busy-poll needs high-power mode to keep the scheduler
-from throttling it.)_
+12 performance cores, macOS. No `taskset` (and `THREAD_AFFINITY_POLICY` is a no-op on
+Apple Silicon), so client and server run unpinned. The busy-poll path is tuned for Darwin
+instead: 128-byte isolation of the four ring index words (Apple L1/L2 lines + 128-byte
+prefetch), `USER_INTERACTIVE` QoS on both processes, and `cpu_relax` that does **not**
+emit `yield` (a yield-spin is treated as low-value work and parked for ~10–15 µs).
+
+Run the bench under `caffeinate -i` so App Nap / idle throttling does not sit on the
+spinners. Numbers below are SBE median round-trip µs, local M4 Max, Release build.
+
+Single-element — clean:
+
+| operation | p50 | p99 | min |
+|---|---:|---:|---:|
+| `PING` | 0.17 | ~8 | 0.04 |
+| `ZADD`, 1 | 0.21 | ~8 | 0.10 |
+| `HSET`, 1 | 0.17 | ~1 | 0.10 |
+
+A synchronous unpipelined round trip is reliably sub-250 ns at the median. The p99 still
+shows occasional ~8–15 µs scheduler holes (unpinned dual busy-poll has no isolcpus
+equivalent); they are rare enough that single-element medians stay honest.
+
+Ten-element — partially open:
+
+| operation | p50 | note |
+|---|---:|---|
+| `ZADD`, 10 | ~1.0 | usable; p90 still sees the ~15 µs cliff |
+| `HSET`, 10 | ~14–15 | median sits on the cliff; `min` ≈ 0.6 µs proves the ring can do it |
+
+Do not publish the HSET-10 median as “ring latency” — it is a scheduler artifact (the min
+shows the path is fine when both threads stay hot). Two-sided sub-µs busy-poll without
+core isolation remains a Linux strength; on macOS the single-element path is solved, and
+batched ops are still under investigation (adaptive spin-then-timeout is in the tree as a
+tail bound, not a full cure).
+
+Even the stalled ~15 µs numbers stay at Unix-domain-socket cost (~10 µs in
+[BENCHMARKS.md](BENCHMARKS.md)), never worse. Single-element is ~50–75× under a socket.

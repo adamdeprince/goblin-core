@@ -130,42 +130,46 @@ int main(int argc, char** argv) {
   auto sbe = SbeRingClient::open(sbe_ring.c_str(), std::chrono::seconds(5));
   assert(resp && sbe);
 
-  std::puts("PING -- nothing to parse; measures pure framing overhead:");
+  // Op order: interleave 1- and 10-element so a long dual-spin run does not dump
+  // all 10-element work into a thermally-throttled tail (macOS sustained-load
+  // artifact that previously pinned HSET-10 as the last op at ~13 µs).
   const std::vector<std::string_view> ping_cmd = {"PING"};
-  measure("  RESP", [&] { (void)resp->command(ping_cmd); });
-  measure("  SBE", [&] { (void)sbe->ping(); });
-
-  std::puts("\nZADD, 1 member -- one score parsed (RESP) vs native double (SBE):");
   const std::vector<std::string_view> zadd1 = {"ZADD", "k", "1.5", "m0"};
   const std::vector<SbeRingClient::Scored> sbe1 = {{1.5, "m0"}};
-  measure("  RESP", [&] { (void)resp->command(zadd1); });
-  measure("  SBE", [&] { (void)sbe->zadd("k", sbe1); });
-
-  std::puts("\nZADD, 10 members -- 10 scores parsed (RESP) vs 10 native doubles (SBE):");
   std::vector<std::string_view> zadd10 = {"ZADD", "k"};
   static const char* scores[10] = {"1.1","2.2","3.3","4.4","5.5","6.6","7.7","8.8","9.9","10.1"};
   static const char* mems[10]   = {"m0","m1","m2","m3","m4","m5","m6","m7","m8","m9"};
   for (int i = 0; i < 10; ++i) { zadd10.push_back(scores[i]); zadd10.push_back(mems[i]); }
   std::vector<SbeRingClient::Scored> sbe10;
   for (int i = 0; i < 10; ++i) sbe10.push_back({1.1 * (i + 1), mems[i]});
-  measure("  RESP", [&] { (void)resp->command(zadd10); });
-  measure("  SBE", [&] { (void)sbe->zadd("k", sbe10); });
-
-  std::puts("\nHSET, 1 field -- one field/value pair (RESP text vs SBE typed):");
   std::vector<std::string_view> hset1 = {"HSET", "h", "f0", "v0"};
   std::vector<std::pair<std::string_view, std::string_view>> sbe_h1 = {{"f0", "v0"}};
-  measure("  RESP", [&] { (void)resp->command(hset1); });
-  measure("  SBE", [&] { (void)sbe->hset("h", sbe_h1); });
-
-  std::puts("\nHSET, 10 fields -- ten field/value pairs:");
   std::vector<std::string_view> hset10 = {"HSET", "h"};
   static const char* hf[10] = {"f0","f1","f2","f3","f4","f5","f6","f7","f8","f9"};
   static const char* hv[10] = {"v0","v1","v2","v3","v4","v5","v6","v7","v8","v9"};
   for (int i = 0; i < 10; ++i) { hset10.push_back(hf[i]); hset10.push_back(hv[i]); }
   std::vector<std::pair<std::string_view, std::string_view>> sbe_h10;
   for (int i = 0; i < 10; ++i) sbe_h10.push_back({hf[i], hv[i]});
+
+  std::puts("PING -- nothing to parse; measures pure framing overhead:");
+  measure("  RESP", [&] { (void)resp->command(ping_cmd); });
+  measure("  SBE", [&] { (void)sbe->ping(); });
+
+  std::puts("\nHSET, 10 fields -- ten field/value pairs (early: avoids end-of-run stall):");
   measure("  RESP", [&] { (void)resp->command(hset10); });
   measure("  SBE", [&] { (void)sbe->hset("h", sbe_h10); });
+
+  std::puts("\nZADD, 1 member -- one score parsed (RESP) vs native double (SBE):");
+  measure("  RESP", [&] { (void)resp->command(zadd1); });
+  measure("  SBE", [&] { (void)sbe->zadd("k", sbe1); });
+
+  std::puts("\nZADD, 10 members -- 10 scores parsed (RESP) vs 10 native doubles (SBE):");
+  measure("  RESP", [&] { (void)resp->command(zadd10); });
+  measure("  SBE", [&] { (void)sbe->zadd("k", sbe10); });
+
+  std::puts("\nHSET, 1 field -- one field/value pair (RESP text vs SBE typed):");
+  measure("  RESP", [&] { (void)resp->command(hset1); });
+  measure("  SBE", [&] { (void)sbe->hset("h", sbe_h1); });
 
   ::kill(pid, SIGTERM);
   int status = 0;

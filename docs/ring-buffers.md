@@ -66,13 +66,24 @@ Rings and sockets coexist: a ringed server still listens on its port / unix sock
 and serves those clients whenever the rings are quiet, so ordinary `redis-cli` still
 works — just at lower priority than the rings.
 
-## Wire protocol
+## Wire protocols
 
-The payload is **standard RESP** — the same bytes a socket client sends. A client
-writes a command as a RESP array of bulk strings into the SQ; the server writes the
-RESP reply into the CQ. The server reassembles the SQ byte stream with its normal
-RESP parser, so a single ring record may hold one command, several pipelined
-commands, or part of a large one.
+The ring and socket transports both support **RESP and SBE**. They use the same
+one-time protocol selection: an endpoint whose first eight bytes are `GOBLINS!`
+switches to the SBE binary wire; any other prefix is RESP. Protocol and transport
+are independent choices — RESP works over a socket or a ring, and SBE works over a
+socket or a ring. See the [SBE wire protocol](sbe-protocol.md) for the handshake,
+framing, and command schema.
+
+With RESP, a ring client writes the same array-of-bulk-string bytes a socket client
+sends into the SQ, and the server writes the RESP reply into the CQ. The server
+reassembles the SQ byte stream with its normal RESP parser, so a single ring record
+may hold one command, several pipelined commands, or part of a large one.
+
+With SBE, the one-time magic is followed by length-prefixed binary messages. Scores
+and counts travel as native numeric fields and the server dispatches on the SBE
+template id. The ring still carries a byte stream; only the protocol interpreting
+those bytes changes.
 
 Framing: each record starts on a **64-byte cache-line boundary**, with a one-line
 control header (the payload length) followed by the payload on the *next* cache line
@@ -99,7 +110,7 @@ redis-cli-ring /tmp/a
 (integer) 1
 ```
 
-## Talking to a ring: the header-only C++ client
+## Talking to a ring: the header-only RESP client
 
 The whole client is one header, `goblin/core/ring_client.hpp` — include it and you
 have a ring client (this is also how the tests drive the server):
@@ -124,6 +135,11 @@ for (int i = 0; i < 100; ++i) auto r = client->read_reply();
 request and response phases for pipelining. The ring core underneath
 (`goblin/core/ring_buffer.hpp`) is also header-only if you want to build a client in
 another language or embed the producer/consumer directly.
+
+For SBE, `goblin/core/sbe_ring_client.hpp` provides the corresponding header-only
+client for the full binary command surface. SBE can also be used over TCP or a
+Unix-domain socket by sending the same `GOBLINS!` handshake followed by framed SBE
+messages.
 
 ## Constraints and notes
 
