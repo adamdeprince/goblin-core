@@ -454,7 +454,7 @@
           <a class="button secondary" href="#proof">Read the numbers</a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP compatible subset</span><span>Linux fast path</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + SBE</span><span>TCP + UDS + rings</span>
         </div>
       </div>
     </section>
@@ -472,14 +472,14 @@
       <div class="section-inner">
         <p class="section-label">Two roads into the same engine</p>
         <h2 class="section-title">Choose the overhead you are done paying.</h2>
-        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. Both RESP and SBE work over TCP, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
         <div class="path-grid">
           <article class="path">
             <span class="path-num">01 / GROWING PRODUCTS</span>
             <h3>Your leaderboard should not become a fundraising event.</h3>
             <p class="path-lede">When sorted sets and hashes are scaling faster than the budget, packed layouts turn infrastructure growth back into a product problem instead of a RAM bill.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP over TCP or Unix socket</dd></div>
+              <div><dt>Interface</dt><dd>RESP or SBE over TCP, UDS, or rings</dd></div>
               <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
               <div><dt>Measured</dt><dd>763.8 vs 1,486.7 MB: 48.6% less RSS than Redis 8.8 on Lichess</dd></div>
             </dl>
@@ -488,9 +488,9 @@
           <article class="path">
             <span class="path-num">02 / LATENCY-SENSITIVE SYSTEMS</span>
             <h3>Assemble real infrastructure before you invent a protocol.</h3>
-            <p class="path-lede">Use known Redis-shaped operations over a shared-memory SBE ring. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
+            <p class="path-lede">Use the same Redis-shaped operations over any transport, then choose SBE over a shared-memory ring for the lowest latency. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
             <dl>
-              <div><dt>Interface</dt><dd>SBE over shared-memory rings</dd></div>
+              <div><dt>Interface</dt><dd>RESP or SBE over TCP, UDS, or rings</dd></div>
               <div><dt>Best at</dt><dd>Market data and execution-adjacent state</dd></div>
               <div><dt>Measured</dt><dd>~220 ns HSET/ZADD round trip</dd></div>
             </dl>
@@ -523,7 +523,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">On Linux, pin client and server to separate cores. The client writes a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
+        <p class="section-intro">RESP and SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -608,7 +608,7 @@
         <div>
           <p class="section-label">Source-only release</p>
           <h2>Build it. Measure it.</h2>
-          <p>Goblin Core is Apache 2.0 licensed C++23. Start with the server over RESP, then opt into shared-memory rings only where owning the core makes sense.</p>
+          <p>Goblin Core is Apache 2.0 licensed C++23. Choose RESP or SBE over TCP or a Unix-domain socket, then opt into shared-memory rings wherever owning the core makes sense. The protocol choice stays independent of the transport.</p>
         </div>
         <div>
           <div class="terminal" aria-label="Build commands">
