@@ -22,6 +22,17 @@ Dragonfly is multi-threaded by design; it is run with a single proactor
 single-threaded engines, and it manages its own CPU affinity, so it is tested as
 shipped. Host: see [Host](#host). Server and client on separate cores.
 
+The one-core budget is deliberate parity, not an attempt to show
+Dragonfly at its maximum scale. Goblin Core's intended deployment is a
+modest-memory, single-core machine where compact structures can avoid
+paying for a larger server. The quiet, dedicated benchmark host
+available to the developer happens to be a 64-core Threadripper
+monster workstation because it provides clean isolation: the server
+and client get separate, otherwise idle cores, while the remaining
+cores do not contribute to the measured server. The large test rig
+makes the measurement quieter; it does not turn this into a 64-core
+result.
+
 License note: **Redis 7.2.4** is BSD-3-Clause (the last open-source Redis) and is
 the format Goblin Core imports; **Redis 8.8** is RSALv2/SSPL (source-available);
 **Valkey 9.1** is BSD-3-Clause (the community fork); **Dragonfly** is BSL 1.1

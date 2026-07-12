@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets and hashes, with half the memory footprint of legacy Redis and a 220 ns shared-memory fast path.">
+  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets and hashes, with roughly half the sorted-set memory footprint of Redis 7.2.4 and a 220 ns shared-memory fast path.">
   <meta name="theme-color" content="#11130f">
   <meta property="og:title" content="Goblin Core — Redis semantics without Redis overhead">
   <meta property="og:description" content="Spend less on leaderboard infrastructure. Or build latency-sensitive systems with 220 ns request/reply round trips.">
@@ -284,6 +284,16 @@
     .tradeoff { border-top: 1px solid #45483f; padding-top: 23px; }
     .tradeoff h3 { margin: 0 0 10px; font-size: 1rem; }
     .tradeoff p { margin: 0; color: #aeb1a7; font-size: .9rem; }
+    .shootout { margin-top: 58px; padding-top: 28px; border-top: 1px solid #45483f; }
+    .shootout-head { display: flex; justify-content: space-between; gap: 30px; align-items: baseline; }
+    .shootout-head h3 { margin: 0; font-size: 1.35rem; }
+    .shootout-head a { color: var(--acid); font-weight: 800; text-underline-offset: 4px; }
+    .shootout-stats { display: grid; grid-template-columns: 1fr 1fr; margin-top: 26px; border-block: 1px solid #45483f; }
+    .shootout-stat { padding: 25px 30px 27px 0; }
+    .shootout-stat + .shootout-stat { padding-left: 30px; padding-right: 0; border-left: 1px solid #45483f; }
+    .shootout-stat b { display: block; color: var(--acid); font: 850 clamp(1.65rem, 3vw, 2.6rem)/1 var(--mono); }
+    .shootout-stat:nth-child(2) b { color: #41c4d1; }
+    .shootout-stat span { display: block; margin-top: 10px; color: #b7baaf; font-size: .84rem; }
 
     .benchmarks { padding: 110px 0; }
     .benchmark-wrap { margin-top: 58px; overflow-x: auto; border-block: 1px solid var(--ink); }
@@ -390,6 +400,11 @@
       .post + .post { border-top: 1px solid var(--ink); }
       .post h3 { margin-top: 24px; }
       .tradeoffs, .scope-lists { grid-template-columns: 1fr; gap: 36px; }
+      .shootout-head { display: block; }
+      .shootout-head a { display: inline-block; margin-top: 12px; }
+      .shootout-stats { grid-template-columns: 1fr; }
+      .shootout-stat, .shootout-stat + .shootout-stat { padding: 22px 0; border-left: 0; }
+      .shootout-stat + .shootout-stat { border-top: 1px solid #45483f; }
       .engine-step { padding: 24px; }
       .quick-links { grid-template-columns: 1fr; }
       .quick-links a, .quick-links a:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--ink); }
@@ -425,7 +440,7 @@
 
   <main id="main">
     <section class="hero" id="top">
-      <img class="hero-chicken" src="goblin.png" alt="The Goblin Core chicken, a black-and-white Polish chicken">
+      <img class="hero-chicken" src="goblin.png" alt="The Goblin Core chicken, a black-and-white Silkie">
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
@@ -446,7 +461,7 @@
 
     <section class="proof-strip" aria-label="Measured highlights">
       <div class="proof-grid">
-        <div class="proof"><b>51 B</b><span>RSS per sorted-set member at 4M</span></div>
+        <div class="proof"><b>51 B</b><span>RSS/member at 4M vs 103.2 B on Redis 7.2.4</span></div>
         <div class="proof"><b>14.3B</b><span>real Lichess rating updates replayed</span></div>
         <div class="proof"><b>220 ns</b><span>single-element SBE ring round trip</span></div>
         <div class="proof"><b>392K</b><span>ZADD operations/sec on one core</span></div>
@@ -466,7 +481,7 @@
             <dl>
               <div><dt>Interface</dt><dd>RESP over TCP or Unix socket</dd></div>
               <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
-              <div><dt>Measured</dt><dd>~35% less RAM than Redis 8.8</dd></div>
+              <div><dt>Measured</dt><dd>763.8 vs 1,486.7 MB: 48.6% less RSS than Redis 8.8 on Lichess</dd></div>
             </dl>
             <a class="path-link" href="blogs/lichess-leaderboard.html">See 14.3 billion updates →</a>
           </article>
@@ -519,6 +534,13 @@
         <div class="tradeoffs">
           <div class="tradeoff"><h3>What the number means</h3><p>About 220 ns is a full, synchronous, unpipelined request and reply for a one-field <code>HSET</code> or one-member <code>ZADD</code> on a pinned Threadripper PRO 5995WX.</p></div>
           <div class="tradeoff"><h3>What it costs</h3><p>The server busy-polls and owns a core. Linux core isolation provides the reliable low-latency deployment; macOS is useful for development but cannot offer the same scheduler control.</p></div>
+        </div>
+        <div class="shootout">
+          <div class="shootout-head"><h3>Same host. Same timer. Every incumbent.</h3><a href="LATENCY-SHOOTOUT.html">Read the full latency shootout →</a></div>
+          <div class="shootout-stats">
+            <div class="shootout-stat"><b>38–50×</b><span>faster median than the fastest Unix-socket result across SET/GET, HSET/HGET, and ZADD/ZSCORE</span></div>
+            <div class="shootout-stat"><b>0.22–0.28 µs</b><span>ring p99 across all six operations; the fastest socket p99s are 11.29–12.85 µs</span></div>
+          </div>
         </div>
       </div>
     </section>
