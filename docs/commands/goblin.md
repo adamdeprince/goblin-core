@@ -19,8 +19,8 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.HCAD`](GOBLIN.HCAD.md) | Compare-and-delete a hash field: delete it only if it still holds the expected value. |
 | [`GOBLIN.HSETGT`](GOBLIN.HSETGT.md) | Set-if-greater on a hash field: the `ZADD GT` that hashes lack (watermarks). |
 | [`GOBLIN.CLAIM`](GOBLIN.CLAIM.md) | Idempotency guard: claim work once with an expiring lease, else return the prior result. |
-| `GOBLIN.MEMORY` | Per-key memory breakdown for a zset or hash. |
-| `GOBLIN.OPTIMIZE` | Compact a zset or hash in place and repack its index. |
+| `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, or list. |
+| `GOBLIN.OPTIMIZE` | Compact a zset, hash, or list in place. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
 | `GOBLIN.LOAD` | Load a snapshot (or a Redis `dump.rdb`) from disk. |
 
@@ -171,11 +171,11 @@ crashed worker's slot automatically so the work is retried. See the full page:
 GOBLIN.MEMORY key
 ```
 
-Reports where a key's memory goes — a breakdown across value storage, the packed
-member/field index, and structural overhead — so the true footprint is
-observable rather than estimated. Works on a zset or a hash key; replies nil for
-a missing key (or one of another type). The numbers reflect the current layout,
-so they change after [`GOBLIN.OPTIMIZE`](#goblin-optimize).
+Reports where a key's memory goes — a breakdown across value storage, packed
+indexes or PMA order, and structural overhead — so the true footprint is
+observable rather than estimated. Works on a zset, hash, or list key; replies nil
+for a missing key (or one of another type). The numbers reflect the current
+layout, so they change after [`GOBLIN.OPTIMIZE`](#goblin-optimize).
 
 ## GOBLIN.OPTIMIZE
 
@@ -183,16 +183,14 @@ so they change after [`GOBLIN.OPTIMIZE`](#goblin-optimize).
 GOBLIN.OPTIMIZE key [density]
 ```
 
-Compacts a zset or hash **in place**: it reclaims dead arena bytes left by
-updates and deletes and repacks the member/field index to `density`, a load
-factor in `(0, 1]` (default `0.97`). Replies with the number of bytes reclaimed,
-or nil when the key is absent. This moves the reindex cost out of the serving
-path — the intended pattern is to bulk-load a key, run `GOBLIN.OPTIMIZE` once,
-then serve reads. Sorted sets and hashes also auto-compact under heavy churn, so
-this is an explicit trigger, not a requirement. The process-wide signal for *when*
-compaction is worth running is [`INFO`](INFO.md)'s `mem_fragmentation_ratio` (an
-internal-fragmentation measure — how much of `used_memory` is reclaimable dead
-weight), which drops back to `1.00` after a compaction.
+Compacts a zset, hash, or list **in place**. Zsets and hashes reclaim dead arena
+bytes and repack their member/field index to `density`, a load factor in `(0, 1]`
+(default `0.97`). Lists rebuild their value arena and compact their PMA using the
+server's list-density setting. The command replies with bytes reclaimed, or nil
+when the key is absent. These structures also auto-compact under heavy churn, so
+this is an explicit trigger, not a requirement. The process-wide signal for
+*when* compaction is worthwhile is [`INFO`](INFO.md)'s
+`mem_fragmentation_ratio`.
 
 ## GOBLIN.SAVE
 
@@ -214,7 +212,7 @@ GOBLIN.LOAD path
 
 Loads a snapshot from `path` into the store, replying with the number of keys
 loaded. It also accepts a Redis `dump.rdb` (Redis 2.6–7.2.x) to migrate sorted
-sets in. Already-expired keys are dropped during the load.
+sets and lists. Already-expired keys are dropped during native snapshot load.
 
 ## See also
 

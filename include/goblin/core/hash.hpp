@@ -3,8 +3,10 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -16,14 +18,20 @@
 
 namespace goblin::core {
 
-// A hash uses the growth knob for the full form, plus a listpack threshold for
-// tiny tables (same knee as zsets: 32 by default; 0 disables listpack).
+// A hash uses the growth knob for the full form, plus an optional count ceiling
+// for the compact form. By default the 64 KiB blob capacity decides promotion;
+// 0 disables the compact form.
 struct HashOptions {
+  static constexpr std::size_t kDefaultListpackMaxEntries =
+      std::numeric_limits<std::size_t>::max();
+
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t chunk_bytes{HashStorage::kDefaultChunkBytes};
-  // Max fields kept as a compact listpack before promoting to swiss+arena.
-  // 0 disables the listpack (always full). 32 matches zset_listpack_max_entries.
-  std::size_t listpack_max_entries{32};
+  // Optional count ceiling for the indexed compact blob. The default has no
+  // count ceiling: the 64 KiB blob limit decides promotion. 0 disables the
+  // compact form; a finite value lets miss- or rebuild-heavy workloads promote
+  // earlier.
+  std::size_t listpack_max_entries{kDefaultListpackMaxEntries};
 };
 
 struct HashMemoryStats {
@@ -36,8 +44,8 @@ struct HashMemoryStats {
 };
 
 // A Redis hash: field->value, both arbitrary byte strings (<= 64 KiB each).
-// Tiny hashes live as one HashListpack blob (linear scan); past the threshold
-// they promote to a swiss field index + packed HashStorage (same dual as zsets).
+// Small hashes live as one fingerprint-indexed HashListpack blob; past the
+// threshold they promote to a Swiss field index + packed HashStorage.
 class Hash {
  public:
   static constexpr double kDefaultFieldIndexDensity = 0.97;
@@ -77,9 +85,8 @@ class Hash {
     if (additional == 0 || is_small()) {
       return;
     }
-    const auto n = size() + additional;
-    full().storage->reserve(n);
-    full().fields.reserve(n);
+    full().storage->reserve_additional(additional);
+    full().fields.reserve_additional(additional);
   }
 
   // Empty the hash in place (keeps the Hash object for freelist reuse).
@@ -97,6 +104,27 @@ class Hash {
       ensure_full();
     }
     return set_full(field, value);
+  }
+
+  long long set_many(
+      std::span<const std::pair<std::string_view, std::string_view>> fields) {
+    if (fields.empty()) {
+      return 0;
+    }
+    if (auto* lp = small_ptr()) {
+      const auto result =
+          lp->set_many(fields, options_.listpack_max_entries);
+      if (!result.needs_full) {
+        return result.added;
+      }
+      ensure_full();
+    }
+    reserve_additional(fields.size());
+    long long added = 0;
+    for (const auto& [field, value] : fields) {
+      added += set_full(field, value);
+    }
+    return added;
   }
 
   // HSETNX. Returns 1 if the field was set, 0 if it already existed.

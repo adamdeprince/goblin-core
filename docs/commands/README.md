@@ -15,6 +15,7 @@ nothing but the key space (one `Store`).
 
 The data-type commands that share this key space are documented separately:
 **[strings.md](strings.md)** (`SET` / `GET` / `INCR` / `GETRANGE` / …),
+**[lists.md](lists.md)** (`GOBLIN.PMA.LPUSH` / `GOBLIN.PMA.LINDEX` / standard aliases / …),
 **[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`), and **[ttl.md](ttl.md)**
 (`EXPIRE` / `TTL` / `PERSIST` / …). Goblin Core's own additions — memory
 introspection, compaction, snapshots, and the native `GOBLIN.CAD`

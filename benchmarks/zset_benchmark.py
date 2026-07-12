@@ -228,7 +228,8 @@ def start_goblin(binary: Path,
                  max_output_buffer_mib: int | None = None,
                  score_string_cache: bool = False,
                  initial_output_buffer_kib: int | None = None,
-                 unix_socket: str | None = None) -> ServerProcess:
+                 unix_socket: str | None = None,
+                 extra_args: Sequence[str] = ()) -> ServerProcess:
     binary = resolve_executable(binary, "Goblin Core binary")
     port = free_port()
     if rank_cache_mode is None:
@@ -244,6 +245,7 @@ def start_goblin(binary: Path,
         command.extend(["--max-output-buffer-mib", str(max_output_buffer_mib)])
     if initial_output_buffer_kib is not None:
         command.extend(["--initial-output-buffer-kib", str(initial_output_buffer_kib)])
+    command.extend(extra_args)
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -342,17 +344,44 @@ def process_rss_mib(pid: int) -> float:
     return rss_kib / 1024.0
 
 
-def redis_used_memory_mib(client: RespClient) -> float | None:
+def redis_info_fields(
+    client: RespClient, section: str = "memory"
+) -> dict[str, str]:
     try:
-        response = client.command("INFO", "memory")
+        response = client.command("INFO", section)
     except Exception:
-        return None
+        return {}
     if not isinstance(response, bytes):
+        return {}
+    fields: dict[str, str] = {}
+    for raw_line in response.decode(errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        fields[name] = value
+    return fields
+
+
+def redis_info_int(
+    client: RespClient, name: str, section: str = "memory"
+) -> int | None:
+    value = redis_info_fields(client, section).get(name)
+    if value is None:
         return None
-    for line in response.decode(errors="replace").splitlines():
-        if line.startswith("used_memory:"):
-            return int(line.split(":", 1)[1]) / (1024.0 * 1024.0)
-    return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def redis_used_memory_mib(client: RespClient) -> float | None:
+    used_memory = redis_info_int(client, "used_memory")
+    return (
+        None
+        if used_memory is None
+        else used_memory / (1024.0 * 1024.0)
+    )
 
 
 def goblin_memory_stats(client: RespClient, key: str) -> dict[str, int | str] | None:

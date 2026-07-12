@@ -18,13 +18,14 @@ namespace goblin::core {
 // Packed field+value storage for a hash. Each entry is addressed by a
 // struct-of-arrays reference:
 //
-//     field_offset (u32) + value_offset (u32) + field_len (u16) + value_len (u16)
-//         = 12 bytes / field
+//     field_offset (u32) + field_len (u16) + value_len (u16) = 8 bytes / field
 //
 // Fresh inserts place field and value contiguously (value_offset = field_offset +
-// field_len) for HGET locality. A value *grow* re-appends only the value bytes and
-// leaves the field where it is -- no re-copy of the field on the update path.
-// Same-or-smaller value updates still overwrite in place.
+// field_len) for HGET locality, so storing value_offset would be redundant. A
+// value *grow* re-appends only the value bytes and lazily creates a u32 sidecar;
+// UINT32_MAX in that sidecar still means contiguous. Compaction makes every value
+// contiguous again and drops the sidecar. Same-or-smaller updates overwrite in
+// place.
 //
 // Both field and value are capped at 64 KiB - 1 (the u16 length, same as zset
 // members). Larger values belong in a blob store (goblin-store.dev) with the
@@ -78,11 +79,14 @@ class HashStorage {
   [[nodiscard]] size_type ref_capacity() const noexcept {
     return field_offsets_.capacity();
   }
+  [[nodiscard]] size_type relocation_capacity() const noexcept {
+    return relocated_value_offsets_.capacity();
+  }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
     return byte_capacity() +
            field_offsets_.capacity() * sizeof(std::uint32_t) +
-           value_offsets_.capacity() * sizeof(std::uint32_t) +
+           relocated_value_offsets_.capacity() * sizeof(std::uint32_t) +
            field_lengths_.capacity() * sizeof(std::uint16_t) +
            value_lengths_.capacity() * sizeof(std::uint16_t) +
            chunks_.capacity() * sizeof(std::shared_ptr<char[]>);
@@ -90,9 +94,35 @@ class HashStorage {
 
   void reserve(size_type field_count) {
     field_offsets_.reserve(field_count);
-    value_offsets_.reserve(field_count);
+    if (!relocated_value_offsets_.empty()) {
+      relocated_value_offsets_.reserve(field_count);
+    }
     field_lengths_.reserve(field_count);
     value_lengths_.reserve(field_count);
+  }
+
+  // Reserve for a growing batch without defeating amortized growth. Calling
+  // reserve(size() + batch) for every batch makes the base vectors (and an
+  // active relocation sidecar) reallocate at every step; retain the configured
+  // growth slack once it exceeds the incoming batch instead.
+  void reserve_additional(size_type additional) {
+    if (additional == 0) {
+      return;
+    }
+    if (additional > std::numeric_limits<size_type>::max() - size()) {
+      throw std::length_error("hash field reference capacity exhausted");
+    }
+
+    const auto required = size() + additional;
+    auto target = required;
+    const auto current = ref_capacity();
+    if (current != 0 && current < required) {
+      const auto grown = grow_ref_capacity(current);
+      if (grown > target) {
+        target = grown;
+      }
+    }
+    reserve(target);
   }
 
   void reserve_bytes(size_type byte_count) {
@@ -104,7 +134,7 @@ class HashStorage {
   void clear() noexcept {
     chunks_.clear();
     field_offsets_.clear();
-    value_offsets_.clear();
+    relocated_value_offsets_.clear();
     field_lengths_.clear();
     value_lengths_.clear();
     next_offset_ = 0;
@@ -123,7 +153,9 @@ class HashStorage {
     }
     const auto field_off = append_bytes(field, value);
     field_offsets_.push_back(field_off);
-    value_offsets_.push_back(field_off + static_cast<std::uint32_t>(field.size()));
+    if (!relocated_value_offsets_.empty()) {
+      relocated_value_offsets_.push_back(kContiguousValueOffset);
+    }
     field_lengths_.push_back(static_cast<std::uint16_t>(field.size()));
     value_lengths_.push_back(static_cast<std::uint16_t>(value.size()));
     return static_cast<std::uint32_t>(field_offsets_.size() - 1);
@@ -139,9 +171,10 @@ class HashStorage {
           "hash value too large (max 64 KiB; use a blob store for larger)");
     }
     const size_type old_value_len = value_lengths_[field_id];
+    const auto old_value_offset = value_offset(field_id);
     if (value.size() <= old_value_len) {
       if (!value.empty()) {
-        std::memcpy(chunk_ptr(value_offsets_[field_id]), value.data(), value.size());
+        std::memcpy(chunk_ptr(old_value_offset), value.data(), value.size());
       }
       dead_bytes_ += old_value_len - value.size();
       value_lengths_[field_id] = static_cast<std::uint16_t>(value.size());
@@ -150,7 +183,8 @@ class HashStorage {
     // Grow: re-append value only; field stays put.
     dead_bytes_ += old_value_len;
     const auto new_off = append_bytes({}, value);
-    value_offsets_[field_id] = new_off;
+    ensure_relocation_sidecar();
+    relocated_value_offsets_[field_id] = new_off;
     value_lengths_[field_id] = static_cast<std::uint16_t>(value.size());
   }
 
@@ -170,7 +204,7 @@ class HashStorage {
     const auto value_len = value_lengths_[field_id];
     return value_len == 0
                ? std::string_view{}
-               : std::string_view(chunk_ptr(value_offsets_[field_id]), value_len);
+               : std::string_view(chunk_ptr(value_offset(field_id)), value_len);
   }
 
   // Account a to-be-removed field's field+value bytes as dead (the Hash
@@ -186,7 +220,9 @@ class HashStorage {
   void copy_ref(std::uint32_t dst, std::uint32_t src) noexcept {
     assert(dst < field_offsets_.size() && src < field_offsets_.size());
     field_offsets_[dst] = field_offsets_[src];
-    value_offsets_[dst] = value_offsets_[src];
+    if (!relocated_value_offsets_.empty()) {
+      relocated_value_offsets_[dst] = relocated_value_offsets_[src];
+    }
     field_lengths_[dst] = field_lengths_[src];
     value_lengths_[dst] = value_lengths_[src];
   }
@@ -194,12 +230,35 @@ class HashStorage {
   void pop_back() noexcept {
     assert(!field_offsets_.empty());
     field_offsets_.pop_back();
-    value_offsets_.pop_back();
+    if (!relocated_value_offsets_.empty()) {
+      relocated_value_offsets_.pop_back();
+    }
     field_lengths_.pop_back();
     value_lengths_.pop_back();
   }
 
  private:
+  static constexpr std::uint32_t kContiguousValueOffset =
+      std::numeric_limits<std::uint32_t>::max();
+
+  [[nodiscard]] std::uint32_t value_offset(
+      std::uint32_t field_id) const noexcept {
+    if (!relocated_value_offsets_.empty()) {
+      const auto offset = relocated_value_offsets_[field_id];
+      if (offset != kContiguousValueOffset) {
+        return offset;
+      }
+    }
+    return field_offsets_[field_id] + field_lengths_[field_id];
+  }
+
+  void ensure_relocation_sidecar() {
+    if (relocated_value_offsets_.empty()) {
+      relocated_value_offsets_.assign(field_offsets_.size(),
+                                       kContiguousValueOffset);
+    }
+  }
+
   [[nodiscard]] const char* chunk_ptr(std::uint32_t offset) const noexcept {
     return chunks_[offset >> chunk_shift_].get() + (offset & chunk_mask_);
   }
@@ -247,9 +306,15 @@ class HashStorage {
     return r.offset;
   }
 
+  [[nodiscard]] size_type grow_ref_capacity(size_type capacity) const noexcept {
+    const auto scaled =
+        static_cast<size_type>(static_cast<double>(capacity) * growth_);
+    return scaled > capacity ? scaled : capacity + 1;
+  }
+
   std::vector<std::shared_ptr<char[]>> chunks_;
   std::vector<std::uint32_t> field_offsets_;
-  std::vector<std::uint32_t> value_offsets_;
+  std::vector<std::uint32_t> relocated_value_offsets_;
   std::vector<std::uint16_t> field_lengths_;
   std::vector<std::uint16_t> value_lengths_;
   size_type next_offset_{0};

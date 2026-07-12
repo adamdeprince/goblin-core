@@ -1,0 +1,241 @@
+# large-zset.llms.txt — handoff: goblin-core large-zset ZADD latency
+
+Audience: an AI engineer picking up an open performance problem in goblin-core (a
+lean, source-only C++23 Redis-compatible server). Read this end-to-end before
+touching code — several obvious ideas have already been tried and ruled out.
+
+--------------------------------------------------------------------------------
+## 1. The problem in one paragraph
+
+goblin-core's sorted-set (zset) score index is a C++ port of Python
+`sortedcontainers.SortedList`: a vector of sorted fixed-capacity blocks of
+`(score, member_id)` entries, ordered by `(score, member-name)`. On a LARGE zset
+with a NARROW score range — the Lichess leaderboard: ~24M members, chess ratings
+mostly in [1000,2000], driven by a `ZADD`-heavy re-scoring trace — goblin's
+*per-operation latency grows faster with zset size than redis's does*. We have cut
+that gap by roughly half and now win at small sizes, but goblin still trails redis
+at ~100k+ members and still scales a touch worse. The remaining gap is the open
+problem.
+
+## 2. The workload and the metric
+
+- Trace: `~/payload-128.txt` on the bench host `naamah` — a Lichess leaderboard.
+  Big multi-member `ZADD leaderboard <score> <member> <score> <member> ...` lines
+  (~100+ pairs each), narrow integer scores (~1000–2000), the SAME members re-scored
+  over and over (14.3B ZADDs / 24M distinct members at full scale). It is dominated
+  by RE-SCORES of existing members, not fresh inserts.
+- Harness: `benchmarks/feed_payload_uds.sh` feeds `head -n HEAD_LINES` of the payload
+  to each engine over a UNIX-domain socket via `redis-cli` in **normal
+  (reply-per-command)** mode, and prints, per engine: feed wall-clock, self-reported
+  `used_memory_rss`, and OS `os_rss` (`ps`). Compared engines: goblin, redis-7.2.4,
+  redis-8.8.0, valkey-9.1.0, dragonfly. (See `LICHESS-BENCHMARK.md` — the incumbents'
+  RSS self-reporting was patched to match `ps` for a fair memory comparison.)
+- The latency metric we track: **µs per fed line** = `feed_seconds * 1e6 / HEAD_LINES`,
+  goblin vs redis-8.8, across sizes. Because each line is a big multi-member ZADD, the
+  server-side per-op cost is a real fraction of each round trip, so this curve tracks
+  the server cost — but note the caveat in §7.
+
+## 3. Diagnosis (this part is solid — don't re-derive it)
+
+The sort key is `(score, member-name)`. Narrow scores ⇒ enormous same-score buckets
+(≈ members / distinct-scores; ~24k members per score at full scale). Every insert or
+erase bisects within its bucket, and each comparison of two same-score entries must
+compare member NAMES. Names are NOT stored in the score index — the index holds only
+`member_id`; the name is fetched with `members_->view(member_id)`, an indirection into
+a large, insertion-ordered byte arena. So each in-bucket comparison is a cache-cold
+arena lookup, and there are `O(log bucket)` of them per op, growing with n.
+
+Confirmation: a pipelined `redis-benchmark ZADD` with WIDE random scores (few ties)
+showed goblin FASTER than redis; the narrow-score leaderboard showed goblin slower and
+scaling worse. The difference is the tie-break density. Redis avoids the lookup by
+storing the member inline in each skiplist node (it pays for that in memory — redis is
+~2× heavier per member).
+
+## 4. Code map
+
+- `include/goblin/core/zset_score_index.hpp` — the SortedList (`ZSetScoreIndex`).
+  - `struct Block`: parallel arrays `scores_` (byte buffer, width-tagged i16/i32/f64),
+    `member_ids_` (`uint32[]`), and `prefixes_` (`uint32[]`, the tie-break accelerator).
+  - `less_parts(lhs_score, lhs_prefix, lhs_member_id, rhs_score, rhs_prefix, rhs_member_id)`:
+    the comparator. Compares score, then the 4-byte prefix (fast path), then falls back
+    to `members_->view(id)` only on a prefix collision.
+  - `compute_prefix(member_id)` and free fn `zset_member_prefix(std::string_view)`:
+    big-endian first-4-bytes of the name (a `uint32` compare is exactly lexicographic).
+  - `kDefaultLoad = 562` (the block/sublist load factor; runtime `--load-factor`).
+  - location cache (`locations_`, `pack_location`): now a `uint64` {block:32|offset:32};
+    rank-cache-only, default off.
+- `include/goblin/core/zset_member_storage.hpp` — `ZSetMemberStorage`, **SoA**:
+  separate `offsets_` (`u32`), `lengths_` (`u16`), `scores_` (width-tagged), plus the
+  member byte arena. `view(member_id)`, `score/set_score`, `prefetch_location/bytes`
+  (already used for range iteration).
+- `include/goblin/core/zset_member_index.hpp` — `MemberIndex` (tuned SIMD Swiss table),
+  `find(member)`. Stores only `member_id` per slot; resolves keys on demand via
+  `view(member_id)`.
+- `src/store.cpp` — `ZSet::add` (the hot re-score path: `find` → `score(old)` →
+  `erase_one` → `set_score` → `insert`; it computes `zset_member_prefix(member)` from the
+  command bytes and passes it in). `ZSet::remove`, `ZSet::score/rank`.
+- `src/command.cpp` — the `zadd` handler (loops over the member pairs).
+- `benchmarks/feed_payload_uds.sh` — the harness.
+
+## 5. What has already been tried (with outcomes) — DO NOT REPEAT blindly
+
+Committed, in order:
+
+1. **Load-factor sweep + `--load-factor` knob** (commit 75c2f41). Swept the SortedList
+   load factor 100→56234 on the leaderboard. The knee is ~562 (feed-time minimum);
+   LARGER load factors are progressively WORSE (O(load) in-block `memmove` per op — 3×
+   slower at 56234). Default set to 562. **The load factor is NOT the lever.** Also
+   widened `Block` `size_/capacity_` `uint16→uint32` so large loads don't overflow.
+2. **`--block-shrink` A/B** (same commit). Toggles the post-split `trim()`
+   (shrink-to-fit). A/B on the workload: a WASH — no measurable speed cost, no RSS
+   benefit. **Not the lever.**
+3. **`uint64` location word** (commit 06fa260). Rank-cache only; removes an
+   offset-vs-block_id packing tension. Irrelevant to the default (rank-cache-off) path.
+4. **4-byte prefix tie-break** (commit a78906b) — THE fix that worked. A parallel
+   `prefixes_` array holds each member name's first 4 bytes (big-endian). `less_parts`
+   compares the prefix first; the arena lookup happens only on a 4-byte collision. Kept
+   as a parallel array (not packed into `member_id`) so `member_id` stays a plain id and
+   the tie-break scan stays cache-dense. +4 B/member.
+5. **ZSet passes the prefix** (commit b2dbb86). The index used to recompute the prefix
+   via `view()` at each entry (1 cache-cold lookup/op). ZSet already holds the member
+   bytes from the command, so it now computes `zset_member_prefix(name)` and passes it;
+   the index treats `prefix==0` as "not provided, compute it" (sentinel — a name that
+   really starts with 4 NULs recomputes to 0 anyway). Removes the residual per-op lookup.
+
+Tried and REVERTED (do not redo without a new idea):
+
+6. **Cross-member bucket prefetch** in the ZADD handler (hash upcoming members' names,
+   prefetch their Swiss control bytes). Measured a WASH / within noise. Why it can't
+   help: the only thing prefetchable *across* members is the hash control byte (cheap,
+   and largely cache-resident for one hot zset); the EXPENSIVE misses — `offsets_`,
+   `lengths_`, `scores_`, the arena bytes — are all indexed by `member_id`, which is
+   only DISCOVERED by `find`, so you cannot prefetch them ahead of the lookup that
+   produces them.
+
+Correctness note: a "fixed prefix" pathology — members like `user:123…` or hex UUIDs
+that share their first 4 bytes — defeats the accelerator (100% fallthrough) and wastes
+the 4 stored bytes. Documented in README as the "magic memory fountain" caveat; strip
+shared prefixes / use binary ids. Prefix ordering is exactly correct for arbitrary
+bytes (big-endian), verified by the content oracle in §8.
+
+## 6. Current standing (numbers to beat)
+
+Per-line µs, goblin vs redis-8.8, reply-per-command feed of the leaderboard:
+
+| size (lines) | gap BEFORE the prefix | gap AFTER (commit b2dbb86) |
+|---:|---:|---:|
+| 10k | ~0% (tie) | goblin **wins** (~116 vs ~124 µs) |
+| 30k | +18% | +4% |
+| 100k | +34% | +16% |
+| 300k | +67% | +37% |
+
+goblin grows ~2.0× across 10k→300k; redis ~1.4×. So the gap is halved but still opens
+with size. goblin stays ~2× leaner in RSS the whole time (that is the product's story —
+see §9).
+
+## 7. The remaining residual (the actual open lever)
+
+After the prefix, the tie-break arena lookups are gone from the hot comparisons. What
+still grows is goblin's OTHER per-op member-storage touches, which are SoA and scattered
+by `member_id`:
+
+- `find(member)` resolves the key via `view(id)` → `offsets_[id]` + `lengths_[id]` +
+  arena bytes.
+- `score(id)` reads `scores_[id]`; `set_score(id)` writes it.
+
+That's ~3 separate cache lines (`offsets_`, `lengths_`, `scores_`) plus the arena, each
+a scattered miss, per re-score. Redis's dict node holds offset/length/score INLINE — one
+node load. This is the honest cost of goblin's lean SoA: tight, narrow, separate arrays
+(the memory win) vs redis's fatter co-located node (the locality win).
+
+The obvious close — co-locate into an AoS `{offset, length, score}` node — forfeits the
+i16/i32/f64 score NARROWING (an AoS field is fixed-width) and thus the memory lead, which
+is the wrong trade for this product. A "just merge `offsets_`+`lengths_`" idea is NOT free
+(`lengths_` is `u16`, so a merged aligned struct is +2 B/member; packed means unaligned
+`u32` reads, a cross-ISA hazard) and the range-iteration path already prefetches that
+pair. So the residual is *mostly correct* to leave — but it is where any further win lives.
+
+## 8. How to build, run, and benchmark
+
+Local (dev machine is arm64 macOS; the repo is at the goblin-core root):
+```
+cmake --build build-release --target goblin_core_server goblin_core_tests -j8
+./build-release/goblin_core_tests                 # unit tests (has zset order/rank tests)
+cmake --build build-asan   --target goblin_core_tests -j8 && \
+  ASAN_OPTIONS=detect_leaks=0 ./build-asan/goblin_core_tests   # ASan + UBSan
+```
+
+Bench host: `naamah` (x86-64, 64 cores) via `ssh naamah`. Build there in an ISOLATED
+dir (do NOT clobber `~/dev/packrat` — other automated agents work there; never
+`rsync --delete`). Deploy to `~/goblin-bench/goblin-core`, which the harness uses:
+```
+# from the local repo root:
+tar czf /tmp/g.tgz --exclude=./build\* --exclude=./.git -C . .
+scp -q /tmp/g.tgz naamah:/tmp/
+ssh naamah 'rm -rf ~/lfsweep && mkdir ~/lfsweep && tar xzf /tmp/g.tgz -C ~/lfsweep && \
+  cd ~/lfsweep && cmake -B build-rel -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1 && \
+  cmake --build build-rel --target goblin_core_server -j"$(nproc)" >/dev/null 2>&1 && \
+  cp build-rel/goblin-core ~/goblin-bench/goblin-core && echo DEPLOYED'
+```
+
+The scaling curve (THE measurement — goblin vs redis-8.8, per-line µs, run each engine
+alone to avoid contention):
+```
+ssh naamah 'cd ~
+for HL in 10000 30000 100000 300000; do
+  g=$(SERVERS=goblin    HEAD_LINES=$HL ./feed_payload_uds.sh 2>&1 | awk "/^goblin/{print \$2}")
+  r=$(SERVERS=redis-8.8 HEAD_LINES=$HL ./feed_payload_uds.sh 2>&1 | awk "/^redis-8.8/{print \$2}")
+  echo "$HL goblin=$(awk "BEGIN{printf \"%.1f\", $g*1e6/$HL}")us/ln redis=$(awk "BEGIN{printf \"%.1f\", $r*1e6/$HL}")us/ln"
+done'
+```
+
+Server-bound isolation (redis-benchmark, pipelined — but WIDE scores, so it does NOT
+reproduce the tie-break; use it only to confirm goblin's non-tie per-op is competitive):
+```
+redis-benchmark -s <sock> -r 1000000 -n 1000000 -P 32 -q ZADD lb __rand_int__ m:__rand_int__  # fill
+redis-benchmark -s <sock> -r 1000000 -n 2000000 -P 16 -q ZADD lb __rand_int__ m:__rand_int__  # measure (p50)
+```
+
+MEASUREMENT CAVEATS:
+- The `feed_payload_uds.sh` feed is reply-per-command, ~5000 lines/s — round-trip bound.
+  At SMALL zsets the server cost hides under the loopback latency (all engines look tied);
+  the gap only shows once the server per-op grows (large zsets). So measure the CURVE, not
+  one size.
+- To see the tie-break specifically, you must use the REAL narrow-score payload (or a
+  synthetic narrow-score, string-member re-scoring load). `redis-benchmark`'s wide random
+  scores hide it.
+- `perf` on `naamah` returns 0 samples (perf_event_paranoid lockdown, no sudo). Reason
+  from code + targeted A/Bs instead.
+
+## 9. Hard constraints — a change is WRONG if it violates any of these
+
+- CORRECTNESS: `ZRANGE key 0 -1 WITHSCORES` must be BYTE-IDENTICAL to redis and stable
+  across any load factor / representation change (the order is `(score, member-bytes)`,
+  ties lexicographic). Oracle: hash that output and diff. Plus `goblin_core_tests` green
+  and ASan/UBSan clean. The prefix work was gated on exactly this.
+- MEMORY IS THE PRODUCT. goblin's headline is ~2× leaner RSS than redis/valkey. Do NOT
+  spend that to buy large-zset latency unless the trade is explicit and worth it; the
+  member SoA + score narrowing exist to keep it lean. A "solution" that makes goblin as
+  fat as redis is not a solution.
+- Cross-ISA: builds/runs on x86-64 AND LoongArch (and should stay portable). Avoid
+  unaligned-access tricks and ISA-specific assumptions in hot structs.
+- Single-core focus; the server loop is single-threaded on the hot path.
+
+## 10. Directions worth trying (unproven — your job)
+
+- Quantify the residual: instrument to count, per re-score, the cache-cold member-storage
+  accesses and the tie-break FALLBACK rate (same-4-byte-prefix collisions). If fallbacks
+  are common on real chess handles, a longer/secondary prefix might help (but costs memory
+  — measure the trade).
+- Size-adaptive representation: keep the lean SoA for small/most zsets, but for a zset that
+  grows past some threshold, co-locate the hot per-member fields (offset/length/score) into
+  one cache line — paying the memory only where the latency actually matters. This is the
+  most promising "have both" idea and has NOT been tried.
+- A cheaper `view()`/`find` path: co-locate `offset+length` (see §7 caveats) or cache a
+  fingerprint so `find`'s name compare avoids the arena on the common case.
+- Reconsider whether the re-score's `score(old)`+`set_score(new)` (two `scores_[id]`
+  touches) and the `find` `view(id)` can share one loaded line (partial AoS of just those).
+- Do NOT re-try: raising the load factor, toggling shrink, or cross-member bucket prefetch
+  (§5) — all measured neutral-or-worse.
+
+Start by reproducing the §8 curve on your build to confirm the baseline, then attack §7.

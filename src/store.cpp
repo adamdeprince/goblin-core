@@ -84,6 +84,35 @@ constexpr std::size_t kMemberArenaAutoCompactDeadFloor = std::size_t{1} << 20;
   return index;
 }
 
+struct ListRange {
+  std::size_t first{0};
+  std::size_t count{0};
+};
+
+[[nodiscard]] std::optional<ListRange> normalize_list_range(
+    long long start, long long stop, std::size_t size) noexcept {
+  if (size == 0) {
+    return std::nullopt;
+  }
+  const auto n = static_cast<long long>(size);
+  if (start < 0) {
+    start += n;
+  }
+  if (stop < 0) {
+    stop += n;
+  }
+  start = std::max<long long>(0, start);
+  if (stop < 0) {
+    return std::nullopt;
+  }
+  stop = std::min(n - 1, stop);
+  if (start >= n || stop < start) {
+    return std::nullopt;
+  }
+  return ListRange{.first = static_cast<std::size_t>(start),
+                   .count = static_cast<std::size_t>(stop - start + 1)};
+}
+
 void release_unused_heap_pages() noexcept {
 #if defined(__APPLE__)
   (void)malloc_zone_pressure_relief(nullptr, 0);
@@ -830,12 +859,21 @@ namespace {
   };
 }
 
+[[nodiscard]] ListOptions build_list_options(const StoreOptions& options) {
+  return ListOptions{
+      .chunk_bytes = options.list_chunk_bytes,
+      .listpack_max_entries = options.list_listpack_max_entries,
+      .max_density = options.list_max_density,
+      .resize_growth = options.list_resize_growth,
+  };
+}
+
 }  // namespace
 
 Store::Store(StoreOptions options)
     : options_(options),
       zset_options_(build_zset_options(options)),
-      keyspace_(build_hash_options(options)) {}
+      keyspace_(build_hash_options(options), build_list_options(options)) {}
 
 void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   if (!zset.empty()) {
@@ -962,15 +1000,7 @@ long long Store::hset_many(
   if (fields.empty()) {
     return 0;
   }
-  auto& hash = get_or_create_hash(key);
-  // Upper bound: every pair may be a new field. Over-reserve is cheap; a mid-batch
-  // rehash is not.
-  hash.reserve_additional(fields.size());
-  long long added = 0;
-  for (const auto& [field, value] : fields) {
-    added += hash.set(field, value);
-  }
-  return added;
+  return get_or_create_hash(key).set_many(fields);
 }
 
 int Store::hsetnx(std::string_view key, std::string_view field,
@@ -1094,6 +1124,192 @@ std::optional<HashMemoryStats> Store::hash_memory_stats(
     return std::nullopt;
   }
   return hash->memory_stats();
+}
+
+// ---- List ----
+
+void Store::erase_if_empty(std::string_view key, const List& list) {
+  if (!list.empty()) {
+    return;
+  }
+  (void)erase_key(key);
+}
+
+void Store::place_loaded_list(std::string key, List&& list) {
+  (void)keyspace_.place_loaded_list(key, std::move(list));
+}
+
+long long Store::lpush(std::string_view key,
+                       std::span<const std::string_view> values,
+                       bool only_if_exists) {
+  List* list = find_list(key);
+  if (list == nullptr) {
+    if (only_if_exists) {
+      return 0;
+    }
+    list = &get_or_create_list(key);
+  }
+  return static_cast<long long>(list->push_front(values));
+}
+
+long long Store::rpush(std::string_view key,
+                       std::span<const std::string_view> values,
+                       bool only_if_exists) {
+  List* list = find_list(key);
+  if (list == nullptr) {
+    if (only_if_exists) {
+      return 0;
+    }
+    list = &get_or_create_list(key);
+  }
+  return static_cast<long long>(list->push_back(values));
+}
+
+std::optional<std::string> Store::lpop(std::string_view key) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return std::nullopt;
+  }
+  auto value = list->pop_front();
+  erase_if_empty(key, *list);
+  return value;
+}
+
+std::optional<std::string> Store::rpop(std::string_view key) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return std::nullopt;
+  }
+  auto value = list->pop_back();
+  erase_if_empty(key, *list);
+  return value;
+}
+
+std::vector<std::string> Store::lpop(std::string_view key, std::size_t count) {
+  std::vector<std::string> values;
+  auto* list = find_list(key);
+  if (list == nullptr || count == 0) {
+    return values;
+  }
+  const auto take = std::min(count, list->size());
+  values.reserve(take);
+  for (std::size_t i = 0; i < take; ++i) {
+    values.push_back(*list->pop_front());
+  }
+  erase_if_empty(key, *list);
+  return values;
+}
+
+std::vector<std::string> Store::rpop(std::string_view key, std::size_t count) {
+  std::vector<std::string> values;
+  auto* list = find_list(key);
+  if (list == nullptr || count == 0) {
+    return values;
+  }
+  const auto take = std::min(count, list->size());
+  values.reserve(take);
+  for (std::size_t i = 0; i < take; ++i) {
+    values.push_back(*list->pop_back());
+  }
+  erase_if_empty(key, *list);
+  return values;
+}
+
+std::size_t Store::llen(std::string_view key) const noexcept {
+  const auto* list = find_list(key);
+  return list == nullptr ? 0 : list->size();
+}
+
+std::optional<std::string_view> Store::lindex(std::string_view key,
+                                              long long index) const noexcept {
+  const auto* list = find_list(key);
+  if (list == nullptr) {
+    return std::nullopt;
+  }
+  index = normalize_index(index, list->size());
+  if (index < 0 || static_cast<std::size_t>(index) >= list->size()) {
+    return std::nullopt;
+  }
+  return list->at(static_cast<std::size_t>(index));
+}
+
+std::vector<std::string_view> Store::lrange(std::string_view key,
+                                            long long start,
+                                            long long stop) const {
+  std::vector<std::string_view> values;
+  const auto* list = find_list(key);
+  if (list == nullptr) {
+    return values;
+  }
+  const auto range = normalize_list_range(start, stop, list->size());
+  if (!range) {
+    return values;
+  }
+  values.reserve(range->count);
+  list->for_range(range->first, range->count,
+                  [&values](std::string_view value) { values.push_back(value); });
+  return values;
+}
+
+Store::ListSetResult Store::lset(std::string_view key, long long index,
+                                 std::string_view value) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return ListSetResult::MissingKey;
+  }
+  index = normalize_index(index, list->size());
+  if (index < 0 || static_cast<std::size_t>(index) >= list->size()) {
+    return ListSetResult::OutOfRange;
+  }
+  list->set(static_cast<std::size_t>(index), value);
+  return ListSetResult::Stored;
+}
+
+void Store::ltrim(std::string_view key, long long start, long long stop) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return;
+  }
+  const auto range = normalize_list_range(start, stop, list->size());
+  if (!range) {
+    (void)erase_key(key);
+    return;
+  }
+  list->trim(range->first, range->count);
+}
+
+std::size_t Store::lrem(std::string_view key, long long count,
+                        std::string_view value) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return 0;
+  }
+  const auto removed = list->remove(value, count);
+  erase_if_empty(key, *list);
+  return removed;
+}
+
+long long Store::linsert(std::string_view key, bool before,
+                         std::string_view pivot, std::string_view value) {
+  auto* list = find_list(key);
+  if (list == nullptr) {
+    return 0;
+  }
+  const auto index = list->find_first(pivot);
+  if (index) {
+    list->insert(before ? *index : *index + 1, value);
+    return static_cast<long long>(list->size());
+  }
+  return -1;
+}
+
+std::optional<ListMemoryStats> Store::list_memory_stats(
+    std::string_view key) const {
+  const auto* list = find_list(key);
+  if (list == nullptr) {
+    return std::nullopt;
+  }
+  return list->memory_stats();
 }
 
 // ---- String ----
@@ -1594,6 +1810,13 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
     const auto after = hash->memory_stats().total_allocated_bytes;
     return before > after ? before - after : 0;
   }
+  if (auto* list = find_list(key); list != nullptr) {
+    const auto before = list->memory_stats().total_allocated_bytes;
+    list->compact();
+    release_unused_heap_pages();
+    const auto after = list->memory_stats().total_allocated_bytes;
+    return before > after ? before - after : 0;
+  }
   return std::nullopt;
 }
 
@@ -1768,13 +1991,13 @@ ZSet ZSet::load(snapshot::Reader& reader, bool use_accelerator,
 }
 
 void Store::save(std::ostream& out, bool with_accelerator) const {
-  // File header, then one section per data family: ZSET, HASH, STRING.
+  // File header, then one section per data family.
   std::string header;
   snapshot::Writer writer(header);
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(4);  // section count (ZSET, HASH, STRING, TTL)
+  writer.u32(5);  // section count (ZSET, HASH, LIST, STRING, TTL)
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -1833,6 +2056,35 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
     out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
   };
   keyspace_.for_each_hash(emit_hash);
+  out.write(&end, 1);
+
+  // LIST section: only canonical order is persisted. PMA slots, density, and
+  // arena addresses are implementation details rebuilt by the current binary.
+  std::string list_header;
+  snapshot::Writer list_writer(list_header);
+  list_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::List));
+  list_writer.u32(0);
+  list_writer.u64(0);
+  out.write(list_header.data(), static_cast<std::streamsize>(list_header.size()));
+
+  auto emit_list = [&out, &operands](std::string_view key, const List& list) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    operand_writer.u64(static_cast<std::uint64_t>(list.size()));
+    list.for_each([&operand_writer](std::string_view value) {
+      operand_writer.str(value);
+    });
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(snapshot::ListOpcode::List));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(), static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  };
+  keyspace_.for_each_list(emit_list);
   out.write(&end, 1);
 
   // STRING section: a key's value is raw bytes, so there is no accelerator to
@@ -2034,6 +2286,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
       const bool is_string =
           section_type ==
           static_cast<std::uint32_t>(snapshot::SectionType::String);
+      const bool is_list =
+          section_type == static_cast<std::uint32_t>(snapshot::SectionType::List);
       const bool is_ttl =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Ttl);
       const bool zset_use_accelerator =
@@ -2092,6 +2346,21 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           const auto key = reader.str();
           const auto value = reader.str();
           keyspace_.set_string(key, value);
+          ++stats.keys;
+        } else if (is_list && opcode == static_cast<std::uint8_t>(
+                                                snapshot::ListOpcode::List)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          const auto count = reader.u64();
+          if (count > std::numeric_limits<std::uint32_t>::max()) {
+            throw snapshot::snapshot_error("snapshot list is too large");
+          }
+          List list(build_list_options(options_));
+          for (std::uint64_t index = 0; index < count; ++index) {
+            (void)list.push_back(reader.str());
+          }
+          stats.members += static_cast<std::size_t>(count);
+          place_loaded_list(std::move(key), std::move(list));
           ++stats.keys;
         } else if (is_ttl && opcode == static_cast<std::uint8_t>(
                                            snapshot::TtlOpcode::Ttl)) {
@@ -2160,6 +2429,13 @@ MemoryReport Store::memory_report() const noexcept {
     r.used_memory += s.field_value_live_bytes + s.field_value_dead_bytes +
                      s.field_index_allocated_bytes;
     r.reclaimable_bytes += s.field_value_dead_bytes;
+  });
+  // Every list: value arena/listpack plus PMA reference and rank/select arrays.
+  keyspace_.for_each_list([&r](std::string_view, const List& list) {
+    const auto s = list.memory_stats();
+    r.used_memory += s.value_live_bytes + s.value_dead_bytes +
+                     s.order_allocated_bytes;
+    r.reclaimable_bytes += s.value_dead_bytes;
   });
   // The keyspace itself: key/value arena (live + dead) plus the swiss index and
   // object/type tables.

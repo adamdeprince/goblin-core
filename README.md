@@ -11,8 +11,8 @@ about 220 ns over a shared-memory ring (written up in [this post](blogs/ring-lat
 For a real-world run at scale, see the
 [Lichess leaderboard replay](blogs/lichess-leaderboard.md): every rated game in Lichess
 history, 14.3 billion `ZADD`s into one sorted set, held in about half the memory of Redis.
-The initial implementation focuses on sorted sets and hashes with a vector-backed
-layout and a small RESP command surface.
+The implementation focuses first on sorted sets, hashes, strings, and lists with
+compact layouts and a deliberately growing Redis-compatible command surface.
 
 **Because no CTO ever wants to say: "We're letting you go — the cloud bill got too high."**
 
@@ -26,7 +26,8 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 ## Quick Summary
 
 - Source-only C++23 Redis-like server from [Goblin Reactor](https://goblinreactor.com).
-- Current scope: sorted sets, hashes, and `PING`, not full Redis compatibility.
+- Current scope includes sorted sets, hashes, strings, lists, TTLs, counters,
+  scripting, and `PING`; it is not yet the full Redis command surface.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
 - Memory is the point: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin Core
@@ -64,7 +65,10 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   [BENCHMARKS.md](BENCHMARKS.md) (x86) and
   [LOONGSON_BENCHMARKS.md](LOONGSON_BENCHMARKS.md) (Loongson 3A6000).
 - A performance and architecture overview lives in
-  [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md).
+  [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md). The Redis list implementation is
+  documented in [LISTS.md](LISTS.md), including its adaptive PMA algorithm class,
+  rank/select index, endpoint bias, and memory controls. Its repeatable
+  cross-engine results are in [LIST-BENCHMARK.md](LIST-BENCHMARK.md).
 
 ## Current Commands
 
@@ -90,6 +94,25 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `HEXISTS key field`
 - `HSTRLEN key field`
 - `HINCRBY key field increment`
+- `LPUSH key value [value ...]`
+- `RPUSH key value [value ...]`
+- `LPUSHX key value [value ...]`
+- `RPUSHX key value [value ...]`
+- `LPOP key [count]`
+- `RPOP key [count]`
+- `LLEN key`
+- `LINDEX key index`
+- `LRANGE key start stop`
+- `LSET key index value`
+- `LTRIM key start stop`
+- `LREM key count value`
+- `LINSERT key BEFORE|AFTER pivot value`
+
+These standard list names resolve through `--list-implementation pma`. The PMA
+backend is also addressable directly with `GOBLIN.PMA.` plus the command name,
+for example `GOBLIN.PMA.LPUSH` and `GOBLIN.PMA.LINDEX`. Qualified command
+families allow multiple list implementations to coexist and be benchmarked
+without changing the standard compatibility surface.
 
 The protocol handler accepts RESP array commands and a basic inline command
 format for local testing.
@@ -127,28 +150,31 @@ rescore) — the ranking flips between them.
 
 ## Compatibility Scope
 
-Goblin Core is not yet a full Redis replacement. This release is scoped to the
-sorted-set and hash command surfaces above plus `PING` for liveness checks. It
-does not implement automatic (background) persistence, replication, cluster mode,
-pub/sub, transactions, ACLs, Redis modules, eviction policies, or Redis key types
-beyond sorted sets and hashes. Scripting *is* supported, and then some — see the
-[Scripting](#scripting) section above for the six embedded interpreters. Point-in-time snapshots are available on demand via
-`GOBLIN.SAVE`/`GOBLIN.LOAD`, and a Redis `dump.rdb` can be imported to migrate
-sorted sets (see Run and "Migrating from Redis" below).
+Goblin Core is growing toward the full Redis command surface with tighter memory
+layouts and faster execution paths. This build covers sorted sets, hashes,
+strings, lists, TTLs, counters, and scripting; Pub/Sub is next. JavaScript and
+Python are embedded for modern programmers, with Lua, Luau, Wren, and Tcl
+available when another runtime fits the job.
 
-Following Redis's single-namespace keyspace, a key holds at most one type: a hash
-command against a sorted-set key (or a sorted-set command against a hash key)
-returns the standard `WRONGTYPE Operation against a key holding the wrong kind of
-value` error rather than coercing the value.
+The deliberate boundary is infrastructure policy. Goblin Core does not provide
+an append-only write log, replication, or cluster mode. Point-in-time
+`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts; durable replay belongs
+in Kafka, where logging is the product. A Redis `dump.rdb` can be imported to
+migrate sorted sets and lists (see "Migrating from Redis" below).
+
+Following Redis's single-namespace keyspace, a key holds at most one type. A
+type-specific command against a key of another type returns the standard
+`WRONGTYPE Operation against a key holding the wrong kind of value` error rather
+than coercing the value.
 
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
 leaving room to optimize internal layouts aggressively. One deliberate
-divergence: a single sorted-set member — and, in a hash, each field and each
-value — is capped at 64 KiB (Redis allows more), which keeps the per-entry
-reference two bytes smaller and stays well above any realistic member. A value
-larger than that belongs in a blob store (goblin-store.dev), with the hash holding
-the returned key.
+divergence: keys, string and list values, sorted-set members, and hash fields and
+values are capped at 65,535 bytes (Redis allows more). That makes two-byte length
+metadata sufficient. Larger objects belong in
+[Goblin Store](https://goblin-store.dev), with Goblin Core holding the returned
+key.
 
 ## Design Priorities
 
@@ -283,13 +309,13 @@ factor in `(0, 1]`; it defaults to `0.97`. Use `1.0` only for a set that is
 truly read-only and never queried for absent members — a fully packed index has
 no empty slot, so a lookup of a missing member scans the whole table.
 
-`GOBLIN.OPTIMIZE` and `GOBLIN.MEMORY` work on hash keys too. On a hash,
+`GOBLIN.OPTIMIZE` and `GOBLIN.MEMORY` work on hash and list keys too. On a hash,
 `GOBLIN.OPTIMIZE <key>` reclaims dead arena bytes left by value updates and field
-deletes and repacks the field index. Both sorted sets and hashes also
+deletes and repacks the field index. On a list it rebuilds the value arena and
+packs the adaptive PMA at its configured density. All three structures
 auto-compact: once dead (reclaimable) arena bytes exceed the live bytes past a
-~`1` MiB floor, the structure rebuilds itself, so a value-update/delete-heavy hash
-(or a `ZREM`-heavy zset) bounds its own footprint — about twice the live bytes —
-without a manual `GOBLIN.OPTIMIZE`.
+type-specific floor, the structure rebuilds itself, so update/delete-heavy keys
+bound their own footprint without a manual `GOBLIN.OPTIMIZE`.
 
 `--member-index-growth <factor>` sets how much the member index grows on each
 rehash (default `2^0.25 ≈ 1.19`), for both the zset member index and the hash
@@ -297,16 +323,18 @@ field index. A smaller factor keeps the never-compacted load factor high (memory
 at the cost of more frequent rehashes during writes; `2.0` is the classic
 doubling that favors write throughput.
 
-`--zset-chunk-bytes <bytes>` and `--hash-chunk-bytes <bytes>` set the
-packed-arena chunk size per type. Each must be a power of two and at least the
-per-type minimum — `64` KiB for zsets, `128` KiB for hashes, since one chunk must
-hold the largest possible entry — and both default to `1` MiB. Larger chunks
-trade granularity for fewer allocations on big structures; the defaults suit
-typical workloads.
+`--zset-chunk-bytes <bytes>`, `--hash-chunk-bytes <bytes>`, and
+`--list-chunk-bytes <bytes>` set the packed-arena chunk size per type. Each must
+be a power of two and large enough to hold its largest entry; all three default
+to `1` MiB. `--list-implementation pma` selects the backend used by standard
+list commands; PMA is the sole selector value and default today. Lists
+separately expose `--list-max-density` (default `0.97`) and
+`--list-resize-growth` (default `2**0.25`) so packing and resize policy do not
+silently control one another. See [LISTS.md](LISTS.md).
 
-`GOBLIN.SAVE <path>` snapshots every zset and hash to a file (hashes ride in a
-new section, so newer snapshots stay backward compatible with older zset-only
-ones). It `fork()`s a
+`GOBLIN.SAVE <path>` snapshots every supported key type and its TTL. Lists are
+written in canonical order rather than persisting PMA slots or arena addresses.
+It `fork()`s a
 copy-on-write child that writes the snapshot from a frozen image of the data, so
 the command returns immediately — replying `Background saving started` — and the
 server keeps serving while the child writes; completion or failure is logged, and
@@ -314,10 +342,10 @@ only one background save runs at a time (a second returns an error). The child
 writes to a temp file and renames it into place, so a crash mid-save never
 corrupts the previous snapshot. `GOBLIN.LOAD <path>` (or `--load <path>` at
 startup) replaces the current data with a snapshot, replying with the number of
-keys loaded. Snapshots are a portable canonical layer (zset members and scores, hash fields
-and values) plus a version-gated accelerator (the packed indexes); a snapshot always loads on any
-build or machine, rebuilding the indexes from the canonical layer when the
-accelerator cannot be trusted (a different `std::hash`, a changed index format).
+keys loaded. Snapshots carry portable canonical data for zsets, hashes, strings,
+and lists plus version-gated accelerators for the indexed types; a snapshot loads
+on any build or machine, rebuilding indexes when an accelerator cannot be
+trusted (a different `std::hash`, a changed index format).
 Persistence is explicit and client-driven: a crash loses writes made since the
 last successful `GOBLIN.SAVE`, so drive saves from your operations and `--load`
 on startup.
@@ -381,7 +409,7 @@ redis-cli -p 6379 ZRANGE leaders 0 -1 WITHSCORES
 
 ## Migrating from Redis
 
-Point Goblin Core at a Redis `dump.rdb` and its sorted sets come across:
+Point Goblin Core at a Redis `dump.rdb` and its sorted sets and lists come across:
 
 ```sh
 ./build-release/goblin-core --port 6379 --load /path/to/dump.rdb
@@ -390,13 +418,12 @@ redis-cli -p 6379 GOBLIN.LOAD /path/to/dump.rdb
 ```
 
 The reader accepts RDB files from **Redis 2.6 through 7.2.x** (RDB versions
-6–11). Sorted sets are imported; other RDB key types (strings, lists, sets, and —
-for now — hashes) are parsed and skipped. RDB hash import is not yet wired up, so
-a hash in a `dump.rdb` does not come across; carry Goblin Core's own hashes
-between restarts with a native `GOBLIN.SAVE` snapshot instead. Streams and modules
-abort the load with a message — migrate those separately. `+inf`/`-inf` scores
-clamp to the largest finite double, and a member larger than 64 KiB aborts the
-load.
+6–11). It imports plain and compact sorted sets plus plain lists, ziplist lists,
+quicklists, and quicklist2/listpack lists. Strings, sets, and hashes are parsed
+and skipped; carry Goblin Core's own versions of those types between restarts
+with a native `GOBLIN.SAVE` snapshot. Streams and modules abort the load with a
+message. Infinite scores clamp to the largest finite double, and a sorted-set
+member or list value larger than 65,535 bytes aborts the load atomically.
 
 Newer RDB versions (Redis 7.4+ / RDB 12+) are intentionally not read. Re-save the
 dump under Redis ≤ 7.2, or migrate over the wire (`SCAN` + `ZRANGE ... WITHSCORES`

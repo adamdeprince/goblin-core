@@ -87,6 +87,9 @@ namespace {
   s += "# Server\r\n";
   s += "redis_version:7.4.0\r\n";
   s += "redis_mode:standalone\r\n";
+  s += "list_implementation:" +
+       std::string(list_implementation_name(store.list_implementation())) +
+       "\r\n";
   s += "# Memory\r\n";
   s += "used_memory:" + std::to_string(used) + "\r\n";
   s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
@@ -273,6 +276,32 @@ struct ScoreBound {
   return resp::array(views);
 }
 
+[[nodiscard]] std::vector<std::string> list_memory_stats_fields(
+    const ListMemoryStats& stats) {
+  std::vector<std::string> fields;
+  auto add = [&fields](std::string_view name, std::size_t value) {
+    fields.emplace_back(name);
+    fields.push_back(std::to_string(value));
+  };
+  add("element_count", stats.element_count);
+  add("value_live_bytes", stats.value_live_bytes);
+  add("value_dead_bytes", stats.value_dead_bytes);
+  add("value_allocated_bytes", stats.value_allocated_bytes);
+  add("order_capacity", stats.order_capacity);
+  add("order_front_slack", stats.order_front_slack);
+  add("order_back_slack", stats.order_back_slack);
+  add("order_allocated_bytes", stats.order_allocated_bytes);
+  add("total_allocated_bytes", stats.total_allocated_bytes);
+  return fields;
+}
+
+[[nodiscard]] std::string list_memory_stats_response(
+    const ListMemoryStats& stats) {
+  const auto fields = list_memory_stats_fields(stats);
+  const std::vector<std::string_view> views(fields.begin(), fields.end());
+  return resp::array(views);
+}
+
 constexpr std::string_view kWrongType =
     "WRONGTYPE Operation against a key holding the wrong kind of value";
 
@@ -322,6 +351,78 @@ constexpr std::string_view kValueTooLarge =
   }
 }
 
+[[nodiscard]] bool is_list_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::lpush:
+    case CommandType::rpush:
+    case CommandType::lpushx:
+    case CommandType::rpushx:
+    case CommandType::lpop:
+    case CommandType::rpop:
+    case CommandType::llen:
+    case CommandType::lindex:
+    case CommandType::lrange:
+    case CommandType::lset:
+    case CommandType::ltrim:
+    case CommandType::lrem:
+    case CommandType::linsert:
+    case CommandType::pma_lpush:
+    case CommandType::pma_rpush:
+    case CommandType::pma_lpushx:
+    case CommandType::pma_rpushx:
+    case CommandType::pma_lpop:
+    case CommandType::pma_rpop:
+    case CommandType::pma_llen:
+    case CommandType::pma_lindex:
+    case CommandType::pma_lrange:
+    case CommandType::pma_lset:
+    case CommandType::pma_ltrim:
+    case CommandType::pma_lrem:
+    case CommandType::pma_linsert:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] CommandType resolve_list_command(
+    CommandType type, ListImplementation implementation) noexcept {
+  switch (implementation) {
+    case ListImplementation::Pma:
+      switch (type) {
+        case CommandType::lpush:
+          return CommandType::pma_lpush;
+        case CommandType::rpush:
+          return CommandType::pma_rpush;
+        case CommandType::lpushx:
+          return CommandType::pma_lpushx;
+        case CommandType::rpushx:
+          return CommandType::pma_rpushx;
+        case CommandType::lpop:
+          return CommandType::pma_lpop;
+        case CommandType::rpop:
+          return CommandType::pma_rpop;
+        case CommandType::llen:
+          return CommandType::pma_llen;
+        case CommandType::lindex:
+          return CommandType::pma_lindex;
+        case CommandType::lrange:
+          return CommandType::pma_lrange;
+        case CommandType::lset:
+          return CommandType::pma_lset;
+        case CommandType::ltrim:
+          return CommandType::pma_ltrim;
+        case CommandType::lrem:
+          return CommandType::pma_lrem;
+        case CommandType::linsert:
+          return CommandType::pma_linsert;
+        default:
+          return type;
+      }
+  }
+  return CommandType::unknown;
+}
+
 // String commands that require the key to already hold a string (or be absent).
 // SET / SETNX / MSET clobber or create regardless of type, and MGET / DEL /
 // EXISTS / TYPE are type-agnostic, so none of those are gated. GOBLIN.CAD /
@@ -362,6 +463,9 @@ constexpr std::string_view kValueTooLarge =
   }
   if (is_hash_command(type)) {
     return KeyType::Hash;
+  }
+  if (is_list_command(type)) {
+    return KeyType::List;
   }
   if (is_typed_string_command(type)) {
     return KeyType::String;
@@ -855,6 +959,70 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::hincrby;
       return {.command = std::move(command)};
+    case CommandType::lpush:
+    case CommandType::rpush:
+    case CommandType::lpushx:
+    case CommandType::rpushx:
+    case CommandType::pma_lpush:
+    case CommandType::pma_rpush:
+    case CommandType::pma_lpushx:
+    case CommandType::pma_rpushx:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::lpop:
+    case CommandType::rpop:
+    case CommandType::pma_lpop:
+    case CommandType::pma_rpop:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::llen:
+    case CommandType::pma_llen:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::lindex:
+    case CommandType::pma_lindex:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::lrange:
+    case CommandType::ltrim:
+    case CommandType::pma_lrange:
+    case CommandType::pma_ltrim:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity(command.name));
+      }
+      if (!parse_range_indexes(command)) {
+        return parse_error(integer_range_error());
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::lset:
+    case CommandType::lrem:
+    case CommandType::pma_lset:
+    case CommandType::pma_lrem:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::linsert:
+    case CommandType::pma_linsert:
+      if (command.args.size() != 4) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
     case CommandType::set:
       if (command.args.size() < 2) {  // options (NX) validated in the handler
         return parse_error(wrong_arity("set"));
@@ -1096,6 +1264,7 @@ std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
                                                              std::string_view key) {
   if (const auto z = store.zset_memory_stats(key)) return memory_stats_fields(*z);
   if (const auto h = store.hash_memory_stats(key)) return hash_memory_stats_fields(*h);
+  if (const auto l = store.list_memory_stats(key)) return list_memory_stats_fields(*l);
   return std::nullopt;
 }
 
@@ -1103,11 +1272,13 @@ void execute_command_into(Store& store,
                           const Command& command,
                           std::string& out,
                           CommandExecutionOptions options) {
+  const auto type =
+      resolve_list_command(command.type, store.list_implementation());
   // Lazy expiration: a key whose TTL has already passed is deleted on first
   // access, before the type gate or the command sees it. Only the first-key
   // argument is handled here (multi-key readers purge their extra keys); gated on
   // a non-empty TTL set so a server with no expirations pays nothing.
-  if (!command.args.empty() && command_has_key_arg(command.type) &&
+  if (!command.args.empty() && command_has_key_arg(type) &&
       !store.ttl_empty()) {
     (void)store.purge_if_expired(command.args[0], store.now_ms());
   }
@@ -1119,7 +1290,7 @@ void execute_command_into(Store& store,
   // exempt; GOBLIN.CAD / GOBLIN.CAEXPIRE / GOBLIN.CAS are not (they read the
   // value like GET).
   if (!command.args.empty()) {
-    if (const auto required = command_requires_type(command.type)) {
+    if (const auto required = command_requires_type(type)) {
       if (const auto actual = store.key_type(command.args[0]);
           actual.has_value() && *actual != *required) {
         resp::append_error(out, kWrongType);
@@ -1128,7 +1299,7 @@ void execute_command_into(Store& store,
     }
   }
 
-  switch (command.type) {
+  switch (type) {
     case CommandType::ping:
       if (command.args.empty()) {
         resp::append_simple_string(out, "PONG");
@@ -1479,6 +1650,171 @@ void execute_command_into(Store& store,
       return;
     }
 
+    case CommandType::lpush:
+    case CommandType::rpush:
+    case CommandType::lpushx:
+    case CommandType::rpushx:
+    case CommandType::pma_lpush:
+    case CommandType::pma_rpush:
+    case CommandType::pma_lpushx:
+    case CommandType::pma_rpushx: {
+      for (std::size_t index = 1; index < command.args.size(); ++index) {
+        if (command.args[index].size() > Store::max_value_bytes()) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
+      const auto values = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      const bool front = type == CommandType::pma_lpush ||
+                         type == CommandType::pma_lpushx;
+      const bool only_if_exists = type == CommandType::pma_lpushx ||
+                                  type == CommandType::pma_rpushx;
+      const auto length = front
+                              ? store.lpush(command.args[0], values,
+                                            only_if_exists)
+                              : store.rpush(command.args[0], values,
+                                            only_if_exists);
+      resp::append_integer(out, length);
+      return;
+    }
+
+    case CommandType::lpop:
+    case CommandType::rpop:
+    case CommandType::pma_lpop:
+    case CommandType::pma_rpop: {
+      const bool front = type == CommandType::pma_lpop;
+      if (command.args.size() == 1) {
+        const auto value = front ? store.lpop(command.args[0])
+                                 : store.rpop(command.args[0]);
+        if (value) {
+          resp::append_bulk_string(out, *value);
+        } else {
+          resp::append_null_bulk_string(out);
+        }
+        return;
+      }
+      const auto count = parse_ll(command.args[1]);
+      if (!count) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*count < 0) {
+        resp::append_error(out, "ERR value is out of range, must be positive");
+        return;
+      }
+      if (!store.exists(command.args[0])) {
+        resp::append_null_bulk_string(out);
+        return;
+      }
+      const auto values = front
+                              ? store.lpop(command.args[0],
+                                           static_cast<std::size_t>(*count))
+                              : store.rpop(command.args[0],
+                                           static_cast<std::size_t>(*count));
+      resp::append_array_header(out, values.size());
+      for (const auto& value : values) {
+        resp::append_bulk_string(out, value);
+      }
+      return;
+    }
+
+    case CommandType::llen:
+    case CommandType::pma_llen:
+      resp::append_integer(out,
+                           static_cast<long long>(store.llen(command.args[0])));
+      return;
+
+    case CommandType::lindex:
+    case CommandType::pma_lindex: {
+      const auto index = parse_ll(command.args[1]);
+      if (!index) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto value = store.lindex(command.args[0], *index);
+      if (value) {
+        resp::append_bulk_string(out, *value);
+      } else {
+        resp::append_null_bulk_string(out);
+      }
+      return;
+    }
+
+    case CommandType::lrange:
+    case CommandType::pma_lrange: {
+      const auto values = store.lrange(command.args[0], command.range_start,
+                                       command.range_stop);
+      resp::append_array_header(out, values.size());
+      for (const auto value : values) {
+        resp::append_bulk_string(out, value);
+      }
+      return;
+    }
+
+    case CommandType::lset:
+    case CommandType::pma_lset: {
+      const auto index = parse_ll(command.args[1]);
+      if (!index) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (command.args[2].size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      switch (store.lset(command.args[0], *index, command.args[2])) {
+        case Store::ListSetResult::Stored:
+          resp::append_simple_string(out, "OK");
+          return;
+        case Store::ListSetResult::MissingKey:
+          resp::append_error(out, "ERR no such key");
+          return;
+        case Store::ListSetResult::OutOfRange:
+          resp::append_error(out, "ERR index out of range");
+          return;
+      }
+      return;
+    }
+
+    case CommandType::ltrim:
+    case CommandType::pma_ltrim:
+      store.ltrim(command.args[0], command.range_start, command.range_stop);
+      resp::append_simple_string(out, "OK");
+      return;
+
+    case CommandType::lrem:
+    case CommandType::pma_lrem: {
+      const auto count = parse_ll(command.args[1]);
+      if (!count) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_integer(
+          out, static_cast<long long>(
+                   store.lrem(command.args[0], *count, command.args[2])));
+      return;
+    }
+
+    case CommandType::linsert:
+    case CommandType::pma_linsert: {
+      bool before = false;
+      if (equals_ci(command.args[1], "BEFORE")) {
+        before = true;
+      } else if (!equals_ci(command.args[1], "AFTER")) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      if (command.args[3].size() > Store::max_value_bytes()) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      resp::append_integer(
+          out, store.linsert(command.args[0], before, command.args[2],
+                             command.args[3]));
+      return;
+    }
+
     case CommandType::set: {
       // SET key value [NX | XX] [GET]
       //     [EX s | PX ms | EXAT ts | PXAT ms | KEEPTTL].
@@ -1783,6 +2119,9 @@ void execute_command_into(Store& store,
           case KeyType::Hash:
             name = "hash";
             break;
+          case KeyType::List:
+            name = "list";
+            break;
         }
       }
       resp::append_simple_string(out, name);
@@ -1828,7 +2167,7 @@ void execute_command_into(Store& store,
       }
       const auto now = store.now_ms();
       std::optional<std::uint64_t> when;
-      switch (command.type) {
+      switch (type) {
         case CommandType::expire:
           when = compute_when_ms(now, *amount, 1000);
           break;
@@ -1853,7 +2192,7 @@ void execute_command_into(Store& store,
     case CommandType::ttl:
     case CommandType::pttl: {
       const auto ms = store.pttl_ms(command.args[0], store.now_ms());
-      if (command.type == CommandType::pttl || ms < 0) {
+      if (type == CommandType::pttl || ms < 0) {
         resp::append_integer(out, ms);
       } else {
         resp::append_integer(out, (ms + 500) / 1000);  // TTL rounds to seconds
@@ -1866,7 +2205,7 @@ void execute_command_into(Store& store,
     case CommandType::expiretime:
     case CommandType::pexpiretime: {
       const auto ms = store.expiretime_ms(command.args[0]);
-      if (command.type == CommandType::pexpiretime || ms < 0) {
+      if (type == CommandType::pexpiretime || ms < 0) {
         resp::append_integer(out, ms);
       } else {
         resp::append_integer(out, ms / 1000);  // EXPIRETIME in seconds
@@ -1880,6 +2219,9 @@ void execute_command_into(Store& store,
       } else if (const auto hstats = store.hash_memory_stats(command.args[0]);
                  hstats) {
         out.append(hash_memory_stats_response(*hstats));
+      } else if (const auto lstats = store.list_memory_stats(command.args[0]);
+                 lstats) {
+        out.append(list_memory_stats_response(*lstats));
       } else {
         resp::append_null_bulk_string(out);
       }

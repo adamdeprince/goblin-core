@@ -2,6 +2,8 @@
 #include "goblin/core/chunked_sorted_list.hpp"
 #include "goblin/core/hash.hpp"
 #include "goblin/core/compact_listpack.hpp"
+#include "goblin/core/adaptive_pma.hpp"
+#include "goblin/core/list.hpp"
 #include "goblin/core/key_arena.hpp"
 
 #include "goblin/core/rdb.hpp"
@@ -13,6 +15,7 @@
 #include "goblin/core/ring_client.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/server.hpp"
+#include "goblin/core/simd_ops.hpp"
 #include "goblin/core/tcl_script.hpp"
 #include "goblin/core/upython_script.hpp"
 #include "goblin/core/wren_script.hpp"
@@ -25,11 +28,14 @@
 // Tests must validate even in Release builds; keep assert() live regardless of
 // the build's NDEBUG setting.
 #undef NDEBUG
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -41,6 +47,40 @@
 #include <vector>
 
 namespace {
+
+void test_fingerprint_simd_scan() {
+  constexpr auto width = goblin::core::simd::kFingerprintGroupWidth;
+  static_assert(width == 16 || width == 32 || width == 64);
+  alignas(64) std::array<std::uint8_t, width + 1> storage{};
+  auto* group = storage.data() + 1;  // Exercise every ISA's unaligned load.
+  std::fill_n(group, width, std::uint8_t{0x11});
+
+  constexpr std::uint8_t needle = 0xA5;
+  assert(goblin::core::simd::match_fingerprint_group(group, needle) == 0);
+  std::uint64_t expected = 0;
+  for (const std::size_t index : {std::size_t{0}, std::size_t{7}, width / 2,
+                                  width - 1}) {
+    group[index] = needle;
+    expected |= std::uint64_t{1} << index;
+  }
+  assert(goblin::core::simd::match_fingerprint_group(group, needle) ==
+         expected);
+
+  std::fill_n(group, width, needle);
+  std::uint64_t all = 0;
+  if constexpr (width == 64) {
+    all = std::numeric_limits<std::uint64_t>::max();
+  } else {
+    all = (std::uint64_t{1} << width) - 1;
+  }
+  assert(goblin::core::simd::match_fingerprint_group(group, needle) == all);
+
+  // The fixed-width Swiss probe has an independent LSX implementation.
+  std::fill_n(group, 16, std::uint8_t{0x11});
+  group[0] = needle;
+  group[15] = needle;
+  assert(goblin::core::simd::match_control_group_16(group, needle) == 0x8001U);
+}
 
 struct BadHasher {
   std::size_t operator()(const std::string&) const noexcept {
@@ -140,6 +180,8 @@ void test_command_perfect_hash() {
   assert(type_of({"zscore", "k", "m"}) == CT::zscore);
   assert(type_of({"zRaNgE", "k", "0", "-1"}) == CT::zrange);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
+  assert(type_of({"goblin.pma.lpush", "l", "v"}) == CT::pma_lpush);
+  assert(type_of({"GoBlIn.PmA.LiNdEx", "l", "0"}) == CT::pma_lindex);
   assert(type_of({"goblin.memory", "k"}) == CT::goblin_memory);
   assert(type_of({"Goblin.Optimize", "k"}) == CT::goblin_optimize);
   // Unknowns, near-misses, the length boundary, an embedded NUL.
@@ -1346,7 +1388,10 @@ void test_goblin_td_leaderboard_rescore() {
 }
 
 void test_memory_report() {
-  goblin::core::Store store;
+  // Force the full hash form below: this test checks arena dead-byte
+  // accounting, while compact HDEL rebuilds its blob without fragmentation.
+  goblin::core::Store store(
+      goblin::core::StoreOptions{.hash_listpack_max_entries = 0});
 
   // An empty store has allocated nothing and has nothing to reclaim.
   assert(store.memory_report().used_memory == 0);
@@ -2390,6 +2435,8 @@ void test_hash_listpack_mode() {
   using goblin::core::HashListpack;
 
   static_assert(sizeof(HashListpack) == sizeof(void*));
+  static_assert(HashOptions::kDefaultListpackMaxEntries ==
+                std::numeric_limits<std::size_t>::max());
 
   // Direct blob ops.
   HashListpack lp;
@@ -2452,6 +2499,490 @@ void test_hash_listpack_mode() {
   assert(grow.set("k", "ab") == 1);
   assert(grow.set("k", "abcdefgh") == 0);
   assert(grow.get("k") == "abcdefgh");
+
+  // The fingerprint/offset directory crosses two full SIMD groups plus a tail,
+  // and deletion repairs logical indexes and byte offsets together.
+  HashListpack indexed;
+  std::vector<std::string> indexed_fields;
+  std::vector<std::string> indexed_values;
+  indexed_fields.reserve(40);
+  indexed_values.reserve(40);
+  std::size_t entry_bytes = 0;
+  for (int i = 0; i < 40; ++i) {
+    indexed_fields.push_back("indexed-field-" + std::to_string(i));
+    indexed_values.push_back("value-" + std::to_string(i));
+    assert(indexed.set(indexed_fields.back(), indexed_values.back(), 64).added);
+    entry_bytes +=
+        4 + indexed_fields.back().size() + indexed_values.back().size();
+  }
+  assert(indexed.allocated_bytes() == 8 + 3 * 40 + entry_bytes);
+  for (int i = 0; i < 40; ++i) {
+    assert(indexed.get(indexed_fields[i]) == indexed_values[i]);
+  }
+  assert(!indexed.set(indexed_fields[16], "a-different-width", 64).added);
+  assert(indexed.get(indexed_fields[16]) == "a-different-width");
+  for (const int removed : {0, 15, 16, 39}) {
+    assert(indexed.erase(indexed_fields[removed]));
+    assert(!indexed.get(indexed_fields[removed]));
+  }
+  for (int i = 0; i < 40; ++i) {
+    if (i != 0 && i != 15 && i != 16 && i != 39) {
+      assert(indexed.get(indexed_fields[i]) == indexed_values[i]);
+    }
+  }
+
+  // A real fingerprint collision must still compare the complete field.
+  std::vector<std::string> first_by_fingerprint(256);
+  std::string collision_a;
+  std::string collision_b;
+  auto fingerprint = [](std::string_view field) {
+    auto hash = std::hash<std::string_view>{}(field);
+    if constexpr (sizeof(hash) > sizeof(std::uint32_t)) {
+      hash ^= hash >> 32;
+    }
+    return static_cast<std::uint8_t>(hash);
+  };
+  for (int i = 0; collision_b.empty(); ++i) {
+    auto candidate = "collision-field-" + std::to_string(i);
+    const auto fp = fingerprint(candidate);
+    if (first_by_fingerprint[fp].empty()) {
+      first_by_fingerprint[fp] = std::move(candidate);
+    } else if (first_by_fingerprint[fp] != candidate) {
+      collision_a = first_by_fingerprint[fp];
+      collision_b = std::move(candidate);
+    }
+  }
+  HashListpack collisions;
+  assert(collisions.set(collision_a, "left", 8).added);
+  assert(collisions.set(collision_b, "right", 8).added);
+  assert(collisions.get(collision_a) == "left");
+  assert(collisions.get(collision_b) == "right");
+  assert(collisions.erase(collision_a));
+  assert(collisions.get(collision_b) == "right");
+
+  // Multi-field HSET merges duplicates and updates without partially mutating
+  // the blob when the requested threshold would require promotion.
+  HashListpack batched;
+  const std::vector<std::pair<std::string_view, std::string_view>> first_batch = {
+      {"a", "1"}, {"b", "2"}, {"a", "3"}, {"c", "4"}};
+  const auto first_result = batched.set_many(first_batch, 8);
+  assert(!first_result.needs_full && first_result.added == 3);
+  assert(batched.size() == 3 && batched.get("a") == "3");
+  const std::vector<std::pair<std::string_view, std::string_view>> rejected = {
+      {"d", "5"}, {"e", "6"}};
+  const auto rejected_result = batched.set_many(rejected, 4);
+  assert(rejected_result.needs_full);
+  assert(batched.size() == 3 && !batched.get("d"));
+
+  // With no count ceiling, this field/value shape fills the compact blob to
+  // exactly 65,535 bytes. One more entry requests promotion without mutation.
+  constexpr std::size_t kBoundaryCount = 1771;
+  std::vector<std::string> boundary_fields;
+  std::vector<std::string> boundary_values;
+  std::vector<std::pair<std::string_view, std::string_view>> boundary_batch;
+  boundary_fields.reserve(kBoundaryCount);
+  boundary_values.reserve(kBoundaryCount);
+  boundary_batch.reserve(kBoundaryCount);
+  for (std::size_t index = 0; index < kBoundaryCount; ++index) {
+    std::array<char, 32> field{};
+    std::array<char, 32> value{};
+    std::snprintf(field.data(), field.size(), "f:%012zu", index);
+    std::snprintf(value.data(), value.size(), "v%015zu", index);
+    boundary_fields.emplace_back(field.data());
+    boundary_values.emplace_back(value.data());
+  }
+  for (std::size_t index = 0; index < kBoundaryCount; ++index) {
+    boundary_batch.emplace_back(boundary_fields[index], boundary_values[index]);
+  }
+  HashListpack boundary;
+  const auto boundary_result = boundary.set_many(
+      boundary_batch, HashOptions::kDefaultListpackMaxEntries);
+  assert(!boundary_result.needs_full &&
+         boundary_result.added == kBoundaryCount);
+  assert(boundary.allocated_bytes() ==
+         goblin::core::kHashListpackMaxBlobBytes);
+  assert(boundary.get(boundary_fields.front()) == boundary_values.front());
+  assert(boundary.get(boundary_fields.back()) == boundary_values.back());
+  std::array<char, 32> overflow_field{};
+  std::array<char, 32> overflow_value{};
+  std::snprintf(overflow_field.data(), overflow_field.size(), "f:%012zu",
+                kBoundaryCount);
+  std::snprintf(overflow_value.data(), overflow_value.size(), "v%015zu",
+                kBoundaryCount);
+  const auto boundary_overflow = boundary.set(
+      overflow_field.data(), overflow_value.data(),
+      HashOptions::kDefaultListpackMaxEntries);
+  assert(boundary_overflow.needs_full && boundary.size() == kBoundaryCount);
+
+  // A threshold of zero takes the same forced-full multi-field path used by
+  // the compact/full crossover benchmark.
+  Hash forced_full(HashOptions{.listpack_max_entries = 0});
+  std::vector<std::string> full_fields;
+  std::vector<std::string> full_values;
+  std::vector<std::pair<std::string_view, std::string_view>> full_batch;
+  full_fields.reserve(512);
+  full_values.reserve(512);
+  full_batch.reserve(512);
+  for (int i = 0; i < 512; ++i) {
+    full_fields.push_back("full-field-" + std::to_string(i));
+    full_values.push_back("full-value-" + std::to_string(i));
+  }
+  for (int i = 0; i < 512; ++i) {
+    full_batch.emplace_back(full_fields[i], full_values[i]);
+  }
+  assert(forced_full.set_many(full_batch) == 512);
+  assert(!forced_full.is_small() && forced_full.size() == 512);
+  for (int i : {0, 255, 511}) {
+    assert(forced_full.get(full_fields[i]) == full_values[i]);
+  }
+  const std::vector<std::pair<std::string_view, std::string_view>> full_update = {
+      {full_fields[255], "updated-255"}};
+  assert(forced_full.set_many(full_update) == 0);
+  assert(forced_full.get(full_fields[255]) == "updated-255");
+}
+
+void test_hash_bulk_reserve_growth() {
+  using goblin::core::Hash;
+  using goblin::core::HashOptions;
+  using goblin::core::HashStorage;
+
+  constexpr std::size_t kBatch = 128;
+  constexpr std::size_t kBatches = 256;
+
+  HashStorage relocated;
+  relocated.reserve(64);
+  for (std::size_t index = 0; index < 64; ++index) {
+    const auto field = "relocated-field-" + std::to_string(index);
+    assert(relocated.push_back(field, "vv") == index);
+  }
+  assert(relocated.relocation_capacity() == 0);
+  relocated.set_value(17, "a-grown-value");
+  assert(relocated.relocation_capacity() >= relocated.size());
+  assert(relocated.value(17) == "a-grown-value");
+  assert(relocated.value(16) == "vv" && relocated.value(18) == "vv");
+  relocated.set_value(18, "x");
+  assert(relocated.value(18) == "x");
+
+  HashStorage storage;
+  std::size_t storage_capacity_changes = 0;
+  auto storage_capacity = storage.ref_capacity();
+  for (std::size_t batch = 0; batch < kBatches; ++batch) {
+    storage.reserve_additional(kBatch);
+    if (storage.ref_capacity() != storage_capacity) {
+      storage_capacity = storage.ref_capacity();
+      ++storage_capacity_changes;
+    }
+    for (std::size_t item = 0; item < kBatch; ++item) {
+      const auto ordinal = batch * kBatch + item;
+      const auto field = "storage-field-" + std::to_string(ordinal);
+      const auto id = storage.push_back(field, "v");
+      assert(id == ordinal);
+    }
+  }
+  assert(storage.size() == kBatch * kBatches);
+  assert(storage_capacity_changes < 64);
+
+  Hash hash(HashOptions{.listpack_max_entries = 0});
+  std::size_t index_capacity_changes = 0;
+  auto index_capacity = hash.field_index_capacity();
+  for (std::size_t batch = 0; batch < kBatches; ++batch) {
+    hash.reserve_additional(kBatch);
+    const auto reserved_capacity = hash.field_index_capacity();
+    if (reserved_capacity != index_capacity) {
+      index_capacity = reserved_capacity;
+      ++index_capacity_changes;
+    }
+    for (std::size_t item = 0; item < kBatch; ++item) {
+      const auto ordinal = batch * kBatch + item;
+      const auto field = "hash-field-" + std::to_string(ordinal);
+      assert(hash.set(field, "v") == 1);
+    }
+    assert(hash.field_index_capacity() == reserved_capacity);
+  }
+  assert(hash.size() == kBatch * kBatches);
+  assert(hash.get("hash-field-0") == "v");
+  const auto last_field =
+      "hash-field-" + std::to_string(kBatch * kBatches - 1);
+  assert(hash.get(last_field) == "v");
+  assert(index_capacity_changes < 64);
+}
+
+void test_adaptive_pma_rank_select() {
+  using goblin::core::AdaptivePma;
+  using goblin::core::ListValueRef;
+
+  const AdaptivePma defaults;
+  assert(defaults.max_density() == 0.97);
+  assert(defaults.resize_growth() == 1.1892071150027210);
+
+  AdaptivePma pma(/*max_density=*/0.80, /*resize_growth=*/1.20);
+  std::vector<ListValueRef> expected;
+  std::uint32_t next_id = 1;
+  std::uint32_t random = 0x12345678U;
+  auto next_random = [&random] {
+    random = random * 1664525U + 1013904223U;
+    return random;
+  };
+  auto make_ref = [&next_id] {
+    const auto id = next_id++;
+    return ListValueRef{.block = id,
+                        .offset = id * 17U,
+                        .length = static_cast<std::uint16_t>(id % 501U)};
+  };
+
+  // First force several global growths and local redistributions.
+  for (std::size_t i = 0; i < 700; ++i) {
+    const auto rank = i % 3 == 0 ? std::size_t{0}
+                                 : (i % 3 == 1 ? expected.size()
+                                               : expected.size() / 2);
+    const auto ref = make_ref();
+    pma.insert(rank, ref);
+    expected.insert(expected.begin() + static_cast<std::ptrdiff_t>(rank), ref);
+    assert(pma.check_invariants());
+  }
+
+  // Mixed rank operations compare every logical position to a dense oracle.
+  for (std::size_t step = 0; step < 3000; ++step) {
+    if (expected.empty() || (next_random() & 3U) != 0) {
+      const auto rank = static_cast<std::size_t>(next_random()) %
+                        (expected.size() + 1);
+      const auto ref = make_ref();
+      pma.insert(rank, ref);
+      expected.insert(expected.begin() + static_cast<std::ptrdiff_t>(rank), ref);
+    } else {
+      const auto rank =
+          static_cast<std::size_t>(next_random()) % expected.size();
+      assert(pma.erase(rank) == expected[rank]);
+      expected.erase(expected.begin() + static_cast<std::ptrdiff_t>(rank));
+    }
+    assert(pma.size() == expected.size());
+    assert(pma.check_invariants());
+    for (std::size_t rank = 0; rank < expected.size(); ++rank) {
+      assert(pma.at(rank) == expected[rank]);
+    }
+  }
+
+  while (!expected.empty()) {
+    assert(pma.erase(expected.size() - 1) == expected.back());
+    expected.pop_back();
+  }
+  assert(pma.empty() && pma.capacity() == 0 && pma.check_invariants());
+
+  // A tight explicit compaction may make the next push grow, but its matching
+  // pop must not immediately shrink back and rebuild the entire PMA again.
+  AdaptivePma hysteresis;
+  for (std::uint32_t id = 0; id < 1000; ++id) {
+    hysteresis.insert(hysteresis.size(), ListValueRef{.block = id});
+  }
+  hysteresis.compact();
+  const auto tight_capacity = hysteresis.capacity();
+  hysteresis.insert(hysteresis.size(), ListValueRef{.block = 1000});
+  const auto grown_capacity = hysteresis.capacity();
+  assert(grown_capacity > tight_capacity);
+  (void)hysteresis.erase(hysteresis.size() - 1);
+  assert(hysteresis.capacity() == grown_capacity);
+  assert(hysteresis.check_invariants());
+
+  // A command-sized batch is one PMA mutation and preserves the caller's final
+  // logical order at the head, middle, and tail.
+  AdaptivePma batched(/*max_density=*/0.90, /*resize_growth=*/1.20);
+  std::vector<ListValueRef> batch_expected;
+  auto insert_batch = [&](std::size_t rank, std::size_t count) {
+    std::vector<ListValueRef> refs;
+    refs.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      refs.push_back(make_ref());
+    }
+    batched.insert_many(rank, refs);
+    batch_expected.insert(
+        batch_expected.begin() + static_cast<std::ptrdiff_t>(rank),
+        refs.begin(), refs.end());
+    assert(batched.check_invariants());
+    assert(batched.size() == batch_expected.size());
+    for (std::size_t index = 0; index < batch_expected.size(); ++index) {
+      assert(batched.at(index) == batch_expected[index]);
+    }
+  };
+  insert_batch(0, 257);
+  insert_batch(batched.size(), 193);
+  insert_batch(0, 71);
+  insert_batch(200, 89);
+
+  // Endpoint activity reserves a concrete share of compacted slack, not a
+  // weight that disappears through integer rounding on a large list.
+  AdaptivePma endpoint(/*max_density=*/0.90, /*resize_growth=*/1.20);
+  std::vector<ListValueRef> tail_refs;
+  for (std::size_t index = 0; index < 1000; ++index) {
+    tail_refs.push_back(make_ref());
+  }
+  endpoint.insert_many(0, tail_refs, AdaptivePma::EndpointBias::Back);
+  endpoint.compact();
+  const auto endpoint_empty = endpoint.capacity() - endpoint.size();
+  assert(endpoint_empty > 0);
+  assert(endpoint.back_slack() >= endpoint_empty / 2);
+  assert(endpoint.check_invariants());
+}
+
+void test_list_listpack_and_pma() {
+  using goblin::core::List;
+  using goblin::core::ListOptions;
+
+  const ListOptions options{
+      .listpack_max_entries = 4,
+      .max_density = 0.75,
+      .resize_growth = 1.20,
+  };
+  List list(options);
+  assert(list.is_small());
+  (void)list.push_back("b");
+  (void)list.push_front("a");
+  list.insert(2, "c");
+  list.insert(3, "d");
+  assert(list.is_small() && list.size() == 4);
+  (void)list.push_back("e");
+  assert(!list.is_small() && list.size() == 5);
+  assert(list.at(0) == "a" && list.at(2) == "c" && list.at(4) == "e");
+
+  list.set(2, "middle-value");
+  assert(list.at(2) == "middle-value");
+  assert(list.erase(1) == "b");
+  assert(list.is_small() && list.size() == 4);  // automatic demotion
+  assert(list.remove("d", 0) == 1);
+  list.trim(1, 1);
+  assert(list.size() == 1 && list.at(0) == "middle-value");
+  assert(list.check_invariants());
+
+  // A large value cannot fit the one-blob encoding but remains legal in the
+  // full arena; u16 is sufficient for the product-wide 65,535-byte ceiling.
+  const std::string largest(goblin::core::ListValueArena::kMaxValueBytes, 'x');
+  List large(options);
+  (void)large.push_back(largest);
+  assert(!large.is_small());
+  assert(large.at(0) == largest && large.check_invariants());
+
+  // Empty and binary values use the same u16 length path in both forms. Empty
+  // full-form values need no arena allocation, but still occupy distinct ranks.
+  const std::string binary("a\0b", 3);
+  List bytes(ListOptions{.listpack_max_entries = 0});
+  (void)bytes.push_back("");
+  (void)bytes.push_back(binary);
+  (void)bytes.push_front("");
+  assert(!bytes.is_small() && bytes.size() == 3);
+  assert(bytes.at(0).empty() && bytes.at(1).empty() && bytes.at(2) == binary);
+  bytes.set(1, binary);
+  bytes.compact();
+  assert(bytes.at(1) == binary && bytes.at(2) == binary);
+  assert(bytes.find_first(binary) == 1);
+  assert(bytes.find_last(binary, bytes.size()) == 2);
+  assert(bytes.check_invariants());
+
+  // Multi-value pushes cross the listpack boundary once, preserve RPUSH order,
+  // and reverse an LPUSH command exactly as Redis specifies.
+  List batches(ListOptions{.listpack_max_entries = 4,
+                           .max_density = 0.90,
+                           .resize_growth = 1.20});
+  const std::array<std::string_view, 6> back = {"b0", "b1", "b2",
+                                                "b3", "b4", "b5"};
+  const std::array<std::string_view, 3> front = {"f0", "f1", "f2"};
+  assert(batches.push_back(back) == 6);
+  assert(batches.push_front(front) == 9);
+  const std::array<std::string_view, 9> batch_order = {
+      "f2", "f1", "f0", "b0", "b1", "b2", "b3", "b4", "b5"};
+  for (std::size_t index = 0; index < batch_order.size(); ++index) {
+    assert(batches.at(index) == batch_order[index]);
+  }
+  assert(batches.check_invariants());
+}
+
+void test_list_commands() {
+  goblin::core::Store store(goblin::core::StoreOptions{
+      .list_listpack_max_entries = 3,
+      .list_max_density = 0.80,
+      .list_resize_growth = 1.20,
+  });
+
+  assert(execute_fields(store, {"LPUSH", "q", "one", "two"}) == ":2\r\n");
+  assert(execute_fields(store, {"RPUSH", "q", "three", "four"}) ==
+         ":4\r\n");
+  assert(execute_fields(store, {"LRANGE", "q", "0", "-1"}) ==
+         "*4\r\n$3\r\ntwo\r\n$3\r\none\r\n$5\r\nthree\r\n$4\r\nfour\r\n");
+  assert(execute_fields(store, {"LINDEX", "q", "-2"}) ==
+         "$5\r\nthree\r\n");
+  assert(execute_fields(store, {"LRANGE", "q", "-16", "-9"}) ==
+         "*0\r\n");
+  assert(execute_fields(store, {"LINSERT", "q", "BEFORE", "three", "x"}) ==
+         ":5\r\n");
+  assert(execute_fields(store, {"LSET", "q", "-1", "tail"}) == "+OK\r\n");
+  assert(execute_fields(store, {"LREM", "q", "0", "one"}) == ":1\r\n");
+  assert(execute_fields(store, {"LTRIM", "q", "1", "-1"}) == "+OK\r\n");
+  assert(execute_fields(store, {"LLEN", "q"}) == ":3\r\n");
+  assert(execute_fields(store, {"TYPE", "q"}) == "+list\r\n");
+  assert(execute_fields(store, {"LPOP", "q", "2"}) ==
+         "*2\r\n$1\r\nx\r\n$5\r\nthree\r\n");
+  assert(execute_fields(store, {"RPOP", "q"}) == "$4\r\ntail\r\n");
+  assert(execute_fields(store, {"TYPE", "q"}) == "+none\r\n");
+  assert(execute_fields(store, {"LPUSHX", "missing", "x"}) == ":0\r\n");
+  assert(execute_fields(store, {"LPOP", "missing", "3"}) == "$-1\r\n");
+
+  // The qualified command set always selects the PMA implementation. Standard
+  // commands resolve through StoreOptions::list_implementation (PMA for now),
+  // so the two names deliberately address the same list.
+  assert(execute_fields(store, {"GOBLIN.PMA.RPUSH", "qualified", "a", "b"}) ==
+         ":2\r\n");
+  assert(execute_fields(store, {"LPUSH", "qualified", "c", "d"}) ==
+         ":4\r\n");
+  assert(execute_fields(store, {"GOBLIN.PMA.LRANGE", "qualified", "0", "-1"}) ==
+         "*4\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\na\r\n$1\r\nb\r\n");
+  assert(execute_fields(store, {"GOBLIN.PMA.LLEN", "qualified"}) ==
+         ":4\r\n");
+  assert(execute_fields(store, {"INFO"}).find("list_implementation:pma") !=
+         std::string::npos);
+
+  // Multi-value validation happens before the first element is inserted.
+  const std::string oversized(goblin::core::Store::max_value_bytes() + 1, 'z');
+  assert(execute_fields(store, {"RPUSH", "atomic", "ok", oversized}) ==
+         "-ERR value is larger than the 64 KiB limit; use https://goblin-store.dev\r\n");
+  assert(!store.exists("atomic"));
+
+  store.set("string-key", "v");
+  assert(execute_fields(store, {"LLEN", "string-key"}) ==
+         "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+}
+
+void test_list_snapshot_persistence() {
+  goblin::core::Store source(goblin::core::StoreOptions{
+      .list_listpack_max_entries = 2,
+      .list_max_density = 0.77,
+      .list_resize_growth = 1.20,
+  });
+  std::vector<std::string> owned;
+  std::vector<std::string_view> values;
+  for (int i = 0; i < 80; ++i) {
+    owned.push_back("value-" + std::to_string(i));
+  }
+  for (const auto& value : owned) {
+    values.push_back(value);
+  }
+  assert(source.rpush("list", values) == 80);
+  const auto expiry = source.now_ms() + 60000;
+  assert(source.expire_at_ms("list", expiry, source.now_ms()));
+
+  std::stringstream snapshot;
+  source.save(snapshot, false);
+  goblin::core::Store loaded(goblin::core::StoreOptions{
+      .list_listpack_max_entries = 2,
+      .list_max_density = 0.77,
+      .list_resize_growth = 1.20,
+  });
+  const auto stats = loaded.load(snapshot);
+  assert(stats.keys == 1 && stats.members == 80);
+  assert(loaded.key_type("list") == goblin::core::KeyType::List);
+  const auto range = loaded.lrange("list", 0, -1);
+  assert(range.size() == owned.size());
+  for (std::size_t i = 0; i < range.size(); ++i) {
+    assert(range[i] == owned[i]);
+  }
+  assert(loaded.expiretime_ms("list") == static_cast<long long>(expiry));
 }
 
 void test_block_hint_rank_cache_lazy_offset_repair() {
@@ -3126,9 +3657,78 @@ void test_rdb_import() {
   // independently of any real dump).
   assert(goblin::core::rdb::crc64("123456789") == 0xe9c6d914c4b8d9caULL);
   auto u8 = [](std::string& s, unsigned b) { s.push_back(static_cast<char>(b)); };
-  auto str = [&u8](std::string& s, std::string_view v) {  // 6-bit length (len < 64)
-    u8(s, v.size());
+  auto len = [&u8](std::string& s, std::uint64_t value) {
+    if (value < 64) {
+      u8(s, static_cast<unsigned>(value));
+    } else if (value < 16384) {
+      u8(s, 0x40U | static_cast<unsigned>(value >> 8));
+      u8(s, static_cast<unsigned>(value));
+    } else {
+      assert(value <= std::numeric_limits<std::uint32_t>::max());
+      u8(s, 0x80);
+      for (int shift = 24; shift >= 0; shift -= 8) {
+        u8(s, static_cast<unsigned>(value >> shift));
+      }
+    }
+  };
+  auto str = [&len](std::string& s, std::string_view v) {
+    len(s, v.size());
     s.append(v);
+  };
+  auto le16 = [&u8](std::string& s, std::uint16_t value) {
+    u8(s, value);
+    u8(s, value >> 8);
+  };
+  auto le32 = [&u8](std::string& s, std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) u8(s, value >> shift);
+  };
+  auto ziplist = [&u8, &le16, &le32](
+                     std::initializer_list<std::string_view> values) {
+    std::string entries;
+    std::size_t previous_size = 0;
+    std::uint32_t tail_offset = 10;
+    for (const auto value : values) {
+      assert(value.size() < 64 && previous_size < 254);
+      tail_offset = static_cast<std::uint32_t>(10 + entries.size());
+      const auto entry_start = entries.size();
+      u8(entries, static_cast<unsigned>(previous_size));
+      u8(entries, static_cast<unsigned>(value.size()));
+      entries.append(value);
+      previous_size = entries.size() - entry_start;
+    }
+    std::string blob;
+    le32(blob, static_cast<std::uint32_t>(10 + entries.size() + 1));
+    le32(blob, tail_offset);
+    le16(blob, static_cast<std::uint16_t>(values.size()));
+    blob.append(entries);
+    u8(blob, 0xFF);
+    return blob;
+  };
+  auto listpack = [&u8, &le16, &le32](
+                      std::initializer_list<std::string_view> values,
+                      std::optional<std::int8_t> signed_integer = std::nullopt) {
+    std::string entries;
+    for (const auto value : values) {
+      assert(value.size() < 64);
+      const auto entry_start = entries.size();
+      u8(entries, 0x80U | static_cast<unsigned>(value.size()));
+      entries.append(value);
+      const auto entry_size = entries.size() - entry_start;
+      assert(entry_size < 128);
+      u8(entries, static_cast<unsigned>(entry_size));
+    }
+    if (signed_integer) {
+      u8(entries, 0xFE);
+      u8(entries, static_cast<std::uint8_t>(*signed_integer));
+      u8(entries, 2);  // encoding byte + signed byte
+    }
+    std::string blob;
+    le32(blob, static_cast<std::uint32_t>(6 + entries.size() + 1));
+    le16(blob, static_cast<std::uint16_t>(values.size() +
+                                          (signed_integer ? 1 : 0)));
+    blob.append(entries);
+    u8(blob, 0xFF);
+    return blob;
   };
   auto dbl = [](std::string& s, double d) {
     const auto bits = std::bit_cast<std::uint64_t>(d);
@@ -3157,6 +3757,42 @@ void test_rdb_import() {
     assert(store.zscore("zk", "bb") == -2.0);
     assert(store.zscore("zk", "inf") == std::numeric_limits<double>::max());  // clamped
     assert(store.zcard("zk") == 3);
+  }
+
+  // Plain lists, the legacy single-ziplist encoding, Redis 3.2-6 quicklists,
+  // and Redis 7 quicklist2/listpack nodes all preserve logical order.
+  {
+    const auto zl = ziplist({"left", "middle", "right"});
+    const auto ql_head = ziplist({"q0", "q1"});
+    const auto ql_tail = ziplist({"q2"});
+    const auto lp = listpack({"packed-0", "packed-1", "packed-2"}, -7);
+
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0x01); str(rdb, "plain"); len(rdb, 3);
+    str(rdb, "a"); str(rdb, "b"); str(rdb, "c");
+    u8(rdb, 0x0A); str(rdb, "ziplist"); str(rdb, zl);
+    u8(rdb, 0x0E); str(rdb, "quicklist"); len(rdb, 2);
+    str(rdb, ql_head); str(rdb, ql_tail);
+    u8(rdb, 0x12); str(rdb, "quicklist2"); len(rdb, 3);
+    len(rdb, 1); str(rdb, "plain-node");
+    len(rdb, 2); str(rdb, lp);
+    len(rdb, 1); str(rdb, "tail-node");
+    u8(rdb, 0xFF);
+    crc0(rdb);
+
+    Store store;
+    std::istringstream in(rdb, std::ios::binary);
+    const auto stats = store.load(in);
+    assert(stats.keys == 4 && stats.members == 15);
+    assert(execute_fields(store, {"LRANGE", "plain", "0", "-1"}) ==
+           "*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n");
+    assert(execute_fields(store, {"LRANGE", "ziplist", "0", "-1"}) ==
+           "*3\r\n$4\r\nleft\r\n$6\r\nmiddle\r\n$5\r\nright\r\n");
+    assert(execute_fields(store, {"LRANGE", "quicklist", "0", "-1"}) ==
+           "*3\r\n$2\r\nq0\r\n$2\r\nq1\r\n$2\r\nq2\r\n");
+    assert(execute_fields(store, {"LRANGE", "quicklist2", "0", "-1"}) ==
+           "*6\r\n$10\r\nplain-node\r\n$8\r\npacked-0\r\n$8\r\npacked-1\r\n"
+           "$8\r\npacked-2\r\n$2\r\n-7\r\n$9\r\ntail-node\r\n");
   }
 
   auto throws = [](const std::string& rdb) {
@@ -3190,6 +3826,14 @@ void test_rdb_import() {
     u8(rdb, 0x05); str(rdb, "z"); u8(rdb, 0x01); str(rdb, "m"); dbl(rdb, 1.0);
     u8(rdb, 0xFF);
     for (int i = 0; i < 8; ++i) u8(rdb, 0xAB);  // bogus checksum
+    assert(throws(rdb));
+  }
+  // RDB import enforces the same 65,535-byte list-value ceiling as commands.
+  {
+    const std::string oversized(65536, 'x');
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0x01); str(rdb, "too-large"); len(rdb, 1); str(rdb, oversized);
+    u8(rdb, 0xFF); crc0(rdb);
     assert(throws(rdb));
   }
 }
@@ -4180,6 +4824,7 @@ void test_ring_reply_framing() {
 }
 
 int main() {
+  test_fingerprint_simd_scan();
   test_ring_size_parsing();
   test_ring_buffer_roundtrip();
   test_ring_reply_framing();
@@ -4241,6 +4886,11 @@ int main() {
   test_key_arena();
   test_zset_listpack_mode();
   test_hash_listpack_mode();
+  test_hash_bulk_reserve_growth();
+  test_adaptive_pma_rank_select();
+  test_list_listpack_and_pma();
+  test_list_commands();
+  test_list_snapshot_persistence();
   test_block_hint_rank_cache_lazy_offset_repair();
   test_block_hint_rank_cache_promotes_to_wide_storage();
   test_resp_parser_incremental();

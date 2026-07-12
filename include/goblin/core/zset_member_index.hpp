@@ -155,6 +155,34 @@ class MemberIndex {
     rehash(capacity_for_size(expected_size));
   }
 
+  // Reserve room for a batch while preserving the configured geometric growth
+  // ratio. reserve(size() + batch) intentionally packs tightly and therefore
+  // rehashes again on the next batch; this path grows only when the batch no
+  // longer fits and clears tombstones in the same rebuild.
+  void reserve_additional(size_type additional) {
+    if (additional == 0) {
+      return;
+    }
+    if (additional > std::numeric_limits<size_type>::max() - size_) {
+      throw std::length_error("member index size overflow");
+    }
+
+    const auto expected_size = size_ + additional;
+    const auto usable = max_usable(capacity_);
+    const auto occupied = size_ + tombstones_;
+    const bool occupied_batch_fits =
+        occupied <= usable && additional <= usable - occupied;
+    if (expected_size <= usable && occupied_batch_fits) {
+      return;
+    }
+
+    auto target_capacity = capacity_ == 0 ? kGroupWidth : capacity_;
+    while (expected_size > max_usable(target_capacity)) {
+      target_capacity = grow_capacity(target_capacity);
+    }
+    rehash(target_capacity);
+  }
+
   // Allocate for exactly `expected_size` members at a target load factor
   // (`density` in (0, 1]). density 1.0 packs the table with no spare slots,
   // which minimizes memory for a set that will not receive further inserts;

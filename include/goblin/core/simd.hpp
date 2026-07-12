@@ -10,6 +10,8 @@ struct Capabilities {
   bool avx2{false};
   bool avx512bw{false};
   bool avx512vl{false};
+  bool lsx{false};
+  bool lasx{false};
 };
 
 [[nodiscard]] Capabilities detect_capabilities() noexcept;

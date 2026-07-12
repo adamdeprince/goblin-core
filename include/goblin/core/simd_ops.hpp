@@ -2,8 +2,8 @@
 
 // Hot-path SIMD helpers for Swiss-table probes, member compare, and RESP CRLF
 // scan. No runtime CPU dispatch: the SIMD path is selected at compile time for
-// the target ISA (AVX2 on x86-64 when enabled, else SSE2; NEON on AArch64)
-// with a scalar fallback otherwise.
+// the target ISA (AVX-512/AVX2/SSE2 on x86-64, NEON on AArch64, LASX/LSX on
+// LoongArch) with a scalar fallback otherwise.
 
 #include <bit>
 #include <cstddef>
@@ -12,10 +12,15 @@
 #include <optional>
 #include <string_view>
 
-#if defined(__AVX2__)
+#if defined(__AVX512BW__) || defined(__AVX2__)
 #include <immintrin.h>
 #elif defined(__SSE2__)
 #include <emmintrin.h>
+#elif defined(__loongarch_asx)
+#include <lasxintrin.h>
+#include <lsxintrin.h>
+#elif defined(__loongarch_sx)
+#include <lsxintrin.h>
 #elif defined(__aarch64__)
 #include <arm_neon.h>
 #endif
@@ -42,12 +47,69 @@ namespace goblin::core::simd {
   const std::uint32_t low = vaddv_u8(vget_low_u8(masked));
   const std::uint32_t high = vaddv_u8(vget_high_u8(masked));
   return static_cast<std::uint64_t>(low | (high << 8));
+#elif defined(__loongarch_sx)
+  const __m128i control =
+      __lsx_vld(const_cast<std::uint8_t*>(group), 0);
+  const __m128i equal =
+      __lsx_vseq_b(control, __lsx_vreplgr2vr_b(needle));
+  const __m128i packed = __lsx_vmskltz_b(equal);
+  return static_cast<std::uint64_t>(
+      __lsx_vpickve2gr_hu(packed, 0) & 0xFFFFU);
 #else
   std::uint64_t mask = 0;
   for (std::size_t i = 0; i < 16; ++i) {
     mask |= static_cast<std::uint64_t>(group[i] == needle) << i;
   }
   return mask;
+#endif
+}
+
+// Compact-hash fingerprint scan. Unlike the Swiss-table probe above, this is a
+// dense sequential directory, so use the widest byte vector provided by the
+// selected build ISA. The return mask always maps bit i to group[i].
+#if defined(__AVX512BW__)
+inline constexpr std::size_t kFingerprintGroupWidth = 64;
+#elif defined(__AVX2__) || defined(__loongarch_asx)
+inline constexpr std::size_t kFingerprintGroupWidth = 32;
+#else
+inline constexpr std::size_t kFingerprintGroupWidth = 16;
+#endif
+
+[[nodiscard]] inline std::uint64_t match_fingerprint_group(
+    const std::uint8_t* group, std::uint8_t needle) noexcept {
+#if defined(__AVX512BW__)
+  const __m512i fingerprints =
+      _mm512_loadu_si512(reinterpret_cast<const void*>(group));
+  return static_cast<std::uint64_t>(_mm512_cmpeq_epi8_mask(
+      fingerprints, _mm512_set1_epi8(static_cast<char>(needle))));
+#elif defined(__AVX2__)
+  const __m256i fingerprints =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(group));
+  const __m256i equal = _mm256_cmpeq_epi8(
+      fingerprints, _mm256_set1_epi8(static_cast<char>(needle)));
+  return static_cast<std::uint64_t>(
+      static_cast<std::uint32_t>(_mm256_movemask_epi8(equal)));
+#elif defined(__loongarch_asx)
+  const __m256i fingerprints =
+      __lasx_xvld(const_cast<std::uint8_t*>(group), 0);
+  const __m256i equal = __lasx_xvseq_b(
+      fingerprints, __lasx_xvreplgr2vr_b(needle));
+  const __m256i packed = __lasx_xvmskltz_b(equal);
+  const auto low =
+      static_cast<std::uint32_t>(__lasx_xvpickve2gr_wu(packed, 0)) & 0xFFFFU;
+  const auto high =
+      static_cast<std::uint32_t>(__lasx_xvpickve2gr_wu(packed, 4)) & 0xFFFFU;
+  return static_cast<std::uint64_t>(low | (high << 16));
+#elif defined(__loongarch_sx)
+  const __m128i fingerprints =
+      __lsx_vld(const_cast<std::uint8_t*>(group), 0);
+  const __m128i equal =
+      __lsx_vseq_b(fingerprints, __lsx_vreplgr2vr_b(needle));
+  const __m128i packed = __lsx_vmskltz_b(equal);
+  return static_cast<std::uint64_t>(
+      __lsx_vpickve2gr_hu(packed, 0) & 0xFFFFU);
+#else
+  return match_control_group_16(group, needle);
 #endif
 }
 

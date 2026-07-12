@@ -20,6 +20,7 @@
 #include "goblin/core/hash.hpp"
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/keyspace_storage.hpp"
+#include "goblin/core/list.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/string_value.hpp"
 #include "goblin/core/ttl_set.hpp"
@@ -425,6 +426,7 @@ enum class KeyType : std::uint8_t {
   String = 0,
   Zset = 1,
   Hash = 2,
+  List = 3,
 };
 
 // The swap-remove an erase performs: the key that had id `from` now lives at id
@@ -466,6 +468,7 @@ union KeyObjectSlot {
   StringValue str;
   ZSet zset;
   Hash* hash;
+  List* list;
   KeyObjectSlot() noexcept {}
   ~KeyObjectSlot() {}
 };
@@ -479,11 +482,14 @@ static_assert(sizeof(KeyObjectSlot) == 16);
 // Ids stay dense via swap-remove.
 class Keyspace {
  public:
-  explicit Keyspace(HashOptions hash_options)
-      : index_(&storage_), hash_options_(hash_options) {}
+  explicit Keyspace(HashOptions hash_options, ListOptions list_options)
+      : index_(&storage_),
+        hash_options_(hash_options),
+        list_options_(list_options) {}
   ~Keyspace() {
     destroy_all();
     drain_hash_freelist();
+    drain_list_freelist();
   }
   Keyspace(const Keyspace&) = delete;
   Keyspace& operator=(const Keyspace&) = delete;
@@ -496,19 +502,24 @@ class Keyspace {
         objects_(std::move(other.objects_)),
         types_(std::move(other.types_)),
         hash_options_(other.hash_options_),
-        hash_freelist_(std::move(other.hash_freelist_)) {
+        hash_freelist_(std::move(other.hash_freelist_)),
+        list_options_(other.list_options_),
+        list_freelist_(std::move(other.list_freelist_)) {
     index_.set_members(&storage_);
   }
   Keyspace& operator=(Keyspace&& other) noexcept {
     if (this != &other) {
       destroy_all();
       drain_hash_freelist();
+      drain_list_freelist();
       storage_ = std::move(other.storage_);
       index_ = std::move(other.index_);
       objects_ = std::move(other.objects_);
       types_ = std::move(other.types_);
       hash_options_ = other.hash_options_;
       hash_freelist_ = std::move(other.hash_freelist_);
+      list_options_ = other.list_options_;
+      list_freelist_ = std::move(other.list_freelist_);
       index_.set_members(&storage_);
     }
     return *this;
@@ -639,6 +650,38 @@ class Keyspace {
     return *objects_[id].hash;
   }
 
+  // ---- list ----
+  [[nodiscard]] List* find_list(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::List)) {
+      return nullptr;
+    }
+    return objects_[*id].list;
+  }
+  [[nodiscard]] const List* find_list(std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::List)) {
+      return nullptr;
+    }
+    return objects_[*id].list;
+  }
+  [[nodiscard]] List& get_or_create_list(std::string_view key) {
+    if (const auto id = find_id(key)) {
+      if (types_[*id] != static_cast<std::uint8_t>(KeyType::List)) {
+        throw std::logic_error("get_or_create_list on a key that is not a list");
+      }
+      return *objects_[*id].list;
+    }
+    const auto id = create_key(key, KeyType::List);
+    objects_[id].list = alloc_list();
+    return *objects_[id].list;
+  }
+  [[nodiscard]] List& place_loaded_list(std::string_view key, List&& list) {
+    const auto id = create_key(key, KeyType::List);
+    objects_[id].list = new List(std::move(list));
+    return *objects_[id].list;
+  }
+
   // ---- lifecycle ----
   [[nodiscard]] std::optional<std::uint64_t> id_of(
       std::string_view key) const noexcept {
@@ -693,6 +736,14 @@ class Keyspace {
     for (std::uint64_t id = 0; id < types_.size(); ++id) {
       if (types_[id] == static_cast<std::uint8_t>(KeyType::Hash)) {
         fn(storage_.view(id), *objects_[id].hash);
+      }
+    }
+  }
+  template <class Fn>
+  void for_each_list(Fn&& fn) const {  // fn(std::string_view, const List&)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::List)) {
+        fn(storage_.view(id), *objects_[id].list);
       }
     }
   }
@@ -795,6 +846,10 @@ class Keyspace {
         recycle_hash(objects_[id].hash);
         objects_[id].hash = nullptr;
         break;
+      case KeyType::List:
+        recycle_list(objects_[id].list);
+        objects_[id].list = nullptr;
+        break;
     }
   }
 
@@ -812,6 +867,10 @@ class Keyspace {
       case KeyType::Hash:
         objects_[dst].hash = objects_[src].hash;
         objects_[src].hash = nullptr;
+        break;
+      case KeyType::List:
+        objects_[dst].list = objects_[src].list;
+        objects_[src].list = nullptr;
         break;
     }
   }
@@ -844,6 +903,28 @@ class Keyspace {
       delete h;
     }
     hash_freelist_.clear();
+  }
+
+  [[nodiscard]] List* alloc_list() {
+    if (!list_freelist_.empty()) {
+      List* list = list_freelist_.back();
+      list_freelist_.pop_back();
+      return list;
+    }
+    return new List(list_options_);
+  }
+  void recycle_list(List* list) noexcept {
+    if (list == nullptr) {
+      return;
+    }
+    list->clear();
+    list_freelist_.push_back(list);
+  }
+  void drain_list_freelist() noexcept {
+    for (List* list : list_freelist_) {
+      delete list;
+    }
+    list_freelist_.clear();
   }
 
   void maybe_compact() {
@@ -879,6 +960,8 @@ class Keyspace {
   std::vector<std::uint8_t> types_;
   HashOptions hash_options_;
   std::vector<Hash*> hash_freelist_;
+  ListOptions list_options_;
+  std::vector<List*> list_freelist_;
 };
 
 struct StoreOptions {
@@ -897,9 +980,21 @@ struct StoreOptions {
   // saving is ~flat with size, but the O(n) blob scan makes ZSCORE ~2.5x at 32
   // and perverse (>6x) by 128, so we promote to the O(log n) structure there.
   std::size_t zset_listpack_max_entries{32};
-  // Max fields a hash keeps as a compact listpack before promoting to
-  // swiss+arena (0 disables). Same knee as zsets: O(n) scan is fine to 32.
-  std::size_t hash_listpack_max_entries{32};
+  // Optional count ceiling for a fingerprint-indexed compact hash (0 disables).
+  // By default only the 64 KiB blob limit forces promotion to swiss+arena.
+  std::size_t hash_listpack_max_entries{
+      HashOptions::kDefaultListpackMaxEntries};
+  // Lists stay as a single inline-value blob through this many entries, then
+  // promote to the adaptive PMA plus split-address value arena.
+  std::size_t list_listpack_max_entries{32};
+  // Standard Redis list commands resolve to this concrete implementation.
+  // Implementation-qualified commands bypass the selector.
+  ListImplementation list_implementation{ListImplementation::Pma};
+  std::size_t list_chunk_bytes{ListValueArena::kDefaultChunkBytes};
+  // Independent PMA controls: steady-state packing ceiling and geometric
+  // resize step. The defaults favor memory without conflating the two policies.
+  double list_max_density{AdaptivePma::kDefaultMaxDensity};
+  double list_resize_growth{AdaptivePma::kDefaultResizeGrowth};
   // Zsets created before the overflow table are kept in a small inline table
   // for fast key resolution on multi-key workloads.
   std::size_t inline_zset_limit{32};
@@ -928,6 +1023,10 @@ struct MemoryReport {
 class Store {
  public:
   explicit Store(StoreOptions options = {});
+
+  [[nodiscard]] ListImplementation list_implementation() const noexcept {
+    return options_.list_implementation;
+  }
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
   [[nodiscard]] long long zrem(std::string_view key, std::span<const std::string_view> members);
@@ -1264,6 +1363,40 @@ class Store {
   [[nodiscard]] std::optional<HashMemoryStats> hash_memory_stats(
       std::string_view key) const;
 
+  // --- List (ordered strings) ---
+  [[nodiscard]] bool key_is_list(std::string_view key) const noexcept {
+    return find_list(key) != nullptr;
+  }
+  [[nodiscard]] long long lpush(std::string_view key,
+                                std::span<const std::string_view> values,
+                                bool only_if_exists = false);
+  [[nodiscard]] long long rpush(std::string_view key,
+                                std::span<const std::string_view> values,
+                                bool only_if_exists = false);
+  [[nodiscard]] std::optional<std::string> lpop(std::string_view key);
+  [[nodiscard]] std::optional<std::string> rpop(std::string_view key);
+  [[nodiscard]] std::vector<std::string> lpop(std::string_view key,
+                                               std::size_t count);
+  [[nodiscard]] std::vector<std::string> rpop(std::string_view key,
+                                               std::size_t count);
+  [[nodiscard]] std::size_t llen(std::string_view key) const noexcept;
+  [[nodiscard]] std::optional<std::string_view> lindex(
+      std::string_view key, long long index) const noexcept;
+  [[nodiscard]] std::vector<std::string_view> lrange(
+      std::string_view key, long long start, long long stop) const;
+  enum class ListSetResult { Stored, MissingKey, OutOfRange };
+  [[nodiscard]] ListSetResult lset(std::string_view key, long long index,
+                                   std::string_view value);
+  void ltrim(std::string_view key, long long start, long long stop);
+  [[nodiscard]] std::size_t lrem(std::string_view key, long long count,
+                                 std::string_view value);
+  // Redis LINSERT reply: new length, 0 for a missing key, -1 when pivot is absent.
+  [[nodiscard]] long long linsert(std::string_view key, bool before,
+                                  std::string_view pivot,
+                                  std::string_view value);
+  [[nodiscard]] std::optional<ListMemoryStats> list_memory_stats(
+      std::string_view key) const;
+
   // --- String (value) ---
   // A key holds at most one type (unified keyspace). SET replaces whatever was
   // there, of any type; the other string ops and the key ops below gate on type
@@ -1473,6 +1606,18 @@ class Store {
     return keyspace_.get_or_create_hash(key);
   }
   void erase_if_empty(std::string_view key, const Hash& hash);
+
+  void place_loaded_list(std::string key, List&& list);
+  [[nodiscard]] List* find_list(std::string_view key) noexcept {
+    return keyspace_.find_list(key);
+  }
+  [[nodiscard]] const List* find_list(std::string_view key) const noexcept {
+    return keyspace_.find_list(key);
+  }
+  [[nodiscard]] List& get_or_create_list(std::string_view key) {
+    return keyspace_.get_or_create_list(key);
+  }
+  void erase_if_empty(std::string_view key, const List& list);
 
   // Erase a key (any type), clearing its own TTL and rekeying the TTL of the key
   // that the swap-remove slid into its slot.

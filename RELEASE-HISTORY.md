@@ -8,6 +8,25 @@ For the current command surface, build instructions, and compatibility limits,
 see the [project documentation](README.md). For changes after the latest tag,
 see the [repository history](https://github.com/adamdeprince/goblin-core/commits/main/).
 
+## Unreleased — lists targeted for July 20, 2026
+
+- Added Redis-compatible list commands for push, pop, index, range, set, trim,
+  remove, and pivot-relative insert operations.
+- Added a one-blob encoding for small lists and an adaptive packed-memory array
+  with bitmap rank/select and endpoint-biased slack for larger lists.
+- Added true multi-value PMA insertion and an explicit endpoint slack quota.
+- Added the `GOBLIN.PMA.*` command family and `--list-implementation pma` for
+  selecting which concrete implementation receives standard list commands.
+- Added split 32-bit block/offset value-arena addresses and 16-bit lengths for
+  the product-wide 65,535-byte value ceiling.
+- Added independent `--list-max-density` and `--list-resize-growth` controls,
+  defaulting to `0.97` and `2**0.25` respectively.
+- Added canonical list snapshot persistence and Redis RDB import for plain,
+  ziplist, quicklist, and quicklist2/listpack encodings.
+- Added list memory reporting, compaction, Redis differential coverage, and the
+  [list design document](LISTS.md) with a repeatable
+  [cross-engine benchmark](LIST-BENCHMARK.md).
+
 ## v0.5.0 — July 11, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.5.0)

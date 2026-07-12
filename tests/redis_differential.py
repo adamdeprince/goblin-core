@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare Goblin Core's zset command behavior against Redis.
+"""Compare Goblin Core's sorted-set and PMA-list behavior against Redis.
 
 The test starts one Goblin Core process and one Redis process, sends the same
 deterministic workload to both over RESP, and fails on the first semantic
-mismatch. It covers the Redis subset Goblin Core currently implements:
-ZADD, ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZRANGE, and ZREVRANGE.
+mismatch. It covers the implemented sorted-set surface plus LPUSH/RPUSH,
+LPUSHX/RPUSHX, LPOP/RPOP, LLEN, LINDEX, LRANGE, LSET, LTRIM, LREM, and LINSERT.
+Redis receives the standard list names; Goblin receives GOBLIN.PMA.* by default.
 """
 
 from __future__ import annotations
@@ -24,6 +25,10 @@ from typing import Iterable, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LIST_COMMANDS = {
+    "LPUSH", "RPUSH", "LPUSHX", "RPUSHX", "LPOP", "RPOP", "LLEN",
+    "LINDEX", "LRANGE", "LSET", "LTRIM", "LREM", "LINSERT",
+}
 
 
 def default_goblin_binary() -> Path:
@@ -240,7 +245,7 @@ def score_text(value: float) -> str:
     return format(value, ".17g")
 
 
-def fixed_commands() -> list[list[object]]:
+def fixed_zset_commands() -> list[list[object]]:
     return [
         ["ZCARD", "missing"],
         ["ZSCORE", "missing", "member-1"],
@@ -282,8 +287,46 @@ def fixed_commands() -> list[list[object]]:
     ]
 
 
+def fixed_list_commands() -> list[list[object]]:
+    return [
+        ["LLEN", "list:missing"],
+        ["LINDEX", "list:missing", "0"],
+        ["LRANGE", "list:missing", "0", "-1"],
+        ["LPOP", "list:missing"],
+        ["LPOP", "list:missing", "3"],
+        ["LPUSHX", "list:missing", "x"],
+        ["RPUSHX", "list:missing", "x"],
+        ["LPUSH", "list:fixed", "one", "two", "three"],
+        ["RPUSH", "list:fixed", "four", "five"],
+        ["LRANGE", "list:fixed", "0", "-1"],
+        ["LRANGE", "list:fixed", "-4", "-2"],
+        ["LINDEX", "list:fixed", "-1"],
+        ["LINDEX", "list:fixed", "999"],
+        ["LINSERT", "list:fixed", "BEFORE", "four", "before-four"],
+        ["LINSERT", "list:fixed", "AFTER", "four", "after-four"],
+        ["LINSERT", "list:fixed", "BEFORE", "absent", "x"],
+        ["LSET", "list:fixed", "-1", "tail"],
+        ["LREM", "list:fixed", "1", "four"],
+        ["LPUSH", "list:fixed", "dup", "dup"],
+        ["RPUSH", "list:fixed", "dup"],
+        ["LREM", "list:fixed", "-2", "dup"],
+        ["LTRIM", "list:fixed", "1", "-2"],
+        ["LPOP", "list:fixed", "2"],
+        ["RPOP", "list:fixed", "2"],
+        ["LRANGE", "list:fixed", "0", "-1"],
+        ["LPOP", "list:fixed", "-1"],
+        ["LINSERT", "list:fixed", "SIDEWAYS", "x", "y"],
+        ["LSET", "list:missing", "0", "x"],
+    ]
+
+
 def command_stream(args: argparse.Namespace) -> list[list[object]]:
-    return [*fixed_commands(), *random_commands(args)]
+    return [
+        *fixed_zset_commands(),
+        *fixed_list_commands(),
+        *random_zset_commands(args),
+        *random_list_commands(args),
+    ]
 
 
 def random_member(rng: random.Random, member_count: int) -> str:
@@ -302,7 +345,7 @@ def random_score(rng: random.Random) -> str:
     return score_text(rng.uniform(-10_000.0, 10_000.0))
 
 
-def random_commands(args: argparse.Namespace) -> Iterable[list[object]]:
+def random_zset_commands(args: argparse.Namespace) -> Iterable[list[object]]:
     rng = random.Random(args.seed)
     for _ in range(args.ops):
         roll = rng.random()
@@ -338,6 +381,49 @@ def random_commands(args: argparse.Namespace) -> Iterable[list[object]]:
             yield command
         else:
             yield ["ZCARD", key]
+
+
+def random_list_commands(args: argparse.Namespace) -> Iterable[list[object]]:
+    rng = random.Random(args.seed ^ 0x4C495354)
+    for _ in range(args.ops):
+        roll = rng.random()
+        key = f"list:{rng.randrange(args.keys)}"
+        value = f"value-{rng.randrange(args.members):04d}"
+        if roll < 0.22:
+            command = "LPUSH" if rng.random() < 0.5 else "RPUSH"
+            count = rng.randint(1, 4)
+            yield [command, key, *[
+                f"value-{rng.randrange(args.members):04d}" for _ in range(count)
+            ]]
+        elif roll < 0.28:
+            command = "LPUSHX" if rng.random() < 0.5 else "RPUSHX"
+            yield [command, key, value]
+        elif roll < 0.41:
+            command = "LPOP" if rng.random() < 0.5 else "RPOP"
+            if rng.random() < 0.5:
+                yield [command, key]
+            else:
+                yield [command, key, str(rng.randint(0, 5))]
+        elif roll < 0.48:
+            yield ["LLEN", key]
+        elif roll < 0.58:
+            yield ["LINDEX", key, str(rng.randint(-30, 30))]
+        elif roll < 0.72:
+            start = rng.randint(-30, 30)
+            stop = start + rng.randint(-4, 20)
+            yield ["LRANGE", key, str(start), str(stop)]
+        elif roll < 0.78:
+            yield ["LSET", key, str(rng.randint(-20, 20)), value]
+        elif roll < 0.86:
+            start = rng.randint(-20, 20)
+            stop = start + rng.randint(-4, 15)
+            yield ["LTRIM", key, str(start), str(stop)]
+        elif roll < 0.93:
+            yield ["LREM", key, str(rng.randint(-3, 3)), value]
+        else:
+            side = "BEFORE" if rng.random() < 0.5 else "AFTER"
+            pivot = f"value-{rng.randrange(args.members):04d}"
+            yield ["LINSERT", key, side, pivot, value]
 
 
 def is_with_scores(command: Sequence[object]) -> bool:
@@ -402,6 +488,14 @@ def execute(client: RespClient, command: Sequence[object]) -> object:
         return ErrorResponse(str(exc))
 
 
+def goblin_command(command: Sequence[object], list_prefix: str) -> list[object]:
+    translated = list(command)
+    name = str(translated[0]).upper()
+    if name in LIST_COMMANDS:
+        translated[0] = f"{list_prefix}{name}"
+    return translated
+
+
 def read_response(client: RespClient) -> object:
     try:
         return client.read_response()
@@ -437,16 +531,23 @@ def compare_command(command: Sequence[object],
 def run_command_pair(goblin: RespClient,
                      redis: RespClient,
                      command: Sequence[object],
-                     history: list[str]) -> None:
-    compare_command(command, execute(redis, command), execute(goblin, command), history)
+                     history: list[str],
+                     list_prefix: str) -> None:
+    compare_command(
+        command,
+        execute(redis, command),
+        execute(goblin, goblin_command(command, list_prefix)),
+        history,
+    )
 
 
 def run_command_batch(goblin: RespClient,
                       redis: RespClient,
                       commands: Sequence[Sequence[object]],
-                      history: list[str]) -> None:
+                      history: list[str],
+                      list_prefix: str) -> None:
     redis.send_batch(commands)
-    goblin.send_batch(commands)
+    goblin.send_batch([goblin_command(command, list_prefix) for command in commands])
     for command in commands:
         redis_response = read_response(redis)
         goblin_response = read_response(goblin)
@@ -456,15 +557,22 @@ def run_command_batch(goblin: RespClient,
 def run_commands(goblin: RespClient,
                  redis: RespClient,
                  commands: Sequence[Sequence[object]],
-                 pipeline_depth: int) -> int:
+                 pipeline_depth: int,
+                 list_prefix: str) -> int:
     history: list[str] = []
     if pipeline_depth <= 1:
         for command in commands:
-            run_command_pair(goblin, redis, command, history)
+            run_command_pair(goblin, redis, command, history, list_prefix)
         return len(commands)
 
     for start in range(0, len(commands), pipeline_depth):
-        run_command_batch(goblin, redis, commands[start:start + pipeline_depth], history)
+        run_command_batch(
+            goblin,
+            redis,
+            commands[start:start + pipeline_depth],
+            history,
+            list_prefix,
+        )
     return len(commands)
 
 
@@ -484,7 +592,9 @@ def run_differential(args: argparse.Namespace) -> None:
         goblin = RespClient(goblin_server.port, args.timeout)
         redis = RespClient(redis_server.port, args.timeout)
         try:
-            count = run_commands(goblin, redis, commands, args.pipeline_depth)
+            count = run_commands(
+                goblin, redis, commands, args.pipeline_depth, args.goblin_list_prefix
+            )
         finally:
             goblin.close()
             redis.close()
@@ -517,6 +627,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--rank-cache", action="store_true",
                         help="Run Goblin Core with --rank-cache enabled.")
     parser.add_argument("--rank-cache-mode", choices=["off", "exact", "block-hint"])
+    parser.add_argument(
+        "--goblin-list-prefix",
+        default="GOBLIN.PMA.",
+        help="Concrete Goblin list command prefix; use an empty string for aliases.",
+    )
     return parser.parse_args(argv)
 
 

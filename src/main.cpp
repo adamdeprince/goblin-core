@@ -5,6 +5,7 @@
 
 #include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -77,7 +78,20 @@ namespace {
   const auto* begin = text.data();
   const auto* end = text.data() + text.size();
   const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end || !(value > 1.0)) {
+  if (ec != std::errc{} || ptr != end || !(value > 1.0) ||
+      !std::isfinite(value)) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+[[nodiscard]] std::optional<double> parse_density(std::string_view text) {
+  double value = 0.0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end || !(value > 0.0) || value > 1.0 ||
+      !std::isfinite(value)) {
     return std::nullopt;
   }
   return value;
@@ -97,6 +111,14 @@ namespace {
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<goblin::core::ListImplementation>
+parse_list_implementation(std::string_view text) {
+  if (text == "pma") {
+    return goblin::core::ListImplementation::Pma;
+  }
+  return std::nullopt;
+}
+
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
@@ -106,6 +128,11 @@ void print_usage(std::string_view program) {
             << "       [--member-index-growth FACTOR] [--load-factor N]\n"
             << "       [--block-shrink on|off]\n"
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
+            << "       [--hash-listpack-max-entries N|blob]\n"
+            << "       [--list-implementation pma]\n"
+            << "       [--list-chunk-bytes BYTES]\n"
+            << "       [--list-max-density FRACTION]\n"
+            << "       [--list-resize-growth FACTOR]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
@@ -283,6 +310,89 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--hash-listpack-max-entries") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const std::string_view text(argv[++i]);
+      if (text == "blob") {
+        store_options.hash_listpack_max_entries =
+            goblin::core::HashOptions::kDefaultListpackMaxEntries;
+        continue;
+      }
+      std::size_t entries = 0;
+      const auto [ptr, ec] =
+          std::from_chars(text.data(), text.data() + text.size(), entries);
+      if (ec != std::errc{} || ptr != text.data() + text.size()) {
+        std::cerr << "goblin-core: --hash-listpack-max-entries must be a "
+                     "non-negative integer or blob\n";
+        return 2;
+      }
+      store_options.hash_listpack_max_entries = entries;
+      continue;
+    }
+
+    if (arg == "--list-chunk-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_chunk_bytes(
+          argv[++i], goblin::core::ListValueArena::kMinChunkBytes);
+      if (!bytes ||
+          *bytes > goblin::core::ListValueArena::kMaxChunkBytes) {
+        std::cerr << "goblin-core: --list-chunk-bytes must be a power of two >= "
+                  << goblin::core::ListValueArena::kMinChunkBytes << " and <= "
+                  << goblin::core::ListValueArena::kMaxChunkBytes << " bytes\n";
+        return 2;
+      }
+      store_options.list_chunk_bytes = *bytes;
+      continue;
+    }
+
+    if (arg == "--list-implementation") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto implementation = parse_list_implementation(argv[++i]);
+      if (!implementation) {
+        std::cerr << "goblin-core: --list-implementation must be pma\n";
+        return 2;
+      }
+      store_options.list_implementation = *implementation;
+      continue;
+    }
+
+    if (arg == "--list-max-density") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto density = parse_density(argv[++i]);
+      if (!density) {
+        std::cerr << "goblin-core: --list-max-density must be in (0, 1]\n";
+        return 2;
+      }
+      store_options.list_max_density = *density;
+      continue;
+    }
+
+    if (arg == "--list-resize-growth") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto growth = parse_growth(argv[++i]);
+      if (!growth) {
+        std::cerr << "goblin-core: --list-resize-growth must be > 1\n";
+        return 2;
+      }
+      store_options.list_resize_growth = *growth;
+      continue;
+    }
+
     if (arg == "--load") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
@@ -355,7 +465,9 @@ int main(int argc, char** argv) {
             << " neon=" << caps.neon
             << " avx2=" << caps.avx2
             << " avx512bw=" << caps.avx512bw
-            << " avx512vl=" << caps.avx512vl << '\n';
+            << " avx512vl=" << caps.avx512vl
+            << " lsx=" << caps.lsx
+            << " lasx=" << caps.lasx << '\n';
 
   goblin::core::Store store(store_options);
 

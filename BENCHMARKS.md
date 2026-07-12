@@ -317,8 +317,18 @@ of the serving path.
 Goblin Core also implements a Redis `HASH` (field→value), built on the same tuned
 Swiss table and packed arena as the sorted set — no scores, no ordering, so it is
 leaner still (an 8-byte struct-of-arrays reference per field instead of 14). The
-memory comparison uses the same methodology as [Memory](#memory-the-headline)
-above: N field→value pairs loaded into one hash with `HSET`, then
+broader [HSET speed and memory benchmark](HSET-BENCHMARK.md) covers exact bulk
+construction, existing-field updates, value growth and compaction for one
+million-field hash, plus 8/32/64/128-field hashes at fixed total cardinality.
+The repeatable driver is [`benchmarks/hset_benchmark.py`](benchmarks/hset_benchmark.py).
+The follow-up [indexed compact threshold sweep](HASH-THRESHOLD-SWEEP.md) measures
+20 requested boundaries from 32 through the 64 KiB promotion point and 2048,
+including first/middle/last/miss lookup shape, forced-full Goblin, and all four
+incumbents.
+
+The earlier memory comparison below uses the same methodology as
+[Memory](#memory-the-headline) above: N field→value pairs loaded into one hash
+with `HSET`, then
 `GOBLIN.OPTIMIZE`; all Redis-family engines on jemalloc 5.3.0 under the
 [shared parity config](redis-parity.conf), which pins
 `hash-max-listpack-entries`/`-value` so every hash past 128 entries uses the
@@ -447,6 +457,9 @@ which share the server flags):
   `benchmarks/hash_benchmark.py --engine ... --sizes N,... [--value-bytes B]`.
 - Sorted-set / hash throughput + depth-1 latency: `benchmarks/zset_speed.py` and
   `benchmarks/hash_speed.py --engine ... --redis-benchmark <path>`.
+- Combined HSET speed, RSS, value-growth, and representation sweep:
+  `benchmarks/hset_benchmark.py --engine ... --redis-benchmark <path>`; the
+  checked-in naamah result is [HSET-BENCHMARK.md](HSET-BENCHMARK.md).
 - PING latency, concurrency, and write-path tail: `benchmarks/lat_tail.py
   --engine ... --probe ./write_tail_latency --redis-benchmark <path>` (build the
   probe with `c++ -O2 -std=c++20 -o write_tail_latency

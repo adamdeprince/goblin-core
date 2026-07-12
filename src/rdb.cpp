@@ -307,6 +307,8 @@ Element read_listpack_entry(Cursor& c) {
     std::size_t len = 0;
     for (int i = 0; i < 4; ++i) len |= static_cast<std::size_t>(c.u8()) << (8 * i);  // LE
     out = {false, 0, c.bytes(len)};
+  } else if (e == 0xFE) {
+    out = {true, static_cast<std::int8_t>(c.u8()), {}};
   } else {
     throw rdb_error("bad listpack entry encoding");
   }
@@ -349,6 +351,30 @@ void parse_listpack_zset(std::string_view blob, Add&& add) {
     const auto score = read_listpack_entry(c);
     add(element_member(member), element_score(score));
   }
+}
+
+template <class Add>
+std::size_t parse_ziplist_values(std::string_view blob, Add&& add) {
+  Cursor c(blob);
+  c.skip(10);  // zlbytes(4) + zltail(4) + zllen(2)
+  std::size_t count = 0;
+  while (c.peek() != 0xFF) {
+    add(element_member(read_ziplist_entry(c)));
+    ++count;
+  }
+  return count;
+}
+
+template <class Add>
+std::size_t parse_listpack_values(std::string_view blob, Add&& add) {
+  Cursor c(blob);
+  c.skip(6);  // total-bytes(4) + num-elements(2)
+  std::size_t count = 0;
+  while (c.peek() != 0xFF) {
+    add(element_member(read_listpack_entry(c)));
+    ++count;
+  }
+  return count;
 }
 
 }  // namespace
@@ -417,11 +443,23 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
       auto add = [&](std::string_view member, double score) {
         add_member(key, member, score);
       };
+      auto add_list_value = [&](std::string_view value) {
+        if (value.size() > kMaxMemberBytes) {
+          throw rdb_error("list value exceeds 64 KiB in key '" + key + "'");
+        }
+        const std::array<std::string_view, 1> one{value};
+        (void)store.rpush(key, one);
+        ++stats.members;
+      };
 
       switch (type) {
         case kString: (void)load_string(r); break;
         case kList: {
-          for (auto n = load_length(r); n > 0; --n) (void)load_string(r);
+          const auto count = load_length(r);
+          for (std::uint64_t i = 0; i < count; ++i) {
+            add_list_value(load_string(r));
+          }
+          if (count != 0) ++stats.keys;
           break;
         }
         case kSet: {
@@ -461,7 +499,11 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
           parse_listpack_zset(load_string(r), add);
           ++stats.keys;
           break;
-        case kListZiplist:
+        case kListZiplist: {
+          const auto count = parse_ziplist_values(load_string(r), add_list_value);
+          if (count != 0) ++stats.keys;
+          break;
+        }
         case kSetIntset:
         case kHashZiplist:
         case kHashListpack:
@@ -469,14 +511,30 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
           (void)load_string(r);  // single container blob
           break;
         case kListQuicklist: {
-          for (auto n = load_length(r); n > 0; --n) (void)load_string(r);
+          const auto nodes = load_length(r);
+          std::size_t count = 0;
+          for (std::uint64_t i = 0; i < nodes; ++i) {
+            count += parse_ziplist_values(load_string(r), add_list_value);
+          }
+          if (count != 0) ++stats.keys;
           break;
         }
         case kListQuicklist2: {
-          for (auto n = load_length(r); n > 0; --n) {
-            (void)load_length(r);  // node container type
-            (void)load_string(r);
+          const auto nodes = load_length(r);
+          std::size_t count = 0;
+          for (std::uint64_t i = 0; i < nodes; ++i) {
+            const auto container = load_length(r);
+            const auto blob = load_string(r);
+            if (container == 1) {  // QUICKLIST_NODE_CONTAINER_PLAIN
+              add_list_value(blob);
+              ++count;
+            } else if (container == 2) {  // QUICKLIST_NODE_CONTAINER_PACKED
+              count += parse_listpack_values(blob, add_list_value);
+            } else {
+              throw rdb_error("unsupported quicklist node container");
+            }
           }
+          if (count != 0) ++stats.keys;
           break;
         }
         case kHashZipmap:

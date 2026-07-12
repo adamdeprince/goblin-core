@@ -8,7 +8,7 @@
 // Redis source from 7.4 onward (RSALv2/SSPL, incompatible with Apache-2.0);
 // newer format details, if ever needed, come from descriptions or Valkey.
 //
-// Scope: sorted sets are imported; simple types (string/list/set/hash) are
+// Scope: sorted sets and lists are imported; strings, sets, and hashes are
 // parsed and discarded; streams and modules abort the import (migrate those
 // with the network import script). The floor is RDB v6 (Redis 2.6); the older
 // zipmap hash encoding aborts with a "re-save under Redis >= 2.6" message.
@@ -32,9 +32,10 @@ class rdb_error : public std::runtime_error {
 // 0xe9c6d914c4b8d9ca.
 [[nodiscard]] std::uint64_t crc64(std::string_view data) noexcept;
 
-// Import every sorted set from a Redis RDB stream into `store`, which is cleared
-// first. +/-inf scores clamp to +/-DBL_MAX; a member larger than 64 KiB aborts.
-// Throws rdb_error on malformed, unsupported, or out-of-range input.
+// Import every sorted set and list from a Redis RDB stream into `store`, which
+// is cleared first. +/-inf scores clamp to +/-DBL_MAX; a member or list value
+// larger than 64 KiB aborts. Throws rdb_error on malformed, unsupported, or
+// out-of-range input.
 SnapshotLoadStats import(Store& store, std::istream& in);
 
 }  // namespace goblin::core::rdb

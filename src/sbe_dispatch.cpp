@@ -983,6 +983,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
           case KeyType::String: name = "string"; break;
           case KeyType::Zset: name = "zset"; break;
           case KeyType::Hash: name = "hash"; break;
+          case KeyType::List: name = "list"; break;
         }
       }
       reply_status(out, name);

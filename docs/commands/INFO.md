@@ -17,6 +17,7 @@ the full payload.
 |---|---|
 | `redis_version` | `7.4.0` — the wire/behaviour compatibility level |
 | `redis_mode` | `standalone` |
+| `list_implementation` | concrete backend selected for standard list commands (`pma` today) |
 
 ## `# Memory`
 
@@ -32,7 +33,7 @@ the full payload.
 
 `used_memory` is a real number, not the RSS: it comes from
 [`GOBLIN.MEMORY`](goblin.md)-style accounting rolled up across every zset, hash,
-and the keyspace. Because each arena maintains its live/dead byte counts
+list, and the keyspace. Because each arena maintains its live/dead byte counts
 incrementally (a `+len` where bytes are written, a `−len` where a member is
 orphaned), computing all of this is O(1) — nothing walks the data.
 

@@ -53,8 +53,8 @@ inline constexpr std::uint32_t kFormatVersion = 2;
 
 // The snapshot body is a sequence of typed sections so each Redis value type
 // gets its own section, and a reader can skip a section type it does not
-// recognize (every section's entries are uniformly length-framed). Only ZSET is
-// emitted today; the rest are reserved for when those types are implemented.
+// recognize (every section's entries are uniformly length-framed). Zsets,
+// strings, hashes, lists, and TTLs currently have emitted sections.
 enum class SectionType : std::uint32_t {
   Zset = 1,
   String = 2,
@@ -95,6 +95,11 @@ inline constexpr std::uint32_t kHashAcceleratorVersion = 1;
 enum class StringOpcode : std::uint8_t {
   End = kOpEnd,
   String = 0x01,  // operands: key, raw value bytes (no accelerator)
+};
+
+enum class ListOpcode : std::uint8_t {
+  End = kOpEnd,
+  List = 0x01,  // operands: key, element count, ordered raw values
 };
 
 enum class TtlOpcode : std::uint8_t {

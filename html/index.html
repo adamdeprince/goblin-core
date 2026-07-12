@@ -446,7 +446,7 @@
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
         <p class="hero-copy">A compact server for sorted sets and hashes. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <p class="release-note"><span><strong>Coming July 20, 2026:</strong> Redis-compatible lists and Pub/Sub.</span><span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span></p>
+        <p class="release-note"><span><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a> and Pub/Sub.</span><span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span></p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
             Build from source
@@ -593,7 +593,7 @@
         <div>
           <p class="section-label">Direction, stated plainly</p>
           <h2>Redis semantics, without the old overhead.</h2>
-          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows, with lists and Pub/Sub arriving July 20, 2026.</p>
+          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows, with <a href="LISTS.html">adaptive-PMA lists</a> (<a href="LIST-BENCHMARK.html">100k benchmark</a>) and Pub/Sub arriving July 20, 2026.</p>
           <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
           <p class="section-intro">Keys and string values are limited to 64 KiB. Larger values belong in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>

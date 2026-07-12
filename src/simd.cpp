@@ -18,6 +18,12 @@ Capabilities detect_capabilities() noexcept {
 #if defined(__AVX2__)
   caps.avx2 = true;
 #endif
+#if defined(__loongarch_sx)
+  caps.lsx = true;
+#endif
+#if defined(__loongarch_asx)
+  caps.lasx = true;
+#endif
 
   return caps;
 }
