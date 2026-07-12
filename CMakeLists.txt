@@ -449,6 +449,33 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_ring_reconnect_test $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_ring_reconnect PROPERTIES TIMEOUT 60)
 
+  # Unit test for the ring producer's backpressure guarantees: block while full,
+  # unblock the instant a record is freed, and throw when a record can never fit.
+  # Self-contained -- drives both ends of a ring in-process, no server needed.
+  add_executable(goblin_core_ring_backpressure_test tests/ring_backpressure_test.cpp)
+  target_link_libraries(goblin_core_ring_backpressure_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_ring_backpressure_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_ring_backpressure
+    COMMAND goblin_core_ring_backpressure_test)
+  set_tests_properties(goblin_core_ring_backpressure PROPERTIES TIMEOUT 60)
+
+  # Mirror-mapped rings: a record straddling the ring end round-trips (double-map),
+  # and the forced single-map + WRAP-filler fallback round-trips the same traffic.
+  add_executable(goblin_core_ring_mirror_test tests/ring_mirror_test.cpp)
+  target_link_libraries(goblin_core_ring_mirror_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_ring_mirror_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_ring_mirror
+    COMMAND goblin_core_ring_mirror_test)
+  set_tests_properties(goblin_core_ring_mirror PROPERTIES TIMEOUT 60)
+
   add_test(
     NAME goblin_core_output_backpressure
     COMMAND

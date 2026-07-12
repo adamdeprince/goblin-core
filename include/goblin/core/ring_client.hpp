@@ -13,10 +13,12 @@
 #include "goblin/core/ring_buffer.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -180,6 +182,59 @@ class RingClient {
   [[nodiscard]] std::optional<std::string> command(
       std::initializer_list<std::string_view> args) {
     return command(std::span<const std::string_view>(args.begin(), args.size()));
+  }
+
+  // Move any ready CQ records into the pending buffer without blocking. A streaming
+  // writer must service the CQ so the server never stalls on a full CQ -- with a full
+  // SQ that would deadlock a pure writer. Returns the number of bytes drained.
+  std::size_t drain_cq() {
+    std::size_t drained = 0;
+    while (auto rec = cq_.peek()) {
+      pending_.append(*rec);
+      drained += rec->size();
+      cq_.pop();
+    }
+    return drained;
+  }
+
+  // Non-blocking read: return the next complete reply if one is already available
+  // (draining ready CQ records first), else nullopt. Lets a streaming writer count
+  // and discard replies as they arrive, so buffered replies never grow unbounded.
+  [[nodiscard]] std::optional<std::string> try_read_reply() {
+    for (;;) {
+      if (const auto end = reply_end(pending_)) {
+        std::string reply = pending_.substr(0, *end);
+        pending_.erase(0, *end);
+        return reply;
+      }
+      auto rec = cq_.peek();
+      if (!rec) {
+        return std::nullopt;
+      }
+      pending_.append(*rec);
+      cq_.pop();
+    }
+  }
+
+  // Encode a command and push it as ONE atomic ring record (Producer::send_record):
+  // block until the ring has room -- draining the CQ while blocked so a stalled
+  // server (one waiting on a full CQ) can advance -- and throw std::length_error if
+  // the encoded command is larger than the ring can ever hold. This is the
+  // streaming/pipe primitive; cf. command(), which is a synchronous request/reply.
+  // Throws std::runtime_error on timeout.
+  void send_command_atomic(
+      std::span<const std::string_view> args,
+      std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+    const std::string bytes = encode_command(args);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const bool pushed = sq_.send_record(bytes, [&] {
+      drain_cq();  // service replies so a blocked server can make progress
+      return std::chrono::steady_clock::now() >= deadline;
+    });
+    if (!pushed) {
+      throw std::runtime_error(
+          "RingClient: timed out streaming a command (server stalled or gone)");
+    }
   }
 
   [[nodiscard]] const Mapping& mapping() const noexcept { return mapping_; }

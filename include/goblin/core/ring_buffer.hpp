@@ -46,6 +46,8 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include <fcntl.h>
@@ -79,7 +81,7 @@ inline constexpr std::size_t kIndexLine = 128;
 inline constexpr std::size_t kIndexLine = 64;
 #endif
 inline constexpr std::uint32_t kMagic = 0x474E5247;  // 'GRNG'
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;  // v2 adds the Header::mirror flag
 
 // Pure-spin budget before parking on a ring index (macOS). Must cover a healthy
 // sub-µs RTT with headroom for brief peer preemption -- parking too early turns
@@ -244,6 +246,13 @@ struct alignas(kIndexLine) Header {
   // owns `epoch_ack`; both read-mostly, so sharing the config line is fine.
   std::uint64_t epoch;
   std::uint64_t epoch_ack;
+  // 1 if the SQ/CQ data regions are mirror-mapped (each mapped twice at adjacent
+  // virtual addresses) so a record may straddle the ring end as one contiguous span
+  // and no WRAP fillers are written; 0 for the portable single-map + WRAP-filler
+  // scheme. create() sets it (falling back to 0 when the double-map is unavailable);
+  // open() reads it, so the producer and consumer always agree on whether fillers
+  // exist. Read-mostly config, so it shares the config line with the fields above.
+  std::uint32_t mirror;
   // Each index on its own kIndexLine: the producer writes one, the consumer the
   // other, and they must not share a line (or an Apple 128-byte prefetch pair)
   // or every publish bounces the cache.
@@ -285,9 +294,9 @@ class Consumer {
  public:
   Consumer() = default;
   Consumer(std::uint64_t* head, std::uint64_t* tail, char* data,
-           std::uint64_t capacity) noexcept
+           std::uint64_t capacity, bool mirror = false) noexcept
       : head_(head), tail_(tail), data_(data), capacity_(capacity),
-        mask_(capacity - 1),
+        mask_(capacity - 1), mirror_(mirror),
         // We own head: seed the local cursor so empty-spin peeks never re-load it.
         head_pos_(std::atomic_ref<std::uint64_t>(*head).load(
             std::memory_order_relaxed)) {}
@@ -345,6 +354,12 @@ class Consumer {
         return false;
       }
       empty_spins_ = 0;  // saw work; reset adaptive park counter
+      // Mirror map: the producer never writes fillers (a record straddles the end as
+      // one contiguous span), so head already sits on a data record.
+      if (mirror_) {
+        head_pos_ = h;
+        return true;
+      }
       const std::uint64_t off = h & mask_;
       if (detail::get_u32(data_ + off + sizeof(std::uint32_t)) == kFlagWrap) {
         h += capacity_ - off;  // jump to the ring boundary (offset 0)
@@ -362,6 +377,7 @@ class Consumer {
   char* data_ = nullptr;
   std::uint64_t capacity_ = 0;
   std::uint64_t mask_ = 0;
+  bool mirror_ = false;
   std::uint64_t head_pos_ = 0;
   unsigned empty_spins_ = 0;
 };
@@ -377,9 +393,9 @@ class Producer {
  public:
   Producer() = default;
   Producer(std::uint64_t* head, std::uint64_t* tail, char* data,
-           std::uint64_t capacity) noexcept
+           std::uint64_t capacity, bool mirror = false) noexcept
       : head_(head), tail_(tail), data_(data), capacity_(capacity),
-        mask_(capacity - 1),
+        mask_(capacity - 1), mirror_(mirror),
         // A record uses one control line plus the padded payload; cap a single
         // record at half the ring so at least two can coexist (pipelining) and no
         // single record needs a fully-drained ring.
@@ -404,6 +420,28 @@ class Producer {
   [[nodiscard]] bool try_push(std::string_view payload) noexcept {
     const std::uint64_t padded = kCacheLine + align_up(payload.size(), kCacheLine);
     std::uint64_t t = tail_pos_;
+    if (mirror_) {
+      // Mirror map: the region is mapped twice back to back, so a record can straddle
+      // the physical end and be written as one contiguous span (the second mapping
+      // folds the overflow onto offset 0). No filler is ever needed, so a record needs
+      // exactly `padded` free bytes -- and the ring wastes no tail bytes at the seam.
+      if (capacity_ - (t - cached_head_) < padded) {
+        cached_head_ = std::atomic_ref<std::uint64_t>(*head_).load(
+            std::memory_order_acquire);
+        if (capacity_ - (t - cached_head_) < padded) {
+          return false;
+        }
+      }
+      char* base = data_ + (t & mask_);
+      const std::uint64_t ctrl = static_cast<std::uint32_t>(payload.size()) |
+                                 (static_cast<std::uint64_t>(kFlagData) << 32);
+      std::memcpy(base, &ctrl, sizeof(ctrl));
+      std::memcpy(base + kCacheLine, payload.data(), payload.size());
+      const std::uint64_t next = t + padded;
+      std::atomic_ref<std::uint64_t>(*tail_).store(next, std::memory_order_release);
+      tail_pos_ = next;
+      return true;
+    }
     const std::uint64_t off = t & mask_;
     const std::uint64_t to_end = capacity_ - off;
     const std::uint64_t need = padded > to_end ? to_end + padded : padded;
@@ -479,12 +517,47 @@ class Producer {
     }
   }
 
+  // Enqueue `payload` as a SINGLE ring record -- never split. Spins (cpu_relax) for
+  // space until the whole record fits or `stop()` returns true; returns true when
+  // pushed, false if `stop()` aborted the wait. Unlike send(), which chunks a large
+  // payload into record-sized pieces (a byte stream the reader reassembles), this
+  // keeps one message atomic on the ring -- the reader never sees a partial record.
+  //
+  // The wait is released the moment there is room for THIS record, not when the ring
+  // is empty: try_push succeeds as soon as free space >= the record's padded size.
+  //
+  // Throws std::length_error if `payload` is larger than max_record_payload(): a
+  // record that big can never fit, even in a fully drained ring, so blocking would
+  // spin forever. Enlarge the ring (a bigger `--ring <path> <size>`) to send it.
+  template <class StopFn>
+  bool send_record(std::string_view payload, StopFn&& stop) {
+    if (payload.size() > max_payload_) {
+      throw std::length_error(
+          "ring record (" + std::to_string(payload.size()) +
+          " bytes) exceeds the ring's maximum record size (" +
+          std::to_string(max_payload_) + " bytes); enlarge the ring");
+    }
+    unsigned spins = 0;
+    while (!try_push(payload)) {
+      // Full ring: adaptive wait on the consumer's head advancing, then recheck --
+      // the recheck (try_push) succeeds as soon as this record fits.
+      const std::uint64_t h = std::atomic_ref<std::uint64_t>(*head_).load(
+          std::memory_order_acquire);
+      wait_while_equal(head_, h, spins);
+      if (stop()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
  private:
   std::uint64_t* head_ = nullptr;
   std::uint64_t* tail_ = nullptr;
   char* data_ = nullptr;
   std::uint64_t capacity_ = 0;
   std::uint64_t mask_ = 0;
+  bool mirror_ = false;
   std::uint64_t max_payload_ = 0;
   std::uint64_t cached_head_ = 0;
   std::uint64_t tail_pos_ = 0;
@@ -513,18 +586,21 @@ class Mapping {
 
   // Server side: consume the SQ (requests), produce into the CQ (replies).
   [[nodiscard]] Consumer sq_consumer() const noexcept {
-    return Consumer(&header_->sq_head, &header_->sq_tail, sq_, sq_cap_);
+    return Consumer(&header_->sq_head, &header_->sq_tail, sq_, sq_cap_, mirror_);
   }
   [[nodiscard]] Producer cq_producer() const noexcept {
-    return Producer(&header_->cq_head, &header_->cq_tail, cq_, cq_cap_);
+    return Producer(&header_->cq_head, &header_->cq_tail, cq_, cq_cap_, mirror_);
   }
   // Client side: produce into the SQ (requests), consume the CQ (replies).
   [[nodiscard]] Producer sq_producer() const noexcept {
-    return Producer(&header_->sq_head, &header_->sq_tail, sq_, sq_cap_);
+    return Producer(&header_->sq_head, &header_->sq_tail, sq_, sq_cap_, mirror_);
   }
   [[nodiscard]] Consumer cq_consumer() const noexcept {
-    return Consumer(&header_->cq_head, &header_->cq_tail, cq_, cq_cap_);
+    return Consumer(&header_->cq_head, &header_->cq_tail, cq_, cq_cap_, mirror_);
   }
+
+  // Whether the data regions are mirror-mapped (records may straddle the ring end).
+  [[nodiscard]] bool mirror() const noexcept { return mirror_; }
 
   // ---- reconnect handshake (see Header::epoch) -------------------------------
   // Client: request a fresh connection -- bump the epoch and return the new value.
@@ -573,10 +649,15 @@ class Mapping {
   }
 
   // Create (or re-create) a ring file and initialize it. The server calls this.
-  // `sq_cap`/`cq_cap` must be powers of two >= one page.
+  // `sq_cap`/`cq_cap` must be powers of two >= one page. When `allow_mirror` is set
+  // (the default) it maps each data region twice back to back so records can straddle
+  // the ring end contiguously; if that double-map is unavailable it falls back to the
+  // single-map + WRAP-filler scheme. The chosen mode is recorded in the header so
+  // clients open() it the same way.
   [[nodiscard]] static std::optional<Mapping> create(const char* path,
                                                      std::uint64_t sq_cap,
-                                                     std::uint64_t cq_cap) noexcept {
+                                                     std::uint64_t cq_cap,
+                                                     bool allow_mirror = true) noexcept {
     const int fd = ::open(path, O_CREAT | O_RDWR, 0600);
     if (fd < 0) {
       return std::nullopt;
@@ -587,19 +668,31 @@ class Mapping {
       return std::nullopt;
     }
     Mapping m;
-    if (!m.map_all(fd, sq_cap, cq_cap, header_bytes(),
-                   header_bytes() + sq_cap)) {
+    // Prefer the mirror map; fall back to the single map + WRAP fillers if it fails.
+    const std::uint64_t sq_off = header_bytes();
+    const std::uint64_t cq_off = header_bytes() + sq_cap;
+    bool ok = allow_mirror &&
+              m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, /*mirror=*/true);
+    if (!ok) {
+      ok = m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, /*mirror=*/false);
+    }
+    if (!ok) {
       ::close(fd);
       return std::nullopt;
     }
+    // Prefault + lock before publishing the magic below: no client can have mapped
+    // the ring yet, so it is safe to write-touch (and thus allocate backing for)
+    // every data page here on the server that owns the fresh file.
+    m.prefault_and_lock(/*write_alloc=*/true);
     Header* h = m.header_;
     h->version = kVersion;
     h->sq_capacity = sq_cap;
     h->cq_capacity = cq_cap;
-    h->sq_offset = header_bytes();
-    h->cq_offset = header_bytes() + sq_cap;
+    h->sq_offset = sq_off;
+    h->cq_offset = cq_off;
     h->epoch = 0;
     h->epoch_ack = 0;
+    h->mirror = m.mirror_ ? 1u : 0u;
     std::atomic_ref<std::uint64_t>(h->sq_head).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->sq_tail).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->cq_head).store(0, std::memory_order_relaxed);
@@ -636,43 +729,142 @@ class Mapping {
     const std::uint64_t cq_cap = h->cq_capacity;
     const std::uint64_t sq_off = h->sq_offset;
     const std::uint64_t cq_off = h->cq_offset;
+    // The producer and consumer must agree on whether fillers exist, so open the ring
+    // in exactly the mode create() chose. If the server mirror-mapped but this client
+    // cannot (map_all returns false), open fails rather than risk a wrap/mirror
+    // mismatch -- there is no safe single-map fallback against a mirror producer.
+    const bool mirror = h->mirror != 0;
     ::munmap(hp, header_bytes());  // remapped uniformly by map_all below
     Mapping m;
-    if (!m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off)) {
+    if (!m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, mirror)) {
       ::close(fd);
       return std::nullopt;
     }
+    // Read-fault + lock: the server already allocated the backing, and a ring being
+    // reconnected to may hold live records, so we must not write-touch here.
+    m.prefault_and_lock(/*write_alloc=*/false);
     ::close(fd);
     return m;
   }
 
  private:
+  // Reserve `len` bytes of contiguous address space (no backing) to hold the two
+  // halves of a mirror map before MAP_FIXED drops the file over them. MAP_ANON is not
+  // POSIX and glibc hides it under __USE_MISC (off in strict -std=c++23), so prefer it
+  // when the macro is visible and otherwise reserve via a MAP_PRIVATE map of
+  // /dev/zero -- the pre-MAP_ANON portable idiom.
+  static void* reserve_va(std::uint64_t len) noexcept {
+#if defined(MAP_ANONYMOUS)
+    return ::mmap(nullptr, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#elif defined(MAP_ANON)
+    return ::mmap(nullptr, len, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#else
+    const int z = ::open("/dev/zero", O_RDWR);
+    if (z < 0) {
+      return MAP_FAILED;
+    }
+    void* p = ::mmap(nullptr, len, PROT_NONE, MAP_PRIVATE, z, 0);
+    ::close(z);
+    return p;
+#endif
+  }
+
+  // Single file-backed mapping of [off, off+cap). Returns nullptr on failure.
+  static char* map_single(int fd, std::uint64_t off, std::uint64_t cap) noexcept {
+    void* p = ::mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                     static_cast<off_t>(off));
+    return p == MAP_FAILED ? nullptr : static_cast<char*>(p);
+  }
+
+  // Mirror mapping: reserve 2*cap of address space, then MAP_FIXED the file's
+  // [off, off+cap) over BOTH halves, so the bytes at virtual offset i and i+cap are
+  // the same file byte. A record placed near the end can then be read/written as one
+  // contiguous span running past `cap` into the mirror. Returns nullptr (and leaves
+  // nothing mapped) on failure, so the caller can fall back to a single map.
+  static char* map_mirror(int fd, std::uint64_t off, std::uint64_t cap) noexcept {
+    void* base = reserve_va(2 * cap);
+    if (base == MAP_FAILED) {
+      return nullptr;
+    }
+    char* b = static_cast<char*>(base);
+    void* lo = ::mmap(b, cap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd,
+                      static_cast<off_t>(off));
+    void* hi = ::mmap(b + cap, cap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+                      fd, static_cast<off_t>(off));
+    if (lo != b || hi != b + cap) {
+      ::munmap(base, 2 * cap);  // frees whatever of the reservation/halves exists
+      return nullptr;
+    }
+    return b;
+  }
+
   bool map_all(int fd, std::uint64_t sq_cap, std::uint64_t cq_cap,
-               std::uint64_t sq_off, std::uint64_t cq_off) noexcept {
-    void* hp = ::mmap(nullptr, header_bytes(), PROT_READ | PROT_WRITE, MAP_SHARED,
-                      fd, 0);
-    void* sq = ::mmap(nullptr, sq_cap, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
-                      static_cast<off_t>(sq_off));
-    void* cq = ::mmap(nullptr, cq_cap, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
-                      static_cast<off_t>(cq_off));
-    if (hp == MAP_FAILED || sq == MAP_FAILED || cq == MAP_FAILED) {
-      if (hp != MAP_FAILED) {
+               std::uint64_t sq_off, std::uint64_t cq_off, bool mirror) noexcept {
+    char* hp = map_single(fd, 0, header_bytes());
+    char* sq = mirror ? map_mirror(fd, sq_off, sq_cap) : map_single(fd, sq_off, sq_cap);
+    char* cq = mirror ? map_mirror(fd, cq_off, cq_cap) : map_single(fd, cq_off, cq_cap);
+    if (hp == nullptr || sq == nullptr || cq == nullptr) {
+      if (hp != nullptr) {
         ::munmap(hp, header_bytes());
       }
-      if (sq != MAP_FAILED) {
-        ::munmap(sq, sq_cap);
+      if (sq != nullptr) {
+        ::munmap(sq, mirror ? 2 * sq_cap : sq_cap);
       }
-      if (cq != MAP_FAILED) {
-        ::munmap(cq, cq_cap);
+      if (cq != nullptr) {
+        ::munmap(cq, mirror ? 2 * cq_cap : cq_cap);
       }
       return false;
     }
-    header_ = static_cast<Header*>(hp);
-    sq_ = static_cast<char*>(sq);
-    cq_ = static_cast<char*>(cq);
+    header_ = reinterpret_cast<Header*>(hp);
+    sq_ = sq;
+    cq_ = cq;
     sq_cap_ = sq_cap;
     cq_cap_ = cq_cap;
+    mirror_ = mirror;
     return true;
+  }
+
+  // Touch one byte of every page so the whole region is resident before the first
+  // op -- the alternative is a minor page fault per page on the first lap around the
+  // ring, i.e. µs-scale jitter sprinkled through the initial traffic. `write` stores
+  // a byte (which also allocates the sparse file's backing blocks, so a later store
+  // can never SIGBUS on an unbacked page); otherwise it only reads (faulting this
+  // process's page-table entries without modifying shared data).
+  static void fault_pages(void* addr, std::uint64_t len, bool write) noexcept {
+    const std::uint64_t pg = page_size();
+    volatile char* p = static_cast<volatile char*>(addr);
+    if (write) {
+      for (std::uint64_t i = 0; i < len; i += pg) p[i] = 0;
+    } else {
+      volatile char sink = 0;
+      for (std::uint64_t i = 0; i < len; i += pg) sink = p[i];
+      (void)sink;
+    }
+  }
+
+  // Prefault every mapped region and lock it resident (mlock) so the ring never
+  // takes a page fault -- neither a first-touch fault nor a later reclaim/swap -- on
+  // the hot path. Locking is best-effort: a low RLIMIT_MEMLOCK or missing privilege
+  // must not stop the ring from working, and by this point the touch loop has already
+  // made the pages present, so an mlock failure only forfeits the never-evicted
+  // guarantee, not correctness. (munmap drops the locks, so unmap needs no munlock.)
+  //
+  // `write_alloc` write-faults (allocating backing). Only the server that create()s
+  // the ring passes true, before it publishes the magic -- nothing else is mapped
+  // yet. A client open()ing an existing ring passes false: the blocks are already
+  // allocated, and a ring being reconnected to may hold live records the server
+  // produced, which a write-touch would clobber.
+  void prefault_and_lock(bool write_alloc) noexcept {
+    // Fault every mapped page (both halves in mirror mode) so the first lap takes no
+    // minor faults. Lock only the first `cap` of each ring: in mirror mode the second
+    // half maps the same physical pages, so pinning the first copy keeps them all
+    // resident without double-counting against RLIMIT_MEMLOCK.
+    fault_pages(header_, header_bytes(), write_alloc);
+    fault_pages(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_, write_alloc);
+    fault_pages(cq_, mirror_ ? 2 * cq_cap_ : cq_cap_, write_alloc);
+    (void)::mlock(header_, header_bytes());
+    (void)::mlock(sq_, sq_cap_);
+    (void)::mlock(cq_, cq_cap_);
   }
 
   void unmap() noexcept {
@@ -680,10 +872,10 @@ class Mapping {
       ::munmap(header_, header_bytes());
     }
     if (sq_ != nullptr) {
-      ::munmap(sq_, sq_cap_);
+      ::munmap(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_);
     }
     if (cq_ != nullptr) {
-      ::munmap(cq_, cq_cap_);
+      ::munmap(cq_, mirror_ ? 2 * cq_cap_ : cq_cap_);
     }
     header_ = nullptr;
     sq_ = nullptr;
@@ -696,6 +888,7 @@ class Mapping {
     cq_ = other.cq_;
     sq_cap_ = other.sq_cap_;
     cq_cap_ = other.cq_cap_;
+    mirror_ = other.mirror_;
     other.header_ = nullptr;
     other.sq_ = nullptr;
     other.cq_ = nullptr;
@@ -706,6 +899,7 @@ class Mapping {
   char* cq_ = nullptr;
   std::uint64_t sq_cap_ = 0;
   std::uint64_t cq_cap_ = 0;
+  bool mirror_ = false;
 };
 
 }  // namespace goblin::core::ring
