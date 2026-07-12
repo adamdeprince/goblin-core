@@ -19,25 +19,23 @@ option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   "Enable Redis-backed differential tests for Goblin Core's Redis-compatible subset"
   OFF)
 
-set(GOBLIN_CORE_MARKDOWN_DOCS
-  README.md
-  BENCHMARKS.md
-  MICROBENCHMARKS.md
-  PERFORMANCE_BRIEF.md
-  RELEASE.md)
-
-set(GOBLIN_CORE_MARKDOWN_DOC_PATHS)
-foreach(GOBLIN_CORE_MARKDOWN_DOC IN LISTS GOBLIN_CORE_MARKDOWN_DOCS)
-  list(APPEND GOBLIN_CORE_MARKDOWN_DOC_PATHS
-    ${CMAKE_CURRENT_SOURCE_DIR}/${GOBLIN_CORE_MARKDOWN_DOC})
-endforeach()
+# The generator walks the project's complete Markdown set when invoked without
+# positional sources. Track the same set here so edits to blogs and nested docs
+# rebuild their HTML instead of leaving stale site-wide navigation behind.
+file(GLOB_RECURSE GOBLIN_CORE_MARKDOWN_DOC_PATHS CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/*.md)
+list(FILTER GOBLIN_CORE_MARKDOWN_DOC_PATHS EXCLUDE REGEX
+  "/(\\.git|html|third_party|memory|benchmark-results|node_modules|build[^/]*)/")
+list(FILTER GOBLIN_CORE_MARKDOWN_DOC_PATHS EXCLUDE REGEX
+  "/(RELEASE|RING-LATENCY-HANDOFF)\\.md$")
 
 set(GOBLIN_CORE_HTML_DOCS
-  ${CMAKE_CURRENT_SOURCE_DIR}/html/index.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/BENCHMARKS.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/LATENCY-SHOOTOUT.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/MICROBENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/PERFORMANCE_BRIEF.html
-  ${CMAKE_CURRENT_SOURCE_DIR}/html/RELEASE.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/RING-BENCHMARKS.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/RELEASE-HISTORY.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/styles.css)
 
 if(GOBLIN_CORE_BUILD_HTML_DOCS OR GOBLIN_CORE_BUILD_TESTS)
@@ -52,7 +50,6 @@ if(GOBLIN_CORE_BUILD_HTML_DOCS)
       ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_html_docs.py
       --output ${CMAKE_CURRENT_SOURCE_DIR}/html
-      ${GOBLIN_CORE_MARKDOWN_DOC_PATHS}
     DEPENDS
       ${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_html_docs.py
       ${GOBLIN_CORE_MARKDOWN_DOC_PATHS}

@@ -10,8 +10,14 @@ request/reply.
 It puts Goblin's SBE/ring next to Goblin's own RESP-over-Unix-socket and to every
 Redis-family incumbent on their sockets — Redis 7.2.4, Redis 8.8, Valkey 9.1, and
 Dragonfly — on the same host, with the same client and the same timer. The result: on
-these operations the ring is 38–50x faster at the median than the fastest socket, and its
-tail is tighter by two orders of magnitude.
+these operations Goblin's SBE shared-memory ring is 38–50x faster at the median than the
+fastest RESP Unix-domain-socket result, and its tail is tighter by two orders of magnitude.
+
+The earlier [ring round-trip latency report](RING-BENCHMARKS.md) is retained as
+the older, ring-only story. It compares RESP and SBE on Goblin's shared-memory
+transport and includes the macOS development-host results. This shootout is the
+current headline because it puts the ring on the same timer and host as Goblin's
+socket path and the Redis-family incumbents.
 
 ## What is measured
 

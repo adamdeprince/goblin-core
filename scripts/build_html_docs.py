@@ -674,7 +674,7 @@ def render_nav(nav_pages: Sequence[Page], current: Page, prefix: str) -> str:
         ("README.md", "Docs"),
         ("BENCHMARKS.md", "Benchmarks"),
         ("PERFORMANCE_BRIEF.md", "Architecture"),
-        ("RING-BENCHMARKS.md", "Ring latency"),
+        ("LATENCY-SHOOTOUT.md", "Ring latency"),
     )
     links = []
     for source_name, label in primary:

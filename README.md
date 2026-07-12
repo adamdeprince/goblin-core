@@ -6,7 +6,7 @@ memory consumption and single-core throughput. It holds a sorted set in **roughl
 half** the resident set of legacy Redis, stays the leanest of the field at every
 scale, and leads every sorted-set and hash operation measured. See the
 [x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md),
-and the [ring latency benchmarks](RING-BENCHMARKS.md) — a full request/reply round trip in
+and the [ring latency shootout](LATENCY-SHOOTOUT.md) — a full request/reply round trip in
 about 220 ns over a shared-memory ring (written up in [this post](blogs/ring-latency.md)).
 For a real-world run at scale, see the
 [Lichess leaderboard replay](blogs/lichess-leaderboard.md): every rated game in Lichess

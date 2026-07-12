@@ -431,6 +431,7 @@
       <div class="nav-links">
         <a href="#for-you">Use cases</a>
         <a href="#proof">Benchmarks</a>
+        <a href="LATENCY-SHOOTOUT.html">Ring latency</a>
         <a href="#writing">Blogs</a>
         <a href="README.html">Docs</a>
         <a class="nav-cta" href="https://github.com/adamdeprince/goblin-core">View on GitHub</a>
@@ -538,7 +539,7 @@
         <div class="shootout">
           <div class="shootout-head"><h3>Same host. Same timer. Every incumbent.</h3><a href="LATENCY-SHOOTOUT.html">Read the full latency shootout →</a></div>
           <div class="shootout-stats">
-            <div class="shootout-stat"><b>38–50×</b><span>faster median than the fastest Unix-socket result across SET/GET, HSET/HGET, and ZADD/ZSCORE</span></div>
+            <div class="shootout-stat"><b>38–50×</b><span>faster median with Goblin's SBE shared-memory ring than the fastest RESP Unix-domain-socket result across SET/GET, HSET/HGET, and ZADD/ZSCORE</span></div>
             <div class="shootout-stat"><b>0.22–0.28 µs</b><span>ring p99 across all six operations; the fastest socket p99s are 11.29–12.85 µs</span></div>
           </div>
         </div>
