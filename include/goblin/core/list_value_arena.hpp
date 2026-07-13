@@ -34,7 +34,7 @@ class ListValueArena {
  public:
   using size_type = std::size_t;
 
-  static constexpr size_type kDefaultChunkBytes = size_type{1} << 20;
+  static constexpr size_type kDefaultChunkBytes = size_type{1} << 21;  // 2 MiB (x86 huge page)
   static constexpr size_type kMinChunkBytes = size_type{1} << 16;
   static constexpr size_type kMaxChunkBytes = static_cast<size_type>(
       sizeof(size_type) > 4 ? (std::uint64_t{1} << 32)

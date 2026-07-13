@@ -19,7 +19,7 @@
 
 namespace goblin::core {
 
-inline constexpr std::size_t kZSetMemberDefaultChunkBytes = std::size_t{1} << 20;
+inline constexpr std::size_t kZSetMemberDefaultChunkBytes = std::size_t{1} << 21;  // 2 MiB (x86 huge page)
 
 // Immutable member/score-text byte chunks shared across copy-on-write splits.
 // SoA metadata (offsets, lengths, scores) lives in ZSetMemberStorage and forks
@@ -39,7 +39,7 @@ struct ZSetMemberByteArena {
   size_type score_text_active_bytes{0};
   size_type score_text_committed_bytes{0};
   size_type chunk_bytes{kZSetMemberDefaultChunkBytes};
-  size_type chunk_shift{20};
+  size_type chunk_shift{21};  // re-derived by configure_chunk_bytes; matches the 2 MiB default
   size_type chunk_mask{kZSetMemberDefaultChunkBytes - 1};
   double growth{kDefaultArenaGrowth};
 

@@ -83,7 +83,7 @@ class HashStorage {
       std::numeric_limits<std::uint16_t>::max();
   static constexpr size_type kMaxValueBytes =
       std::numeric_limits<std::uint16_t>::max();
-  static constexpr size_type kDefaultChunkBytes = size_type{1} << 20;  // 1 MiB
+  static constexpr size_type kDefaultChunkBytes = size_type{1} << 21;  // 2 MiB (x86 huge page)
   // Must hold the largest possible blob (field + value = 2 * 64 KiB) in one
   // chunk, rounded to the next power of two: 2^17 = 128 KiB.
   static constexpr size_type kMinChunkBytes = size_type{1} << 17;
