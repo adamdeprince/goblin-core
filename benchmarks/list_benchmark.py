@@ -7,7 +7,7 @@ readers. It loads one fixed-width list through pipelined multi-value RPUSH,
 measures rank-sensitive reads and writes at several positions, then exercises
 stable-length endpoint and pivot churn. Every engine runs alone.
 
-Example (naamah):
+Example:
   ./benchmarks/list_benchmark.py \
     --engine goblin-pma:goblin-pma:./build-release/goblin-core \
     --engine redis-7.2.4:redis:$HOME/bench/redis-7.2.4/src/redis-server \
@@ -568,7 +568,7 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
     lines = [
         "# Goblin Core 100k List Benchmark",
         "",
-        f"Generated on `{socket.gethostname()}` at {generated_at}.",
+        f"Generated on a dedicated benchmark host at {generated_at}.",
         "",
         "## Method",
         "",

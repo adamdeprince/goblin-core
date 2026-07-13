@@ -20,7 +20,7 @@ Two focused workloads cover update behavior:
 * mixed hashes: seeded inserts, same-width updates, deletes, and value growth,
   measured as depth-one RESP latency through p99.9.
 
-Example (naamah):
+Example:
   ./benchmarks/hset_benchmark.py \
     --engine goblin:goblin:./build-release/goblin-core \
     --engine redis-7.2.4:redis:$HOME/bench/redis-7.2.4/src/redis-server \
@@ -1348,7 +1348,7 @@ def report_lines(
     lines = [
         "# Goblin Core HSET Speed and Memory Benchmark",
         "",
-        f"Generated on `{socket.gethostname()}` at {generated_at}.",
+        f"Generated on a dedicated benchmark host at {generated_at}.",
         "",
         "## Method",
         "",
@@ -1357,7 +1357,7 @@ def report_lines(
         f"deletes a `{args.baseline_warmup_fields:,}`-field fixed-width hash, "
         "then settles. This warms the hash arena, index, and allocator.",
         "- RSS is `INFO memory`'s `used_memory_rss` before and after the workload. "
-        "The naamah builds read the same live `/proc` resident-set field and do "
+        "The builds read the same live `/proc` resident-set field and do "
         "not use a cached value.",
         "- Application memory is the independent `INFO used_memory` delta. "
         "Per-key memory is `MEMORY USAGE` on incumbents and "
@@ -1384,7 +1384,7 @@ def report_lines(
         f"median delta.",
         "- Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one "
         "proactor thread for single-core parity. The target is a modest single-core "
-        "memory server; naamah is a quiet 64-core test machine.",
+        "memory server; the benchmark host is a quiet 64-core test machine.",
         "- Goblin uses the tested binary's configured compact-hash policy. The "
         "parity config keeps Redis and Valkey listpacked through 128 fields. "
         "The many-hash sweep therefore measures the engines' configured "

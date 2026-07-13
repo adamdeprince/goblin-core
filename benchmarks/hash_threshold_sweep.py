@@ -328,7 +328,7 @@ def report_lines(
     lines = [
         "# Indexed Compact Hash Threshold Sweep",
         "",
-        f"Generated on `{socket.gethostname()}` at {generated_at}.",
+        f"Generated on a dedicated benchmark host at {generated_at}.",
         "",
         "## Method",
         "",

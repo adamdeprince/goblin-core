@@ -1,6 +1,6 @@
 # Goblin Core 100k List Benchmark
 
-Generated on `naamah` at 2026-07-12 20:22:22 UTC.
+Generated on a dedicated benchmark host at 2026-07-12 20:22:22 UTC.
 
 ## Method
 

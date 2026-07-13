@@ -13,7 +13,7 @@ every hash to the full form and `blob` restores the size-only default.
 
 ## Method
 
-- Host: `naamah`, the quiet dedicated 64-core Threadripper PRO 5995WX system.
+- Host: a quiet dedicated 64-core Threadripper PRO 5995WX system.
 - Every cardinality and engine starts a fresh server; servers run one at a time.
 - Each row holds approximately 500,000 total fields. Keys and fields are 14
   bytes each and values are 16 bytes.

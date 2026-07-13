@@ -64,7 +64,7 @@ own arena rather than collapsing to one via the shared-member-layer optimization
 
 | workload | old (fixed 1 MiB) | new (growable) | change |
 | --- | ---: | ---: | ---: |
-| small zset RSS, naamah / x86 4 KiB pages | 5492 B/zset | **1510 B/zset** | **3.6× leaner** |
+| small zset RSS, x86 4 KiB pages | 5492 B/zset | **1510 B/zset** | **3.6× leaner** |
 | small zset RSS, 16 KiB-page hosts (est.) | ~17.8 KB/zset | ~1.5 KB/zset | ~12× leaner |
 
 Large zsets — **no regression**:

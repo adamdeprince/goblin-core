@@ -1,16 +1,16 @@
 # Goblin Core HSET Speed and Memory Benchmark
 
-Generated on `naamah` at 2026-07-13 01:42:36 UTC.
+Generated on a dedicated benchmark host at 2026-07-13 01:42:36 UTC.
 
 ## Method
 
 - Every scenario starts a fresh server; engines run one at a time.
 - Before the empty-server baseline, every engine constructs and deletes a `2,048`-field fixed-width hash, then settles. This warms the hash arena, index, and allocator.
-- RSS is `INFO memory`'s `used_memory_rss` before and after the workload. The naamah builds read the same live `/proc` resident-set field and do not use a cached value.
+- RSS is `INFO memory`'s `used_memory_rss` before and after the workload. The builds read the same live `/proc` resident-set field and do not use a cached value.
 - Application memory is the independent `INFO used_memory` delta. Per-key memory is `MEMORY USAGE` on incumbents and `GOBLIN.MEMORY total_allocated_bytes` on Goblin Core. These are engine-specific corroborating counters; RSS is the cross-engine comparison.
 - Bulk loads use multi-field `HSET` batches of `128` and pipeline depth `256` through the shared Python RESP harness; load timing includes client encoding and is reported as observed end-to-end throughput. Point-update rates use one `redis-benchmark` client at pipeline depth `256` and `500,000` requests. Each fresh-server round takes a median of `3` point runs; the large/many tables then median `3` fresh rounds (`9` point samples), while relocation HGET medians `5` fresh rounds (`15` point samples).
 - Baselines are component-wise medians of each scenario's fresh-server rounds (`3` for construction/mixed and `5` for relocation). RSS and `used_memory` deltas are paired within each round and then medianed; absolute checkpoint values are the median baseline plus that paired median delta.
-- Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one proactor thread for single-core parity. The target is a modest single-core memory server; naamah is a quiet 64-core test machine.
+- Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one proactor thread for single-core parity. The target is a modest single-core memory server; the benchmark host is a quiet 64-core test machine.
 - Goblin uses the tested binary's configured compact-hash policy. The parity config keeps Redis and Valkey listpacked through 128 fields. The many-hash sweep therefore measures the engines' configured representation choices, not matched internal encodings.
 - Incumbents are exercised strictly as black-box RESP servers; their source code is not inspected.
 

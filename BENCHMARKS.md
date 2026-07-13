@@ -459,7 +459,7 @@ which share the server flags):
   `benchmarks/hash_speed.py --engine ... --redis-benchmark <path>`.
 - Combined HSET speed, RSS, value-growth, and representation sweep:
   `benchmarks/hset_benchmark.py --engine ... --redis-benchmark <path>`; the
-  checked-in naamah result is [HSET-BENCHMARK.md](HSET-BENCHMARK.md).
+  checked-in result is [HSET-BENCHMARK.md](HSET-BENCHMARK.md).
 - PING latency, concurrency, and write-path tail: `benchmarks/lat_tail.py
   --engine ... --probe ./write_tail_latency --redis-benchmark <path>` (build the
   probe with `c++ -O2 -std=c++20 -o write_tail_latency

@@ -27,7 +27,7 @@ parses or re-stringifies numbers, and the server dispatches straight out of the 
 ### Latency over the ring
 
 Measured by [`benchmarks/sbe_vs_resp_ring.cpp`](../benchmarks/sbe_vs_resp_ring.cpp) — both
-protocols on one server, client and server pinned to separate cores (host `naamah` — an
+protocols on one server, client and server pinned to separate cores (a quiet dedicated
 AMD Ryzen Threadripper PRO 5995WX, 64C/128T, x86-64; a many-core workstation part, not a
 single-thread speed champion — which makes the sub-microsecond round trips notable).
 Figures are the **median** round-trip over a 3-second window (~1–5 M samples per op). SBE runs ~1.7–2.0× faster than RESP over the *same* ring; the delta is pure protocol —
