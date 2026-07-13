@@ -1,5 +1,6 @@
 #include "goblin/core/store.hpp"
 
+#include "goblin/core/hugetlb.hpp"
 #include "goblin/core/rdb.hpp"
 
 #include <algorithm>
@@ -2164,10 +2165,56 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   }
 }
 
+bool Store::save_to_file(const std::string& path,
+                         bool with_accelerator) const noexcept {
+  // Write to a temp file, fsync, and atomically rename into place. Used by both the
+  // forked child and the synchronous (huge-page) save; on the child path the caller
+  // _exit()s the result without running the parent's destructors.
+  const std::string temp = path + ".tmp";
+  const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    return false;
+  }
+  bool ok = true;
+  {
+    FdOutputStreambuf sink(fd);
+    std::ostream out(&sink);
+    try {
+      save(out, with_accelerator);
+      out.flush();
+    } catch (...) {
+      ok = false;
+    }
+    if (!out) {
+      ok = false;
+    }
+  }
+  if (ok && ::fsync(fd) != 0) ok = false;
+  if (::close(fd) != 0) ok = false;
+  if (ok && ::rename(temp.c_str(), path.c_str()) != 0) ok = false;
+  if (!ok) {
+    ::unlink(temp.c_str());
+  }
+  return ok;
+}
+
 Store::SaveStart Store::start_background_save(std::string path,
                                              bool with_accelerator) {
-  if (background_save_child_ > 0) {
+  if (background_save_child_ > 0 || background_save_sync_pending_) {
     return SaveStart::AlreadyRunning;
+  }
+
+  if (hugetlb::arena_enabled()) {
+    // Huge pages make fork+COW unsafe: a huge-page mapping copies-on-write at 2 MiB
+    // granularity, so one post-fork write duplicates a whole 2 MiB page and pulls a
+    // fresh huge page from the small fixed pool -- amplifying RSS and SIGBUS-ing the
+    // parent once the pool exhausts. Save synchronously in-process instead: the event
+    // loop blocks for the duration, but nothing is written after a fork so nothing
+    // copies-on-write. reap_background_save() returns the outcome on its next call.
+    background_save_sync_ok_ = save_to_file(path, with_accelerator);
+    background_save_path_ = std::move(path);
+    background_save_sync_pending_ = true;
+    return SaveStart::Started;
   }
 
   const pid_t child = ::fork();
@@ -2176,38 +2223,10 @@ Store::SaveStart Store::start_background_save(std::string path,
   }
 
   if (child == 0) {
-    // Child: a copy-on-write snapshot of the store, frozen at fork time. Write
-    // to a temp file, fsync, rename into place, and _exit without running the
-    // parent's destructors or atexit handlers (they belong to the parent). The
-    // inherited descriptors are left untouched -- blindly closing them is unsafe
-    // on some platforms (macOS keeps runtime ports in low fds) -- and close on
-    // _exit anyway.
-    const std::string temp = path + ".tmp";
-    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-      _exit(1);
-    }
-    bool ok = true;
-    {
-      FdOutputStreambuf sink(fd);
-      std::ostream out(&sink);
-      try {
-        save(out, with_accelerator);
-        out.flush();
-      } catch (...) {
-        ok = false;
-      }
-      if (!out) {
-        ok = false;
-      }
-    }
-    if (ok && ::fsync(fd) != 0) ok = false;
-    if (::close(fd) != 0) ok = false;
-    if (ok && ::rename(temp.c_str(), path.c_str()) != 0) ok = false;
-    if (!ok) {
-      ::unlink(temp.c_str());
-    }
-    _exit(ok ? 0 : 1);
+    // Child: a copy-on-write snapshot of the store, frozen at fork time. Write it and
+    // _exit without running the parent's destructors or atexit handlers (they belong
+    // to the parent); inherited descriptors are left untouched and close on _exit.
+    _exit(save_to_file(path, with_accelerator) ? 0 : 1);
   }
 
   background_save_child_ = child;
@@ -2216,6 +2235,14 @@ Store::SaveStart Store::start_background_save(std::string path,
 }
 
 std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
+  if (background_save_sync_pending_) {
+    // The synchronous (huge-page) save already finished inside start_background_save.
+    background_save_sync_pending_ = false;
+    SaveOutcome outcome{.path = std::move(background_save_path_),
+                        .ok = background_save_sync_ok_};
+    background_save_path_.clear();
+    return outcome;
+  }
   if (background_save_child_ <= 0) {
     return std::nullopt;
   }

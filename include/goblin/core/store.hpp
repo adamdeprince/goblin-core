@@ -1551,10 +1551,12 @@ class Store {
   // snapshot_error on I/O trouble.
   void save(std::ostream& out, bool with_accelerator = true) const;
 
-  // Fork a copy-on-write child that writes the snapshot to `path` (to a temp
-  // file renamed into place on success), so the server keeps serving while it
-  // saves. Returns immediately; call reap_background_save() from the event loop
-  // to collect the result. Only one background save runs at a time.
+  // Persist the snapshot to `path` (to a temp file renamed into place on success).
+  // Normally forks a copy-on-write child so the server keeps serving; but when
+  // --arena-hugetlb is set, fork+COW is unsafe (2 MiB COW granularity), so the save
+  // runs synchronously in-process, blocking the event loop for its duration. Either
+  // way returns a start status immediately; call reap_background_save() from the
+  // event loop to collect the result. Only one save runs at a time.
   enum class SaveStart { Started, AlreadyRunning, ForkFailed };
   [[nodiscard]] SaveStart start_background_save(std::string path,
                                                 bool with_accelerator = true);
@@ -1567,7 +1569,7 @@ class Store {
   };
   [[nodiscard]] std::optional<SaveOutcome> reap_background_save() noexcept;
   [[nodiscard]] bool background_save_in_progress() const noexcept {
-    return background_save_child_ > 0;
+    return background_save_child_ > 0 || background_save_sync_pending_;
   }
 
   // Replace all current data with the snapshot read from `in`. Auto-detects a
@@ -1652,6 +1654,15 @@ class Store {
   TtlSet ttl_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
+  // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so
+  // SAVE runs synchronously in-process. These carry its already-finished outcome to
+  // the next reap_background_save(), leaving the caller's start/reap flow unchanged.
+  bool background_save_sync_pending_ = false;
+  bool background_save_sync_ok_ = false;
+  // Write the snapshot to `path` via a temp file + fsync + atomic rename. Shared by
+  // the forked child and the synchronous save path; returns false on any error.
+  [[nodiscard]] bool save_to_file(const std::string& path,
+                                  bool with_accelerator) const noexcept;
 };
 
 [[nodiscard]] std::string format_score(double score);

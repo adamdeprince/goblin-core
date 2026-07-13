@@ -139,7 +139,8 @@ void print_usage(std::string_view program) {
             << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
-            << "       [--no-arena-hugetlb]   (disable huge pages for arena blocks)\n";
+            << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
+            << "                               unsafe with fork-COW SAVE, so off by default)\n";
 }
 
 }  // namespace
@@ -218,10 +219,12 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    if (arg == "--no-arena-hugetlb") {
-      // Disable huge-page backing for max-size arena blocks (on by default). A no-op
-      // where huge pages are unavailable, so it is accepted on every platform.
-      goblin::core::hugetlb::arena_enabled() = false;
+    if (arg == "--arena-hugetlb") {
+      // Back max-size arena blocks with huge pages (OFF by default). Opt-in, not the
+      // default, because SAVE's fork+COW is unsafe with huge pages: 2 MiB COW
+      // granularity blows up RSS and SIGBUSes the parent if the pool exhausts mid-save.
+      // A no-op where huge pages are unavailable, so it is accepted on every platform.
+      goblin::core::hugetlb::arena_enabled() = true;
       continue;
     }
 
