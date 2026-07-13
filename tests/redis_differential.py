@@ -629,8 +629,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--rank-cache-mode", choices=["off", "exact", "block-hint"])
     parser.add_argument(
         "--goblin-list-prefix",
-        default="GOBLIN.PMA.",
-        help="Concrete Goblin list command prefix (PMA or SEGMENTED); use an empty string for aliases.",
+        default="",
+        help=(
+            "Concrete Goblin list command prefix (PMA or SEGMENTED); the "
+            "default exercises standard aliases."
+        ),
     )
     return parser.parse_args(argv)
 

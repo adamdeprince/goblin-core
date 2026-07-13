@@ -968,11 +968,11 @@ struct StoreOptions {
   std::size_t hash_listpack_max_entries{
       HashOptions::kDefaultListpackMaxEntries};
   // Lists stay as a single inline-value blob through this many entries, then
-  // promote to the adaptive PMA plus split-address value arena.
+  // promote to the selected large-list representation.
   std::size_t list_listpack_max_entries{32};
   // Standard Redis list commands resolve to this concrete implementation.
   // Implementation-qualified commands bypass the selector.
-  ListImplementation list_implementation{ListImplementation::Pma};
+  ListImplementation list_implementation{ListImplementation::Segmented};
   std::size_t list_chunk_bytes{ListValueArena::kDefaultChunkBytes};
   // Shared logical-value encoding. A configured LZ4 threshold applies to
   // top-level strings, hash values, and the current PMA list implementation.

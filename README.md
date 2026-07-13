@@ -110,7 +110,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `LINSERT key BEFORE|AFTER pivot value`
 
 These standard list names resolve through `--list-implementation pma|segmented`
-(`pma` is the default). Both backends are also addressable directly with
+(`segmented` is the default). Both backends are also addressable directly with
 `GOBLIN.PMA.` or `GOBLIN.SEGMENTED.` plus the command name, for example
 `GOBLIN.PMA.LINDEX` and `GOBLIN.SEGMENTED.LPUSH`. Qualified command families let
 multiple list implementations coexist and be benchmarked without changing the
@@ -356,7 +356,7 @@ doubling that favors write throughput.
 `--list-chunk-bytes <bytes>` set the packed-arena chunk size per type. Each must
 be a power of two and large enough to hold its largest entry; all three default
 to `2` MiB. `--list-implementation pma|segmented` selects the backend used by
-standard list commands; PMA is the default. Lists separately expose
+standard list commands; segmented lists are the default. Lists separately expose
 `--list-max-density` (default `0.97`) and
 `--list-resize-growth` (default `2**0.25`) so packing and resize policy do not
 silently control one another. See [LISTS.md](LISTS.md).

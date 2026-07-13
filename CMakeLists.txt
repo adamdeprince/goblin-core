@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.5.0
+  VERSION 0.6.0
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -618,26 +618,26 @@ if(GOBLIN_CORE_BUILD_TESTS)
         PROPERTIES TIMEOUT 30)
 
       add_test(
-        NAME goblin_core_segmented_redis_differential_sequential
+        NAME goblin_core_pma_redis_differential_sequential
         COMMAND
           ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/redis_differential.py
           --goblin-bin $<TARGET_FILE:goblin_core_server>
           --redis-server ${REDIS_SERVER_EXECUTABLE}
-          --goblin-list-prefix GOBLIN.SEGMENTED.)
-      set_tests_properties(goblin_core_segmented_redis_differential_sequential
+          --goblin-list-prefix GOBLIN.PMA.)
+      set_tests_properties(goblin_core_pma_redis_differential_sequential
         PROPERTIES TIMEOUT 30)
 
       add_test(
-        NAME goblin_core_segmented_redis_differential_pipelined
+        NAME goblin_core_pma_redis_differential_pipelined
         COMMAND
           ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/redis_differential.py
           --goblin-bin $<TARGET_FILE:goblin_core_server>
           --redis-server ${REDIS_SERVER_EXECUTABLE}
-          --goblin-list-prefix GOBLIN.SEGMENTED.
+          --goblin-list-prefix GOBLIN.PMA.
           --pipeline-depth 32)
-      set_tests_properties(goblin_core_segmented_redis_differential_pipelined
+      set_tests_properties(goblin_core_pma_redis_differential_pipelined
         PROPERTIES TIMEOUT 30)
     else()
       message(WARNING

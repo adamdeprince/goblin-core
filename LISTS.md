@@ -138,7 +138,7 @@ verbatim in both representations.
 ## Tuning
 
 - `--list-implementation pma|segmented` selects the backend for standard Redis
-  list command names. The default is `pma`.
+  list command names. The default is `segmented`.
 - `--list-max-density FRACTION` controls maximum PMA occupancy. The default is
   `0.97`.
 - `--list-resize-growth FACTOR` controls geometric PMA and arena-tail growth.

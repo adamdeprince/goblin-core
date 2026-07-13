@@ -38,7 +38,7 @@ enum class ListImplementation : std::uint8_t {
 }
 
 struct ListOptions {
-  ListImplementation implementation{ListImplementation::Pma};
+  ListImplementation implementation{ListImplementation::Segmented};
   std::size_t chunk_bytes{ListValueArena::kDefaultChunkBytes};
   std::size_t listpack_max_entries{32};
   double max_density{AdaptivePma::kDefaultMaxDensity};
@@ -48,7 +48,7 @@ struct ListOptions {
 };
 
 struct ListMemoryStats {
-  ListImplementation implementation{ListImplementation::Pma};
+  ListImplementation implementation{ListImplementation::Segmented};
   std::size_t element_count{0};
   std::size_t object_allocated_bytes{0};
   std::size_t value_live_bytes{0};

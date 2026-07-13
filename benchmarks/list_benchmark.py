@@ -870,9 +870,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--standard-list-implementation",
-        default="pma",
+        default="segmented",
         choices=["pma", "segmented"],
-        help="Target selected by standard list commands on Goblin Core.",
+        help=(
+            "Target selected by standard list commands on Goblin Core "
+            "(default: segmented)."
+        ),
     )
     parser.add_argument(
         "--goblin-max-density",

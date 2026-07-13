@@ -3602,6 +3602,7 @@ void test_list_listpack_and_pma() {
   using goblin::core::ListOptions;
 
   const ListOptions options{
+      .implementation = goblin::core::ListImplementation::Pma,
       .listpack_max_entries = 4,
       .max_density = 0.75,
       .resize_growth = 1.20,
@@ -3636,7 +3637,10 @@ void test_list_listpack_and_pma() {
 
   // Empty and binary values use the same u16 encoded-length path in both forms.
   const std::string binary("a\0b", 3);
-  List bytes(ListOptions{.listpack_max_entries = 0});
+  List bytes(ListOptions{
+      .implementation = goblin::core::ListImplementation::Pma,
+      .listpack_max_entries = 0,
+  });
   (void)bytes.push_back("");
   (void)bytes.push_back(binary);
   (void)bytes.push_front("");
@@ -3651,9 +3655,12 @@ void test_list_listpack_and_pma() {
 
   // Multi-value pushes cross the listpack boundary once, preserve RPUSH order,
   // and reverse an LPUSH command exactly as Redis specifies.
-  List batches(ListOptions{.listpack_max_entries = 4,
-                           .max_density = 0.90,
-                           .resize_growth = 1.20});
+  List batches(ListOptions{
+      .implementation = goblin::core::ListImplementation::Pma,
+      .listpack_max_entries = 4,
+      .max_density = 0.90,
+      .resize_growth = 1.20,
+  });
   const std::array<std::string_view, 6> back = {"b0", "b1", "b2",
                                                 "b3", "b4", "b5"};
   const std::array<std::string_view, 3> front = {"f0", "f1", "f2"};
@@ -3800,6 +3807,7 @@ void test_list_listpack_and_pma() {
   const std::array<std::string_view, 3> raw_restore_values = {
       raw_large_a, "", raw_large_b};
   List raw_restored(ListOptions{
+      .implementation = goblin::core::ListImplementation::Pma,
       .chunk_bytes = 65'536,
       .listpack_max_entries = 0,
   });
@@ -3815,6 +3823,7 @@ void test_list_listpack_and_pma() {
   // size identically or offsets will be decoded as block numbers.
   const std::array<std::string_view, 2> normalized_values = {"first", "second"};
   List normalized_chunks(ListOptions{
+      .implementation = goblin::core::ListImplementation::Pma,
       .chunk_bytes = 1,
       .listpack_max_entries = 0,
   });
@@ -3860,6 +3869,8 @@ void test_list_commands() {
   assert(execute_fields(store, {"LPUSH", "q", "one", "two"}) == ":2\r\n");
   assert(execute_fields(store, {"RPUSH", "q", "three", "four"}) ==
          ":4\r\n");
+  assert(store.list_memory_stats("q")->implementation ==
+         goblin::core::ListImplementation::Segmented);
   assert(execute_fields(store, {"LRANGE", "q", "0", "-1"}) ==
          "*4\r\n$3\r\ntwo\r\n$3\r\none\r\n$5\r\nthree\r\n$4\r\nfour\r\n");
   assert(execute_fields(store, {"LINDEX", "q", "-2"}) ==
@@ -3880,9 +3891,8 @@ void test_list_commands() {
   assert(execute_fields(store, {"LPUSHX", "missing", "x"}) == ":0\r\n");
   assert(execute_fields(store, {"LPOP", "missing", "3"}) == "$-1\r\n");
 
-  // The qualified command set always selects the PMA implementation. Standard
-  // commands resolve through StoreOptions::list_implementation (PMA for now),
-  // so the two names deliberately address the same list.
+  // A qualified push selects PMA for a new key. Standard command names then
+  // keep operating on that existing representation without converting it.
   assert(execute_fields(store, {"GOBLIN.PMA.RPUSH", "qualified", "a", "b"}) ==
          ":2\r\n");
   assert(execute_fields(store, {"LPUSH", "qualified", "c", "d"}) ==
@@ -3929,21 +3939,20 @@ void test_list_commands() {
   assert(execute_fields(store,
                         {"GOBLIN.SEGMENTED.LLEN", "seg-qualified"}) ==
          ":1\r\n");
-  assert(execute_fields(store, {"INFO"}).find("list_implementation:pma") !=
-         std::string::npos);
+  assert(execute_fields(store, {"INFO"})
+             .find("list_implementation:segmented") != std::string::npos);
 
-  goblin::core::Store segmented_store(goblin::core::StoreOptions{
+  goblin::core::Store pma_store(goblin::core::StoreOptions{
       .list_listpack_max_entries = 3,
-      .list_implementation = goblin::core::ListImplementation::Segmented,
+      .list_implementation = goblin::core::ListImplementation::Pma,
   });
-  assert(execute_fields(segmented_store,
+  assert(execute_fields(pma_store,
                         {"RPUSH", "packed", "a", "b", "c", "d"}) ==
          ":4\r\n");
-  assert(execute_fields(segmented_store,
-                        {"LRANGE", "packed", "0", "-1"}) ==
+  assert(execute_fields(pma_store, {"LRANGE", "packed", "0", "-1"}) ==
          "*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n");
-  assert(execute_fields(segmented_store, {"INFO"})
-             .find("list_implementation:segmented") != std::string::npos);
+  assert(execute_fields(pma_store, {"INFO"})
+             .find("list_implementation:pma") != std::string::npos);
 
   // Multi-value validation happens before the first element is inserted.
   const std::string oversized(goblin::core::kStringMaxBytes + 1, 'z');

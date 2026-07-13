@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets and hashes, with roughly half the sorted-set memory footprint of Redis 7.2.4 and a 220 ns shared-memory fast path.">
+  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets, hashes, strings, and lists, with roughly half the sorted-set memory footprint of Redis 7.2.4 and a 220 ns shared-memory fast path.">
   <meta name="theme-color" content="#11130f">
   <meta property="og:title" content="Goblin Core — Redis semantics without Redis overhead">
   <meta property="og:description" content="Spend less on leaderboard infrastructure. Or build latency-sensitive systems with 220 ns request/reply round trips.">
@@ -172,8 +172,40 @@
       font: 760 .86rem/1.4 var(--mono);
     }
     .release-note strong { color: var(--acid-dark); }
-    .release-note span { display: block; }
-    .release-note span + span { margin-top: 4px; }
+    .release-note > span { display: block; }
+    .release-note > span + span { margin-top: 4px; }
+    .release-delivered { margin-bottom: 9px; }
+    .crossed-plan {
+      position: relative;
+      display: inline-block;
+      color: #73756d;
+      text-decoration: none;
+    }
+    .crossed-plan strong { color: #73756d; }
+    .crossed-plan::before,
+    .crossed-plan::after {
+      content: "";
+      position: absolute;
+      z-index: 1;
+      top: calc(50% - 2px);
+      right: -7px;
+      left: -7px;
+      height: 4px;
+      background: #c52222;
+      pointer-events: none;
+    }
+    .crossed-plan::before { transform: rotate(4deg); }
+    .crossed-plan::after { transform: rotate(-4deg); }
+    .delivery-stamp {
+      display: inline-block;
+      margin-left: 12px;
+      padding: 2px 7px;
+      border: 2px solid #c52222;
+      color: #a91818 !important;
+      font-weight: 900;
+      text-transform: uppercase;
+      transform: rotate(-2deg);
+    }
     .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
     .button {
       display: inline-flex;
@@ -381,6 +413,7 @@
       .hero-inner { padding-top: 112px; }
       h1 { font-size: clamp(3.6rem, 19vw, 5.8rem); }
       .hero-copy { margin-top: 22px; font-size: 1.07rem; }
+      .delivery-stamp { display: table; margin: 8px 0 0; }
       .hero-note { display: none; }
       .hero-chicken { right: -87px; bottom: -66px; width: 470px; height: 470px; }
       .proof { min-height: 128px; padding: 24px 17px; }
@@ -445,8 +478,12 @@
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
-        <p class="hero-copy">A compact server for sorted sets and hashes. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <p class="release-note"><span><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a> and Pub/Sub.</span><span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span></p>
+        <p class="hero-copy">A compact server for sorted sets, hashes, strings, and lists. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <p class="release-note">
+          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
+          <span><strong>Coming July 20, 2026:</strong> Pub/Sub.</span>
+          <span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span>
+        </p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
             Build from source
@@ -563,6 +600,7 @@
           </table>
         </div>
         <p class="method">Best of three, <code>redis-benchmark -P 16 -c 1</code>, dedicated AMD 5995WX host. Each engine uses its shipped allocator; Dragonfly limited to one proactor. <a href="BENCHMARKS.html">Full methodology and reproduction commands.</a></p>
+        <p class="method"><strong>Benchmark reports:</strong> <a href="HSET-BENCHMARK.html">HSET speed and memory</a> · <a href="LIST-BENCHMARK.html">LIST speed and memory</a></p>
       </div>
     </section>
 
@@ -593,12 +631,12 @@
         <div>
           <p class="section-label">Direction, stated plainly</p>
           <h2>Redis semantics, without the old overhead.</h2>
-          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> arrive July 20, 2026 alongside Pub/Sub; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while segmented lists effectively match the fastest Redis build on pipelined population and account for 17.16 bytes per item.</p>
+          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation effectively matches the fastest Redis build on pipelined population and accounts for 17.16 bytes per item. Pub/Sub remains targeted for July 20, 2026.</p>
           <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
           <p class="section-intro">Keys and encoded values use compact 16-bit lengths. Raw values hold up to 65,534 bytes; optional LZ4 admits larger compressible values while the encoded form fits. Everything larger belongs in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, and strings</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, strings, and lists</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
           <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No built-in replication</li><li>No cluster mode</li><li>Kafka for durable replay</li><li>Save/load for fast restarts</li></ul></div>
         </div>
       </div>

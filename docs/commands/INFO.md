@@ -17,7 +17,7 @@ the full payload.
 |---|---|
 | `redis_version` | `7.4.0` — the wire/behaviour compatibility level |
 | `redis_mode` | `standalone` |
-| `list_implementation` | concrete backend selected for standard list commands (`pma` or `segmented`; default `pma`) |
+| `list_implementation` | concrete backend selected for standard list commands (`pma` or `segmented`; default `segmented`) |
 
 ## `# Memory`
 

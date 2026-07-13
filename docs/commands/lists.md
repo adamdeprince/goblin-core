@@ -8,7 +8,8 @@ The measured 100,000-element comparison is in
 [List Benchmark](../../LIST-BENCHMARK.md).
 
 Every operation has implementation-qualified names. Standard Redis names
-resolve through `--list-implementation pma|segmented`; PMA is the default.
+resolve through `--list-implementation pma|segmented`; segmented lists are the
+default.
 
 | Command | Syntax | Reply |
 |---|---|---|

@@ -1,10 +1,12 @@
 # Goblin Core 100k List Benchmark
 
-Generated on a dedicated benchmark host at 2026-07-13 21:37:04 UTC.
+Incumbent results were generated on a dedicated benchmark host at 2026-07-13
+21:37:04 UTC. Goblin Core columns were refreshed on the same host at 2026-07-13
+22:29:27 UTC from commit `26aa20f`; incumbents were not rerun.
 
 ## Summary
 
-`goblin-pma` leads `8` of `8` fixed-command rows, reaches `2.80x` the fastest incumbent on middle-list `LINDEX`, RESP population is `49.1%` behind the fastest incumbent, and uses `30.06` RSS-delta bytes/item. `goblin-segmented` leads `8` of `8` fixed-command rows, reaches `2.00x` the fastest incumbent on middle-list `LINDEX`, RESP population is `1.0%` behind the fastest incumbent, and uses `27.57` RSS-delta bytes/item. `goblin-segmented` is the leanest key representation at `17.16` accounted bytes/item versus `18.14` from the leanest incumbent's key-level counter. The leanest incumbent uses `21.38` RSS-delta bytes/item. RESP population and compound-operation rows use the Python RESP pipeline and are client-influenced; fixed-command rows use the C benchmark client.
+`goblin-pma` leads `8` of `8` fixed-command rows, reaches `2.63x` the fastest incumbent on middle-list `LINDEX`, RESP population is `47.8%` behind the fastest incumbent, and uses `29.37` RSS-delta bytes/item. `goblin-segmented` leads `8` of `8` fixed-command rows, reaches `1.96x` the fastest incumbent on middle-list `LINDEX`, RESP population is `1.5%` behind the fastest incumbent, and uses `26.91` RSS-delta bytes/item. `goblin-segmented` is the leanest key representation at `17.16` accounted bytes/item versus `18.14` from the leanest incumbent's key-level counter. The leanest incumbent uses `21.38` RSS-delta bytes/item. RESP population and compound-operation rows use the Python RESP pipeline and are client-influenced; fixed-command rows use the C benchmark client.
 
 ## Method
 
@@ -23,8 +25,8 @@ Generated on a dedicated benchmark host at 2026-07-13 21:37:04 UTC.
 
 | Engine | items/s | seconds | RPUSH commands |
 | --- | ---: | ---: | ---: |
-| `goblin-pma` | 772,450 | 0.1295 | 782 |
-| `goblin-segmented` | 1,503,153 | 0.0665 | 782 |
+| `goblin-pma` | 792,638 | 0.1262 | 782 |
+| `goblin-segmented` | 1,496,056 | 0.0668 | 782 |
 | `redis-7.2.4` | 1,518,455 | 0.0659 | 782 |
 | `redis-8.8` | 1,484,023 | 0.0674 | 782 |
 | `valkey-9.1` | 1,471,200 | 0.0680 | 782 |
@@ -36,26 +38,26 @@ Logical operations per second. Fixed commands use the C benchmark client; compou
 
 | Operation | goblin-pma | goblin-segmented | redis-7.2.4 | redis-8.8 | valkey-9.1 | dragonfly |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `LLEN control` | 3,574,857 | 3,512,140 | 2,742,356 | 2,199,912 | 2,001,920 | 1,539,938 |
-| `LINDEX 0` | 2,669,226 | 2,705,297 | 2,152,602 | 1,924,923 | 1,725,793 | 1,275,108 |
-| `LINDEX 25000` | 2,534,076 | 2,249,348 | 1,157,179 | 1,082,119 | 1,112,178 | 1,048,126 |
-| `LINDEX 50000` | 2,669,226 | 1,906,590 | 953,295 | 633,519 | 851,881 | 870,400 |
-| `LINDEX 75000` | 2,383,238 | 1,640,918 | 1,429,943 | 1,163,907 | 1,213,285 | 817,110 |
-| `LINDEX -1` | 2,566,564 | 2,411,952 | 2,199,912 | 1,906,590 | 1,614,452 | 1,259,069 |
-| `LRANGE 49992 50007` | 714,971 | 727,971 | 467,738 | 394,079 | 432,380 | 380,593 |
-| `LSET 50000` | 1,696,542 | 1,836,624 | 944,302 | 597,588 | 803,984 | 788,157 |
-| `LINSERT before middle pivot + LREM inserted value` | 631 | 805 | 614 | 836 | 661 | 825 |
-| `LPUSH + LPOP` | 212,871 | 99,284 | 211,222 | 195,770 | 198,126 | 181,130 |
-| `RPUSH + RPOP` | 204,979 | 97,808 | 214,921 | 200,750 | 198,097 | 183,167 |
-| `LPUSH 8 values + LPOP count=8` | 54,289 | 41,718 | 61,809 | 61,484 | 61,013 | 55,900 |
-| `RPUSH + LPOP` | 179,601 | 58,278 | 212,496 | 200,565 | 199,914 | 173,611 |
+| `LLEN control` | 3,393,085 | 3,451,586 | 2,742,356 | 2,199,912 | 2,001,920 | 1,539,938 |
+| `LINDEX 0` | 2,599,896 | 2,599,896 | 2,152,602 | 1,924,923 | 1,725,793 | 1,275,108 |
+| `LINDEX 25000` | 2,441,366 | 2,199,912 | 1,157,179 | 1,082,119 | 1,112,178 | 1,048,126 |
+| `LINDEX 50000` | 2,502,400 | 1,870,953 | 953,295 | 633,519 | 851,881 | 870,400 |
+| `LINDEX 75000` | 2,327,814 | 1,654,479 | 1,429,943 | 1,163,907 | 1,213,285 | 817,110 |
+| `LINDEX -1` | 2,566,564 | 2,383,238 | 2,199,912 | 1,906,590 | 1,614,452 | 1,259,069 |
+| `LRANGE 49992 50007` | 722,715 | 736,000 | 467,738 | 394,079 | 432,380 | 380,593 |
+| `LSET 50000` | 1,725,793 | 1,888,604 | 944,302 | 597,588 | 803,984 | 788,157 |
+| `LINSERT before middle pivot + LREM inserted value` | 597 | 1,067 | 614 | 836 | 661 | 825 |
+| `LPUSH + LPOP` | 213,631 | 99,890 | 211,222 | 195,770 | 198,126 | 181,130 |
+| `RPUSH + RPOP` | 198,893 | 214,788 | 214,921 | 200,750 | 198,097 | 183,167 |
+| `LPUSH 8 values + LPOP count=8` | 54,559 | 42,566 | 61,809 | 61,484 | 61,013 | 55,900 |
+| `RPUSH + LPOP` | 177,961 | 186,698 | 212,496 | 200,565 | 199,914 | 173,611 |
 
 ## Memory After Population
 
 | Engine | RSS MiB | RSS delta MiB | RSS delta B/item | INFO used MiB | INFO delta B/item | key-reported B/item |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `goblin-pma` | 7.99 | 2.87 | 30.06 | 2.14 | 22.40 | 22.40 |
-| `goblin-segmented` | 7.76 | 2.63 | 27.57 | 1.70 | 17.87 | 17.16 |
+| `goblin-pma` | 8.08 | 2.80 | 29.37 | 2.14 | 22.40 | 22.40 |
+| `goblin-segmented` | 7.79 | 2.57 | 26.91 | 1.70 | 17.87 | 17.16 |
 | `redis-7.2.4` | 10.97 | 2.04 | 21.38 | 2.93 | 21.15 | 20.33 |
 | `redis-8.8` | 12.15 | 2.11 | 22.12 | 2.78 | 21.15 | 18.37 |
 | `valkey-9.1` | 11.98 | 2.21 | 23.14 | 2.98 | 21.35 | 20.33 |
@@ -65,8 +67,8 @@ Logical operations per second. Fixed commands use the C benchmark client; compou
 
 | Engine | RSS MiB | INFO used MiB | key bytes/item | list length |
 | --- | ---: | ---: | ---: | ---: |
-| `goblin-pma` | 11.35 | 2.54 | 26.64 | 100000 |
-| `goblin-segmented` | 7.89 | 1.77 | 17.22 | 100000 |
+| `goblin-pma` | 11.45 | 2.54 | 26.64 | 100000 |
+| `goblin-segmented` | 7.93 | 1.77 | 17.22 | 100000 |
 | `redis-7.2.4` | 11.16 | 3.13 | 17.73 | 100000 |
 | `redis-8.8` | 12.28 | 2.99 | 18.37 | 100000 |
 | `valkey-9.1` | 12.23 | 3.16 | 17.73 | 100000 |
