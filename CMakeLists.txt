@@ -490,6 +490,19 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_ring_hugetlb_test)
   set_tests_properties(goblin_core_ring_hugetlb PROPERTIES TIMEOUT 60)
 
+  # Huge-page-backed arena blocks: a block that freezes at a huge-multiple chunk is
+  # re-homed onto a huge page. Skips cleanly without reserved huge pages.
+  add_executable(goblin_core_arena_hugetlb_test tests/arena_hugetlb_test.cpp)
+  target_link_libraries(goblin_core_arena_hugetlb_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_arena_hugetlb_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_arena_hugetlb
+    COMMAND goblin_core_arena_hugetlb_test)
+  set_tests_properties(goblin_core_arena_hugetlb PROPERTIES TIMEOUT 60)
+
   add_test(
     NAME goblin_core_output_backpressure
     COMMAND

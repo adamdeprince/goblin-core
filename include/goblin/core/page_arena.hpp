@@ -12,6 +12,8 @@
 // callers); this header only owns the allocation policy and the runtime page
 // size (sysconf, not a hardcoded 4 KiB -- Apple/LoongArch use 16 KiB pages).
 
+#include "goblin/core/hugetlb.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -113,6 +115,35 @@ struct PageBlockDeleter {
                                  PageBlockDeleter{bytes, false});
 }
 
+// Try to re-home a just-frozen block onto a huge page: allocate a huge block of
+// exactly `chunk_bytes`, copy the `used` live bytes over, and return it -- or nullptr
+// if `chunk_bytes` is not a huge-page multiple or huge pages are unavailable right
+// now, in which case the caller leaves the block at its grown (normal-page) size.
+// This is the "eat the memcpy" promotion, paid once when a block freezes at max, so
+// a frozen block becomes a single huge page. munmap frees a huge mapping the same
+// way, so PageBlockDeleter needs no change. Best-effort and non-latching: a later
+// freeze retries, since the huge-page pool restocks as blocks are freed.
+[[nodiscard]] inline std::shared_ptr<char[]> try_promote_to_huge(
+    const std::shared_ptr<char[]>& block, std::size_t used, std::size_t chunk_bytes) {
+#if defined(GOBLIN_HAVE_MMAP)
+  if (hugetlb::is_hugepage_multiple(chunk_bytes)) {
+    if (void* hp = hugetlb::try_alloc(chunk_bytes)) {
+      auto huge = std::shared_ptr<char[]>(static_cast<char*>(hp),
+                                          PageBlockDeleter{chunk_bytes, true});
+      if (used != 0 && block) {
+        std::memcpy(huge.get(), block.get(), used);
+      }
+      return huge;
+    }
+  }
+#else
+  (void)block;
+  (void)used;
+  (void)chunk_bytes;
+#endif
+  return nullptr;
+}
+
 // Grow a block to `new_bytes`: allocate a fresh block, copy `used` bytes over,
 // return it. The old block's shared_ptr is released by the caller -- if another
 // arena (a COW split) still holds it, it survives; otherwise it's freed/munmapped.
@@ -189,6 +220,16 @@ struct RunReservation {
       committed_bytes += committed - active_bytes;
       active_bytes = committed;
     } else {  // would straddle chunk_bytes; freeze this block, take the next slot
+      // Freeze-to-max: when huge pages are enabled and chunk_bytes is a huge multiple,
+      // re-home the just-filled block onto one huge page (eat the memcpy once). It is
+      // now exactly chunk_bytes, so a normal frozen block's unused tail is never
+      // committed -- only a huge block, which is a full page regardless, reaches max.
+      if (hugetlb::arena_enabled()) {
+        if (auto huge = try_promote_to_huge(blocks[block_index], block_offset, chunk_bytes)) {
+          committed_bytes += chunk_bytes - active_bytes;
+          blocks[block_index] = std::move(huge);
+        }
+      }
       next_offset += chunk_bytes - block_offset;
       block_offset = 0;
       block_index += 1;
@@ -254,6 +295,16 @@ struct RunReservationSplit {
       committed_bytes += committed - active_bytes;
       active_bytes = committed;
     } else {  // would straddle chunk_bytes; freeze this block, take the next slot
+      // Freeze-to-max: when huge pages are enabled and chunk_bytes is a huge multiple,
+      // re-home the just-filled block onto one huge page (eat the memcpy once). It is
+      // now exactly chunk_bytes, so a normal frozen block's unused tail is never
+      // committed -- only a huge block, which is a full page regardless, reaches max.
+      if (hugetlb::arena_enabled()) {
+        if (auto huge = try_promote_to_huge(blocks[block_index], block_offset, chunk_bytes)) {
+          committed_bytes += chunk_bytes - active_bytes;
+          blocks[block_index] = std::move(huge);
+        }
+      }
       next_offset += chunk_bytes - block_offset;
       block_offset = 0;
       block_index += 1;

@@ -138,7 +138,8 @@ void print_usage(std::string_view program) {
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
-            << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n";
+            << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
+            << "       [--no-arena-hugetlb]   (disable huge pages for arena blocks)\n";
 }
 
 }  // namespace
@@ -214,6 +215,13 @@ int main(int argc, char** argv) {
       std::cerr << "goblin-core: --ring-hugetlb is only supported on Linux\n";
       return 2;
 #endif
+      continue;
+    }
+
+    if (arg == "--no-arena-hugetlb") {
+      // Disable huge-page backing for max-size arena blocks (on by default). A no-op
+      // where huge pages are unavailable, so it is accepted on every platform.
+      goblin::core::hugetlb::arena_enabled() = false;
       continue;
     }
 

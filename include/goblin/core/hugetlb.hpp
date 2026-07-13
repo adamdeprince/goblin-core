@@ -27,6 +27,16 @@
 
 namespace goblin::core::hugetlb {
 
+// Process-wide switch: back max-size arena blocks with huge pages. On by default;
+// `--no-arena-hugetlb` clears it at startup (before any server thread starts, so the
+// single-writer read in the freeze path races nothing). Best-effort regardless -- with
+// it on but no pages reserved, blocks simply stay on normal pages. Distinct from the
+// ring's hugetlb, which is opt-in per --ring-hugetlb.
+[[nodiscard]] inline bool& arena_enabled() noexcept {
+  static bool enabled = true;
+  return enabled;
+}
+
 #if defined(__linux__)
 
 // Some libc headers gate these behind feature macros (off under strict -std=c++23);
