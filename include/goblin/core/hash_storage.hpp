@@ -628,6 +628,20 @@ class HashStorage {
   }
 
   void rotate_active_chunk(size_type first_run_bytes) {
+    // Freeze-to-max: the active chunk is full and about to be frozen. When huge pages
+    // are enabled and chunk_bytes_ is a huge multiple, re-home it onto one huge page
+    // (eat the memcpy once) so a frozen hash chunk is a single 2 MiB page -- one TLB
+    // entry instead of hundreds. Copying into a fresh block is also COW-safe. On
+    // failure or when disabled the chunk stays at its grown normal-page size.
+    if (active_chunk_ != kNoChunk && hugetlb::arena_enabled()) {
+      if (auto huge = try_promote_to_huge(chunks_[active_chunk_], active_offset_,
+                                          chunk_bytes_)) {
+        auto& usage = chunk_usage_[active_chunk_];
+        committed_bytes_ += chunk_bytes_ - usage.capacity;
+        usage.capacity = chunk_bytes_;
+        chunks_[active_chunk_] = std::move(huge);
+      }
+    }
     make_active_chunk(first_run_bytes);
   }
 
