@@ -137,7 +137,8 @@ void print_usage(std::string_view program) {
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--client-read-buffer-kib KIB]\n"
-            << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n";
+            << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
+            << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n";
 }
 
 }  // namespace
@@ -202,6 +203,17 @@ int main(int argc, char** argv) {
       }
       config.rings.push_back(
           goblin::core::RingConfig{.path = path, .bytes = *size});
+      continue;
+    }
+
+    if (arg == "--ring-hugetlb") {
+      // Back every ring with huge pages. Linux-only -- macOS has no hugetlb.
+#if defined(__linux__)
+      config.ring_hugetlb = true;
+#else
+      std::cerr << "goblin-core: --ring-hugetlb is only supported on Linux\n";
+      return 2;
+#endif
       continue;
     }
 

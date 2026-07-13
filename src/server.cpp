@@ -490,15 +490,32 @@ template <class NetFn>
   std::vector<RingEndpoint> rings;
   rings.reserve(config.rings.size());
   for (const auto& rc : config.rings) {
-    const std::uint64_t cap = ring::capacity_for(rc.bytes);
-    auto mapping = ring::Mapping::create(rc.path.c_str(), cap, cap);
+    std::optional<ring::Mapping> mapping;
+#if defined(__linux__)
+    if (config.ring_hugetlb) {
+      // Huge-page backing: create_hugetlb rounds the size up to the huge page,
+      // places the file on a hugetlbfs mount, and symlinks rc.path to it.
+      mapping = ring::Mapping::create_hugetlb(rc.path.c_str(), rc.bytes);
+      if (!mapping) {
+        std::cerr << "goblin-core: failed to create hugetlb ring " << rc.path
+                  << " (no hugetlbfs mount, or no huge pages reserved -- see "
+                     "/proc/meminfo HugePages_Free)\n";
+        return false;
+      }
+    }
+#endif
+    if (!mapping) {
+      const std::uint64_t cap = ring::capacity_for(rc.bytes);
+      mapping = ring::Mapping::create(rc.path.c_str(), cap, cap);
+    }
     if (!mapping) {
       std::cerr << "goblin-core: failed to create ring " << rc.path << ": "
                 << std::strerror(errno) << '\n';
       return false;
     }
-    std::cout << "goblin-core: ring " << rc.path << " ready (" << cap
-              << " bytes/direction)\n";
+    std::cout << "goblin-core: ring " << rc.path << " ready ("
+              << mapping->sq_capacity() << " bytes/direction"
+              << (mapping->is_hugetlb() ? ", hugetlb" : "") << ")\n";
     rings.push_back(RingEndpoint{.mapping = std::move(*mapping)});
     rings.back().rebind_ring_views();
   }

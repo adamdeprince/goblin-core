@@ -55,6 +55,19 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+// hugetlb support: fstatfs to detect a hugetlbfs mount, and dirent/cstdio to
+// enumerate the available huge-page sizes and mounts. All Linux-only -- hugetlb
+// does not exist on macOS, where the whole feature compiles out.
+#include <dirent.h>
+#include <sys/vfs.h>
+#include <cstdio>
+#include <vector>
+#ifndef HUGETLBFS_MAGIC
+#define HUGETLBFS_MAGIC 0x958458f6
+#endif
+#endif
+
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #endif
@@ -101,8 +114,57 @@ inline constexpr std::uint64_t kAdaptiveWaitNs = 100'000;  // 100 µs
   return ps;
 }
 
-// The header occupies one page; the SQ and CQ data regions follow it.
+// The header occupies one page; the SQ and CQ data regions follow it. (On a
+// hugetlbfs-backed ring the granule is the huge-page size instead -- see Mapping.)
 [[nodiscard]] inline std::uint64_t header_bytes() noexcept { return page_size(); }
+
+#if defined(__linux__)
+namespace detail {
+
+// The smallest huge-page size the kernel offers that is strictly larger than the
+// base page, in bytes, or 0 if none. Enumerates /sys/kernel/mm/hugepages/hugepages-*kB
+// (each present directory is a supported size), so it returns 2 MiB on 4 KiB-page x86
+// and the 32 MiB-class size on a 16 KiB-page box without hardcoding.
+[[nodiscard]] inline std::uint64_t smallest_hugepage_over_base() noexcept {
+  DIR* d = ::opendir("/sys/kernel/mm/hugepages");
+  if (d == nullptr) return 0;
+  const std::uint64_t base = page_size();
+  std::uint64_t best = 0;
+  for (const dirent* e = ::readdir(d); e != nullptr; e = ::readdir(d)) {
+    unsigned long long kib = 0;
+    if (std::sscanf(e->d_name, "hugepages-%llukB", &kib) != 1) continue;
+    const std::uint64_t bytes = static_cast<std::uint64_t>(kib) * 1024;
+    if (bytes > base && (best == 0 || bytes < best)) best = bytes;
+  }
+  ::closedir(d);
+  return best;
+}
+
+// The mount point of a hugetlbfs filesystem whose page size equals `hugepage_bytes`,
+// or empty if none is mounted. Confirms the size with statfs(f_bsize) rather than
+// trusting the pagesize= mount-option string.
+[[nodiscard]] inline std::string find_hugetlbfs_mount(std::uint64_t hugepage_bytes) {
+  std::FILE* f = std::fopen("/proc/mounts", "re");
+  if (f == nullptr) return {};
+  std::string result;
+  char line[4096];
+  while (std::fgets(line, sizeof(line), f) != nullptr) {
+    char dev[1024], dir[1024], type[256];
+    if (std::sscanf(line, "%1023s %1023s %255s", dev, dir, type) != 3) continue;
+    if (std::strcmp(type, "hugetlbfs") != 0) continue;
+    struct statfs sfs;
+    if (::statfs(dir, &sfs) == 0 &&
+        static_cast<std::uint64_t>(sfs.f_bsize) == hugepage_bytes) {
+      result = dir;
+      break;
+    }
+  }
+  std::fclose(f);
+  return result;
+}
+
+}  // namespace detail
+#endif  // __linux__
 
 // Spin-loop relax: hint the core to back off so a sibling hyperthread (and the
 // remote core writing our pages) makes progress, and so a busy-poll does not burn
@@ -572,15 +634,19 @@ class Mapping {
   Mapping(Mapping&& other) noexcept { move_from(other); }
   Mapping& operator=(Mapping&& other) noexcept {
     if (this != &other) {
-      unmap();
+      reset();
       move_from(other);
     }
     return *this;
   }
-  ~Mapping() { unmap(); }
+  ~Mapping() { reset(); }
 
   [[nodiscard]] bool valid() const noexcept { return header_ != nullptr; }
   [[nodiscard]] Header* header() const noexcept { return header_; }
+  // The backing granule: base page for a normal ring, huge-page size for a
+  // hugetlb-backed one. is_hugetlb() is true only for the latter.
+  [[nodiscard]] std::uint64_t granule() const noexcept { return granule_; }
+  [[nodiscard]] bool is_hugetlb() const noexcept { return granule_ > page_size(); }
   [[nodiscard]] std::uint64_t sq_capacity() const noexcept { return sq_cap_; }
   [[nodiscard]] std::uint64_t cq_capacity() const noexcept { return cq_cap_; }
 
@@ -662,19 +728,23 @@ class Mapping {
     if (fd < 0) {
       return std::nullopt;
     }
-    const std::uint64_t total = header_bytes() + sq_cap + cq_cap;
+    // The granule is the base page normally, or the huge-page size when `path` is on
+    // hugetlbfs -- in which case sq_cap/cq_cap must already be huge-page multiples
+    // (create_hugetlb rounds them up). It sets the header size and data alignment.
+    const std::uint64_t granule = detect_granule(fd);
+    const std::uint64_t sq_off = granule;
+    const std::uint64_t cq_off = granule + sq_cap;
+    const std::uint64_t total = granule + sq_cap + cq_cap;
     if (::ftruncate(fd, static_cast<off_t>(total)) != 0) {
       ::close(fd);
       return std::nullopt;
     }
     Mapping m;
     // Prefer the mirror map; fall back to the single map + WRAP fillers if it fails.
-    const std::uint64_t sq_off = header_bytes();
-    const std::uint64_t cq_off = header_bytes() + sq_cap;
     bool ok = allow_mirror &&
-              m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, /*mirror=*/true);
+              m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, granule, /*mirror=*/true);
     if (!ok) {
-      ok = m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, /*mirror=*/false);
+      ok = m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, granule, /*mirror=*/false);
     }
     if (!ok) {
       ::close(fd);
@@ -703,6 +773,48 @@ class Mapping {
     return m;
   }
 
+#if defined(__linux__)
+  // Create a hugetlb-backed ring (Linux only). Discovers the smallest huge page
+  // larger than the base page and a hugetlbfs mount for it, rounds `requested` up to a
+  // power-of-two >= that huge page (so 1 MiB with a 2 MiB huge page becomes 2 MiB),
+  // creates the real ring file on the mount, and symlinks `user_path` to it so every
+  // client's ordinary open-by-path follows the symlink into hugetlbfs. Returns nullopt
+  // (leaving nothing behind) if no huge pages are configured or the mapping fails.
+  // The returned Mapping owns both files and unlinks them when it is destroyed.
+  [[nodiscard]] static std::optional<Mapping> create_hugetlb(
+      const char* user_path, std::uint64_t requested, bool allow_mirror = true) {
+    const std::uint64_t huge = detail::smallest_hugepage_over_base();
+    if (huge == 0) {
+      return std::nullopt;  // no huge-page sizes larger than the base page
+    }
+    const std::string mount = detail::find_hugetlbfs_mount(huge);
+    if (mount.empty()) {
+      return std::nullopt;  // no hugetlbfs mount of that size
+    }
+    std::uint64_t cap = huge;  // huge is a power of two; keep doubling to cover request
+    while (cap < requested) {
+      cap <<= 1;
+    }
+    std::string real = mount + "/goblin-ring-" + std::to_string(::getpid()) + "-" +
+                       base_name(user_path);
+    ::unlink(real.c_str());
+    auto m = create(real.c_str(), cap, cap, allow_mirror);
+    if (!m) {
+      ::unlink(real.c_str());
+      return std::nullopt;
+    }
+    // Publish the user-facing path as a symlink into hugetlbfs.
+    ::unlink(user_path);
+    if (::symlink(real.c_str(), user_path) != 0) {
+      ::unlink(real.c_str());  // m's destructor unmaps; nothing is symlinked yet
+      return std::nullopt;
+    }
+    m->real_path_ = std::move(real);
+    m->link_path_ = user_path;
+    return m;
+  }
+#endif  // __linux__
+
   // Open an existing, initialized ring file. The client calls this. Returns
   // nullopt if the file is missing, not yet initialized (magic unset), or the
   // version mismatches.
@@ -711,8 +823,11 @@ class Mapping {
     if (fd < 0) {
       return std::nullopt;
     }
-    void* hp = ::mmap(nullptr, header_bytes(), PROT_READ | PROT_WRITE, MAP_SHARED,
-                      fd, 0);
+    // Detect the granule from the fd (huge-page size on hugetlbfs, else base page):
+    // the client that follows a symlink into hugetlbfs must map the header at the
+    // huge-page granularity too, since hugetlbfs refuses a sub-huge-page mmap length.
+    const std::uint64_t granule = detect_granule(fd);
+    void* hp = ::mmap(nullptr, granule, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (hp == MAP_FAILED) {
       ::close(fd);
       return std::nullopt;
@@ -721,7 +836,7 @@ class Mapping {
     if (std::atomic_ref<std::uint32_t>(h->magic).load(std::memory_order_acquire) !=
             kMagic ||
         h->version != kVersion) {
-      ::munmap(hp, header_bytes());
+      ::munmap(hp, granule);
       ::close(fd);
       return std::nullopt;
     }
@@ -734,9 +849,9 @@ class Mapping {
     // cannot (map_all returns false), open fails rather than risk a wrap/mirror
     // mismatch -- there is no safe single-map fallback against a mirror producer.
     const bool mirror = h->mirror != 0;
-    ::munmap(hp, header_bytes());  // remapped uniformly by map_all below
+    ::munmap(hp, granule);  // remapped uniformly by map_all below
     Mapping m;
-    if (!m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, mirror)) {
+    if (!m.map_all(fd, sq_cap, cq_cap, sq_off, cq_off, granule, mirror)) {
       ::close(fd);
       return std::nullopt;
     }
@@ -748,6 +863,30 @@ class Mapping {
   }
 
  private:
+  // The allocation granule of the ring's backing store: the huge-page size when the
+  // file lives on hugetlbfs (so the header, offsets, and mmap lengths must all be
+  // huge-page multiples), else the base page. Detected from the open fd, so create()
+  // and open() agree without a header field.
+  static std::uint64_t detect_granule(int fd) noexcept {
+#if defined(__linux__)
+    struct statfs sfs;
+    if (::fstatfs(fd, &sfs) == 0 &&
+        (static_cast<std::uint64_t>(sfs.f_type) & 0xffffffffULL) ==
+            static_cast<std::uint64_t>(HUGETLBFS_MAGIC)) {
+      return static_cast<std::uint64_t>(sfs.f_bsize);
+    }
+#else
+    (void)fd;
+#endif
+    return page_size();
+  }
+
+  static std::string base_name(const char* path) {
+    const std::string p(path);
+    const auto slash = p.find_last_of('/');
+    return slash == std::string::npos ? p : p.substr(slash + 1);
+  }
+
   // Reserve `len` bytes of contiguous address space (no backing) to hold the two
   // halves of a mirror map before MAP_FIXED drops the file over them. MAP_ANON is not
   // POSIX and glibc hides it under __USE_MISC (off in strict -std=c++23), so prefer it
@@ -779,33 +918,55 @@ class Mapping {
   // Mirror mapping: reserve 2*cap of address space, then MAP_FIXED the file's
   // [off, off+cap) over BOTH halves, so the bytes at virtual offset i and i+cap are
   // the same file byte. A record placed near the end can then be read/written as one
-  // contiguous span running past `cap` into the mirror. Returns nullptr (and leaves
-  // nothing mapped) on failure, so the caller can fall back to a single map.
-  static char* map_mirror(int fd, std::uint64_t off, std::uint64_t cap) noexcept {
-    void* base = reserve_va(2 * cap);
-    if (base == MAP_FAILED) {
+  // contiguous span running past `cap` into the mirror. `granule` is the mmap
+  // alignment: MAP_FIXED of a hugetlbfs file needs a huge-page-aligned address, so we
+  // over-reserve by one granule and align the base up (a no-op when granule == the
+  // base page). Returns nullptr (leaving nothing mapped) on failure.
+  static char* map_mirror(int fd, std::uint64_t off, std::uint64_t cap,
+                          std::uint64_t granule) noexcept {
+    const bool align = granule > page_size();
+    const std::uint64_t reserve = align ? 2 * cap + granule : 2 * cap;
+    void* raw = reserve_va(reserve);
+    if (raw == MAP_FAILED) {
       return nullptr;
     }
-    char* b = static_cast<char*>(base);
+    char* rbeg = static_cast<char*>(raw);
+    char* b = rbeg;
+    if (align) {
+      const std::uint64_t off_in = reinterpret_cast<std::uintptr_t>(rbeg) & (granule - 1);
+      b = off_in == 0 ? rbeg : rbeg + (granule - off_in);
+      // Trim the slack outside [b, b+2cap) so we do not leak reserved address space.
+      if (b > rbeg) {
+        ::munmap(rbeg, static_cast<std::size_t>(b - rbeg));
+      }
+      char* bend = b + 2 * cap;
+      char* rend = rbeg + reserve;
+      if (rend > bend) {
+        ::munmap(bend, static_cast<std::size_t>(rend - bend));
+      }
+    }
     void* lo = ::mmap(b, cap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd,
                       static_cast<off_t>(off));
     void* hi = ::mmap(b + cap, cap, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
                       fd, static_cast<off_t>(off));
     if (lo != b || hi != b + cap) {
-      ::munmap(base, 2 * cap);  // frees whatever of the reservation/halves exists
+      ::munmap(b, 2 * cap);  // frees whatever of the two halves exists
       return nullptr;
     }
     return b;
   }
 
   bool map_all(int fd, std::uint64_t sq_cap, std::uint64_t cq_cap,
-               std::uint64_t sq_off, std::uint64_t cq_off, bool mirror) noexcept {
-    char* hp = map_single(fd, 0, header_bytes());
-    char* sq = mirror ? map_mirror(fd, sq_off, sq_cap) : map_single(fd, sq_off, sq_cap);
-    char* cq = mirror ? map_mirror(fd, cq_off, cq_cap) : map_single(fd, cq_off, cq_cap);
+               std::uint64_t sq_off, std::uint64_t cq_off, std::uint64_t granule,
+               bool mirror) noexcept {
+    char* hp = map_single(fd, 0, granule);
+    char* sq = mirror ? map_mirror(fd, sq_off, sq_cap, granule)
+                      : map_single(fd, sq_off, sq_cap);
+    char* cq = mirror ? map_mirror(fd, cq_off, cq_cap, granule)
+                      : map_single(fd, cq_off, cq_cap);
     if (hp == nullptr || sq == nullptr || cq == nullptr) {
       if (hp != nullptr) {
-        ::munmap(hp, header_bytes());
+        ::munmap(hp, granule);
       }
       if (sq != nullptr) {
         ::munmap(sq, mirror ? 2 * sq_cap : sq_cap);
@@ -820,6 +981,7 @@ class Mapping {
     cq_ = cq;
     sq_cap_ = sq_cap;
     cq_cap_ = cq_cap;
+    granule_ = granule;
     mirror_ = mirror;
     return true;
   }
@@ -830,14 +992,14 @@ class Mapping {
   // a byte (which also allocates the sparse file's backing blocks, so a later store
   // can never SIGBUS on an unbacked page); otherwise it only reads (faulting this
   // process's page-table entries without modifying shared data).
-  static void fault_pages(void* addr, std::uint64_t len, bool write) noexcept {
-    const std::uint64_t pg = page_size();
+  static void fault_pages(void* addr, std::uint64_t len, bool write,
+                          std::uint64_t stride) noexcept {
     volatile char* p = static_cast<volatile char*>(addr);
     if (write) {
-      for (std::uint64_t i = 0; i < len; i += pg) p[i] = 0;
+      for (std::uint64_t i = 0; i < len; i += stride) p[i] = 0;
     } else {
       volatile char sink = 0;
-      for (std::uint64_t i = 0; i < len; i += pg) sink = p[i];
+      for (std::uint64_t i = 0; i < len; i += stride) sink = p[i];
       (void)sink;
     }
   }
@@ -856,20 +1018,21 @@ class Mapping {
   // produced, which a write-touch would clobber.
   void prefault_and_lock(bool write_alloc) noexcept {
     // Fault every mapped page (both halves in mirror mode) so the first lap takes no
-    // minor faults. Lock only the first `cap` of each ring: in mirror mode the second
-    // half maps the same physical pages, so pinning the first copy keeps them all
-    // resident without double-counting against RLIMIT_MEMLOCK.
-    fault_pages(header_, header_bytes(), write_alloc);
-    fault_pages(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_, write_alloc);
-    fault_pages(cq_, mirror_ ? 2 * cq_cap_ : cq_cap_, write_alloc);
-    (void)::mlock(header_, header_bytes());
+    // minor faults; stride by the granule (base page, or one touch per huge page).
+    // Lock only the first `cap` of each ring: in mirror mode the second half maps the
+    // same physical pages, so pinning the first copy keeps them all resident without
+    // double-counting against RLIMIT_MEMLOCK.
+    fault_pages(header_, granule_, write_alloc, granule_);
+    fault_pages(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_, write_alloc, granule_);
+    fault_pages(cq_, mirror_ ? 2 * cq_cap_ : cq_cap_, write_alloc, granule_);
+    (void)::mlock(header_, granule_);
     (void)::mlock(sq_, sq_cap_);
     (void)::mlock(cq_, cq_cap_);
   }
 
   void unmap() noexcept {
     if (header_ != nullptr) {
-      ::munmap(header_, header_bytes());
+      ::munmap(header_, granule_);
     }
     if (sq_ != nullptr) {
       ::munmap(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_);
@@ -882,16 +1045,40 @@ class Mapping {
     cq_ = nullptr;
   }
 
+  // Unlink the files this Mapping owns (a hugetlb ring's real file + its symlink),
+  // freeing the huge pages. Empty for a normal ring, so it leaves /tmp ring files be,
+  // matching prior behavior. Called after unmap so the file is no longer mapped here.
+  void unlink_files() noexcept {
+    if (!link_path_.empty()) {
+      ::unlink(link_path_.c_str());
+      link_path_.clear();
+    }
+    if (!real_path_.empty()) {
+      ::unlink(real_path_.c_str());
+      real_path_.clear();
+    }
+  }
+
+  void reset() noexcept {
+    unmap();
+    unlink_files();
+  }
+
   void move_from(Mapping& other) noexcept {
     header_ = other.header_;
     sq_ = other.sq_;
     cq_ = other.cq_;
     sq_cap_ = other.sq_cap_;
     cq_cap_ = other.cq_cap_;
+    granule_ = other.granule_;
     mirror_ = other.mirror_;
+    real_path_ = std::move(other.real_path_);
+    link_path_ = std::move(other.link_path_);
     other.header_ = nullptr;
     other.sq_ = nullptr;
     other.cq_ = nullptr;
+    other.real_path_.clear();
+    other.link_path_.clear();
   }
 
   Header* header_ = nullptr;
@@ -899,7 +1086,10 @@ class Mapping {
   char* cq_ = nullptr;
   std::uint64_t sq_cap_ = 0;
   std::uint64_t cq_cap_ = 0;
+  std::uint64_t granule_ = 0;  // base page, or huge-page size on hugetlbfs
   bool mirror_ = false;
+  std::string real_path_;  // hugetlb: the real file on the mount (owned; unlinked)
+  std::string link_path_;  // hugetlb: the user-facing symlink (owned; unlinked)
 };
 
 }  // namespace goblin::core::ring

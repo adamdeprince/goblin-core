@@ -35,6 +35,10 @@ struct ServerConfig {
   // busy-polls these before touching the network (and spins at 100% CPU by
   // design); when empty it runs the ordinary low-CPU poll() loop.
   std::vector<RingConfig> rings{};
+  // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
+  // requested size rounds up to the huge-page size, and each --ring PATH becomes a
+  // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.
+  bool ring_hugetlb{false};
 };
 
 class Server {

@@ -477,6 +477,19 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_ring_mirror_test)
   set_tests_properties(goblin_core_ring_mirror PROPERTIES TIMEOUT 60)
 
+  # Hugetlb-backed rings (Linux): size rounds up to the huge page, --ring PATH becomes
+  # a symlink into hugetlbfs, and records round-trip. Skips cleanly without huge pages.
+  add_executable(goblin_core_ring_hugetlb_test tests/ring_hugetlb_test.cpp)
+  target_link_libraries(goblin_core_ring_hugetlb_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_ring_hugetlb_test PROPERTIES
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  add_test(
+    NAME goblin_core_ring_hugetlb
+    COMMAND goblin_core_ring_hugetlb_test)
+  set_tests_properties(goblin_core_ring_hugetlb PROPERTIES TIMEOUT 60)
+
   add_test(
     NAME goblin_core_output_backpressure
     COMMAND
