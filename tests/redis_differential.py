@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare Goblin Core's sorted-set and PMA-list behavior against Redis.
+"""Compare Goblin Core's sorted-set and list behavior against Redis.
 
 The test starts one Goblin Core process and one Redis process, sends the same
 deterministic workload to both over RESP, and fails on the first semantic
 mismatch. It covers the implemented sorted-set surface plus LPUSH/RPUSH,
 LPUSHX/RPUSHX, LPOP/RPOP, LLEN, LINDEX, LRANGE, LSET, LTRIM, LREM, and LINSERT.
-Redis receives the standard list names; Goblin receives GOBLIN.PMA.* by default.
+Redis receives the standard list names; Goblin receives a qualified list family.
 """
 
 from __future__ import annotations
@@ -630,7 +630,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--goblin-list-prefix",
         default="GOBLIN.PMA.",
-        help="Concrete Goblin list command prefix; use an empty string for aliases.",
+        help="Concrete Goblin list command prefix (PMA or SEGMENTED); use an empty string for aliases.",
     )
     return parser.parse_args(argv)
 

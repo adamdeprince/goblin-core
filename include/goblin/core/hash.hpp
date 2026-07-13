@@ -7,12 +7,16 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
-#include <variant>
+#include <vector>
 
 #include "goblin/core/hash_listpack.hpp"
 #include "goblin/core/hash_storage.hpp"
+#include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/zset_member_index.hpp"
 
@@ -24,15 +28,31 @@ namespace goblin::core {
 struct HashOptions {
   static constexpr std::size_t kDefaultListpackMaxEntries =
       std::numeric_limits<std::size_t>::max();
+  static constexpr std::size_t kDefaultCompactionWorkBudget = 32;
 
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
   std::size_t chunk_bytes{HashStorage::kDefaultChunkBytes};
+  // Exact subset-sum donor selection is useful for measuring maximum packing,
+  // but is too expensive for automatic maintenance unless explicitly enabled.
+  bool compaction_knapsack{false};
+  StringEncodingOptions string_encoding{};
+  // Field ids or chunk candidates inspected after each mutating command while
+  // automatic arena compaction is active.
+  std::size_t compaction_work_budget{kDefaultCompactionWorkBudget};
   // Optional count ceiling for the indexed compact blob. The default has no
   // count ceiling: the 64 KiB blob limit decides promotion. 0 disables the
   // compact form; a finite value lets miss- or rebuild-heavy workloads promote
   // earlier.
   std::size_t listpack_max_entries{kDefaultListpackMaxEntries};
 };
+
+struct HashContext {
+  KeyspaceStorage* storage{nullptr};
+  HashOptions options{};
+  void* compact_owner{nullptr};
+  void (*maybe_compact)(void*){nullptr};
+};
+static_assert(alignof(HashContext) >= 4);
 
 struct HashMemoryStats {
   std::size_t field_count{0};
@@ -47,43 +67,106 @@ struct HashMemoryStats {
   std::size_t field_compaction_candidates_remaining{0};
   std::size_t field_compaction_relocated_fields{0};
   std::size_t field_compaction_relocated_bytes{0};
+  std::uint64_t field_compaction_selection_nanoseconds{0};
+  std::uint64_t field_compaction_densify_nanoseconds{0};
+  std::uint64_t field_compaction_donor_nanoseconds{0};
+  std::uint64_t field_compaction_tail_settle_nanoseconds{0};
+  std::size_t hash_heap_allocated_bytes{0};
+  std::size_t keyspace_accounted_bytes{0};
   std::size_t total_allocated_bytes{0};
 };
 
-// A Redis hash: field->value, both arbitrary byte strings (<= 64 KiB each).
-// Small hashes live as one fingerprint-indexed HashListpack blob; past the
-// threshold they promote to a Swiss field index + packed HashStorage.
+// A Redis hash: field->value. The Hash object itself is the keyspace's 16-byte
+// inline handle. A compact hash stores an arena {block, offset}; promotion swaps
+// that word for a heap FullState pointer without changing the keyspace slot.
+// Compact bytes therefore share KeyspaceStorage with keys and spilled strings
+// and move when that arena compacts. Full hashes retain the Swiss index + packed
+// HashStorage representation.
 class Hash {
+  struct FullState;
+
  public:
   static constexpr double kDefaultFieldIndexDensity = 0.97;
 
-  explicit Hash(HashOptions options = {}) : options_(options) {
+  explicit Hash(HashOptions options = {}) {
+    normalize_options(options);
+    auto* context = new HashContext;
+    context->storage = new KeyspaceStorage;
+    context->options = options;
+    context_flags_ = reinterpret_cast<std::uintptr_t>(context) | kOwnContext;
     init_empty();
+  }
+
+  explicit Hash(HashContext& context)
+      : context_flags_(reinterpret_cast<std::uintptr_t>(&context)) {
+    assert((context_flags_ & kFlagMask) == 0);
+    normalize_options(context.options);
+    init_empty();
+  }
+
+  ~Hash() {
+    destroy_representation();
+    destroy_owned_context();
   }
 
   Hash(const Hash&) = delete;
   Hash& operator=(const Hash&) = delete;
 
   Hash(Hash&& other) noexcept
-      : options_(other.options_), rep_(std::move(other.rep_)) {}
+      : context_flags_(std::exchange(other.context_flags_, 0)),
+        rep_(std::exchange(other.rep_, kEmptyCompact)) {}
   Hash& operator=(Hash&& other) noexcept {
     if (this != &other) {
-      options_ = other.options_;
-      rep_ = std::move(other.rep_);
+      destroy_representation();
+      destroy_owned_context();
+      context_flags_ = std::exchange(other.context_flags_, 0);
+      rep_ = std::exchange(other.rep_, kEmptyCompact);
     }
     return *this;
   }
 
   [[nodiscard]] std::size_t size() const noexcept {
-    if (const auto* lp = small_ptr()) {
-      return lp->size();
+    if (is_small()) {
+      return read_small([](const HashListpack& lp) { return lp.size(); });
     }
     return full().storage->size();
   }
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
-  [[nodiscard]] const HashOptions& options() const noexcept { return options_; }
+  [[nodiscard]] const HashOptions& options() const noexcept {
+    return context().options;
+  }
   [[nodiscard]] bool is_small() const noexcept {
-    return std::holds_alternative<HashListpack>(rep_);
+    return (context_flags_ & kFullRepresentation) == 0;
+  }
+
+  void rebind(HashContext& new_context) {
+    assert((reinterpret_cast<std::uintptr_t>(&new_context) & kFlagMask) == 0);
+    if (&context() == &new_context && !owns_context()) {
+      return;
+    }
+    auto* old_context = &context();
+    const bool old_owned = owns_context();
+    if (is_small() && rep_ != kEmptyCompact) {
+      const auto bytes = compact_blob_view();
+      const auto location = new_context.storage->append_object_blob(bytes);
+      old_context->storage->mark_object_blob_dead(
+          static_cast<std::uint16_t>(bytes.size()));
+      rep_ = pack_location(location);
+    }
+    const auto representation = context_flags_ & kFullRepresentation;
+    context_flags_ = reinterpret_cast<std::uintptr_t>(&new_context) |
+                     representation;
+    if (old_owned) {
+      delete old_context->storage;
+      delete old_context;
+    }
+  }
+
+  void relocate_compact_blob(KeyspaceStorage& destination) {
+    if (!is_small() || rep_ == kEmptyCompact) {
+      return;
+    }
+    rep_ = pack_location(destination.append_object_blob(compact_blob_view()));
   }
 
   // Pre-size the full form for an upcoming bulk insert. No-op while listpack
@@ -96,15 +179,22 @@ class Hash {
     full().fields.reserve_additional(additional);
   }
 
-  // Empty the hash in place (keeps the Hash object for freelist reuse).
-  void clear() { init_empty(); }
+  // Empty the hash in place. Compact bytes become reclaimable in the shared
+  // keyspace arena; a promoted hash releases its full state.
+  void clear() {
+    destroy_representation();
+    init_empty();
+  }
 
   // HSET one field. Returns 1 if the field is new, 0 if it updated an existing
   // field's value.
   int set(std::string_view field, std::string_view value) {
-    if (auto* lp = small_ptr()) {
-      const auto result =
-          lp->set(field, value, options_.listpack_max_entries);
+    validate_field(field);
+    if (is_small()) {
+      const auto result = mutate_small([&](HashListpack& lp) {
+        return lp.set(field, value, options().listpack_max_entries,
+                      options().string_encoding);
+      });
       if (!result.needs_full) {
         return result.added ? 1 : 0;
       }
@@ -123,9 +213,17 @@ class Hash {
     if (fields.empty()) {
       return 0;
     }
-    if (auto* lp = small_ptr()) {
-      const auto result =
-          lp->set_many(fields, options_.listpack_max_entries);
+    for (const auto& [field, value] : fields) {
+      validate_field(field);
+      if (!string_value_fits(value, options().string_encoding)) {
+        throw std::length_error("hash value cannot fit its encoded form");
+      }
+    }
+    if (is_small()) {
+      const auto result = mutate_small([&](HashListpack& lp) {
+        return lp.set_many(fields, options().listpack_max_entries,
+                           options().string_encoding);
+      });
       if (!result.needs_full) {
         return result.added;
       }
@@ -148,12 +246,17 @@ class Hash {
 
   // HSETNX. Returns 1 if the field was set, 0 if it already existed.
   int set_nx(std::string_view field, std::string_view value) {
-    if (auto* lp = small_ptr()) {
-      if (!lp->absent(field)) {
+    validate_field(field);
+    if (is_small()) {
+      if (!read_small([&](const HashListpack& lp) {
+            return lp.absent(field, options().string_encoding);
+          })) {
         return 0;
       }
-      const auto result =
-          lp->set(field, value, options_.listpack_max_entries);
+      const auto result = mutate_small([&](HashListpack& lp) {
+        return lp.set(field, value, options().listpack_max_entries,
+                      options().string_encoding);
+      });
       if (!result.needs_full) {
         return result.added ? 1 : 0;
       }
@@ -171,9 +274,12 @@ class Hash {
     return 1;
   }
 
-  [[nodiscard]] std::optional<std::string_view> get(std::string_view field) const {
-    if (const auto* lp = small_ptr()) {
-      return lp->get(field);
+  [[nodiscard]] std::optional<EncodedStringView> get(
+      std::string_view field) const {
+    if (is_small()) {
+      return read_small([&](const HashListpack& lp) {
+        return lp.get(field, options().string_encoding);
+      });
     }
     const auto* meta = full().fields.find(field);
     if (meta == nullptr) {
@@ -183,16 +289,20 @@ class Hash {
   }
 
   [[nodiscard]] bool contains(std::string_view field) const {
-    if (const auto* lp = small_ptr()) {
-      return lp->contains(field);
+    if (is_small()) {
+      return read_small([&](const HashListpack& lp) {
+        return lp.contains(field, options().string_encoding);
+      });
     }
     return full().fields.find(field) != nullptr;
   }
 
   // HDEL one field. Returns true if it was present and removed.
   bool erase(std::string_view field) {
-    if (auto* lp = small_ptr()) {
-      return lp->erase(field);
+    if (is_small()) {
+      return mutate_small([&](HashListpack& lp) {
+        return lp.erase(field, options().string_encoding);
+      });
     }
     if (!erase_full(field)) {
       return false;
@@ -206,11 +316,15 @@ class Hash {
   // whole atomic command, regardless of its argument count.
   std::size_t erase_many(std::span<const std::string_view> fields) {
     std::size_t removed = 0;
-    if (auto* lp = small_ptr()) {
-      for (const auto field : fields) {
-        removed += lp->erase(field) ? 1 : 0;
-      }
-      return removed;
+    if (is_small()) {
+      return mutate_small([&](HashListpack& lp) {
+        std::size_t compact_removed = 0;
+        for (const auto field : fields) {
+          compact_removed +=
+              lp.erase(field, options().string_encoding) ? 1 : 0;
+        }
+        return compact_removed;
+      });
     }
     for (const auto field : fields) {
       removed += erase_full(field) ? 1 : 0;
@@ -233,8 +347,10 @@ class Hash {
   // is dense id order. Callers must not rely on either.
   template <class Fn>
   void for_each(Fn&& fn) const {
-    if (const auto* lp = small_ptr()) {
-      lp->for_each(std::forward<Fn>(fn));
+    if (is_small()) {
+      read_small([&](const HashListpack& lp) {
+        lp.for_each(std::forward<Fn>(fn), options().string_encoding);
+      });
       return;
     }
     const auto n = static_cast<std::uint32_t>(full().storage->size());
@@ -254,7 +370,7 @@ class Hash {
     fs.storage->compact();
     const auto n = static_cast<std::uint32_t>(fs.storage->size());
     MemberIndex<HashStorage> new_index(fs.storage.get(),
-                                       options_.member_index_growth);
+                                       options().member_index_growth);
     new_index.reserve_for_density(n, field_index_density);
     for (std::uint32_t id = 0; id < n; ++id) {
       new_index.insert_packed(fs.storage->view(id),
@@ -268,10 +384,12 @@ class Hash {
   [[nodiscard]] HashMemoryStats memory_stats() const noexcept {
     HashMemoryStats stats;
     stats.field_count = size();
-    if (const auto* lp = small_ptr()) {
-      stats.field_value_live_bytes = lp->allocated_bytes();
-      stats.field_value_allocated_bytes = lp->allocated_bytes();
-      stats.total_allocated_bytes = lp->allocated_bytes();
+    if (is_small()) {
+      const auto bytes = compact_blob_bytes();
+      stats.field_value_live_bytes = bytes;
+      stats.field_value_allocated_bytes = bytes;
+      stats.keyspace_accounted_bytes = bytes;
+      stats.total_allocated_bytes = bytes;
       return stats;
     }
     const auto& fs = full();
@@ -289,8 +407,16 @@ class Hash {
         progress.candidates_remaining;
     stats.field_compaction_relocated_fields = progress.relocated_fields;
     stats.field_compaction_relocated_bytes = progress.relocated_bytes;
+    stats.field_compaction_selection_nanoseconds =
+        progress.selection_nanoseconds;
+    stats.field_compaction_densify_nanoseconds = progress.densify_nanoseconds;
+    stats.field_compaction_donor_nanoseconds = progress.donor_nanoseconds;
+    stats.field_compaction_tail_settle_nanoseconds =
+        progress.tail_settle_nanoseconds;
+    stats.hash_heap_allocated_bytes = full_heap_allocated_bytes();
     stats.total_allocated_bytes =
-        stats.field_value_allocated_bytes + stats.field_index_allocated_bytes;
+        stats.field_value_allocated_bytes + stats.field_index_allocated_bytes +
+        stats.hash_heap_allocated_bytes;
     return stats;
   }
 
@@ -305,11 +431,11 @@ class Hash {
   // Snapshot. Canonical layer is always (field, value) pairs -- the portable
   // "unpacked table". Accelerator (swiss dump) only for the full form.
   void save(snapshot::Writer& writer, bool with_accelerator) const {
-    writer.f64(options_.member_index_growth);
+    writer.f64(options().member_index_growth);
     writer.u64(static_cast<std::uint64_t>(size()));
-    for_each([&writer](std::string_view field, std::string_view value) {
+    for_each([&writer](std::string_view field, EncodedStringView value) {
       writer.str(field);
-      writer.str(value);
+      writer.str(value.to_string());
     });
     const bool write_accel = with_accelerator && !is_small();
     writer.u8(write_accel ? 1 : 0);
@@ -368,61 +494,254 @@ class Hash {
     MemberIndex<HashStorage> fields;
   };
 
-  [[nodiscard]] HashListpack* small_ptr() noexcept {
-    return std::get_if<HashListpack>(&rep_);
+  static constexpr std::uintptr_t kFullRepresentation = 1;
+  static constexpr std::uintptr_t kOwnContext = 2;
+  static constexpr std::uintptr_t kFlagMask =
+      kFullRepresentation | kOwnContext;
+  static constexpr std::uintptr_t kEmptyCompact =
+      std::numeric_limits<std::uintptr_t>::max();
+
+  static void normalize_options(HashOptions& options) noexcept {
+    if (options.compaction_work_budget == 0) {
+      options.compaction_work_budget = 1;
+    }
   }
-  [[nodiscard]] const HashListpack* small_ptr() const noexcept {
-    return std::get_if<HashListpack>(&rep_);
+
+  [[nodiscard]] HashContext& context() noexcept {
+    assert((context_flags_ & ~kFlagMask) != 0);
+    return *reinterpret_cast<HashContext*>(context_flags_ & ~kFlagMask);
   }
+  [[nodiscard]] const HashContext& context() const noexcept {
+    assert((context_flags_ & ~kFlagMask) != 0);
+    return *reinterpret_cast<const HashContext*>(context_flags_ & ~kFlagMask);
+  }
+  [[nodiscard]] bool owns_context() const noexcept {
+    return (context_flags_ & kOwnContext) != 0;
+  }
+
   [[nodiscard]] FullState& full() noexcept {
-    return *std::get<std::unique_ptr<FullState>>(rep_);
+    assert(!is_small());
+    return *reinterpret_cast<FullState*>(rep_);
   }
   [[nodiscard]] const FullState& full() const noexcept {
-    return *std::get<std::unique_ptr<FullState>>(rep_);
+    assert(!is_small());
+    return *reinterpret_cast<const FullState*>(rep_);
+  }
+
+  [[nodiscard]] static std::uintptr_t pack_location(
+      KeyspaceStorage::TailLocation location) noexcept {
+    return (static_cast<std::uintptr_t>(location.block) << 32) |
+           location.offset;
+  }
+
+  [[nodiscard]] KeyspaceStorage::TailLocation compact_location() const noexcept {
+    assert(is_small() && rep_ != kEmptyCompact);
+    return {.block = static_cast<std::uint32_t>(rep_ >> 32),
+            .offset = static_cast<std::uint32_t>(rep_)};
+  }
+
+  [[nodiscard]] std::size_t compact_blob_bytes() const noexcept {
+    if (!is_small() || rep_ == kEmptyCompact) {
+      return 0;
+    }
+    return HashListpack::blob_bytes(
+        context().storage->blob_data(compact_location()));
+  }
+
+  [[nodiscard]] std::string_view compact_blob_view() const noexcept {
+    const auto bytes = compact_blob_bytes();
+    return bytes == 0
+               ? std::string_view{}
+               : std::string_view(
+                     context().storage->blob_data(compact_location()), bytes);
+  }
+
+  class ArenaBlobStorage final : public HashListpackBlobStorage {
+   public:
+    ArenaBlobStorage(KeyspaceStorage& arena,
+                     KeyspaceStorage::TailLocation old_location,
+                     char* old_data) noexcept
+        : arena_(arena), current_location_(old_location), current_data_(old_data) {}
+
+    explicit ArenaBlobStorage(KeyspaceStorage& arena) noexcept
+        : arena_(arena) {}
+
+    [[nodiscard]] char* allocate(std::size_t bytes) override {
+      assert(pending_data_ == nullptr);
+      if (current_data_ != nullptr) {
+        pinned_block_ = arena_.pin_blob(current_location_);
+      }
+      const auto allocation = arena_.reserve_blob(bytes);
+      if (current_data_ == nullptr) {
+        current_location_ = allocation.location;
+        current_data_ = allocation.data;
+        return current_data_;
+      }
+      pending_location_ = allocation.location;
+      pending_data_ = allocation.data;
+      return pending_data_;
+    }
+
+    void deallocate(char* p, std::size_t bytes) noexcept override {
+      assert(bytes <= std::numeric_limits<std::uint16_t>::max());
+      assert(p == current_data_);
+      (void)p;
+      arena_.mark_object_blob_dead(static_cast<std::uint16_t>(bytes));
+      current_data_ = pending_data_;
+      current_location_ = pending_location_;
+      pending_data_ = nullptr;
+      pinned_block_.reset();
+    }
+
+    [[nodiscard]] std::uintptr_t packed_location_for(
+        const char* p) const noexcept {
+      if (p == nullptr) {
+        return kEmptyCompact;
+      }
+      assert(p == current_data_);
+      return pack_location(current_location_);
+    }
+
+   private:
+    KeyspaceStorage& arena_;
+    KeyspaceStorage::TailLocation current_location_{};
+    KeyspaceStorage::TailLocation pending_location_{};
+    char* current_data_{nullptr};
+    char* pending_data_{nullptr};
+    std::shared_ptr<char[]> pinned_block_;
+  };
+
+  class SmallSession {
+   public:
+    explicit SmallSession(Hash& hash)
+        : hash_(hash),
+          storage_(*hash.context().storage,
+                   hash.rep_ == kEmptyCompact
+                       ? KeyspaceStorage::TailLocation{}
+                       : hash.compact_location(),
+                   hash.rep_ == kEmptyCompact
+                       ? nullptr
+                       : hash.context().storage->mutable_blob_data(
+                             hash.compact_location())),
+          listpack_(hash.rep_ == kEmptyCompact
+                        ? nullptr
+                        : hash.context().storage->mutable_blob_data(
+                              hash.compact_location()),
+                    storage_) {}
+
+    ~SmallSession() {
+      hash_.rep_ = storage_.packed_location_for(listpack_.data());
+    }
+
+    [[nodiscard]] HashListpack& listpack() noexcept { return listpack_; }
+
+   private:
+    Hash& hash_;
+    ArenaBlobStorage storage_;
+    HashListpack listpack_;
+  };
+
+  template <class Fn>
+  std::invoke_result_t<Fn, const HashListpack&> read_small(Fn&& fn) const {
+    assert(is_small());
+    auto& arena = *context().storage;
+    char* data = rep_ == kEmptyCompact
+                     ? nullptr
+                     : const_cast<char*>(arena.blob_data(compact_location()));
+    ArenaBlobStorage storage(
+        arena,
+        rep_ == kEmptyCompact ? KeyspaceStorage::TailLocation{}
+                              : compact_location(),
+        data);
+    HashListpack listpack(data, storage);
+    return std::forward<Fn>(fn)(static_cast<const HashListpack&>(listpack));
+  }
+
+  template <class Fn>
+  std::invoke_result_t<Fn, HashListpack&> mutate_small(Fn&& fn) {
+    assert(is_small());
+    using Result = std::invoke_result_t<Fn, HashListpack&>;
+    if constexpr (std::is_void_v<Result>) {
+      {
+        SmallSession session(*this);
+        std::forward<Fn>(fn)(session.listpack());
+      }
+      maybe_compact_keyspace();
+    } else {
+      auto result = [&]() -> Result {
+        SmallSession session(*this);
+        return std::forward<Fn>(fn)(session.listpack());
+      }();
+      maybe_compact_keyspace();
+      return result;
+    }
+  }
+
+  void maybe_compact_keyspace() {
+    auto& ctx = context();
+    if (ctx.maybe_compact != nullptr && ctx.storage->should_compact()) {
+      ctx.maybe_compact(ctx.compact_owner);
+    }
   }
 
   void init_empty() {
-    if (options_.listpack_max_entries == 0) {
-      auto storage = std::make_unique<HashStorage>(options_.chunk_bytes,
-                                                   options_.member_index_growth);
+    assert(context_flags_ != 0);
+    rep_ = kEmptyCompact;
+    context_flags_ &= ~kFullRepresentation;
+    if (options().listpack_max_entries == 0) {
+      auto storage = std::make_unique<HashStorage>(options().chunk_bytes,
+                                                   options().member_index_growth,
+                                                   options().compaction_knapsack,
+                                                   options().string_encoding);
       MemberIndex<HashStorage> fields(storage.get(),
-                                      options_.member_index_growth);
-      rep_ = std::make_unique<FullState>(
-          FullState{std::move(storage), std::move(fields)});
-    } else {
-      rep_ = HashListpack{};
+                                      options().member_index_growth);
+      auto* state =
+          new FullState{std::move(storage), std::move(fields)};
+      rep_ = reinterpret_cast<std::uintptr_t>(state);
+      context_flags_ |= kFullRepresentation;
     }
   }
 
   void ensure_full() {
-    auto* lp = small_ptr();
-    if (lp == nullptr) {
+    if (!is_small()) {
       return;
     }
-    HashListpack blob = std::move(*lp);
-    auto storage = std::make_unique<HashStorage>(options_.chunk_bytes,
-                                                 options_.member_index_growth);
-    MemberIndex<HashStorage> fields(storage.get(), options_.member_index_growth);
-    const auto n = blob.size();
+    auto storage = std::make_unique<HashStorage>(options().chunk_bytes,
+                                                 options().member_index_growth,
+                                                 options().compaction_knapsack,
+                                                 options().string_encoding);
+    MemberIndex<HashStorage> fields(storage.get(), options().member_index_growth);
+    const auto n = size();
     storage->reserve(n);
     fields.reserve_for_density(n, kDefaultFieldIndexDensity);
-    blob.for_each([&](std::string_view field, std::string_view value) {
-      const auto id = storage->push_back(field, value);
-      fields.insert_packed(storage->view(id), ZSetMemberMeta{.member_id = id});
+    read_small([&](const HashListpack& blob) {
+      blob.for_each(
+        [&](std::string_view field, EncodedStringView value) {
+          const auto id = storage->push_back(field, value.to_string());
+          fields.insert_packed(storage->view(id),
+                               ZSetMemberMeta{.member_id = id});
+        },
+        options().string_encoding);
     });
-    rep_ = std::make_unique<FullState>(
-        FullState{std::move(storage), std::move(fields)});
+    auto* state = new FullState{std::move(storage), std::move(fields)};
+    if (rep_ != kEmptyCompact) {
+      context().storage->mark_object_blob_dead(
+          static_cast<std::uint16_t>(compact_blob_bytes()));
+    }
+    rep_ = reinterpret_cast<std::uintptr_t>(state);
+    context_flags_ |= kFullRepresentation;
+    maybe_compact_keyspace();
   }
 
   void maybe_demote_to_small() {
     if (is_small()) {
       return;
     }
-    if (options_.listpack_max_entries == 0) {
+    if (options().listpack_max_entries == 0) {
       return;
     }
     const auto n = full().storage->size();
-    if (n > options_.listpack_max_entries) {
+    if (n > options().listpack_max_entries) {
       return;
     }
     // Avoid attempting an O(N) rebuild after every HDEL while a large hash is
@@ -430,16 +749,27 @@ class Hash {
     if (!HashListpack::can_encode(n, full().storage->live_bytes())) {
       return;
     }
-    HashListpack lp;
     auto& fs = full();
+    std::vector<std::string> values;
+    std::vector<std::pair<std::string_view, std::string_view>> pairs;
+    values.reserve(n);
+    pairs.reserve(n);
     for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(n); ++id) {
-      const auto result = lp.set(fs.storage->view(id), fs.storage->value(id),
-                                 options_.listpack_max_entries);
-      if (result.needs_full) {
-        return;
-      }
+      values.push_back(fs.storage->value(id).to_string());
+      pairs.emplace_back(fs.storage->view(id), values.back());
     }
-    rep_ = std::move(lp);
+    ArenaBlobStorage arena_storage(*context().storage);
+    HashListpack lp(nullptr, arena_storage);
+    const auto result = lp.set_many(pairs, options().listpack_max_entries,
+                                    options().string_encoding);
+    if (result.needs_full) {
+      return;
+    }
+    const auto compact_rep = arena_storage.packed_location_for(lp.data());
+    auto* old_state = reinterpret_cast<FullState*>(rep_);
+    rep_ = compact_rep;
+    context_flags_ &= ~kFullRepresentation;
+    delete old_state;
   }
 
   int set_full(std::string_view field, std::string_view value) {
@@ -495,17 +825,55 @@ class Hash {
     if (fs.storage->compaction_active() ||
         (fs.storage->dead_bytes() >= kAutoCompactDeadFloor &&
          fs.storage->dead_bytes() >= fs.storage->live_bytes())) {
-      (void)fs.storage->compact_step(kAutoCompactWorkBudget,
+      (void)fs.storage->compact_step(options().compaction_work_budget,
                                      kAutoCompactByteBudget);
     }
   }
 
+  void destroy_representation() noexcept {
+    if (context_flags_ == 0) {
+      return;
+    }
+    if (is_small()) {
+      if (rep_ != kEmptyCompact) {
+        context().storage->mark_object_blob_dead(
+            static_cast<std::uint16_t>(compact_blob_bytes()));
+      }
+    } else {
+      delete reinterpret_cast<FullState*>(rep_);
+    }
+    rep_ = kEmptyCompact;
+    context_flags_ &= ~kFullRepresentation;
+  }
+
+  void destroy_owned_context() noexcept {
+    if (context_flags_ == 0 || !owns_context()) {
+      context_flags_ = 0;
+      return;
+    }
+    auto* owned = &context();
+    delete owned->storage;
+    delete owned;
+    context_flags_ = 0;
+  }
+
+  static void validate_field(std::string_view field) {
+    if (field.size() > HashStorage::kMaxFieldBytes) {
+      throw std::length_error("hash field too large (max 65,535 bytes)");
+    }
+  }
+
+  [[nodiscard]] static constexpr std::size_t
+  full_heap_allocated_bytes() noexcept {
+    return sizeof(FullState) + sizeof(HashStorage);
+  }
+
   static constexpr std::size_t kAutoCompactDeadFloor = std::size_t{1} << 20;
-  static constexpr std::size_t kAutoCompactWorkBudget = 8;
   static constexpr std::size_t kAutoCompactByteBudget = std::size_t{16} << 10;
 
-  HashOptions options_;
-  std::variant<HashListpack, std::unique_ptr<FullState>> rep_;
+  std::uintptr_t context_flags_{0};
+  std::uintptr_t rep_{kEmptyCompact};
 };
+static_assert(sizeof(Hash) == 16);
 
 }  // namespace goblin::core

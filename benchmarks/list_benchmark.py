@@ -3,17 +3,17 @@
 
 The harness reuses zset_benchmark.py's RESP client, parity configuration,
 server launchers, redis-benchmark driver, RSS probe, and INFO/GOBLIN.MEMORY
-readers. It loads one fixed-width list through pipelined multi-value RPUSH,
+readers. It populates one fixed-width list through pipelined multi-value RPUSH,
 measures rank-sensitive reads and writes at several positions, then exercises
 stable-length endpoint and pivot churn. Every engine runs alone.
 
 Example:
   ./benchmarks/list_benchmark.py \
-    --engine goblin-pma:goblin-pma:./build-release/goblin-core \
-    --engine redis-7.2.4:redis:$HOME/bench/redis-7.2.4/src/redis-server \
-    --engine redis-8.8:redis:$HOME/bench/redis-8.8.0/src/redis-server \
-    --engine valkey-9.1:redis:$HOME/bench/valkey-9.1.0/src/valkey-server \
-    --engine dragonfly:dragonfly:$HOME/dragonfly/build-opt/dragonfly
+    --engine goblin-pma:goblin-pma:/path/to/goblin-core \
+    --engine redis-7.2.4:redis:/path/to/redis-7.2.4/redis-server \
+    --engine redis-8.8:redis:/path/to/redis-8.8/redis-server \
+    --engine valkey-9.1:redis:/path/to/valkey-9.1/valkey-server \
+    --engine dragonfly:dragonfly:/path/to/dragonfly
 """
 
 from __future__ import annotations
@@ -525,7 +525,7 @@ def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
             return EngineResult(
                 label=spec.label,
                 kind=spec.kind,
-                binary=str(spec.binary),
+                binary=spec.binary.name,
                 load_commands=load_commands,
                 load_seconds=load_seconds,
                 load_items_per_second=args.members / load_seconds,
@@ -565,16 +565,115 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
     by_label = {result.label: result for result in results}
     operation_names = [op.name for op in results[0].operations]
 
+    summary: list[str] = []
+    goblins = [
+        result for result in results if result.kind.startswith("goblin")
+    ]
+    incumbents = [
+        result for result in results if not result.kind.startswith("goblin")
+    ]
+    if goblins and incumbents:
+        fixed_names = operation_names[:8]
+        incumbent_middle = max(
+            next(op for op in result.operations if op.name == "lindex_middle")
+            .logical_operations_per_second
+            for result in incumbents
+        )
+        best_incumbent_rss_per_item = min(
+            (result.memory_after_load.rss_mib - result.memory_baseline.rss_mib)
+            * 1024
+            * 1024
+            / args.members
+            for result in incumbents
+        )
+        incumbent_key_per_item = [
+            result.memory_after_load.key_memory_usage_bytes / args.members
+            for result in incumbents
+            if result.memory_after_load.key_memory_usage_bytes is not None
+        ]
+        goblin_internal = [
+            (result, goblin_stat(result.memory_after_load,
+                                 "total_allocated_bytes"))
+            for result in goblins
+        ]
+        goblin_internal = [
+            (result, allocated / args.members)
+            for result, allocated in goblin_internal
+            if allocated is not None
+        ]
+        fastest_load = max(result.load_items_per_second for result in incumbents)
+        goblin_sentences = []
+        for goblin in goblins:
+            fixed_wins = sum(
+                next(op for op in goblin.operations if op.name == name)
+                .logical_operations_per_second
+                > max(
+                    next(op for op in result.operations if op.name == name)
+                    .logical_operations_per_second
+                    for result in incumbents
+                )
+                for name in fixed_names
+            )
+            goblin_middle = next(
+                op for op in goblin.operations if op.name == "lindex_middle"
+            ).logical_operations_per_second
+            goblin_rss_per_item = (
+                goblin.memory_after_load.rss_mib
+                - goblin.memory_baseline.rss_mib
+            ) * 1024 * 1024 / args.members
+            load_delta = (
+                goblin.load_items_per_second / fastest_load - 1.0
+            ) * 100
+            load_comparison = (
+                f"`{load_delta:.1f}%` ahead of"
+                if load_delta >= 0
+                else f"`{-load_delta:.1f}%` behind"
+            )
+            goblin_sentences.append(
+                f"`{goblin.label}` leads `{fixed_wins}` of "
+                f"`{len(fixed_names)}` fixed-command rows, reaches "
+                f"`{goblin_middle / incumbent_middle:.2f}x` the fastest "
+                f"incumbent on middle-list `LINDEX`, RESP population is "
+                f"{load_comparison} "
+                f"the fastest incumbent, and uses `{goblin_rss_per_item:.2f}` "
+                "RSS-delta bytes/item."
+            )
+        allocation_sentence = ""
+        if goblin_internal and incumbent_key_per_item:
+            leanest_goblin, leanest_goblin_bytes = min(
+                goblin_internal, key=lambda item: item[1]
+            )
+            allocation_sentence = (
+                f" `{leanest_goblin.label}` is the leanest key representation at "
+                f"`{leanest_goblin_bytes:.2f}` accounted bytes/item versus "
+                f"`{min(incumbent_key_per_item):.2f}` from the leanest incumbent's "
+                "key-level counter."
+            )
+        summary = [
+            "## Summary",
+            "",
+            " ".join(goblin_sentences) + allocation_sentence +
+            " The leanest incumbent uses "
+            f"`{best_incumbent_rss_per_item:.2f}` RSS-delta bytes/item. RESP "
+            "population and compound-operation rows use the Python RESP pipeline and are "
+            "client-influenced; fixed-command rows use the C benchmark client.",
+            "",
+        ]
+
     lines = [
         "# Goblin Core 100k List Benchmark",
         "",
         f"Generated on a dedicated benchmark host at {generated_at}.",
         "",
+        *summary,
         "## Method",
         "",
         f"- `{args.members:,}` distinct `{args.value_bytes}`-byte values in one list.",
-        f"- Load: multi-value `RPUSH` batches of `{args.load_batch}`, pipeline depth "
+        f"- RESP population: multi-value `RPUSH` batches of `{args.load_batch}`, pipeline depth "
         f"`{args.pipeline}`.",
+        "- RESP population measures command ingestion, not Goblin Core native "
+        "snapshot restoration; native restore reconstructs each list in one bulk "
+        "operation and uses the compatible raw-copy accelerator when present.",
         f"- Fixed-command rates: `{args.requests:,}` requests, one client, pipeline "
         f"depth `{args.pipeline}`, median of `{args.rounds}` `redis-benchmark` runs.",
         "- Compound rates use the repository's existing RESP pipeline client and "
@@ -586,12 +685,16 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "proactor thread for single-core parity. The intended target is a modest "
         "single-core memory server; the quiet benchmark host is a 64-core machine. "
         "Engines run one at a time.",
-        "- RSS is external `ps` RSS. `INFO used_memory` and `MEMORY USAGE` are "
-        "reported independently; RSS/INFO deltas subtract the empty-server baseline.",
+        "- RSS is read directly from the launched server PID's Linux "
+        "`/proc/<pid>/status` as `VmRSS + HugetlbPages`; no server-reported RSS "
+        "field is used. `INFO used_memory` and `MEMORY USAGE` are independent "
+        "corroborating counters; RSS/INFO deltas subtract the empty-server baseline.",
         "- Per-key bytes are `MEMORY USAGE` on incumbents and "
         "`GOBLIN.MEMORY total_allocated_bytes` on Goblin Core.",
+        "- Incumbents are exercised strictly as black-box RESP servers; their "
+        "source code is not inspected.",
         "",
-        "## Load",
+        "## RESP Population",
         "",
         "| Engine | items/s | seconds | RPUSH commands |",
         "| --- | ---: | ---: | ---: |",
@@ -606,7 +709,7 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "",
         "## Operations",
         "",
-        "Logical operations per second. Fixed commands use the C load generator; "
+        "Logical operations per second. Fixed commands use the C benchmark client; "
         "compound rows count a two-command pair as one logical operation.",
         "",
         "| Operation | " + " | ".join(labels) + " |",
@@ -622,7 +725,7 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
 
     lines += [
         "",
-        "## Memory After Load",
+        "## Memory After Population",
         "",
         "| Engine | RSS MiB | RSS delta MiB | RSS delta B/item | INFO used MiB | "
         "INFO delta B/item | key-reported B/item |",
@@ -669,45 +772,49 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
             f"{sample.list_length if sample.list_length is not None else 'n/a'} |"
         )
 
-    goblin = next(
-        (result for result in results if result.kind.startswith("goblin")), None
-    )
-    if goblin is not None:
+    if goblins:
         lines += [
             "",
             "## Goblin List Internals",
             "",
-            "| Phase | elements | live value MiB | dead value MiB | value alloc MiB | "
-            "order capacity | front slack | back slack | order alloc MiB | "
+            "| Engine | representation | phase | elements | live value MiB | dead value MiB | value alloc MiB | "
+            "slots/leaves | front slack | back slack | order alloc MiB | "
             "total alloc MiB |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
-        for phase, sample in (
-            ("after load", goblin.memory_after_load),
-            ("after operations", goblin.memory_after_operations),
-        ):
-            def mib_stat(name: str) -> str:
-                value = goblin_stat(sample, name)
-                return fmt(None if value is None else value / (1024 * 1024))
+        for goblin in goblins:
+            for phase, sample in (
+                ("after population", goblin.memory_after_load),
+                ("after operations", goblin.memory_after_operations),
+            ):
+                def mib_stat(name: str) -> str:
+                    value = goblin_stat(sample, name)
+                    return fmt(None if value is None else value / (1024 * 1024))
 
-            lines.append(
-                f"| `{phase}` | {goblin_stat(sample, 'element_count') or 0:,} | "
-                f"{mib_stat('value_live_bytes')} | {mib_stat('value_dead_bytes')} | "
-                f"{mib_stat('value_allocated_bytes')} | "
-                f"{goblin_stat(sample, 'order_capacity') or 0:,} | "
-                f"{goblin_stat(sample, 'order_front_slack') or 0:,} | "
-                f"{goblin_stat(sample, 'order_back_slack') or 0:,} | "
-                f"{mib_stat('order_allocated_bytes')} | "
-                f"{mib_stat('total_allocated_bytes')} |"
-            )
+                representation = (
+                    sample.goblin_memory.get("implementation", "unknown")
+                    if sample.goblin_memory is not None
+                    else "unknown"
+                )
+                lines.append(
+                    f"| `{goblin.label}` | `{representation}` | `{phase}` | "
+                    f"{goblin_stat(sample, 'element_count') or 0:,} | "
+                    f"{mib_stat('value_live_bytes')} | {mib_stat('value_dead_bytes')} | "
+                    f"{mib_stat('value_allocated_bytes')} | "
+                    f"{goblin_stat(sample, 'order_capacity') or 0:,} | "
+                    f"{goblin_stat(sample, 'order_front_slack') or 0:,} | "
+                    f"{goblin_stat(sample, 'order_back_slack') or 0:,} | "
+                    f"{mib_stat('order_allocated_bytes')} | "
+                    f"{mib_stat('total_allocated_bytes')} |"
+                )
 
     lines += [
         "",
-        "## Binaries",
+        "## Tested Servers",
         "",
     ]
     for result in results:
-        lines.append(f"- `{result.label}`: `{result.binary}`")
+        lines.append(f"- `{result.label}`")
     lines.append("")
     return lines
 
@@ -735,7 +842,7 @@ def write_outputs(args: argparse.Namespace, results: Sequence[EngineResult]) -> 
             "settle_seconds": args.settle_seconds,
             "standard_list_implementation": args.standard_list_implementation,
             "goblin_max_density": args.goblin_max_density,
-            "redis_benchmark": str(args.redis_benchmark),
+            "redis_benchmark": args.redis_benchmark.name,
         },
         "results": [asdict(result) for result in results],
     }
@@ -764,7 +871,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--standard-list-implementation",
         default="pma",
-        choices=["pma"],
+        choices=["pma", "segmented"],
         help="Target selected by standard list commands on Goblin Core.",
     )
     parser.add_argument(
@@ -843,7 +950,7 @@ def main(argv: Sequence[str]) -> int:
         middle = next(op for op in result.operations if op.name == "lindex_middle")
         rss_delta = result.memory_after_load.rss_mib - result.memory_baseline.rss_mib
         print(
-            f"  load {result.load_items_per_second:,.0f} items/s, "
+            f"  RESP population {result.load_items_per_second:,.0f} items/s, "
             f"middle LINDEX {middle.logical_operations_per_second:,.0f} ops/s, "
             f"RSS delta {rss_delta:.2f} MiB",
             file=sys.stderr,

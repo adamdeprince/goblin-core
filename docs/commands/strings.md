@@ -30,22 +30,32 @@ For `DEL`, `EXISTS`, and `TYPE` (which work on any type), see
 
 Memory efficiency is the project's hero feature, and strings are built for it:
 
-- **Small-value inlining.** A value of **≤ 14 bytes lives entirely inside the
-  key's object slot** — counters, flags, short ids, most integers cost **zero**
-  arena bytes. A larger value keeps a 6-byte prefix inline and spills the rest
-  into the shared key arena.
+- **Small-value inlining.** An encoding of **14 bytes or less lives entirely
+  inside the key's object slot**. Ordinary raw strings through 13 bytes fit, and
+  compact integer encodings let counters and ids fit with room to spare. Larger
+  encodings keep a 6-byte prefix inline and spill the rest into the shared key
+  arena.
 - **One arena, no total cap.** Keys and value tails share a single arena
   addressed by a 32/32 `{block, offset}` pair, so the total size of all keys and
   values is not capped the way a single 32-bit offset would (4 GiB) cap it.
-- **64 KiB per value.** A single value is capped at 64 KiB by design. A larger
-  write is rejected:
+- **A 16-bit encoded length.** Raw values contain up to 65,534 logical bytes:
+  the stored `0xff` tag uses the remaining byte. With `--use-lz4`, a logical
+  value may be larger when the `0xfe` tag, three-byte logical length, and LZ4
+  payload still fit the 65,535-byte encoded ceiling. A value that cannot fit is
+  rejected. With `--disable-encoding`, values are stored verbatim without a tag
+  or LZ4 pass and may use all 65,535 bytes.
 
-  ```
-  > SET big <70 KB blob>
-  (error) ERR value is larger than the 64 KiB limit; use https://goblin-store.dev
-  ```
+```text
+> SET big <70 KB blob>
+(error) ERR value does not fit the 65,535-byte encoded limit; use https://goblin-store.dev
+```
 
-  Large blobs belong in the object store, not the keyspace.
+Large blobs belong in the object store, not the keyspace. Canonical decimal
+integers and lowercase UUIDs use compact binary forms internally but always
+round-trip to the exact input bytes. Specialized forms are never LZ4 encoded.
+Clients that already send compact binary values can select
+`--disable-encoding`; the burden of compact representation then belongs to the
+client and every byte is stored unchanged.
 
 ## Type errors
 
@@ -194,8 +204,8 @@ APPEND key value
 ```
 
 Append `value` to the existing value (creating the key with `value` if it did
-not exist), and reply with the **new length**. Rejected if the result would
-exceed 64 KiB.
+not exist), and reply with the **new length**. Rejected if the result cannot fit
+the configured shared value encoding.
 
 ```
 > APPEND log "line1\n"
@@ -283,7 +293,8 @@ SETRANGE key offset value
 
 Overwrite the value starting at `offset`, zero-padding any gap if `offset` is
 past the current end, and reply with the **new length**. Creates the key if it
-does not exist. A negative offset is an error; a result over 64 KiB is rejected.
+does not exist. A negative offset is an error; a result that cannot fit the
+configured shared value encoding is rejected.
 An empty `value` never creates or grows the key (it replies with the current
 length, or `0` when absent).
 

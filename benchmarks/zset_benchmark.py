@@ -338,10 +338,33 @@ def start_dragonfly(binary: Path, unix_socket: str | None = None) -> ServerProce
     return server
 
 
+def process_resident_bytes(pid: int) -> int:
+    """Read true process residency without trusting the server's INFO output."""
+    status = Path(f"/proc/{pid}/status")
+    if status.exists():
+        fields: dict[str, int] = {}
+        for line in status.read_text(encoding="ascii").splitlines():
+            name, separator, value = line.partition(":")
+            if not separator or name not in ("VmRSS", "HugetlbPages"):
+                continue
+            parts = value.split()
+            if parts:
+                fields[name] = int(parts[0]) * 1024
+        if "VmRSS" not in fields:
+            raise RuntimeError(f"{status} has no VmRSS field")
+        # Explicit MAP_HUGETLB pages are resident but excluded from VmRSS.
+        return fields["VmRSS"] + fields.get("HugetlbPages", 0)
+
+    # Non-Linux development fallback. Production benchmarks run on Linux and
+    # therefore always take the direct /proc path above.
+    output = subprocess.check_output(
+        ["ps", "-o", "rss=", "-p", str(pid)], text=True
+    )
+    return int(output.strip() or "0") * 1024
+
+
 def process_rss_mib(pid: int) -> float:
-    output = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)], text=True)
-    rss_kib = int(output.strip() or "0")
-    return rss_kib / 1024.0
+    return process_resident_bytes(pid) / (1024.0 * 1024.0)
 
 
 def redis_info_fields(

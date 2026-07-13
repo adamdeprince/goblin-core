@@ -65,9 +65,10 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   [BENCHMARKS.md](BENCHMARKS.md) (x86) and
   [LOONGSON_BENCHMARKS.md](LOONGSON_BENCHMARKS.md) (Loongson 3A6000).
 - A performance and architecture overview lives in
-  [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md). The Redis list implementation is
-  documented in [LISTS.md](LISTS.md), including its adaptive PMA algorithm class,
-  rank/select index, endpoint bias, and memory controls. Its repeatable
+  [PERFORMANCE_BRIEF.md](PERFORMANCE_BRIEF.md). The Redis list implementations
+  are documented in [LISTS.md](LISTS.md), including the adaptive PMA and
+  segmented-listpack algorithm classes, rank indexes, endpoint bias, and memory
+  controls. Their repeatable
   cross-engine results are in [LIST-BENCHMARK.md](LIST-BENCHMARK.md).
 
 ## Current Commands
@@ -108,11 +109,12 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `LREM key count value`
 - `LINSERT key BEFORE|AFTER pivot value`
 
-These standard list names resolve through `--list-implementation pma`. The PMA
-backend is also addressable directly with `GOBLIN.PMA.` plus the command name,
-for example `GOBLIN.PMA.LPUSH` and `GOBLIN.PMA.LINDEX`. Qualified command
-families allow multiple list implementations to coexist and be benchmarked
-without changing the standard compatibility surface.
+These standard list names resolve through `--list-implementation pma|segmented`
+(`pma` is the default). Both backends are also addressable directly with
+`GOBLIN.PMA.` or `GOBLIN.SEGMENTED.` plus the command name, for example
+`GOBLIN.PMA.LINDEX` and `GOBLIN.SEGMENTED.LPUSH`. Qualified command families let
+multiple list implementations coexist and be benchmarked without changing the
+standard compatibility surface.
 
 The protocol handler accepts RESP array commands and a basic inline command
 format for local testing.
@@ -170,11 +172,17 @@ than coercing the value.
 Use the Redis differential tests and benchmark scripts when changing command
 behavior. The goal is to keep the supported subset boringly compatible while
 leaving room to optimize internal layouts aggressively. One deliberate
-divergence: keys, string and list values, sorted-set members, and hash fields and
-values are capped at 65,535 bytes (Redis allows more). That makes two-byte length
-metadata sufficient. Larger objects belong in
-[Goblin Store](https://goblin-store.dev), with Goblin Core holding the returned
-key.
+divergence keeps length metadata at two bytes: keys, sorted-set members, and hash
+fields are capped at 65,535 bytes. String values, hash values, and PMA list values
+share an encoded representation capped at 65,535 bytes. An ordinary raw value
+can contain up to 65,534 bytes because its `0xff` tag consumes one byte. With
+`--use-lz4`, a compressible logical value can be larger, up to the encoding's
+24-bit logical-length ceiling, provided the complete encoded form still fits.
+`--disable-encoding` instead stores string, hash, and list bytes verbatim with no
+tag or LZ4 pass, raising the direct value ceiling to 65,535 bytes for clients
+that already provide compact binary data.
+Larger objects belong in [Goblin Store](https://goblin-store.dev), with Goblin
+Core holding the returned key.
 
 ## Design Priorities
 
@@ -234,6 +242,7 @@ Prerequisites:
 
 - CMake 3.25 or newer
 - A C++23 compiler such as recent Clang, GCC, or MSVC
+- LZ4 headers and library (`liblz4-dev` or `lz4` from Homebrew)
 - Python 3 for tests and generated HTML docs
 - Redis only when running Redis differential tests or Redis comparison benchmarks
 
@@ -312,13 +321,30 @@ no empty slot, so a lookup of a missing member scans the whole table.
 `GOBLIN.OPTIMIZE` and `GOBLIN.MEMORY` work on hash and list keys too. On a hash,
 `GOBLIN.OPTIMIZE <key>` reclaims dead arena bytes left by value updates and field
 deletes and repacks the field index. On a list it rebuilds the value arena and
-packs the adaptive PMA at its configured density. Hash auto-compaction is a
-different, bounded serving path: once dead (reclaimable) arena bytes exceed the
-live bytes past the floor, normal hash mutations scan and evacuate one fragmented
-arena chunk in fixed work/byte steps. The emptied chunk is released and its
-32-bit arena slot is recycled. This bounds per-command maintenance without a
-whole-hash rebuild; `GOBLIN.OPTIMIZE` remains the explicit immediate rebuild and
-field-index repack.
+packs the adaptive PMA at its configured density. Hash compaction keeps arena
+blocks as a contiguous stack: it densifies a holey target, fills it from the last
+block, deletes a fully drained tail, and repeats with the preceding block. The
+first nonempty block promoted to tail is copied off HugeTLB and shrunk while it is
+being compacted. Normal hash mutations advance selection and relocation with
+fixed work/byte budgets. Default tail donation is an allocation-free streaming
+first-fit pass: each inspected field id consumes one work unit, and mutations
+that touch already-scanned ids enter a small fixed pending queue instead of
+rewinding the monotonic cursor. Target densification still scans the hash and
+remains the known tail-latency work; `GOBLIN.OPTIMIZE` drains the same algorithm
+immediately and then repacks the field index.
+
+Tail donation uses deterministic first-fit selection by default. Exact SIMD
+subset-sum packing is available for experiments with
+`--hash-compaction-knapsack`; `--no-hash-compaction-knapsack` selects first-fit
+explicitly. Exact packing costs substantially more serving latency and is not the
+default; unlike the streaming path, it materializes the complete donor set and is
+not latency-bounded.
+
+`--hash-compaction-work-budget <count>` sets how many chunk candidates or field
+ids automatic hash maintenance may inspect after one mutating command (default
+`32`). Copied donor data remains separately capped at 16 KiB per command. Raising
+the scan budget makes large hashes reclaim churn faster; lowering it puts a
+tighter ceiling on maintenance CPU.
 
 `--member-index-growth <factor>` sets how much the member index grows on each
 rehash (default `2^0.25 ≈ 1.19`), for both the zset member index and the hash
@@ -329,11 +355,32 @@ doubling that favors write throughput.
 `--zset-chunk-bytes <bytes>`, `--hash-chunk-bytes <bytes>`, and
 `--list-chunk-bytes <bytes>` set the packed-arena chunk size per type. Each must
 be a power of two and large enough to hold its largest entry; all three default
-to `1` MiB. `--list-implementation pma` selects the backend used by standard
-list commands; PMA is the sole selector value and default today. Lists
-separately expose `--list-max-density` (default `0.97`) and
+to `2` MiB. `--list-implementation pma|segmented` selects the backend used by
+standard list commands; PMA is the default. Lists separately expose
+`--list-max-density` (default `0.97`) and
 `--list-resize-growth` (default `2**0.25`) so packing and resize policy do not
 silently control one another. See [LISTS.md](LISTS.md).
+
+String values, hash values, compact-hash fields, and both list backends use one
+binary-safe encoder. Canonical decimal integers and lowercase raw or dashed
+UUIDs use compact binary forms; every other value carries a `0xff` raw tag and
+decodes to the exact input bytes. Compact-hash fields use the same exact encoder
+but never LZ4. `--use-lz4 <bytes>` enables LZ4 for raw-form values at or above
+the given logical size. Specialized integer and UUID forms are never compressed.
+A compressed value carries a `0xfe` tag and a three-byte logical length. If LZ4
+does not fit but the raw form does, Goblin stores the raw form instead.
+
+`--disable-encoding` disables specialization and compression across strings,
+hashes, and lists. Stored bytes are exactly the supplied bytes, with no `0xff`
+marker; empty values therefore occupy zero payload bytes and direct values may
+use the full 65,535-byte length. This mode is intended for smart clients that
+already use compact binary keys and values. Any `--use-lz4` or
+`--lz4-compress-level` setting is ignored while encoding is disabled.
+
+`--lz4-compress-level <level>` selects the compressor: `0` (or omission) uses
+`LZ4_compress_default`, `3..12` selects the corresponding LZ4HC level, and
+`-1..-8` selects `LZ4_compress_fast` with acceleration `1..8`. The compression
+level has no effect unless `--use-lz4` is present.
 
 `GOBLIN.SAVE <path>` snapshots every supported key type and its TTL. Lists are
 written in canonical order rather than persisting PMA slots or arena addresses.
@@ -348,7 +395,12 @@ startup) replaces the current data with a snapshot, replying with the number of
 keys loaded. Snapshots carry portable canonical data for zsets, hashes, strings,
 and lists plus version-gated accelerators for the indexed types; a snapshot loads
 on any build or machine, rebuilding indexes when an accelerator cannot be
-trusted (a different `std::hash`, a changed index format).
+trusted (a different `std::hash`, a changed index format). For all-raw lists, a
+versioned two-byte accelerator marker lets the canonical bytes copy directly
+into the selected final representation without duplicating them in the file.
+Other lists are still restored with one bulk build from ordered snapshot views,
+rather than one mutation per element; Redis RDB list imports use the same bulk
+construction path.
 Persistence is explicit and client-driven: a crash loses writes made since the
 last successful `GOBLIN.SAVE`, so drive saves from your operations and `--load`
 on startup.
@@ -425,8 +477,9 @@ The reader accepts RDB files from **Redis 2.6 through 7.2.x** (RDB versions
 quicklists, and quicklist2/listpack lists. Strings, sets, and hashes are parsed
 and skipped; carry Goblin Core's own versions of those types between restarts
 with a native `GOBLIN.SAVE` snapshot. Streams and modules abort the load with a
-message. Infinite scores clamp to the largest finite double, and a sorted-set
-member or list value larger than 65,535 bytes aborts the load atomically.
+message. Infinite scores clamp to the largest finite double. A sorted-set member
+over 65,535 bytes, or a list value that cannot fit the configured shared value
+encoding, aborts the load atomically.
 
 Newer RDB versions (Redis 7.4+ / RDB 12+) are intentionally not read. Re-save the
 dump under Redis ≤ 7.2, or migrate over the wire (`SCAN` + `ZRANGE ... WITHSCORES`

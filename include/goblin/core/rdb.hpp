@@ -33,8 +33,9 @@ class rdb_error : public std::runtime_error {
 [[nodiscard]] std::uint64_t crc64(std::string_view data) noexcept;
 
 // Import every sorted set and list from a Redis RDB stream into `store`, which
-// is cleared first. +/-inf scores clamp to +/-DBL_MAX; a member or list value
-// larger than 64 KiB aborts. Throws rdb_error on malformed, unsupported, or
+// is cleared first. +/-inf scores clamp to +/-DBL_MAX. A sorted-set member over
+// 65,535 bytes, or a list value that cannot fit the store's configured shared
+// encoding, aborts the import. Throws rdb_error on malformed, unsupported, or
 // out-of-range input.
 SnapshotLoadStats import(Store& store, std::istream& in);
 

@@ -6,8 +6,9 @@
 // once on open, then for each call builds a typed request, sends it, and decodes the
 // typed reply. An ErrorReply becomes a thrown std::runtime_error ("<code> <message>").
 //
-// Every request builds into a growable send buffer (values may be up to 64 KiB), and
-// replies are decoded straight out of the last received frame.
+// Every request builds into a growable send buffer (logical values may be larger
+// when server-side LZ4 is enabled), and replies are decoded straight out of the
+// last received frame.
 
 #include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/ring_buffer.hpp"
@@ -929,7 +930,7 @@ class SbeRingClient {
   ring::Mapping map_;
   ring::Producer sq_;
   ring::Consumer cq_;
-  std::vector<char> sendbuf_;  // growable request buffer (values up to 64 KiB)
+  std::vector<char> sendbuf_;  // growable request buffer
   std::string cqbuf_;          // CQ byte accumulator
   std::string last_frame_;     // the last reply's SBE message (prefix stripped)
 };

@@ -3,12 +3,16 @@
 // Adaptive packed-memory array for Redis list order.
 //
 // Values are represented by compact arena references in struct-of-arrays form.
-// An occupancy bitmap marks live slots; a Fenwick tree over 64-slot bitmap words
-// implements rank/select. Inserts first consume nearby slack, then redistribute
-// the smallest sufficiently sparse window, and finally grow geometrically.
-// Repeated endpoint operations bias redistributed slack toward that endpoint.
+// A list starts with one u32 tagged logical address plus one u16 length per PMA
+// slot. If its byte arena crosses the narrow 2 GiB address space, it promotes
+// once to split u32 block/u32 offset/u16 length slots. An occupancy bitmap marks
+// live slots; a Fenwick tree over 64-slot bitmap words implements rank/select.
+// Inserts first consume nearby slack, then redistribute the smallest sufficiently
+// sparse window, and finally grow geometrically. Repeated endpoint operations
+// bias redistributed slack toward that endpoint.
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cassert>
 #include <cmath>
@@ -34,7 +38,9 @@ class AdaptivePma {
   static constexpr double kDefaultResizeGrowth = kDefaultArenaGrowth;
 
   explicit AdaptivePma(double max_density = kDefaultMaxDensity,
-                       double resize_growth = kDefaultResizeGrowth)
+                       double resize_growth = kDefaultResizeGrowth,
+                       size_type chunk_bytes =
+                           ListValueArena::kDefaultChunkBytes)
       : max_density_(valid_density(max_density) ? max_density
                                                 : kDefaultMaxDensity),
         resize_growth_(resize_growth > 1.0 ? resize_growth
@@ -42,11 +48,21 @@ class AdaptivePma {
     if (!std::isfinite(resize_growth_)) {
       resize_growth_ = kDefaultResizeGrowth;
     }
+    if (!std::has_single_bit(chunk_bytes) ||
+        chunk_bytes < ListValueArena::kMinChunkBytes ||
+        chunk_bytes > ListValueArena::kMaxChunkBytes) {
+      chunk_bytes = ListValueArena::kDefaultChunkBytes;
+    }
+    chunk_shift_ = static_cast<size_type>(std::countr_zero(chunk_bytes));
+    chunk_mask_ = chunk_bytes - 1;
   }
 
   [[nodiscard]] size_type size() const noexcept { return size_; }
   [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
-  [[nodiscard]] size_type capacity() const noexcept { return blocks_.size(); }
+  [[nodiscard]] size_type capacity() const noexcept { return offsets_.size(); }
+  [[nodiscard]] bool wide_references() const noexcept {
+    return !blocks_.empty();
+  }
   [[nodiscard]] size_type front_slack() const noexcept {
     return empty() ? capacity() : select_slot(0);
   }
@@ -63,7 +79,7 @@ class AdaptivePma {
     return read_slot(select_slot(rank));
   }
 
-  void set(size_type rank, ListValueRef value) noexcept {
+  void set(size_type rank, ListValueRef value) {
     assert(rank < size_);
     write_slot(select_slot(rank), value);
   }
@@ -78,15 +94,11 @@ class AdaptivePma {
     note_insert(rank);
     if (capacity() == 0) {
       allocate_slots(kInitialCapacity);
-      redistribute(0, capacity(), std::vector<ListValueRef>{value});
+      const std::array initial{value};
+      redistribute(0, capacity(), initial);
       size_ = 1;
       return;
     }
-    if (size_ + 1 > max_occupancy(capacity())) {
-      rebuild_with_insert(grown_capacity(size_ + 1), rank, value);
-      return;
-    }
-
     if (rank == 0) {
       const auto first = select_slot(0);
       if (first != 0) {
@@ -140,6 +152,16 @@ class AdaptivePma {
       return;
     }
 
+    // max_density is the target density after redistribution or growth, not a
+    // prohibition against consuming a gap that already exists. In particular,
+    // compact() deliberately reserves endpoint and distributed slack. Let a
+    // transient insert use that slack instead of growing the entire PMA merely
+    // because size_ currently sits exactly on the density watermark.
+    if (size_ + 1 > max_occupancy(capacity())) {
+      rebuild_with_insert(grown_capacity(size_ + 1), rank, value);
+      return;
+    }
+
     if (redistribute_for_insert(rank, value)) {
       return;
     }
@@ -166,16 +188,10 @@ class AdaptivePma {
     const auto next_size = size_ + values.size();
     if (capacity() == 0) {
       allocate_slots(minimum_capacity(next_size));
-      redistribute(0, capacity(),
-                   std::vector<ListValueRef>(values.begin(), values.end()));
+      redistribute(0, capacity(), values);
       size_ = next_size;
       return;
     }
-    if (next_size > max_occupancy(capacity())) {
-      rebuild_with_insert_many(grown_capacity(next_size), rank, values);
-      return;
-    }
-
     // Endpoint batches commonly fit directly in explicitly reserved slack.
     // Populate the whole run before touching size_ so ranks remain stable.
     if (rank == 0) {
@@ -200,6 +216,11 @@ class AdaptivePma {
         size_ = next_size;
         return;
       }
+    }
+
+    if (next_size > max_occupancy(capacity())) {
+      rebuild_with_insert_many(grown_capacity(next_size), rank, values);
+      return;
     }
 
     if (redistribute_for_insert_many(rank, values)) {
@@ -244,7 +265,9 @@ class AdaptivePma {
       return;
     }
     rebuild(minimum_capacity(size_));
-    blocks_.shrink_to_fit();
+    if (wide_references()) {
+      blocks_.shrink_to_fit();
+    }
     offsets_.shrink_to_fit();
     lengths_.shrink_to_fit();
     occupied_.shrink_to_fit();
@@ -318,8 +341,8 @@ class AdaptivePma {
   }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
-    return blocks_.capacity() * sizeof(std::uint32_t) +
-           offsets_.capacity() * sizeof(std::uint32_t) +
+    return offsets_.capacity() * sizeof(std::uint32_t) +
+           blocks_.capacity() * sizeof(std::uint32_t) +
            lengths_.capacity() * sizeof(std::uint16_t) +
            occupied_.capacity() * sizeof(std::uint64_t) +
            fenwick_.capacity() * sizeof(std::uint32_t);
@@ -327,11 +350,11 @@ class AdaptivePma {
 
   [[nodiscard]] bool check_invariants() const noexcept {
     if (capacity() == 0) {
-      return size_ == 0 && offsets_.empty() && lengths_.empty() &&
+      return size_ == 0 && blocks_.empty() && lengths_.empty() &&
              occupied_.empty() && fenwick_.empty();
     }
-    if (blocks_.size() != offsets_.size() ||
-        blocks_.size() != lengths_.size() ||
+    if ((!blocks_.empty() && blocks_.size() != offsets_.size()) ||
+        offsets_.size() != lengths_.size() ||
         occupied_.size() != word_count(capacity()) ||
         fenwick_.size() != occupied_.size() + 1) {
       return false;
@@ -406,9 +429,14 @@ class AdaptivePma {
   }
 
   void allocate_slots(size_type slots) {
-    blocks_.assign(slots, 0);
+    const bool wide = wide_references();
     offsets_.assign(slots, 0);
     lengths_.assign(slots, 0);
+    if (wide) {
+      blocks_.assign(slots, 0);
+    } else {
+      blocks_.clear();
+    }
     occupied_.assign(word_count(slots), 0);
     fenwick_.assign(occupied_.size() + 1, 0);
   }
@@ -490,21 +518,70 @@ class AdaptivePma {
   }
 
   [[nodiscard]] ListValueRef read_slot(size_type slot) const noexcept {
-    return {.block = blocks_[slot],
-            .offset = offsets_[slot],
+    if (wide_references()) {
+      return {.block = blocks_[slot],
+              .offset = offsets_[slot],
+              .length = lengths_[slot]};
+    }
+    const auto tagged = offsets_[slot];
+    const auto logical = tagged & ListValueRef::kBlockMask;
+    const auto raw = tagged & ListValueRef::kRawMask;
+    return {.block = static_cast<std::uint32_t>(logical >> chunk_shift_) | raw,
+            .offset = static_cast<std::uint32_t>(logical & chunk_mask_),
             .length = lengths_[slot]};
   }
 
-  void write_slot(size_type slot, ListValueRef value) noexcept {
-    blocks_[slot] = value.block;
-    offsets_[slot] = value.offset;
+  [[nodiscard]] bool fits_narrow(ListValueRef value) const noexcept {
+    const auto logical =
+        (static_cast<std::uint64_t>(value.block_index()) << chunk_shift_) |
+        value.offset;
+    return logical <= ListValueRef::kBlockMask;
+  }
+
+  [[nodiscard]] std::uint32_t narrow_location(
+      ListValueRef value) const noexcept {
+    assert(fits_narrow(value));
+    const auto logical =
+        (static_cast<std::uint64_t>(value.block_index()) << chunk_shift_) |
+        value.offset;
+    return static_cast<std::uint32_t>(logical) |
+           (value.raw_prefix_omitted() ? ListValueRef::kRawMask : 0);
+  }
+
+  void promote_references() {
+    assert(!wide_references());
+    blocks_.resize(capacity());
+    for (size_type slot = 0; slot < capacity(); ++slot) {
+      const auto tagged = offsets_[slot];
+      const auto logical = tagged & ListValueRef::kBlockMask;
+      blocks_[slot] =
+          static_cast<std::uint32_t>(logical >> chunk_shift_) |
+          (tagged & ListValueRef::kRawMask);
+      offsets_[slot] = static_cast<std::uint32_t>(logical & chunk_mask_);
+    }
+  }
+
+  void write_slot(size_type slot, ListValueRef value) {
+    if (!wide_references() && !fits_narrow(value)) {
+      promote_references();
+    }
+    if (wide_references()) {
+      blocks_[slot] = value.block;
+      offsets_[slot] = value.offset;
+    } else {
+      offsets_[slot] = narrow_location(value);
+    }
     lengths_[slot] = value.length;
   }
 
   void move_slot(size_type dst, size_type src) noexcept {
     assert(is_occupied(src));
     assert(!is_occupied(dst));
-    write_slot(dst, read_slot(src));
+    if (wide_references()) {
+      blocks_[dst] = blocks_[src];
+    }
+    offsets_[dst] = offsets_[src];
+    lengths_[dst] = lengths_[src];
     set_occupied(dst, true);
     set_occupied(src, false);
   }
@@ -557,7 +634,7 @@ class AdaptivePma {
   // n+1 gaps rounds to nothing on a large list, whereas an explicit quota makes
   // sustained stack/queue traffic consume thousands of slots before rebalance.
   void redistribute(size_type begin, size_type end,
-                    const std::vector<ListValueRef>& values) {
+                    std::span<const ListValueRef> values) {
     assert(end <= capacity() && begin <= end);
     const auto width = end - begin;
     assert(values.size() <= width);
@@ -586,9 +663,9 @@ class AdaptivePma {
     size_type slot = begin;
 
     for (size_type index = 0; index <= values.size(); ++index) {
-      const auto target_spread = static_cast<size_type>(std::floor(
-          static_cast<long double>(spread_empty) * (index + 1) /
-          (values.size() + 1)));
+      const auto target_spread = static_cast<size_type>(
+          static_cast<std::uint64_t>(spread_empty) * (index + 1) /
+          (values.size() + 1));
       auto gap = target_spread - assigned_spread;
       assigned_spread = target_spread;
       if (index == 0) {
@@ -756,6 +833,8 @@ class AdaptivePma {
   double resize_growth_{kDefaultResizeGrowth};
   std::uint8_t front_bias_{1};
   std::uint8_t back_bias_{1};
+  size_type chunk_shift_{21};
+  size_type chunk_mask_{ListValueArena::kDefaultChunkBytes - 1};
 };
 
 }  // namespace goblin::core

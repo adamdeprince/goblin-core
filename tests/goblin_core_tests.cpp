@@ -41,6 +41,7 @@
 #include <optional>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1043,10 +1044,305 @@ void test_store_many_zsets_coexist() {
 std::string joined_value(const goblin::core::Store& store, std::string_view key) {
   const auto value = store.get(key);
   assert(value.has_value());
-  std::string out;
-  out.append(value->head);
-  out.append(value->tail);
-  return out;
+  return value->to_string();
+}
+
+std::string encoded_bytes(const goblin::core::EncodedString& value) {
+  std::string bytes(value.size(), '\0');
+  value.write_to(bytes.data());
+  return bytes;
+}
+
+void test_string_value_encoding() {
+  using goblin::core::EncodedString;
+  using goblin::core::EncodedStringView;
+  using goblin::core::StringCompressionMode;
+  using goblin::core::StringEncodingOptions;
+
+  auto expect_bytes = [](std::string_view logical,
+                         std::initializer_list<std::uint8_t> expected) {
+    const auto bytes = encoded_bytes(EncodedString(logical));
+    assert(bytes.size() == expected.size());
+    std::size_t index = 0;
+    for (const auto byte : expected) {
+      assert(static_cast<std::uint8_t>(bytes[index++]) == byte);
+    }
+    assert(EncodedStringView(bytes).to_string() == logical);
+  };
+
+  expect_bytes("0", {0x00});
+  expect_bytes("3", {0x03});
+  expect_bytes("127", {0x7f});
+  expect_bytes("128", {0x80, 0x00});
+  expect_bytes("383", {0x80, 0xff});
+  expect_bytes("384", {0x81, 0x00, 0x00});
+  expect_bytes("65919", {0x81, 0xff, 0xff});
+  expect_bytes("65920", {0x82, 0x00, 0x00, 0x00});
+  expect_bytes("-1", {0x88, 0x00});
+  expect_bytes("-256", {0x88, 0xff});
+  expect_bytes("-257", {0x89, 0x00, 0x00});
+
+  for (const auto logical : {std::string("18446744073709551615"),
+                             std::string("-18446744073709551615")}) {
+    const EncodedString encoded(logical);
+    assert(encoded.size() == 9);
+    assert(EncodedStringView(encoded_bytes(encoded)) == logical);
+  }
+
+  for (const auto raw : {std::string(""), std::string(" 0"),
+                         std::string("00"), std::string("+3"),
+                         std::string("-0")}) {
+    const EncodedString encoded(raw);
+    assert(encoded.is_raw());
+    assert(EncodedStringView(encoded_bytes(encoded)) == raw);
+  }
+  const std::string binary("a\0b\xff", 4);
+  const EncodedString encoded_binary(binary);
+  assert(encoded_binary.is_raw());
+  assert(EncodedStringView(encoded_bytes(encoded_binary)) == binary);
+
+  constexpr std::string_view uuid = "00112233445566778899aabbccddeeff";
+  constexpr std::string_view dashed =
+      "00112233-4455-6677-8899-aabbccddeeff";
+  for (const auto logical : {uuid, dashed}) {
+    const EncodedString encoded(logical);
+    assert(encoded.size() == 17 && !encoded.is_raw() && !encoded.is_lz4());
+    assert(EncodedStringView(encoded_bytes(encoded)) == logical);
+  }
+  const EncodedString uppercase("00112233445566778899AABBCCDDEEFF");
+  assert(uppercase.is_raw());
+
+  const std::string raw_limit(goblin::core::kStringMaxBytes, 'r');
+  const EncodedString largest_raw(raw_limit);
+  assert(largest_raw.is_raw() &&
+         largest_raw.size() == goblin::core::kStringMaxEncodedBytes);
+  bool rejected = false;
+  try {
+    (void)EncodedString(std::string(goblin::core::kStringMaxBytes + 1, 'r'));
+  } catch (const std::length_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+
+  StringEncodingOptions packed;
+  packed.set_lz4_compress_level(12);
+  packed.set_lz4_min_bytes(4096);
+  assert(packed.lz4_enabled() && packed.lz4_min_bytes() == 4096 &&
+         packed.lz4_compress_level() == 12 && sizeof(packed) == 4);
+  packed.set_lz4_compress_level(-8);
+  assert(packed.lz4_min_bytes() == 4096 &&
+         packed.lz4_compress_level() == -8);
+
+  StringEncodingOptions disabled = StringEncodingOptions::with_lz4(0);
+  disabled.set_lz4_compress_level(12);
+  disabled.disable();
+  // Later LZ4 flags do not re-enable a deliberately verbatim store.
+  disabled.set_lz4_min_bytes(64);
+  assert(!disabled.encoding_enabled() && !disabled.lz4_enabled() &&
+         disabled.max_value_bytes() ==
+             goblin::core::kStringMaxVerbatimBytes);
+  const std::string verbatim_binary("\0\xff" "127", 5);
+  const EncodedString verbatim(verbatim_binary, disabled);
+  assert(verbatim.is_raw() && !verbatim.encoding_enabled() &&
+         encoded_bytes(verbatim) == verbatim_binary);
+  assert(EncodedStringView(encoded_bytes(verbatim), false) == verbatim_binary);
+  const EncodedString verbatim_empty("", disabled);
+  assert(verbatim_empty.size() == 0);
+  assert(EncodedStringView({}, false).valid() &&
+         EncodedStringView({}, false) == "");
+  const std::string largest_verbatim(
+      goblin::core::kStringMaxVerbatimBytes, 'v');
+  assert(EncodedString(largest_verbatim, disabled).size() ==
+         goblin::core::kStringMaxVerbatimBytes);
+  rejected = false;
+  try {
+    (void)EncodedString(
+        std::string(goblin::core::kStringMaxVerbatimBytes + 1, 'v'),
+        disabled);
+  } catch (const std::length_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+
+  const std::string compressible(100'000, 'c');
+  for (const int level : {-8, -1, 0, 3, 12}) {
+    auto options = StringEncodingOptions::with_lz4(0);
+    options.set_lz4_compress_level(level);
+    const EncodedString encoded(compressible, options);
+    const auto bytes = encoded_bytes(encoded);
+    assert(encoded.is_lz4() &&
+           static_cast<std::uint8_t>(bytes[0]) == goblin::core::kStringLz4);
+    assert(static_cast<std::uint8_t>(bytes[1]) == 0x01);
+    assert(static_cast<std::uint8_t>(bytes[2]) == 0x86);
+    assert(static_cast<std::uint8_t>(bytes[3]) == 0xa0);
+    assert(EncodedStringView(bytes) == compressible);
+
+    // Exercise every possible top-level inline/arena split around the header.
+    for (std::size_t split = 0; split <= 8; ++split) {
+      const auto cut = std::min(split, bytes.size());
+      const EncodedStringView split_view(std::string_view(bytes).substr(0, cut),
+                                         std::string_view(bytes).substr(cut));
+      assert(split_view.valid() && split_view == compressible);
+    }
+  }
+
+  // If LZ4 cannot fit its payload, a raw value still gets its normal fallback.
+  std::string incompressible(goblin::core::kStringMaxBytes, '\0');
+  std::uint32_t random = 0x9e3779b9U;
+  for (auto& byte : incompressible) {
+    random ^= random << 13;
+    random ^= random >> 17;
+    random ^= random << 5;
+    byte = static_cast<char>(random);
+  }
+  const auto lz4 = StringEncodingOptions::with_lz4(0);
+  const EncodedString fallback(incompressible, lz4);
+  assert(fallback.is_raw() && EncodedStringView(encoded_bytes(fallback)) ==
+                                  incompressible);
+  rejected = false;
+  try {
+    incompressible.push_back('x');
+    (void)EncodedString(incompressible, lz4);
+  } catch (const std::length_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+
+  const EncodedString never(compressible.substr(0, 1000), lz4,
+                            StringCompressionMode::NeverLz4);
+  assert(never.is_raw());
+  const EncodedString never_numeric("123", lz4,
+                                    StringCompressionMode::NeverLz4);
+  assert(!never_numeric.is_raw() && !never_numeric.is_lz4());
+  rejected = false;
+  try {
+    (void)EncodedString(compressible, lz4,
+                        StringCompressionMode::NeverLz4);
+  } catch (const std::length_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+
+  const std::string over_24_bit(
+      goblin::core::kStringMaxCompressedLogicalBytes + 1, 'z');
+  assert(!goblin::core::string_value_fits(over_24_bit, lz4));
+  rejected = false;
+  try {
+    (void)EncodedString(over_24_bit, lz4);
+  } catch (const std::length_error&) {
+    rejected = true;
+  }
+  assert(rejected);
+}
+
+void test_encoded_values_in_store_types() {
+  using goblin::core::List;
+  using goblin::core::ListOptions;
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+  using goblin::core::StringCompressionMode;
+  using goblin::core::StringEncodingOptions;
+
+  auto encoding = StringEncodingOptions::with_lz4(32);
+  encoding.set_lz4_compress_level(3);
+  Store store(StoreOptions{.list_listpack_max_entries = 2,
+                           .string_encoding = encoding});
+  const std::string large(100'000, 'q');
+
+  store.set("string", large);
+  assert(store.strlen("string") == large.size());
+  assert(store.get("string")->is_lz4() && *store.get("string") == large);
+
+  assert(store.hset("hash", "numeric", "127") == 1);
+  assert(store.hset("hash", "large", large) == 1);
+  assert(store.hget("hash", "numeric")->prefix() == 0x7f);
+  assert(store.hget("hash", "large")->is_lz4() &&
+         *store.hget("hash", "large") == large);
+
+  const std::array<std::string_view, 3> values = {"1", large, "tail"};
+  assert(store.rpush("list", values) == 3);
+  assert(store.lindex("list", 0)->prefix() == 0x01);
+  assert(store.lindex("list", 1)->is_lz4() &&
+         *store.lindex("list", 1) == large);
+
+  List self_compressed(ListOptions{
+      .listpack_max_entries = 0,
+      .string_encoding = encoding,
+      .string_compression = StringCompressionMode::NeverLz4,
+  });
+  (void)self_compressed.push_back("123");
+  (void)self_compressed.push_back(std::string(1000, 'n'));
+  assert(self_compressed.at(0).prefix() == 123);
+  assert(self_compressed.at(1).is_raw() &&
+         self_compressed.at(1) == std::string(1000, 'n'));
+
+  std::stringstream snapshot;
+  store.save(snapshot, false);
+  Store restored(StoreOptions{.list_listpack_max_entries = 2,
+                              .string_encoding = encoding});
+  const auto stats = restored.load(snapshot);
+  assert(stats.keys == 3);
+  assert(restored.get("string")->is_lz4() &&
+         *restored.get("string") == large);
+  assert(restored.hget("hash", "large")->is_lz4() &&
+         *restored.hget("hash", "large") == large);
+  assert(restored.lindex("list", 1)->is_lz4() &&
+         *restored.lindex("list", 1) == large);
+
+  // RESP command admission and replies use logical bytes, even though the
+  // stored values are larger than the raw representation can hold.
+  Store command_store(StoreOptions{.list_listpack_max_entries = 2,
+                                   .string_encoding = encoding});
+  assert(execute_fields(command_store, {"SET", "s", large}) == "+OK\r\n");
+  assert(execute_fields(command_store, {"GET", "s"}) ==
+         "$100000\r\n" + large + "\r\n");
+  assert(execute_fields(command_store, {"HSET", "h", "f", large}) ==
+         ":1\r\n");
+  assert(execute_fields(command_store, {"HGET", "h", "f"}) ==
+         "$100000\r\n" + large + "\r\n");
+  assert(execute_fields(command_store, {"RPUSH", "l", large}) ==
+         ":1\r\n");
+  assert(execute_fields(command_store, {"LINDEX", "l", "0"}) ==
+         "$100000\r\n" + large + "\r\n");
+
+  StringEncodingOptions verbatim;
+  verbatim.disable();
+  Store raw_store(StoreOptions{.list_listpack_max_entries = 2,
+                               .string_encoding = verbatim});
+  assert(raw_store.max_value_bytes() ==
+         goblin::core::kStringMaxVerbatimBytes);
+  const std::string binary("\0\x7f\x80\xfe\xff", 5);
+  raw_store.set("binary", binary);
+  const auto raw_string = raw_store.get("binary");
+  assert(raw_string && !raw_string->encoding_enabled() &&
+         raw_string->encoded_size() == binary.size() && *raw_string == binary);
+  raw_store.set("empty", "");
+  assert(raw_store.get("empty")->valid() && *raw_store.get("empty") == "");
+
+  assert(raw_store.hset("raw-hash", "127", "-1") == 1);
+  const auto raw_hash_value = raw_store.hget("raw-hash", "127");
+  assert(raw_hash_value && !raw_hash_value->encoding_enabled() &&
+         raw_hash_value->encoded_size() == 2 && *raw_hash_value == "-1");
+  assert(execute_fields(raw_store, {"HKEYS", "raw-hash"}) ==
+         "*1\r\n$3\r\n127\r\n");
+
+  const std::array<std::string_view, 3> raw_list_values = {"", "127", binary};
+  assert(raw_store.rpush("raw-list", raw_list_values) == 3);
+  assert(raw_store.lindex("raw-list", 0)->valid() &&
+         *raw_store.lindex("raw-list", 0) == "");
+  assert(!raw_store.lindex("raw-list", 1)->encoding_enabled() &&
+         raw_store.lindex("raw-list", 1)->encoded_size() == 3 &&
+         *raw_store.lindex("raw-list", 1) == "127");
+  assert(*raw_store.lindex("raw-list", 2) == binary);
+
+  const std::string max_verbatim(goblin::core::kStringMaxVerbatimBytes, 'm');
+  raw_store.set("max-string", max_verbatim);
+  assert(*raw_store.get("max-string") == max_verbatim);
+  assert(raw_store.hset("max-hash", "field", max_verbatim) == 1);
+  assert(*raw_store.hget("max-hash", "field") == max_verbatim);
+  const std::array<std::string_view, 1> max_list_value = {max_verbatim};
+  assert(raw_store.rpush("max-list", max_list_value) == 1);
+  assert(*raw_store.lindex("max-list", 0) == max_verbatim);
 }
 
 void test_store_strings() {
@@ -1055,27 +1351,27 @@ void test_store_strings() {
 
   store.set("k", "42");
   assert(joined_value(store, "k") == "42");
-  assert(store.get("k")->tail.empty());  // small values are fully inline
+  assert(store.get("k")->encoded_tail().empty());
   assert(store.strlen("k") == 2U);
   assert(store.key_type("k") == KeyType::String);
   assert(store.exists("k") && store.key_is_string("k"));
 
-  // 14 bytes is the largest fully-inline value; 15 spills a tail into the arena.
-  store.set("edge", "0123456789abcd");  // 14
-  assert(store.get("edge")->tail.empty());
-  store.set("edge2", "0123456789abcde");  // 15
-  assert(!store.get("edge2")->tail.empty());
+  // Raw values spend one byte on 0xff: 13 logical bytes fit inline; 14 spill.
+  store.set("edge", "0123456789abc");  // 13 logical, 14 encoded
+  assert(store.get("edge")->encoded_tail().empty());
+  store.set("edge2", "0123456789abcd");  // 14 logical, 15 encoded
+  assert(!store.get("edge2")->encoded_tail().empty());
 
   const std::string big(1000, 'x');
   store.set("big", big);
   assert(joined_value(store, "big") == big);
-  assert(!store.get("big")->tail.empty());
+  assert(!store.get("big")->encoded_tail().empty());
   assert(store.strlen("big") == 1000U);
 
   // Overwrite spilled -> inline reclaims the tail; the value stays correct.
   store.set("big", "hi");
   assert(joined_value(store, "big") == "hi");
-  assert(store.get("big")->tail.empty());
+  assert(store.get("big")->encoded_tail().empty());
 
   assert(!store.set_nx("k", "nope"));    // exists
   assert(store.set_nx("fresh", "yes"));  // absent
@@ -1160,10 +1456,11 @@ void test_string_commands() {
   assert(execute_fields(store, {"SET", "big", big}) == "+OK\r\n");
   assert(execute_fields(store, {"GET", "big"}) == "$500\r\n" + big + "\r\n");
 
-  // Values over the 64 KiB ceiling are rejected with a pointer to the store.
+  // Values that cannot fit the default raw encoding are rejected with a pointer
+  // to the blob store.
   const std::string too_big(70000, 'z');
   assert(execute_fields(store, {"SET", "toobig", too_big}) ==
-         "-ERR value is larger than the 64 KiB limit; use "
+         "-ERR value does not fit the 65,535-byte encoded limit; use "
          "https://goblin-store.dev\r\n");
 
   assert(execute_fields(store, {"SETNX", "k", "nope"}) == ":0\r\n");
@@ -1320,7 +1617,7 @@ void test_goblin_cas() {
   assert(store.compare_and_set("lock", "t0", "t1"));   // swap the value...
   assert(store.pttl_ms("lock", now) == 30000);         // ... TTL survives
   const auto v = store.get("lock");
-  assert(v && v->head == "t1" && v->tail.empty());     // ... value changed
+  assert(v && *v == "t1" && v->encoded_tail().empty());  // ... value changed
   // A mismatched CAS touches neither the value nor the TTL.
   assert(!store.compare_and_set("lock", "wrong", "t2"));
   assert(store.pttl_ms("lock", now) == 30000);
@@ -1329,7 +1626,7 @@ void test_goblin_cas() {
   assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
   assert(execute_fields(store, {"GOBLIN.CAS", "z", "x", "y"}) == wrongtype);
 
-  // A new value over the 64 KiB cap is rejected (before any swap).
+  // A new value that cannot fit the encoding is rejected before any swap.
   const std::string huge(64 * 1024 + 1, 'x');
   assert(execute_fields(store, {"GOBLIN.CAS", "k", "new", huge}).front() == '-');
 
@@ -1393,9 +1690,14 @@ void test_memory_report() {
   goblin::core::Store store(
       goblin::core::StoreOptions{.hash_listpack_max_entries = 0});
 
-  // An empty store has allocated nothing and has nothing to reclaim.
-  assert(store.memory_report().used_memory == 0);
-  assert(store.memory_report().reclaimable_bytes == 0);
+  // An empty store may still see capacity retained by the process-wide compact
+  // blob pool from earlier work. INFO counts that real upstream allocation.
+  const auto empty = store.memory_report();
+  assert(empty.used_memory == empty.blob_pool_capacity_bytes);
+  assert(empty.blob_pool_capacity_bytes >= empty.blob_pool_requested_bytes);
+  assert(empty.blob_pool_fragmentation_bytes ==
+         empty.blob_pool_capacity_bytes - empty.blob_pool_requested_bytes);
+  assert(empty.reclaimable_bytes == 0);
 
   // A zset grows used_memory with no dead bytes yet.
   for (int i = 0; i < 200; ++i) {
@@ -1422,11 +1724,18 @@ void test_memory_report() {
     (void)execute_fields(store, {"HSET", "h", "f" + std::to_string(i),
                                  "value-" + std::to_string(i)});
   }
+  assert(store.memory_report().hash_heap_allocated_bytes > 0);
   assert(store.memory_report().reclaimable_bytes == 0);
   for (int i = 0; i < 50; ++i) {
     (void)execute_fields(store, {"HDEL", "h", "f" + std::to_string(i)});
   }
   assert(store.memory_report().reclaimable_bytes > 0);
+
+  const auto info = execute_fields(store, {"INFO", "memory"});
+  assert(info.find("hash_heap_allocated_bytes:") != std::string::npos);
+  assert(info.find("blob_pool_requested_bytes:") != std::string::npos);
+  assert(info.find("blob_pool_capacity_bytes:") != std::string::npos);
+  assert(info.find("blob_pool_fragmentation_bytes:") != std::string::npos);
 }
 
 void test_goblin_increx() {
@@ -1705,12 +2014,12 @@ void test_goblin_claim() {
     auto o1 = store.claim("c", "r", "reqA", now + 5'000, now);
     assert(o1.claimed && !o1.result_wrongtype && !o1.result);
     const auto held = store.get("c");
-    assert(held && held->head == "reqA");
+    assert(held && *held == "reqA");
     assert(store.pttl_ms("c", now) == 5'000);
     // Held, but no result stored yet -> not claimed, nil result; token unchanged.
     auto o2 = store.claim("c", "r", "reqB", now + 5'000, now);
     assert(!o2.claimed && !o2.result_wrongtype && !o2.result);
-    assert(store.get("c")->head == "reqA");
+    assert(*store.get("c") == "reqA");
     // The worker stores its result; a duplicate request reads it back.
     store.set("r", "RESULT");
     auto o3 = store.claim("c", "r", "reqC", now + 5'000, now);
@@ -1718,7 +2027,7 @@ void test_goblin_claim() {
     // Once the claim TTL passes, the slot is free again -> a new claim wins.
     auto o4 = store.claim("c", "r", "reqD", now + 20'000 + 5'000, now + 20'000);
     assert(o4.claimed);
-    assert(store.get("c")->head == "reqD");
+    assert(*store.get("c") == "reqD");
   }
 
   // A non-string result key makes the fallthrough GET a WRONGTYPE (NX never is).
@@ -2428,13 +2737,15 @@ void test_zset_listpack_mode() {
 }
 
 // Hash listpack: tiny hashes stay as one blob, promote past the threshold, and
-// demote on compact/shrink -- same dual as zsets. Entry is u16 field/value lens.
+// demote on compact/shrink. Entry lengths use the packed one/two-byte format.
 void test_hash_listpack_mode() {
   using goblin::core::Hash;
   using goblin::core::HashOptions;
   using goblin::core::HashListpack;
+  using goblin::core::StringEncodingOptions;
 
-  static_assert(sizeof(HashListpack) == sizeof(void*));
+  static_assert(sizeof(HashListpack) == 2 * sizeof(void*));
+  static_assert(sizeof(Hash) == 2 * sizeof(void*));
   static_assert(HashOptions::kDefaultListpackMaxEntries ==
                 std::numeric_limits<std::size_t>::max());
 
@@ -2449,6 +2760,50 @@ void test_hash_listpack_mode() {
   // Empty field/value are legal.
   assert(lp.set("", "", 8).added);
   assert(lp.get("") == "" && lp.size() == 2);
+
+  // Canonical field and value strings share the compact encoder. One-byte
+  // lengths plus one-byte integer encodings make this whole hash 11 bytes.
+  HashListpack encoded_identity;
+  assert(encoded_identity.set("127", "127", 8).added);
+  assert(encoded_identity.allocated_bytes() == 11);
+  assert(encoded_identity.get("127") == "127");
+
+  StringEncodingOptions verbatim;
+  verbatim.disable();
+  HashListpack raw_identity;
+  assert(raw_identity.set("127", "127", 8, verbatim).added);
+  assert(raw_identity.allocated_bytes() == 15);
+  assert(raw_identity.get("127", verbatim) == "127");
+  const std::string binary_field("\0\x80\xff", 3);
+  assert(raw_identity.set(binary_field, "v", 8, verbatim).added);
+  assert(raw_identity.get(binary_field, verbatim) == "v");
+
+  // The encoded length, not the logical length, crosses the one-byte boundary.
+  HashListpack one_byte_lengths;
+  assert(one_byte_lengths.set(std::string(126, 'f'),
+                              std::string(126, 'v'), 8).added);
+  assert(one_byte_lengths.allocated_bytes() == 4 + 3 + 1 + 1 + 127 + 127);
+  HashListpack two_byte_lengths;
+  assert(two_byte_lengths.set(std::string(127, 'f'),
+                              std::string(127, 'v'), 8).added);
+  assert(two_byte_lengths.allocated_bytes() == 4 + 3 + 2 + 2 + 128 + 128);
+
+  // A packed length is 15 bits. Enabled raw strings spend one byte on 0xff;
+  // verbatim mode can therefore keep exactly 32,767 bytes compact.
+  const std::string length_ceiling(0x7fff, 'x');
+  HashListpack enabled_ceiling;
+  assert(enabled_ceiling.set("f", length_ceiling, 8).needs_full);
+  HashListpack disabled_ceiling;
+  assert(disabled_ceiling.set("f", length_ceiling, 8, verbatim).added);
+  assert(disabled_ceiling.get("f", verbatim) == length_ceiling);
+  assert(disabled_ceiling
+             .set("g", std::string(0x8000, 'x'), 8, verbatim)
+             .needs_full);
+
+  // Fields classify with the shared encoder but never invoke LZ4.
+  const auto lz4 = StringEncodingOptions::with_lz4(0);
+  HashListpack no_lz4_fields;
+  assert(no_lz4_fields.set(length_ceiling, "v", 8, lz4).needs_full);
   // Past max_entries signals promotion.
   HashListpack limit;
   for (int i = 0; i < 4; ++i) {
@@ -2508,14 +2863,22 @@ void test_hash_listpack_mode() {
   indexed_fields.reserve(40);
   indexed_values.reserve(40);
   std::size_t entry_bytes = 0;
+  auto packed_length_bytes = [](std::size_t length) {
+    return length <= 0x7f ? std::size_t{1} : std::size_t{2};
+  };
   for (int i = 0; i < 40; ++i) {
     indexed_fields.push_back("indexed-field-" + std::to_string(i));
     indexed_values.push_back("value-" + std::to_string(i));
     assert(indexed.set(indexed_fields.back(), indexed_values.back(), 64).added);
-    entry_bytes +=
-        4 + indexed_fields.back().size() + indexed_values.back().size();
+    const goblin::core::EncodedString encoded_field(
+        indexed_fields.back(), {},
+        goblin::core::StringCompressionMode::NeverLz4);
+    const goblin::core::EncodedString encoded_value(indexed_values.back());
+    entry_bytes += packed_length_bytes(encoded_field.size()) +
+                   packed_length_bytes(encoded_value.size()) +
+                   encoded_field.size() + encoded_value.size();
   }
-  assert(indexed.allocated_bytes() == 8 + 3 * 40 + entry_bytes);
+  assert(indexed.allocated_bytes() == 4 + 3 * 40 + entry_bytes);
   for (int i = 0; i < 40; ++i) {
     assert(indexed.get(indexed_fields[i]) == indexed_values[i]);
   }
@@ -2574,8 +2937,8 @@ void test_hash_listpack_mode() {
   assert(rejected_result.needs_full);
   assert(batched.size() == 3 && !batched.get("d"));
 
-  // With no count ceiling, this field/value shape fills the compact blob to
-  // exactly 65,535 bytes. One more entry requests promotion without mutation.
+  // With no count ceiling, this field/value shape packs 1,771 entries into the
+  // compact blob. Each entry is 34 bytes plus its 3-byte directory slot.
   constexpr std::size_t kBoundaryCount = 1771;
   std::vector<std::string> boundary_fields;
   std::vector<std::string> boundary_values;
@@ -2599,8 +2962,7 @@ void test_hash_listpack_mode() {
       boundary_batch, HashOptions::kDefaultListpackMaxEntries);
   assert(!boundary_result.needs_full &&
          boundary_result.added == kBoundaryCount);
-  assert(boundary.allocated_bytes() ==
-         goblin::core::kHashListpackMaxBlobBytes);
+  assert(boundary.allocated_bytes() == 4 + kBoundaryCount * 37);
   assert(boundary.get(boundary_fields.front()) == boundary_values.front());
   assert(boundary.get(boundary_fields.back()) == boundary_values.back());
   std::array<char, 32> overflow_field{};
@@ -2613,10 +2975,13 @@ void test_hash_listpack_mode() {
       overflow_field.data(), overflow_value.data(),
       HashOptions::kDefaultListpackMaxEntries);
   assert(boundary_overflow.needs_full && boundary.size() == kBoundaryCount);
-  assert(HashListpack::can_encode(kBoundaryCount,
-                                  kBoundaryCount * (14 + 16)));
-  assert(!HashListpack::can_encode(kBoundaryCount + 1,
-                                   (kBoundaryCount + 1) * (14 + 16)));
+  // The O(1) full-to-compact precheck budgets worst-case two-byte lengths and
+  // a raw-field marker. It is intentionally sufficient rather than exact.
+  constexpr std::size_t kConservativeBoundary = 1680;
+  assert(HashListpack::can_encode(kConservativeBoundary,
+                                  kConservativeBoundary * (14 + 17)));
+  assert(!HashListpack::can_encode(kConservativeBoundary + 1,
+                                   (kConservativeBoundary + 1) * (14 + 17)));
 
   // A full hash that is still too large for the compact blob must reject
   // demotion from byte accounting alone. Rebuilding the first ~1,700 entries
@@ -2657,6 +3022,104 @@ void test_hash_listpack_mode() {
       {full_fields[255], "updated-255"}};
   assert(forced_full.set_many(full_update) == 0);
   assert(forced_full.get(full_fields[255]) == "updated-255");
+}
+
+void test_hash_keyspace_arena_storage() {
+  using goblin::core::HashListpack;
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  // Standalone listpacks still use the shared pool, whose requested bytes and
+  // actual upstream capacity are independently visible.
+  const auto pool_before_standalone = goblin::core::blob_pool_stats();
+  {
+    HashListpack standalone;
+    assert(standalone.set("field", "value", 8).added);
+    const auto pool_live = goblin::core::blob_pool_stats();
+    assert(pool_live.requested_live_bytes ==
+           pool_before_standalone.requested_live_bytes +
+               standalone.allocated_bytes());
+    assert(pool_live.upstream_capacity_bytes >=
+           pool_live.requested_live_bytes);
+  }
+  assert(goblin::core::blob_pool_stats().requested_live_bytes ==
+         pool_before_standalone.requested_live_bytes);
+
+  // A production compact hash stores its blob in KeyspaceStorage, not the
+  // process-wide listpack pool. Equal-width updates overwrite in place.
+  const auto pool_before_store = goblin::core::blob_pool_stats();
+  Store compact;
+  assert(compact.hset("same", "field", "aa") == 1);
+  const auto compact_stats = compact.hash_memory_stats("same");
+  assert(compact_stats && compact_stats->hash_heap_allocated_bytes == 0);
+  assert(compact_stats->keyspace_accounted_bytes ==
+         compact_stats->field_value_live_bytes);
+  assert(compact_stats->keyspace_accounted_bytes > 0);
+  const auto before_in_place = compact.memory_report();
+  assert(compact.hset("same", "field", "bb") == 0);
+  const auto after_in_place = compact.memory_report();
+  assert(after_in_place.used_memory == before_in_place.used_memory);
+  assert(after_in_place.reclaimable_bytes ==
+         before_in_place.reclaimable_bytes);
+  assert(goblin::core::blob_pool_stats().requested_live_bytes ==
+         pool_before_store.requested_live_bytes);
+
+  // One atomic multi-field delete performs several arena replacements through
+  // the same adapter session.
+  Store batched_delete;
+  for (int i = 0; i < 8; ++i) {
+    assert(batched_delete.hset("batch", "f" + std::to_string(i),
+                               "v" + std::to_string(i)) == 1);
+  }
+  const std::array<std::string_view, 4> removed = {"f1", "f3", "f5", "f7"};
+  assert(batched_delete.hdel_many("batch", removed) == removed.size());
+  assert(batched_delete.hlen("batch") == 4);
+  for (const int survivor : {0, 2, 4, 6}) {
+    assert(batched_delete.hget("batch", "f" + std::to_string(survivor)) ==
+           "v" + std::to_string(survivor));
+  }
+
+  // Two differently-sized rewrites leave enough dead bytes to force a complete
+  // keyspace-arena rebuild. Every inline location must be rewritten correctly.
+  Store relocating;
+  constexpr int kHashes = 128;
+  const std::string initial(900, 'a');
+  const std::string grown(1000, 'b');
+  const std::string final(900, 'c');
+  for (int i = 0; i < kHashes; ++i) {
+    assert(relocating.hset("hash:" + std::to_string(i), "field", initial) == 1);
+  }
+  for (int i = 0; i < kHashes; ++i) {
+    assert(relocating.hset("hash:" + std::to_string(i), "field", grown) == 0);
+  }
+  for (int i = 0; i < kHashes; ++i) {
+    assert(relocating.hset("hash:" + std::to_string(i), "field", final) == 0);
+  }
+  int first_survivor = 0;
+  for (; first_survivor < 16; ++first_survivor) {
+    assert(relocating.del("hash:" + std::to_string(first_survivor)));
+    if (relocating.memory_report().reclaimable_bytes == 0) {
+      ++first_survivor;
+      break;
+    }
+  }
+  assert(relocating.memory_report().reclaimable_bytes == 0);
+  assert(first_survivor < 16);
+  for (int i = first_survivor; i < kHashes; ++i) {
+    const auto value =
+        relocating.hget("hash:" + std::to_string(i), "field");
+    assert(value && *value == final);
+  }
+
+  // Forced-full hashes retain their 16-byte inline handle but own heap state;
+  // both per-key and aggregate accounting must include it.
+  Store full(StoreOptions{.hash_listpack_max_entries = 0});
+  assert(full.hset("full", "field", "value") == 1);
+  const auto full_stats = full.hash_memory_stats("full");
+  assert(full_stats && full_stats->hash_heap_allocated_bytes > 0);
+  assert(full_stats->keyspace_accounted_bytes == 0);
+  assert(full.memory_report().hash_heap_allocated_bytes ==
+         full_stats->hash_heap_allocated_bytes);
 }
 
 void test_hash_bulk_reserve_growth() {
@@ -2733,7 +3196,11 @@ void test_hash_storage_bounded_compaction() {
   // Tail-donor: holey frozen chunks densify, pull live bytes from the active
   // tail, then the tail shrinks. Values are large so a few fields span chunks.
   constexpr std::size_t kInitialCount = 10;
-  HashStorage storage(HashStorage::kMinChunkBytes);
+  // Exercise the opt-in exact selector here; the recursive case below uses the
+  // default greedy selector.
+  HashStorage storage(HashStorage::kMinChunkBytes,
+                      goblin::core::kDefaultArenaGrowth,
+                      /*compaction_knapsack=*/true);
   std::vector<std::string> fields;
   std::vector<std::string> values;
   fields.reserve(32);
@@ -2753,7 +3220,8 @@ void test_hash_storage_bounded_compaction() {
   auto expected_live_bytes = [&] {
     std::size_t bytes = 0;
     for (std::size_t id = 0; id < fields.size(); ++id) {
-      bytes += fields[id].size() + values[id].size();
+      bytes += fields[id].size() +
+               goblin::core::EncodedString(values[id]).size();
     }
     return bytes;
   };
@@ -2794,6 +3262,113 @@ void test_hash_storage_bounded_compaction() {
   assert(storage.dead_bytes() < dead_before ||
          storage.byte_capacity() < capacity_before);
   check();
+
+  // Default first-fit donation is a persistent streaming scan. A small work
+  // budget must not hide a full field-table materialization. A value grow on an
+  // already-scanned id is queued separately so it cannot erase forward progress.
+  HashStorage streamed(HashStorage::kMinChunkBytes);
+  std::vector<std::string> streamed_fields;
+  std::vector<std::string> streamed_values;
+  for (std::size_t id = 0; id < kInitialCount; ++id) {
+    streamed_fields.push_back("streamed-" + std::to_string(id));
+    streamed_values.emplace_back(30000, static_cast<char>('a' + id));
+    assert(streamed.push_back(streamed_fields.back(),
+                              streamed_values.back()) == id);
+  }
+  streamed_values[0].assign(10000, 's');
+  streamed.set_value(0, streamed_values[0]);
+  for (std::size_t steps = 0;
+       streamed.compaction_progress().phase !=
+       HashStorage::CompactionPhase::donate;
+       ++steps) {
+    assert(steps < 20);
+    (void)streamed.compact_step(/*work_budget=*/1,
+                                /*byte_budget=*/size_t{64} << 10);
+  }
+  const auto bounded = streamed.compact_step(/*work_budget=*/3,
+                                              /*byte_budget=*/size_t{64} << 10);
+  assert(bounded.work_done == 3);
+  assert(bounded.progress.phase == HashStorage::CompactionPhase::donate);
+  assert(bounded.progress.fields_scanned == 3);
+
+  streamed_values[0].assign(20000, 'g');
+  streamed.set_value(0, streamed_values[0]);
+  assert(streamed.compaction_progress().fields_scanned == 3);
+  const auto pending = streamed.compact_step(/*work_budget=*/1,
+                                              /*byte_budget=*/size_t{64} << 10);
+  assert(pending.work_done == 1);
+  assert(pending.bytes_moved ==
+         goblin::core::EncodedString(streamed_values[0]).size());
+  assert(pending.progress.fields_scanned == 3);
+  const auto forward = streamed.compact_step(/*work_budget=*/1,
+                                              /*byte_budget=*/size_t{64} << 10);
+  assert(forward.work_done == 1);
+  assert(forward.progress.fields_scanned == 4);
+  streamed.compact();
+  for (std::size_t id = 0; id < streamed_fields.size(); ++id) {
+    assert(streamed.view(static_cast<std::uint32_t>(id)) ==
+           streamed_fields[id]);
+    assert(streamed.value(static_cast<std::uint32_t>(id)) ==
+           streamed_values[id]);
+  }
+
+  // Recursive tail draining: one holey target has room for the live remnants
+  // of three later chunks. Each emptied tail must be popped before donation
+  // continues from its predecessor; no interior recycle slots remain.
+  HashStorage recursive(HashStorage::kMinChunkBytes);
+  std::vector<std::string> recursive_fields;
+  std::vector<std::string> recursive_values;
+  for (std::size_t id = 0; id < 20; ++id) {
+    recursive_fields.push_back("recursive-" + std::to_string(id));
+    recursive_values.emplace_back(30000, static_cast<char>('a' + id));
+    assert(recursive.push_back(recursive_fields.back(),
+                               recursive_values.back()) == id);
+  }
+  assert(recursive.chunk_slot_count() == 5);
+  for (const std::size_t base : {std::size_t{0}, std::size_t{8},
+                                 std::size_t{12}, std::size_t{16}}) {
+    for (std::size_t id = base; id < base + 3; ++id) {
+      recursive_values[id] = "x";
+      recursive.set_value(static_cast<std::uint32_t>(id), "x");
+    }
+  }
+  const auto recursive_capacity_before = recursive.byte_capacity();
+  assert(recursive.dead_bytes() > 0);
+  recursive.compact();
+  assert(recursive.dead_bytes() == 0);
+  assert(recursive.chunk_slot_count() == 2);
+  assert(recursive.recycled_chunk_count() == 0);
+  assert(recursive.byte_capacity() < recursive_capacity_before);
+  for (std::size_t id = 0; id < recursive_fields.size(); ++id) {
+    assert(recursive.view(static_cast<std::uint32_t>(id)) ==
+           recursive_fields[id]);
+    assert(recursive.value(static_cast<std::uint32_t>(id)) ==
+           recursive_values[id]);
+  }
+
+  // Empty-tail recursion also applies when successive blocks contain no live
+  // donor at all: pop n-1, then n-2, and settle n-3 as the sole tail.
+  HashStorage empty_tails(HashStorage::kMinChunkBytes);
+  std::vector<std::string> empty_tail_fields;
+  for (std::size_t id = 0; id < 12; ++id) {
+    empty_tail_fields.push_back("empty-tail-" + std::to_string(id));
+    assert(empty_tails.push_back(empty_tail_fields.back(),
+                                 std::string(30000, 'v')) == id);
+  }
+  assert(empty_tails.chunk_slot_count() == 3);
+  for (std::size_t remaining = 12; remaining > 4; --remaining) {
+    empty_tails.orphan(static_cast<std::uint32_t>(remaining - 1));
+    empty_tails.pop_back();
+  }
+  empty_tails.compact();
+  assert(empty_tails.chunk_slot_count() == 1);
+  assert(empty_tails.dead_bytes() == 0);
+  for (std::size_t id = 0; id < 4; ++id) {
+    assert(empty_tails.view(static_cast<std::uint32_t>(id)) ==
+           empty_tail_fields[id]);
+    assert(empty_tails.value(static_cast<std::uint32_t>(id)) ==
+           std::string(30000, 'v'));
+  }
 
   // Mid-compaction swap-remove must not corrupt field/value views.
   HashStorage swapped(HashStorage::kMinChunkBytes);
@@ -2858,7 +3433,8 @@ void test_hash_storage_bounded_compaction() {
                       std::string(30000, static_cast<char>('a' + id))) == 1);
   }
   const char* stable_field_before = nullptr;
-  stable.for_each([&](std::string_view field, std::string_view) {
+  stable.for_each([&](std::string_view field,
+                      goblin::core::EncodedStringView) {
     if (field == "stable-0") {
       stable_field_before = field.data();
     }
@@ -2870,7 +3446,8 @@ void test_hash_storage_bounded_compaction() {
   assert(stable.memory_stats().field_value_dead_bytes > 0);
   stable.compact();
   const char* stable_field_after = nullptr;
-  stable.for_each([&](std::string_view field, std::string_view) {
+  stable.for_each([&](std::string_view field,
+                      goblin::core::EncodedStringView) {
     if (field == "stable-0") {
       stable_field_after = field.data();
     }
@@ -2942,8 +3519,9 @@ void test_adaptive_pma_rank_select() {
   }
   assert(pma.empty() && pma.capacity() == 0 && pma.check_invariants());
 
-  // A tight explicit compaction may make the next push grow, but its matching
-  // pop must not immediately shrink back and rebuild the entire PMA again.
+  // A tight explicit compaction retains real endpoint and distributed gaps.
+  // Crossing the nominal density watermark for one transient insert must use
+  // those gaps rather than geometrically growing the entire PMA.
   AdaptivePma hysteresis;
   for (std::uint32_t id = 0; id < 1000; ++id) {
     hysteresis.insert(hysteresis.size(), ListValueRef{.block = id});
@@ -2951,10 +3529,14 @@ void test_adaptive_pma_rank_select() {
   hysteresis.compact();
   const auto tight_capacity = hysteresis.capacity();
   hysteresis.insert(hysteresis.size(), ListValueRef{.block = 1000});
-  const auto grown_capacity = hysteresis.capacity();
-  assert(grown_capacity > tight_capacity);
+  assert(hysteresis.capacity() == tight_capacity);
   (void)hysteresis.erase(hysteresis.size() - 1);
-  assert(hysteresis.capacity() == grown_capacity);
+  assert(hysteresis.capacity() == tight_capacity);
+  hysteresis.insert(hysteresis.size() / 2,
+                    ListValueRef{.block = 1001});
+  assert(hysteresis.capacity() == tight_capacity);
+  (void)hysteresis.erase(hysteresis.size() / 2);
+  assert(hysteresis.capacity() == tight_capacity);
   assert(hysteresis.check_invariants());
 
   // A command-sized batch is one PMA mutation and preserves the caller's final
@@ -2995,6 +3577,24 @@ void test_adaptive_pma_rank_select() {
   assert(endpoint_empty > 0);
   assert(endpoint.back_slack() >= endpoint_empty / 2);
   assert(endpoint.check_invariants());
+
+  // Persistent references stay in the six-byte narrow form until their
+  // logical byte address crosses 2 GiB, then promote once without changing
+  // any logical values.
+  AdaptivePma reference_width(/*max_density=*/0.90,
+                              /*resize_growth=*/1.20,
+                              /*chunk_bytes=*/std::size_t{1} << 16);
+  const ListValueRef low{.block = ListValueRef::kRawMask,
+                         .offset = 123,
+                         .length = 16};
+  reference_width.insert(0, low);
+  assert(!reference_width.wide_references());
+  const ListValueRef high{.block = 32768, .offset = 0, .length = 9};
+  reference_width.insert(1, high);
+  assert(reference_width.wide_references());
+  assert(reference_width.at(0) == low);
+  assert(reference_width.at(1) == high);
+  assert(reference_width.check_invariants());
 }
 
 void test_list_listpack_and_pma() {
@@ -3026,16 +3626,15 @@ void test_list_listpack_and_pma() {
   assert(list.size() == 1 && list.at(0) == "middle-value");
   assert(list.check_invariants());
 
-  // A large value cannot fit the one-blob encoding but remains legal in the
-  // full arena; u16 is sufficient for the product-wide 65,535-byte ceiling.
+  // A maximum raw value remains legal in the compact format. Its extended
+  // header and prefix-free raw payload fit without creating a PMA arena.
   const std::string largest(goblin::core::ListValueArena::kMaxValueBytes, 'x');
   List large(options);
   (void)large.push_back(largest);
-  assert(!large.is_small());
+  assert(large.is_small());
   assert(large.at(0) == largest && large.check_invariants());
 
-  // Empty and binary values use the same u16 length path in both forms. Empty
-  // full-form values need no arena allocation, but still occupy distinct ranks.
+  // Empty and binary values use the same u16 encoded-length path in both forms.
   const std::string binary("a\0b", 3);
   List bytes(ListOptions{.listpack_max_entries = 0});
   (void)bytes.push_back("");
@@ -3066,6 +3665,189 @@ void test_list_listpack_and_pma() {
     assert(batches.at(index) == batch_order[index]);
   }
   assert(batches.check_invariants());
+
+  // Raw full-form values omit the redundant 0xff byte. Explicit compaction
+  // also trims the geometrically grown active block to its live page count.
+  goblin::core::ListValueArena arena;
+  const std::string raw_value = "0123456789abcdef";
+  std::vector<goblin::core::ListValueRef> arena_refs;
+  arena_refs.reserve(100'000);
+  for (std::size_t index = 0; index < 100'000; ++index) {
+    arena_refs.push_back(arena.append(raw_value));
+    if (arena.allocated_bytes() >
+        arena.used_bytes() + 2 * goblin::core::page_bytes()) {
+      break;
+    }
+  }
+  assert(arena_refs.size() < 100'000);
+  assert(arena_refs.front().raw_prefix_omitted());
+  assert(arena_refs.front().length == raw_value.size());
+  assert(arena.view(arena_refs.front()) == raw_value);
+  assert(arena.view(arena_refs.back()) == raw_value);
+  const auto arena_before_trim = arena.allocated_bytes();
+  arena.shrink_to_fit();
+  assert(arena.allocated_bytes() < arena_before_trim);
+  assert(arena.view(arena_refs.front()) == raw_value);
+  assert(arena.view(arena_refs.back()) == raw_value);
+
+  const auto stats = batches.memory_stats();
+  assert(stats.object_allocated_bytes > sizeof(List));
+  assert(stats.total_allocated_bytes ==
+         stats.object_allocated_bytes + stats.value_allocated_bytes +
+             stats.order_allocated_bytes);
+  List compact_object;
+  assert(compact_object.memory_stats().object_allocated_bytes == sizeof(List));
+  assert(sizeof(List) <= 32);
+
+  // The segmented implementation keeps values inline in bounded leaves while
+  // retaining logarithmic rank-to-leaf selection.
+  List segmented(ListOptions{
+      .implementation = goblin::core::ListImplementation::Segmented,
+      .listpack_max_entries = 4,
+  });
+  std::vector<std::string> segmented_values;
+  segmented_values.reserve(1000);
+  for (std::size_t index = 0; index < 1000; ++index) {
+    segmented_values.push_back("value-" + std::to_string(index));
+    (void)segmented.push_back(segmented_values.back());
+  }
+  assert(!segmented.is_small());
+  assert(segmented.size() == segmented_values.size());
+  for (const auto index : {std::size_t{0}, std::size_t{127},
+                           std::size_t{500}, std::size_t{999}}) {
+    assert(segmented.at(index) == segmented_values[index]);
+  }
+  segmented.insert(500, "inserted");
+  assert(segmented.at(500) == "inserted");
+  assert(segmented.erase(500) == "inserted");
+  segmented.set(500, "replacement");
+  assert(segmented.at(500) == "replacement");
+  assert(segmented.pop_front() == "value-0");
+  assert(segmented.pop_back() == "value-999");
+  segmented.compact();
+  assert(segmented.size() == 998);
+  assert(segmented.check_invariants());
+  const auto segmented_stats = segmented.memory_stats();
+  assert(segmented_stats.order_capacity > 1);
+  assert(segmented_stats.value_allocated_bytes < 20 * segmented.size());
+
+  // Command-sized batches build balanced leaves once and preserve both Redis
+  // endpoint orderings.
+  List segmented_batches(ListOptions{
+      .implementation = goblin::core::ListImplementation::Segmented,
+      .listpack_max_entries = 0,
+  });
+  std::vector<std::string> batch_storage;
+  std::vector<std::string_view> batch_views;
+  batch_storage.reserve(257);
+  batch_views.reserve(257);
+  for (std::size_t index = 0; index < 257; ++index) {
+    batch_storage.push_back("batch-" + std::to_string(index));
+  }
+  for (const auto& value : batch_storage) {
+    batch_views.push_back(value);
+  }
+  assert(segmented_batches.push_back(batch_views) == 257);
+  assert(segmented_batches.at(0) == "batch-0");
+  assert(segmented_batches.at(128) == "batch-128");
+  assert(segmented_batches.at(256) == "batch-256");
+  assert(segmented_batches.memory_stats().order_capacity == 3);
+  const std::array<std::string_view, 3> segmented_front = {"a", "b", "c"};
+  assert(segmented_batches.push_front(segmented_front) == 260);
+  assert(segmented_batches.at(0) == "c");
+  assert(segmented_batches.at(1) == "b");
+  assert(segmented_batches.at(2) == "a");
+  assert(segmented_batches.check_invariants());
+
+  // Repeated leaf-sized endpoint batches splice already-final leaves instead
+  // of decoding and rebuilding the full tail on every batch.
+  List segmented_leaf_batches(ListOptions{
+      .implementation = goblin::core::ListImplementation::Segmented,
+      .listpack_max_entries = 0,
+  });
+  for (std::size_t begin = 0; begin < 1024; begin += 128) {
+    std::vector<std::string> leaf_storage;
+    std::vector<std::string_view> leaf_views;
+    leaf_storage.reserve(128);
+    leaf_views.reserve(128);
+    for (std::size_t index = 0; index < 128; ++index) {
+      leaf_storage.push_back("leaf-" + std::to_string(begin + index));
+    }
+    for (const auto& value : leaf_storage) {
+      leaf_views.push_back(value);
+    }
+    assert(segmented_leaf_batches.push_back(leaf_views) == begin + 128);
+  }
+  assert(segmented_leaf_batches.memory_stats().order_capacity == 8);
+  assert(segmented_leaf_batches.at(0) == "leaf-0");
+  assert(segmented_leaf_batches.at(511) == "leaf-511");
+  assert(segmented_leaf_batches.at(1023) == "leaf-1023");
+  assert(segmented_leaf_batches.check_invariants());
+
+  List assigned(ListOptions{
+      .implementation = goblin::core::ListImplementation::Segmented,
+      .listpack_max_entries = 0,
+  });
+  (void)assigned.push_back("discarded");
+  assigned.assign(batch_views);
+  assert(assigned.size() == batch_views.size());
+  assert(assigned.at(0) == batch_views.front());
+  assert(assigned.at(256) == batch_views.back());
+  assert(assigned.check_invariants());
+
+  std::string raw_large_a(40'000, 'a');
+  std::string raw_large_b(40'000, 'b');
+  const std::array<std::string_view, 3> raw_restore_values = {
+      raw_large_a, "", raw_large_b};
+  List raw_restored(ListOptions{
+      .chunk_bytes = 65'536,
+      .listpack_max_entries = 0,
+  });
+  raw_restored.assign_raw(raw_restore_values);
+  assert(raw_restored.at(0) == raw_large_a);
+  assert(raw_restored.at(1).empty());
+  assert(raw_restored.at(2) == raw_large_b);
+  assert(raw_restored.push_back("tail") == 4);
+  assert(raw_restored.at(3) == "tail");
+  assert(raw_restored.check_invariants());
+
+  // PMA reference packing and the value arena must normalize an invalid chunk
+  // size identically or offsets will be decoded as block numbers.
+  const std::array<std::string_view, 2> normalized_values = {"first", "second"};
+  List normalized_chunks(ListOptions{
+      .chunk_bytes = 1,
+      .listpack_max_entries = 0,
+  });
+  assert(normalized_chunks.push_back(normalized_values) == 2);
+  assert(normalized_chunks.at(0) == "first");
+  assert(normalized_chunks.at(1) == "second");
+  assert(normalized_chunks.check_invariants());
+
+  // Endpoint-biased splits keep queue churn from accumulating half-full
+  // leaves. At most one transient tail leaf is added while the head drains.
+  List segmented_queue(ListOptions{
+      .implementation = goblin::core::ListImplementation::Segmented,
+      .listpack_max_entries = 0,
+  });
+  std::vector<std::string> queue_storage;
+  std::vector<std::string_view> queue_views;
+  queue_storage.reserve(1024);
+  queue_views.reserve(1024);
+  for (std::size_t index = 0; index < 1024; ++index) {
+    queue_storage.push_back("queue-" + std::to_string(index));
+  }
+  for (const auto& value : queue_storage) {
+    queue_views.push_back(value);
+  }
+  (void)segmented_queue.push_back(queue_views);
+  const auto queue_leaves = segmented_queue.memory_stats().order_capacity;
+  for (std::size_t index = 0; index < 4096; ++index) {
+    (void)segmented_queue.push_back("queue-new");
+    assert(segmented_queue.pop_front().has_value());
+  }
+  assert(segmented_queue.size() == 1024);
+  assert(segmented_queue.memory_stats().order_capacity <= queue_leaves + 1);
+  assert(segmented_queue.check_invariants());
 }
 
 void test_list_commands() {
@@ -3109,13 +3891,65 @@ void test_list_commands() {
          "*4\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\na\r\n$1\r\nb\r\n");
   assert(execute_fields(store, {"GOBLIN.PMA.LLEN", "qualified"}) ==
          ":4\r\n");
+
+  // Every implementation has a qualified family. A qualified push selects
+  // the representation for a new key; all list names then operate on that
+  // same list without converting it.
+  assert(execute_fields(
+             store,
+             {"GOBLIN.SEGMENTED.RPUSH", "seg-qualified", "a", "b", "c",
+              "d"}) == ":4\r\n");
+  assert(execute_fields(
+             store,
+             {"GOBLIN.SEGMENTED.LINSERT", "seg-qualified", "BEFORE", "c",
+              "x"}) == ":5\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LINDEX", "seg-qualified", "2"}) ==
+         "$1\r\nx\r\n");
+  assert(execute_fields(store, {"LPUSH", "seg-qualified", "head"}) ==
+         ":6\r\n");
+  assert(execute_fields(
+             store, {"GOBLIN.SEGMENTED.LRANGE", "seg-qualified", "0", "-1"}) ==
+         "*6\r\n$4\r\nhead\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nx\r\n$1\r\nc\r\n$1\r\nd\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LPOP", "seg-qualified", "2"}) ==
+         "*2\r\n$4\r\nhead\r\n$1\r\na\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LSET", "seg-qualified", "0", "B"}) ==
+         "+OK\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LREM", "seg-qualified", "0", "c"}) ==
+         ":1\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LTRIM", "seg-qualified", "0", "1"}) ==
+         "+OK\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.RPOP", "seg-qualified"}) ==
+         "$1\r\nx\r\n");
+  assert(execute_fields(store,
+                        {"GOBLIN.SEGMENTED.LLEN", "seg-qualified"}) ==
+         ":1\r\n");
   assert(execute_fields(store, {"INFO"}).find("list_implementation:pma") !=
          std::string::npos);
 
+  goblin::core::Store segmented_store(goblin::core::StoreOptions{
+      .list_listpack_max_entries = 3,
+      .list_implementation = goblin::core::ListImplementation::Segmented,
+  });
+  assert(execute_fields(segmented_store,
+                        {"RPUSH", "packed", "a", "b", "c", "d"}) ==
+         ":4\r\n");
+  assert(execute_fields(segmented_store,
+                        {"LRANGE", "packed", "0", "-1"}) ==
+         "*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n");
+  assert(execute_fields(segmented_store, {"INFO"})
+             .find("list_implementation:segmented") != std::string::npos);
+
   // Multi-value validation happens before the first element is inserted.
-  const std::string oversized(goblin::core::Store::max_value_bytes() + 1, 'z');
+  const std::string oversized(goblin::core::kStringMaxBytes + 1, 'z');
   assert(execute_fields(store, {"RPUSH", "atomic", "ok", oversized}) ==
-         "-ERR value is larger than the 64 KiB limit; use https://goblin-store.dev\r\n");
+         "-ERR value does not fit the 65,535-byte encoded limit; use "
+         "https://goblin-store.dev\r\n");
   assert(!store.exists("atomic"));
 
   store.set("string-key", "v");
@@ -3157,6 +3991,81 @@ void test_list_snapshot_persistence() {
     assert(range[i] == owned[i]);
   }
   assert(loaded.expiretime_ms("list") == static_cast<long long>(expiry));
+
+  std::istringstream segmented_snapshot(snapshot.str());
+  goblin::core::Store segmented_loaded(goblin::core::StoreOptions{
+      .list_listpack_max_entries = 2,
+      .list_implementation = goblin::core::ListImplementation::Segmented,
+  });
+  const auto segmented_stats = segmented_loaded.load(segmented_snapshot);
+  assert(segmented_stats.keys == 1 && segmented_stats.members == 80);
+  const auto segmented_range = segmented_loaded.lrange("list", 0, -1);
+  assert(segmented_range.size() == owned.size());
+  for (std::size_t i = 0; i < segmented_range.size(); ++i) {
+    assert(segmented_range[i] == owned[i]);
+  }
+  assert(segmented_loaded.list_memory_stats("list")->implementation ==
+         goblin::core::ListImplementation::Segmented);
+
+  std::stringstream accelerated_snapshot;
+  source.save(accelerated_snapshot, true);
+  const auto accelerated_bytes = accelerated_snapshot.str();
+  assert(accelerated_bytes.size() > snapshot.str().size());
+  for (const auto implementation :
+       {goblin::core::ListImplementation::Pma,
+        goblin::core::ListImplementation::Segmented}) {
+    goblin::core::StoreOptions options;
+    options.list_listpack_max_entries = 2;
+    options.list_implementation = implementation;
+    goblin::core::Store accelerated_loaded(options);
+    std::istringstream accelerated_input(accelerated_bytes);
+    const auto accelerated_stats =
+        accelerated_loaded.load(accelerated_input);
+    assert(accelerated_stats.used_accelerator);
+    assert(accelerated_stats.keys == 1 && accelerated_stats.members == 80);
+    const auto accelerated_range =
+        accelerated_loaded.lrange("list", 0, -1);
+    assert(accelerated_range.size() == owned.size());
+    for (std::size_t i = 0; i < accelerated_range.size(); ++i) {
+      assert(accelerated_range[i] == owned[i]);
+    }
+    const std::array<std::string_view, 1> tail = {"tail"};
+    assert(accelerated_loaded.rpush("list", tail) == 81);
+    const auto loaded_tail = accelerated_loaded.lindex("list", -1);
+    assert(loaded_tail.has_value() && *loaded_tail == "tail");
+  }
+
+  // A different encoding policy ignores the versioned encoded image and uses
+  // the canonical ordered values.
+  goblin::core::StoreOptions verbatim_options;
+  verbatim_options.list_listpack_max_entries = 2;
+  verbatim_options.string_encoding.disable();
+  goblin::core::Store verbatim_loaded(verbatim_options);
+  std::istringstream verbatim_input(accelerated_bytes);
+  const auto verbatim_stats = verbatim_loaded.load(verbatim_input);
+  assert(!verbatim_stats.used_accelerator);
+  const auto verbatim_range = verbatim_loaded.lrange("list", 0, -1);
+  assert(verbatim_range.size() == owned.size());
+  for (std::size_t i = 0; i < verbatim_range.size(); ++i) {
+    assert(verbatim_range[i] == owned[i]);
+  }
+
+  goblin::core::Store specialized_source;
+  const std::array<std::string_view, 4> specialized_values = {
+      "3", "127", "-1", "not-an-integer"};
+  assert(specialized_source.rpush("encoded", specialized_values) == 4);
+  std::stringstream specialized_snapshot;
+  specialized_source.save(specialized_snapshot, true);
+  goblin::core::Store specialized_loaded;
+  const auto specialized_stats =
+      specialized_loaded.load(specialized_snapshot);
+  assert(!specialized_stats.used_accelerator);
+  const auto specialized_range =
+      specialized_loaded.lrange("encoded", 0, -1);
+  assert(specialized_range.size() == specialized_values.size());
+  for (std::size_t i = 0; i < specialized_range.size(); ++i) {
+    assert(specialized_range[i] == specialized_values[i]);
+  }
 }
 
 void test_block_hint_rank_cache_lazy_offset_repair() {
@@ -3553,7 +4462,7 @@ void test_hash_basic() {
   assert(!h.contains("age") && h.size() == 1);
   assert(h.get("name") == "alexander");      // survivor intact after the swap
   int count = 0;
-  h.for_each([&](std::string_view f, std::string_view v) {
+  h.for_each([&](std::string_view f, goblin::core::EncodedStringView v) {
     ++count;
     assert(f == "name" && v == "alexander");
   });
@@ -3688,6 +4597,8 @@ void test_wrongtype() {
          std::string::npos);
   assert(execute_fields(store, {"GOBLIN.MEMORY", "h"}).find("field_count") !=
          std::string::npos);
+  assert(execute_fields(store, {"GOBLIN.MEMORY", "h"})
+             .find("field_compaction_donor_nanoseconds") != std::string::npos);
   assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "h"}) != "$-1\r\n");
 }
 
@@ -3826,6 +4737,8 @@ void test_background_save() {
 // validation against a period-correct redis is a separate fixture step.
 void test_rdb_import() {
   using goblin::core::Store;
+  using goblin::core::StoreOptions;
+  using goblin::core::StringEncodingOptions;
 
   // CRC64 must match Redis's published vector (validates the checksum path
   // independently of any real dump).
@@ -4002,7 +4915,7 @@ void test_rdb_import() {
     for (int i = 0; i < 8; ++i) u8(rdb, 0xAB);  // bogus checksum
     assert(throws(rdb));
   }
-  // RDB import enforces the same 65,535-byte list-value ceiling as commands.
+  // Default RDB import rejects a list value that cannot fit the raw encoding.
   {
     const std::string oversized(65536, 'x');
     std::string rdb = "REDIS0011";
@@ -4010,9 +4923,33 @@ void test_rdb_import() {
     u8(rdb, 0xFF); crc0(rdb);
     assert(throws(rdb));
   }
+
+  // With LZ4 enabled, RDB list import admits a larger logical value when its
+  // encoded representation still fits the u16 arena reference.
+  {
+    const std::string compressible(100'000, 'x');
+    std::string rdb = "REDIS0011";
+    u8(rdb, 0x01);
+    str(rdb, "compressed");
+    len(rdb, 1);
+    str(rdb, compressible);
+    u8(rdb, 0xFF);
+    crc0(rdb);
+
+    Store store(StoreOptions{
+        .string_encoding = StringEncodingOptions::with_lz4(0),
+    });
+    std::istringstream in(rdb, std::ios::binary);
+    const auto stats = store.load(in);
+    assert(stats.keys == 1 && stats.members == 1);
+    const auto value = store.lindex("compressed", 0);
+    assert(value && value->is_lz4() && *value == compressible);
+  }
 }
 
 void test_keyspace_storage_and_string_value() {
+  using goblin::core::EncodedString;
+  using goblin::core::EncodedStringView;
   using goblin::core::KeyspaceStorage;
   using goblin::core::StringValue;
 
@@ -4021,33 +4958,35 @@ void test_keyspace_storage_and_string_value() {
   // A tiny value lives entirely inline; block/offset are unused.
   {
     StringValue v{};
-    const std::string_view small = "42";
+    const EncodedString small("42");
     v.length = static_cast<std::uint16_t>(small.size());
     assert(v.is_inline());
     assert(v.tail_length() == 0);
-    std::memcpy(v.head_data(), small.data(), small.size());
-    assert(v.head() == small);
+    small.write_to(v.head_data());
+    assert(EncodedStringView(v.head()) == "42");
   }
-  // A 14-byte value is the largest fully-inline value.
+  // A 13-byte ordinary string fills the 14-byte inline encoding exactly.
   {
     StringValue v{};
-    const std::string_view full = "0123456789abcd";  // 14 bytes
+    const EncodedString full("0123456789abc");
     v.length = static_cast<std::uint16_t>(full.size());
     assert(v.is_inline());
-    std::memcpy(v.head_data(), full.data(), full.size());
-    assert(v.head() == full);
+    full.write_to(v.head_data());
+    assert(EncodedStringView(v.head()) == "0123456789abc");
   }
-  // A larger value keeps a 6-byte prefix inline and addresses its tail.
+  // A larger encoding keeps a 6-byte prefix inline and addresses its tail.
   {
     StringValue v{};
-    v.length = 40;
+    const std::string spilled_source(40, 'x');
+    const EncodedString spilled(spilled_source);
+    v.length = static_cast<std::uint16_t>(spilled.size());
     assert(!v.is_inline());
-    assert(v.tail_length() == 40 - StringValue::kPrefixCap);
+    assert(v.tail_length() == spilled.size() - StringValue::kPrefixCap);
     v.set_tail(7, 123);
     assert(v.tail_block() == 7);
     assert(v.tail_offset() == 123);
-    std::memcpy(v.head_data(), "prefix", StringValue::kPrefixCap);
-    assert(v.head() == std::string_view("prefix", StringValue::kPrefixCap));
+    spilled.write_range_to(0, StringValue::kPrefixCap, v.head_data());
+    assert(v.head().front() == static_cast<char>(goblin::core::kStringRaw));
   }
 
   // Key table: push/view, an empty key, value tails sharing the arena, and a
@@ -5027,6 +5966,8 @@ int main() {
   test_zset_arena_growth_spans_blocks();
   test_store_shared_member_layer_skips_unrelated_keys();
   test_store_many_zsets_coexist();
+  test_string_value_encoding();
+  test_encoded_values_in_store_types();
   test_store_strings();
   test_store_string_arena_compaction();
   test_string_commands();
@@ -5060,6 +6001,7 @@ int main() {
   test_key_arena();
   test_zset_listpack_mode();
   test_hash_listpack_mode();
+  test_hash_keyspace_arena_storage();
   test_hash_bulk_reserve_growth();
   test_hash_storage_bounded_compaction();
   test_adaptive_pma_rank_select();

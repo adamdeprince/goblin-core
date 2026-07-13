@@ -177,12 +177,34 @@ observable rather than estimated. Works on a zset, hash, or list key; replies ni
 for a missing key (or one of another type). The numbers reflect the current
 layout, so they change after [`GOBLIN.OPTIMIZE`](#goblin-optimize).
 
+Lists also report `implementation` (`pma` or `segmented`). For PMA lists,
+`order_capacity` is the number of PMA slots; for segmented lists it is the leaf
+count. `value_allocated_bytes` is arena capacity for PMA and requested leaf-blob
+bytes for segmented lists.
+
+Hashes also report `hash_heap_allocated_bytes` and
+`keyspace_accounted_bytes`. A compact hash has no heap wrapper: its 16-byte handle
+lives directly in the keyspace object slot and its packed field/value blob shares
+the movable keyspace arena, so those blob bytes appear as
+`keyspace_accounted_bytes`. A promoted hash reports the heap bytes occupied by its
+full state and storage object instead. Process-wide retained compact-blob pool
+capacity is reported by [`INFO`](INFO.md), because it cannot be assigned reliably
+to one key.
+
 For a full hash, `field_compaction_active`, `field_compaction_victim_chunk`,
 `field_compaction_candidates_remaining`, `field_compaction_fields_scanned`,
 `field_compaction_fields_total`, and the relocated field/byte counters expose
 bounded automatic arena maintenance while it is in progress. Candidate count
 falls during budgeted victim selection; field progress follows during that
-chunk's evacuation.
+chunk's evacuation. The cumulative `field_compaction_selection_nanoseconds`,
+`field_compaction_densify_nanoseconds`, `field_compaction_donor_nanoseconds`, and
+`field_compaction_tail_settle_nanoseconds` counters attribute compaction time for
+that hash. Default donor progress is a persistent streaming first-fit scan, so
+each inspected field id consumes one work unit. Mutations of already-scanned ids
+use a small fixed pending queue and do not rewind the forward cursor. The opt-in
+exact knapsack mode materializes the full donor set and is not latency-bounded.
+`--hash-compaction-work-budget` sets the automatic per-command scan budget; the
+donor copy budget remains 16 KiB.
 
 ## GOBLIN.OPTIMIZE
 
@@ -192,12 +214,14 @@ GOBLIN.OPTIMIZE key [density]
 
 Compacts a zset, hash, or list **in place**. Zsets and hashes reclaim dead arena
 bytes and repack their member/field index to `density`, a load factor in `(0, 1]`
-(default `0.97`). Lists rebuild their value arena and compact their PMA using the
-server's list-density setting. The command replies with bytes reclaimed, or nil
+(default `0.97`). PMA lists rebuild their value arena and compact their PMA using
+the server's list-density setting; segmented lists merge adjacent leaves and
+tighten the leaf/index vectors. The command replies with bytes reclaimed, or nil
 when the key is absent. Hashes also reclaim fragmented arena chunks
 automatically under heavy churn, using bounded work and byte budgets on normal
-mutations; that path leaves the field index intact. `GOBLIN.OPTIMIZE` is the
-explicit immediate full rebuild and index repack. The process-wide signal for
+mutations; that path leaves the field index intact. `GOBLIN.OPTIMIZE` immediately
+drains the same in-place arena algorithm and repacks the field index. The
+process-wide signal for
 *when* compaction is worthwhile is [`INFO`](INFO.md)'s
 `mem_fragmentation_ratio`.
 
@@ -221,7 +245,10 @@ GOBLIN.LOAD path
 
 Loads a snapshot from `path` into the store, replying with the number of keys
 loaded. It also accepts a Redis `dump.rdb` (Redis 2.6–7.2.x) to migrate sorted
-sets and lists. Already-expired keys are dropped during native snapshot load.
+sets and lists. Compatible default snapshots raw-copy all-raw list values into
+one final representation build; canonical fallback and RDB imports also build
+once per key rather than replaying individual mutations. Already-expired keys
+are dropped during native snapshot load.
 
 ## See also
 

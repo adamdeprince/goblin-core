@@ -68,12 +68,10 @@ namespace {
 // sections for tooling (redis-cli, benchmark harnesses) that keys off
 // used_memory_rss / redis_version. Fields are CRLF-separated per the protocol.
 //
-// used_memory is what our allocation layers actually hold, summed from every
-// arena's O(1) live/dead counters (Store::memory_report -- no scan); used_memory_rss
-// is the OS resident set. mem_fragmentation_ratio is honest and *internal*: our
-// allocation over its compacted size (used minus the reclaimable dead bytes a
-// GOBLIN.OPTIMIZE would free), so 1.00 means nothing to reclaim and higher means
-// churn has left dead bytes in the arenas. mem_reclaimable_bytes is that dead total.
+// used_memory is what our allocation layers actually hold, including retained
+// blob-pool capacity and full-hash heap state; used_memory_rss is the OS resident
+// set. mem_fragmentation_ratio remains the arena-internal ratio: allocation over
+// its compacted size (used minus reclaimable dead arena bytes).
 [[nodiscard]] std::string build_info_string(const Store& store) {
   const std::size_t rss = current_rss_bytes();
   const MemoryReport mem = store.memory_report();
@@ -95,6 +93,18 @@ namespace {
   s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
   s += "used_memory_peak:" + std::to_string(used) + "\r\n";
   s += "mem_reclaimable_bytes:" + std::to_string(dead) + "\r\n";
+  s += "hash_heap_allocated_bytes:" +
+       std::to_string(mem.hash_heap_allocated_bytes) + "\r\n";
+  s += "blob_pool_requested_bytes:" +
+       std::to_string(mem.blob_pool_requested_bytes) + "\r\n";
+  s += "blob_pool_capacity_bytes:" +
+       std::to_string(mem.blob_pool_capacity_bytes) + "\r\n";
+  s += "blob_pool_fragmentation_bytes:" +
+       std::to_string(mem.blob_pool_fragmentation_bytes) + "\r\n";
+  s += "blob_pool_live_allocations:" +
+       std::to_string(mem.blob_pool_live_allocations) + "\r\n";
+  s += "blob_pool_upstream_allocations:" +
+       std::to_string(mem.blob_pool_upstream_allocations) + "\r\n";
   s += "maxmemory:0\r\n";
   s += "maxmemory_policy:noeviction\r\n";
   s += "mem_fragmentation_ratio:" + std::string(frag) + "\r\n";
@@ -276,6 +286,16 @@ struct ScoreBound {
       stats.field_compaction_relocated_fields);
   add("field_compaction_relocated_bytes",
       stats.field_compaction_relocated_bytes);
+  add("field_compaction_selection_nanoseconds",
+      stats.field_compaction_selection_nanoseconds);
+  add("field_compaction_densify_nanoseconds",
+      stats.field_compaction_densify_nanoseconds);
+  add("field_compaction_donor_nanoseconds",
+      stats.field_compaction_donor_nanoseconds);
+  add("field_compaction_tail_settle_nanoseconds",
+      stats.field_compaction_tail_settle_nanoseconds);
+  add("hash_heap_allocated_bytes", stats.hash_heap_allocated_bytes);
+  add("keyspace_accounted_bytes", stats.keyspace_accounted_bytes);
   add("total_allocated_bytes", stats.total_allocated_bytes);
 
   return fields;
@@ -294,7 +314,10 @@ struct ScoreBound {
     fields.emplace_back(name);
     fields.push_back(std::to_string(value));
   };
+  fields.emplace_back("implementation");
+  fields.emplace_back(list_implementation_name(stats.implementation));
   add("element_count", stats.element_count);
+  add("object_allocated_bytes", stats.object_allocated_bytes);
   add("value_live_bytes", stats.value_live_bytes);
   add("value_dead_bytes", stats.value_dead_bytes);
   add("value_allocated_bytes", stats.value_allocated_bytes);
@@ -316,10 +339,11 @@ struct ScoreBound {
 constexpr std::string_view kWrongType =
     "WRONGTYPE Operation against a key holding the wrong kind of value";
 
-// Goblin Core caps a single string value at 64 KiB by design; larger blobs
-// belong in the object store, not the keyspace.
+// Every stored field/value reference retains a 16-bit encoded length. LZ4 can
+// admit a larger logical value when that encoded representation still fits.
 constexpr std::string_view kValueTooLarge =
-    "ERR value is larger than the 64 KiB limit; use https://goblin-store.dev";
+    "ERR value does not fit the 65,535-byte encoded limit; use "
+    "https://goblin-store.dev";
 
 [[nodiscard]] bool is_zset_command(CommandType type) noexcept {
   switch (type) {
@@ -390,6 +414,19 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::pma_ltrim:
     case CommandType::pma_lrem:
     case CommandType::pma_linsert:
+    case CommandType::segmented_lpush:
+    case CommandType::segmented_rpush:
+    case CommandType::segmented_lpushx:
+    case CommandType::segmented_rpushx:
+    case CommandType::segmented_lpop:
+    case CommandType::segmented_rpop:
+    case CommandType::segmented_llen:
+    case CommandType::segmented_lindex:
+    case CommandType::segmented_lrange:
+    case CommandType::segmented_lset:
+    case CommandType::segmented_ltrim:
+    case CommandType::segmented_lrem:
+    case CommandType::segmented_linsert:
       return true;
     default:
       return false;
@@ -399,6 +436,37 @@ constexpr std::string_view kValueTooLarge =
 [[nodiscard]] CommandType resolve_list_command(
     CommandType type, ListImplementation implementation) noexcept {
   switch (implementation) {
+    case ListImplementation::Segmented:
+      switch (type) {
+        case CommandType::lpush:
+          return CommandType::segmented_lpush;
+        case CommandType::rpush:
+          return CommandType::segmented_rpush;
+        case CommandType::lpushx:
+          return CommandType::segmented_lpushx;
+        case CommandType::rpushx:
+          return CommandType::segmented_rpushx;
+        case CommandType::lpop:
+          return CommandType::segmented_lpop;
+        case CommandType::rpop:
+          return CommandType::segmented_rpop;
+        case CommandType::llen:
+          return CommandType::segmented_llen;
+        case CommandType::lindex:
+          return CommandType::segmented_lindex;
+        case CommandType::lrange:
+          return CommandType::segmented_lrange;
+        case CommandType::lset:
+          return CommandType::segmented_lset;
+        case CommandType::ltrim:
+          return CommandType::segmented_ltrim;
+        case CommandType::lrem:
+          return CommandType::segmented_lrem;
+        case CommandType::linsert:
+          return CommandType::segmented_linsert;
+        default:
+          return type;
+      }
     case ListImplementation::Pma:
       switch (type) {
         case CommandType::lpush:
@@ -978,6 +1046,10 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::pma_rpush:
     case CommandType::pma_lpushx:
     case CommandType::pma_rpushx:
+    case CommandType::segmented_lpush:
+    case CommandType::segmented_rpush:
+    case CommandType::segmented_lpushx:
+    case CommandType::segmented_rpushx:
       if (command.args.size() < 2) {
         return parse_error(wrong_arity(command.name));
       }
@@ -987,6 +1059,8 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::rpop:
     case CommandType::pma_lpop:
     case CommandType::pma_rpop:
+    case CommandType::segmented_lpop:
+    case CommandType::segmented_rpop:
       if (command.args.size() != 1 && command.args.size() != 2) {
         return parse_error(wrong_arity(command.name));
       }
@@ -994,6 +1068,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       return {.command = std::move(command)};
     case CommandType::llen:
     case CommandType::pma_llen:
+    case CommandType::segmented_llen:
       if (command.args.size() != 1) {
         return parse_error(wrong_arity(command.name));
       }
@@ -1001,6 +1076,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       return {.command = std::move(command)};
     case CommandType::lindex:
     case CommandType::pma_lindex:
+    case CommandType::segmented_lindex:
       if (command.args.size() != 2) {
         return parse_error(wrong_arity(command.name));
       }
@@ -1010,6 +1086,8 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::ltrim:
     case CommandType::pma_lrange:
     case CommandType::pma_ltrim:
+    case CommandType::segmented_lrange:
+    case CommandType::segmented_ltrim:
       if (command.args.size() != 3) {
         return parse_error(wrong_arity(command.name));
       }
@@ -1022,6 +1100,8 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::lrem:
     case CommandType::pma_lset:
     case CommandType::pma_lrem:
+    case CommandType::segmented_lset:
+    case CommandType::segmented_lrem:
       if (command.args.size() != 3) {
         return parse_error(wrong_arity(command.name));
       }
@@ -1029,6 +1109,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       return {.command = std::move(command)};
     case CommandType::linsert:
     case CommandType::pma_linsert:
+    case CommandType::segmented_linsert:
       if (command.args.size() != 4) {
         return parse_error(wrong_arity(command.name));
       }
@@ -1547,6 +1628,13 @@ void execute_command_into(Store& store,
 
     case CommandType::hset: {
       const auto& key = command.args[0];
+      for (std::size_t index = 1; index + 1 < command.args.size(); index += 2) {
+        if (command.args[index].size() > HashStorage::kMaxFieldBytes ||
+            !store.value_fits(command.args[index + 1])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
       // Common case: HSET k f v -- skip the multi-field vector.
       if (command.args.size() == 3) {
         resp::append_integer(
@@ -1566,6 +1654,11 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::hsetnx:
+      if (command.args[1].size() > HashStorage::kMaxFieldBytes ||
+          !store.value_fits(command.args[2])) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
       resp::append_integer(
           out, store.hsetnx(command.args[0], command.args[1], command.args[2]));
       return;
@@ -1604,7 +1697,8 @@ void execute_command_into(Store& store,
     case CommandType::hgetall: {
       resp::append_array_header(out, store.hlen(command.args[0]) * 2);
       store.hash_for_each(command.args[0],
-                          [&out](std::string_view field, std::string_view value) {
+                          [&out](std::string_view field,
+                                 EncodedStringView value) {
                             resp::append_bulk_string(out, field);
                             resp::append_bulk_string(out, value);
                           });
@@ -1614,7 +1708,7 @@ void execute_command_into(Store& store,
     case CommandType::hkeys: {
       resp::append_array_header(out, store.hlen(command.args[0]));
       store.hash_for_each(command.args[0],
-                          [&out](std::string_view field, std::string_view) {
+                          [&out](std::string_view field, EncodedStringView) {
                             resp::append_bulk_string(out, field);
                           });
       return;
@@ -1623,7 +1717,7 @@ void execute_command_into(Store& store,
     case CommandType::hvals: {
       resp::append_array_header(out, store.hlen(command.args[0]));
       store.hash_for_each(command.args[0],
-                          [&out](std::string_view, std::string_view value) {
+                          [&out](std::string_view, EncodedStringView value) {
                             resp::append_bulk_string(out, value);
                           });
       return;
@@ -1667,9 +1761,13 @@ void execute_command_into(Store& store,
     case CommandType::pma_lpush:
     case CommandType::pma_rpush:
     case CommandType::pma_lpushx:
-    case CommandType::pma_rpushx: {
+    case CommandType::pma_rpushx:
+    case CommandType::segmented_lpush:
+    case CommandType::segmented_rpush:
+    case CommandType::segmented_lpushx:
+    case CommandType::segmented_rpushx: {
       for (std::size_t index = 1; index < command.args.size(); ++index) {
-        if (command.args[index].size() > Store::max_value_bytes()) {
+        if (!store.value_fits(command.args[index])) {
           resp::append_error(out, kValueTooLarge);
           return;
         }
@@ -1677,14 +1775,25 @@ void execute_command_into(Store& store,
       const auto values = std::span<const std::string_view>(
           command.args.data() + 1, command.args.size() - 1);
       const bool front = type == CommandType::pma_lpush ||
-                         type == CommandType::pma_lpushx;
+                         type == CommandType::pma_lpushx ||
+                         type == CommandType::segmented_lpush ||
+                         type == CommandType::segmented_lpushx;
       const bool only_if_exists = type == CommandType::pma_lpushx ||
-                                  type == CommandType::pma_rpushx;
+                                  type == CommandType::pma_rpushx ||
+                                  type == CommandType::segmented_lpushx ||
+                                  type == CommandType::segmented_rpushx;
+      const auto implementation =
+          type == CommandType::segmented_lpush ||
+                  type == CommandType::segmented_rpush ||
+                  type == CommandType::segmented_lpushx ||
+                  type == CommandType::segmented_rpushx
+              ? ListImplementation::Segmented
+              : ListImplementation::Pma;
       const auto length = front
                               ? store.lpush(command.args[0], values,
-                                            only_if_exists)
+                                            only_if_exists, implementation)
                               : store.rpush(command.args[0], values,
-                                            only_if_exists);
+                                            only_if_exists, implementation);
       resp::append_integer(out, length);
       return;
     }
@@ -1692,8 +1801,11 @@ void execute_command_into(Store& store,
     case CommandType::lpop:
     case CommandType::rpop:
     case CommandType::pma_lpop:
-    case CommandType::pma_rpop: {
-      const bool front = type == CommandType::pma_lpop;
+    case CommandType::pma_rpop:
+    case CommandType::segmented_lpop:
+    case CommandType::segmented_rpop: {
+      const bool front = type == CommandType::pma_lpop ||
+                         type == CommandType::segmented_lpop;
       if (command.args.size() == 1) {
         const auto value = front ? store.lpop(command.args[0])
                                  : store.rpop(command.args[0]);
@@ -1731,12 +1843,14 @@ void execute_command_into(Store& store,
 
     case CommandType::llen:
     case CommandType::pma_llen:
+    case CommandType::segmented_llen:
       resp::append_integer(out,
                            static_cast<long long>(store.llen(command.args[0])));
       return;
 
     case CommandType::lindex:
-    case CommandType::pma_lindex: {
+    case CommandType::pma_lindex:
+    case CommandType::segmented_lindex: {
       const auto index = parse_ll(command.args[1]);
       if (!index) {
         resp::append_error(out, integer_range_error());
@@ -1752,7 +1866,8 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::lrange:
-    case CommandType::pma_lrange: {
+    case CommandType::pma_lrange:
+    case CommandType::segmented_lrange: {
       const auto values = store.lrange(command.args[0], command.range_start,
                                        command.range_stop);
       resp::append_array_header(out, values.size());
@@ -1763,13 +1878,14 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::lset:
-    case CommandType::pma_lset: {
+    case CommandType::pma_lset:
+    case CommandType::segmented_lset: {
       const auto index = parse_ll(command.args[1]);
       if (!index) {
         resp::append_error(out, integer_range_error());
         return;
       }
-      if (command.args[2].size() > Store::max_value_bytes()) {
+      if (!store.value_fits(command.args[2])) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -1789,12 +1905,14 @@ void execute_command_into(Store& store,
 
     case CommandType::ltrim:
     case CommandType::pma_ltrim:
+    case CommandType::segmented_ltrim:
       store.ltrim(command.args[0], command.range_start, command.range_stop);
       resp::append_simple_string(out, "OK");
       return;
 
     case CommandType::lrem:
-    case CommandType::pma_lrem: {
+    case CommandType::pma_lrem:
+    case CommandType::segmented_lrem: {
       const auto count = parse_ll(command.args[1]);
       if (!count) {
         resp::append_error(out, integer_range_error());
@@ -1807,7 +1925,8 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::linsert:
-    case CommandType::pma_linsert: {
+    case CommandType::pma_linsert:
+    case CommandType::segmented_linsert: {
       bool before = false;
       if (equals_ci(command.args[1], "BEFORE")) {
         before = true;
@@ -1815,7 +1934,7 @@ void execute_command_into(Store& store,
         resp::append_error(out, syntax_error());
         return;
       }
-      if (command.args[3].size() > Store::max_value_bytes()) {
+      if (!store.value_fits(command.args[3])) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -1830,7 +1949,7 @@ void execute_command_into(Store& store,
       //     [EX s | PX ms | EXAT ts | PXAT ms | KEEPTTL].
       const auto& key = command.args[0];
       const auto& value = command.args[1];
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -1898,8 +2017,7 @@ void execute_command_into(Store& store,
         if (const auto current = store.get(key)) {
           old_value.emplace();
           old_value->reserve(current->size());
-          old_value->append(current->head);
-          old_value->append(current->tail);
+          current->append_to(*old_value);
         }
       }
       if (condition_met) {
@@ -1930,20 +2048,14 @@ void execute_command_into(Store& store,
       const auto value = store.get(command.args[0]);
       if (!value) {
         resp::append_null_bulk_string(out);
-      } else if (value->tail.empty()) {  // fully inline -> zero-copy
-        resp::append_bulk_string(out, value->head);
       } else {
-        std::string joined;
-        joined.reserve(value->size());
-        joined.append(value->head);
-        joined.append(value->tail);
-        resp::append_bulk_string(out, joined);
+        resp::append_bulk_string(out, *value);
       }
       return;
     }
     case CommandType::getset: {
       const auto& value = command.args[1];
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -1957,7 +2069,7 @@ void execute_command_into(Store& store,
     }
     case CommandType::setnx: {
       const auto& value = command.args[1];
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -1980,13 +2092,12 @@ void execute_command_into(Store& store,
     }
     case CommandType::append: {
       const auto& value = command.args[1];
-      const auto current = store.strlen(command.args[0]).value_or(0);
-      if (current + value.size() > Store::max_value_bytes()) {
+      const auto length = store.append(command.args[0], value);
+      if (!length) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
-      resp::append_integer(
-          out, static_cast<long long>(store.append(command.args[0], value)));
+      resp::append_integer(out, static_cast<long long>(*length));
       return;
     }
     case CommandType::incr:
@@ -2060,7 +2171,7 @@ void execute_command_into(Store& store,
     }
     case CommandType::mset: {
       for (std::size_t i = 0; i + 1 < command.args.size(); i += 2) {
-        if (command.args[i + 1].size() > Store::max_value_bytes()) {
+        if (!store.value_fits(command.args[i + 1])) {
           resp::append_error(out, kValueTooLarge);
           return;
         }
@@ -2082,14 +2193,8 @@ void execute_command_into(Store& store,
         const auto value = store.get(key);  // nil for a missing or non-string key
         if (!value) {
           resp::append_null_bulk_string(out);
-        } else if (value->tail.empty()) {
-          resp::append_bulk_string(out, value->head);
         } else {
-          std::string joined;
-          joined.reserve(value->size());
-          joined.append(value->head);
-          joined.append(value->tail);
-          resp::append_bulk_string(out, joined);
+          resp::append_bulk_string(out, *value);
         }
       }
       return;
@@ -2299,7 +2404,7 @@ void execute_command_into(Store& store,
       // returns) and 0 when the token did not match -- a drop-in for the script's
       // `return redis.call("set", KEYS[1], ARGV[2], "KEEPTTL")` / `0`.
       const auto& new_value = command.args[2];
-      if (new_value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(new_value)) {
         resp::append_error(out, kValueTooLarge);
         return;
       }
@@ -2545,7 +2650,7 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR invalid expire time in 'goblin.claim' command");
         return;
       }
-      if (command.args[2].size() > Store::max_value_bytes()) {
+      if (!store.value_fits(command.args[2])) {
         resp::append_error(out, kValueTooLarge);
         return;
       }

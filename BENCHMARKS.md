@@ -320,7 +320,9 @@ leaner still (an 8-byte struct-of-arrays reference per field instead of 14). The
 broader [HSET speed and memory benchmark](HSET-BENCHMARK.md) covers exact bulk
 construction, existing-field updates, value growth and compaction for one
 million-field hash, plus 8/32/64/128-field hashes at fixed total cardinality.
-The repeatable driver is [`benchmarks/hset_benchmark.py`](benchmarks/hset_benchmark.py).
+The repeatable native driver is
+[`benchmarks/hset_benchmark.cpp`](benchmarks/hset_benchmark.cpp), built as the
+`goblin_core_hset_benchmark` CMake target.
 The follow-up [indexed compact threshold sweep](HASH-THRESHOLD-SWEEP.md) measures
 20 requested boundaries from 32 through the 64 KiB promotion point and 2048,
 including first/middle/last/miss lookup shape, forced-full Goblin, and all four
@@ -458,7 +460,7 @@ which share the server flags):
 - Sorted-set / hash throughput + depth-1 latency: `benchmarks/zset_speed.py` and
   `benchmarks/hash_speed.py --engine ... --redis-benchmark <path>`.
 - Combined HSET speed, RSS, value-growth, and representation sweep:
-  `benchmarks/hset_benchmark.py --engine ... --redis-benchmark <path>`; the
+  `build/goblin_core_hset_benchmark --engine ... --redis-benchmark <path>`; the
   checked-in result is [HSET-BENCHMARK.md](HSET-BENCHMARK.md).
 - PING latency, concurrency, and write-path tail: `benchmarks/lat_tail.py
   --engine ... --probe ./write_tail_latency --redis-benchmark <path>` (build the

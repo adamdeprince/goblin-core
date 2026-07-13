@@ -5,6 +5,14 @@ and a 16-bit entry offset per field. Lookups scan fingerprints with the build
 ISA's widest byte vector, then compare the complete field only for fingerprint
 matches. The full hash uses the Swiss field index and arena.
 
+The blob begins with a byte-packed four-byte header (`u16` entry bytes and
+`u16` count), followed by the fingerprint and offset directories. Each entry
+stores encoded-field length and encoded-value length in one or two bytes:
+lengths through 127 use one byte; larger lengths use a high-bit byte plus the
+low byte, up to 32,767. A larger encoded field or value promotes to the full
+hash. Compact fields use the shared exact decimal/UUID encoder with LZ4
+forbidden. `--disable-encoding` instead stores both fields and values verbatim.
+
 The initial sweep supported increasing the old 32-field default through 512. A
 second AVX2 sweep through 2048 supports removing the default count ceiling:
 **the 64 KiB compact-blob limit now decides promotion**. Operators can still

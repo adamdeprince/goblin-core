@@ -54,6 +54,32 @@ namespace {
   return static_cast<std::size_t>(value * bytes_per_kib);
 }
 
+[[nodiscard]] std::optional<std::size_t> parse_positive_size(
+    std::string_view text) {
+  unsigned long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end || value == 0 ||
+      value > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(value);
+}
+
+[[nodiscard]] std::optional<std::size_t> parse_nonnegative_size(
+    std::string_view text) {
+  unsigned long long value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end ||
+      value > std::numeric_limits<std::size_t>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(value);
+}
+
 [[nodiscard]] std::optional<std::size_t> parse_chunk_bytes(
     std::string_view text, std::size_t min_bytes) {
   unsigned long long value = 0;
@@ -116,6 +142,9 @@ parse_list_implementation(std::string_view text) {
   if (text == "pma") {
     return goblin::core::ListImplementation::Pma;
   }
+  if (text == "segmented") {
+    return goblin::core::ListImplementation::Segmented;
+  }
   return std::nullopt;
 }
 
@@ -128,11 +157,15 @@ void print_usage(std::string_view program) {
             << "       [--member-index-growth FACTOR] [--load-factor N]\n"
             << "       [--block-shrink on|off]\n"
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
+            << "       [--hash-compaction-knapsack|--no-hash-compaction-knapsack]\n"
+            << "       [--hash-compaction-work-budget N]\n"
             << "       [--hash-listpack-max-entries N|blob]\n"
-            << "       [--list-implementation pma]\n"
+            << "       [--list-implementation pma|segmented]\n"
             << "       [--list-chunk-bytes BYTES]\n"
             << "       [--list-max-density FRACTION]\n"
             << "       [--list-resize-growth FACTOR]\n"
+            << "       [--disable-encoding]\n"
+            << "       [--use-lz4 BYTES] [--lz4-compress-level LEVEL]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
@@ -359,6 +392,32 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--hash-compaction-knapsack") {
+      store_options.hash_compaction_knapsack = true;
+      continue;
+    }
+
+    if (arg == "--no-hash-compaction-knapsack") {
+      store_options.hash_compaction_knapsack = false;
+      continue;
+    }
+
+    if (arg == "--hash-compaction-work-budget") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto budget = parse_positive_size(argv[++i]);
+      constexpr std::size_t kMaxCompactionWorkBudget = std::size_t{1} << 20;
+      if (!budget || *budget > kMaxCompactionWorkBudget) {
+        std::cerr << "goblin-core: --hash-compaction-work-budget must be in "
+                     "[1, 1048576]\n";
+        return 2;
+      }
+      store_options.hash_compaction_work_budget = *budget;
+      continue;
+    }
+
     if (arg == "--hash-listpack-max-entries") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
@@ -407,7 +466,8 @@ int main(int argc, char** argv) {
       }
       const auto implementation = parse_list_implementation(argv[++i]);
       if (!implementation) {
-        std::cerr << "goblin-core: --list-implementation must be pma\n";
+        std::cerr << "goblin-core: --list-implementation must be pma or "
+                     "segmented\n";
         return 2;
       }
       store_options.list_implementation = *implementation;
@@ -439,6 +499,45 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.list_resize_growth = *growth;
+      continue;
+    }
+
+    if (arg == "--disable-encoding") {
+      store_options.string_encoding.disable();
+      continue;
+    }
+
+    if (arg == "--use-lz4") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto threshold = parse_nonnegative_size(argv[++i]);
+      if (!threshold) {
+        std::cerr << "goblin-core: --use-lz4 must be a non-negative integer\n";
+        return 2;
+      }
+      store_options.string_encoding.set_lz4_min_bytes(*threshold);
+      continue;
+    }
+
+    if (arg == "--lz4-compress-level") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const std::string_view text(argv[++i]);
+      int level = 0;
+      const auto [ptr, ec] =
+          std::from_chars(text.data(), text.data() + text.size(), level);
+      if (ec != std::errc{} || ptr != text.data() + text.size() ||
+          !goblin::core::StringEncodingOptions::valid_lz4_compress_level(
+              level)) {
+        std::cerr << "goblin-core: --lz4-compress-level must be 0, 3..12, "
+                     "or -1..-8\n";
+        return 2;
+      }
+      store_options.string_encoding.set_lz4_compress_level(level);
       continue;
     }
 

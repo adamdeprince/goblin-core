@@ -856,16 +856,22 @@ namespace {
   return HashOptions{
       .member_index_growth = options.member_index_growth,
       .chunk_bytes = options.hash_chunk_bytes,
+      .compaction_knapsack = options.hash_compaction_knapsack,
+      .string_encoding = options.string_encoding,
+      .compaction_work_budget = options.hash_compaction_work_budget,
       .listpack_max_entries = options.hash_listpack_max_entries,
   };
 }
 
 [[nodiscard]] ListOptions build_list_options(const StoreOptions& options) {
   return ListOptions{
+      .implementation = options.list_implementation,
       .chunk_bytes = options.list_chunk_bytes,
       .listpack_max_entries = options.list_listpack_max_entries,
       .max_density = options.list_max_density,
       .resize_growth = options.list_resize_growth,
+      .string_encoding = options.string_encoding,
+      .string_compression = StringCompressionMode::AllowLz4,
   };
 }
 
@@ -874,7 +880,8 @@ namespace {
 Store::Store(StoreOptions options)
     : options_(options),
       zset_options_(build_zset_options(options)),
-      keyspace_(build_hash_options(options), build_list_options(options)) {}
+      keyspace_(build_hash_options(options), build_list_options(options),
+                options.string_encoding) {}
 
 void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   if (!zset.empty()) {
@@ -1009,8 +1016,8 @@ int Store::hsetnx(std::string_view key, std::string_view field,
   return get_or_create_hash(key).set_nx(field, value);
 }
 
-std::optional<std::string_view> Store::hget(std::string_view key,
-                                            std::string_view field) const {
+std::optional<EncodedStringView> Store::hget(std::string_view key,
+                                             std::string_view field) const {
   const auto* hash = find_hash(key);
   if (hash == nullptr) {
     return std::nullopt;
@@ -1065,7 +1072,8 @@ std::optional<long long> Store::hincrby(std::string_view key,
   auto& hash = get_or_create_hash(key);
   long long current = 0;
   if (const auto value = hash.get(field); value) {
-    const auto parsed = parse_i64(*value);
+    const auto decoded = value->to_string();
+    const auto parsed = parse_i64(decoded);
     if (!parsed) {
       erase_if_empty(key, hash);
       return std::nullopt;  // existing value is not an integer
@@ -1108,7 +1116,8 @@ std::optional<bool> Store::hash_set_if_greater(std::string_view key,
   double current = -std::numeric_limits<double>::infinity();
   if (hash != nullptr) {
     if (const auto existing = hash->get(field)) {
-      const auto parsed = parse_double(*existing);
+      const auto decoded = existing->to_string();
+      const auto parsed = parse_double(decoded);
       if (!parsed) {
         return std::nullopt;  // existing value is not a finite number
       }
@@ -1153,26 +1162,30 @@ void Store::place_loaded_list(std::string key, List&& list) {
 
 long long Store::lpush(std::string_view key,
                        std::span<const std::string_view> values,
-                       bool only_if_exists) {
+                       bool only_if_exists,
+                       std::optional<ListImplementation> implementation) {
   List* list = find_list(key);
   if (list == nullptr) {
     if (only_if_exists) {
       return 0;
     }
-    list = &get_or_create_list(key);
+    list = &get_or_create_list(
+        key, implementation.value_or(options_.list_implementation));
   }
   return static_cast<long long>(list->push_front(values));
 }
 
 long long Store::rpush(std::string_view key,
                        std::span<const std::string_view> values,
-                       bool only_if_exists) {
+                       bool only_if_exists,
+                       std::optional<ListImplementation> implementation) {
   List* list = find_list(key);
   if (list == nullptr) {
     if (only_if_exists) {
       return 0;
     }
-    list = &get_or_create_list(key);
+    list = &get_or_create_list(
+        key, implementation.value_or(options_.list_implementation));
   }
   return static_cast<long long>(list->push_back(values));
 }
@@ -1232,8 +1245,8 @@ std::size_t Store::llen(std::string_view key) const noexcept {
   return list == nullptr ? 0 : list->size();
 }
 
-std::optional<std::string_view> Store::lindex(std::string_view key,
-                                              long long index) const noexcept {
+std::optional<EncodedStringView> Store::lindex(std::string_view key,
+                                               long long index) const noexcept {
   const auto* list = find_list(key);
   if (list == nullptr) {
     return std::nullopt;
@@ -1245,10 +1258,10 @@ std::optional<std::string_view> Store::lindex(std::string_view key,
   return list->at(static_cast<std::size_t>(index));
 }
 
-std::vector<std::string_view> Store::lrange(std::string_view key,
-                                            long long start,
-                                            long long stop) const {
-  std::vector<std::string_view> values;
+std::vector<EncodedStringView> Store::lrange(std::string_view key,
+                                             long long start,
+                                             long long stop) const {
+  std::vector<EncodedStringView> values;
   const auto* list = find_list(key);
   if (list == nullptr) {
     return values;
@@ -1259,7 +1272,9 @@ std::vector<std::string_view> Store::lrange(std::string_view key,
   }
   values.reserve(range->count);
   list->for_range(range->first, range->count,
-                  [&values](std::string_view value) { values.push_back(value); });
+                  [&values](EncodedStringView value) {
+                    values.push_back(value);
+                  });
   return values;
 }
 
@@ -1350,22 +1365,14 @@ std::optional<StringValueView> Store::get(std::string_view key) const noexcept {
 }
 
 namespace {
-// Materialize a (head, tail) value view into a contiguous string.
+// Materialize a stored encoded value into its Redis-visible string.
 [[nodiscard]] std::string join_value(StringValueView value) {
-  std::string out;
-  out.reserve(value.size());
-  out.append(value.head);
-  out.append(value.tail);
-  return out;
+  return value.to_string();
 }
 
-// True when the (head, tail) split of a stored value equals `s`, compared in
-// place -- sizes first, then the inline head, then any spilled tail -- so no
-// allocation on the common small-value path.
+// Raw values compare in place; specialized encodings decode canonically.
 [[nodiscard]] bool view_equals(StringValueView value, std::string_view s) {
-  return value.size() == s.size() &&
-         s.substr(0, value.head.size()) == value.head &&
-         s.substr(value.head.size()) == value.tail;
+  return value.equals(s);
 }
 }  // namespace
 
@@ -1444,8 +1451,7 @@ Store::ClaimOutcome Store::claim(std::string_view claim_key,
   if (const auto value = get(result_key)) {
     outcome.result.emplace();
     outcome.result->reserve(value->size());
-    outcome.result->append(value->head);
-    outcome.result->append(value->tail);
+    value->append_to(*outcome.result);
   }
   return outcome;
 }
@@ -1454,14 +1460,24 @@ std::optional<std::size_t> Store::strlen(std::string_view key) const noexcept {
   return keyspace_.string_length(key);
 }
 
-std::size_t Store::append(std::string_view key, std::string_view value) {
+std::optional<std::size_t> Store::append(std::string_view key,
+                                         std::string_view value) {
   const auto current = keyspace_.get_string(key);
   if (!current) {
+    if (!value_fits(value)) {
+      return std::nullopt;
+    }
     keyspace_.set_string(key, value);
     return value.size();
   }
   std::string combined = join_value(*current);
+  if (value.size() > kStringMaxCompressedLogicalBytes - combined.size()) {
+    return std::nullopt;
+  }
   combined.append(value);
+  if (!value_fits(combined)) {
+    return std::nullopt;
+  }
   keyspace_.set_string(key, combined);
   return combined.size();
 }
@@ -1601,22 +1617,24 @@ std::optional<std::size_t> Store::setrange(std::string_view key,
   if (value.empty()) {
     return current_len;
   }
-  // Reject a result past the 64 KiB ceiling; check offset first so the
-  // offset + size sum below can never overflow.
-  if (offset > StringValueMaxBytes ||
-      offset + value.size() > StringValueMaxBytes) {
+  // The compressed form carries a 24-bit logical length. Check before adding so
+  // the result-size arithmetic cannot overflow.
+  if (offset > kStringMaxCompressedLogicalBytes ||
+      value.size() > kStringMaxCompressedLogicalBytes - offset) {
     return std::nullopt;
   }
   const std::size_t result_len = std::max(current_len, offset + value.size());
   std::string buffer;
   buffer.reserve(result_len);
   if (current) {
-    buffer.append(current->head);
-    buffer.append(current->tail);
+    current->append_to(buffer);
   }
   buffer.resize(result_len, '\0');  // zero-pad any gap up to offset
   std::copy(value.begin(), value.end(),
             buffer.begin() + static_cast<std::ptrdiff_t>(offset));
+  if (!value_fits(buffer)) {
+    return std::nullopt;
+  }
   keyspace_.set_string(key, buffer);
   return result_len;
 }
@@ -2070,23 +2088,36 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   keyspace_.for_each_hash(emit_hash);
   out.write(&end, 1);
 
-  // LIST section: only canonical order is persisted. PMA slots, density, and
-  // arena addresses are implementation details rebuilt by the current binary.
+  // LIST section: canonical order is always persisted. The optional accelerator
+  // marks all-raw lists whose canonical bytes are already their final payload;
+  // PMA slots, density, and arena addresses remain implementation details.
   std::string list_header;
   snapshot::Writer list_writer(list_header);
   list_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::List));
-  list_writer.u32(0);
+  list_writer.u32(with_accelerator ? snapshot::kListAcceleratorVersion : 0);
   list_writer.u64(0);
   out.write(list_header.data(), static_cast<std::streamsize>(list_header.size()));
 
-  auto emit_list = [&out, &operands](std::string_view key, const List& list) {
+  auto emit_list = [&out, &operands, with_accelerator](
+                       std::string_view key, const List& list) {
     operands.clear();
     snapshot::Writer operand_writer(operands);
     operand_writer.str(key);
     operand_writer.u64(static_cast<std::uint64_t>(list.size()));
-    list.for_each([&operand_writer](std::string_view value) {
-      operand_writer.str(value);
+    bool all_raw = true;
+    list.for_each([&](EncodedStringView value) {
+      operand_writer.u32(static_cast<std::uint32_t>(value.size()));
+      value.append_to(operands);
+      all_raw = all_raw && value.is_raw();
     });
+
+    if (with_accelerator) {
+      operand_writer.u8(all_raw ? 1 : 0);
+      if (all_raw) {
+        operand_writer.u8(
+            list.options().string_encoding.encoding_enabled() ? 1 : 0);
+      }
+    }
 
     std::string instruction;
     snapshot::Writer instruction_writer(instruction);
@@ -2099,8 +2130,8 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   keyspace_.for_each_list(emit_list);
   out.write(&end, 1);
 
-  // STRING section: a key's value is raw bytes, so there is no accelerator to
-  // carry (version 0, identity 0). Each instruction is str(key) + str(value).
+  // STRING section stays canonical logical bytes; the in-memory value encoding
+  // is rebuilt on load and never leaks into the portable snapshot.
   std::string string_header;
   snapshot::Writer string_writer(string_header);
   string_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::String));
@@ -2114,8 +2145,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
                                                        StringValueView value) {
     value_scratch.clear();
     value_scratch.reserve(value.size());
-    value_scratch.append(value.head);
-    value_scratch.append(value.tail);
+    value.append_to(value_scratch);
 
     operands.clear();
     snapshot::Writer operand_writer(operands);
@@ -2334,10 +2364,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
       const bool hash_use_accelerator =
           is_hash && section_version == snapshot::kHashAcceleratorVersion &&
           hash_identity == ZSetMemberIndex::hash_identity();
-      if (is_zset) {
-        stats.used_accelerator = zset_use_accelerator;
-      }
-
+      const bool list_use_accelerator =
+          is_list && section_version == snapshot::kListAcceleratorVersion;
       // Interpret the section's instruction stream until OP_END.
       for (;;) {
         const auto opcode = static_cast<std::uint8_t>(read_exact(1)[0]);
@@ -2359,6 +2387,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           auto key = std::string(reader.str());
           ZSet zset =
               ZSet::load(reader, zset_use_accelerator, zset_options());
+          stats.used_accelerator =
+              stats.used_accelerator || zset_use_accelerator;
           stats.members += zset.size();
           place_loaded_zset(std::move(key), std::move(zset));
           ++stats.keys;
@@ -2371,9 +2401,16 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
                          HashOptions{
                              .member_index_growth = options_.member_index_growth,
                              .chunk_bytes = options_.hash_chunk_bytes,
+                             .compaction_knapsack =
+                                 options_.hash_compaction_knapsack,
+                             .string_encoding = options_.string_encoding,
+                             .compaction_work_budget =
+                                 options_.hash_compaction_work_budget,
                              .listpack_max_entries =
                                  options_.hash_listpack_max_entries,
                          });
+          stats.used_accelerator =
+              stats.used_accelerator || hash_use_accelerator;
           stats.members += hash.size();
           place_loaded_hash(std::move(key), std::move(hash));
           ++stats.keys;
@@ -2393,10 +2430,25 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           if (count > std::numeric_limits<std::uint32_t>::max()) {
             throw snapshot::snapshot_error("snapshot list is too large");
           }
-          List list(build_list_options(options_));
+          std::vector<std::string_view> values;
+          values.reserve(static_cast<std::size_t>(count));
           for (std::uint64_t index = 0; index < count; ++index) {
-            (void)list.push_back(reader.str());
+            values.push_back(reader.str());
           }
+          List list(build_list_options(options_));
+          bool accelerated = false;
+          if (list_use_accelerator && reader.u8() != 0) {
+            const bool encoding_enabled = reader.u8() != 0;
+            if (encoding_enabled ==
+                list.options().string_encoding.encoding_enabled()) {
+              list.assign_raw(values);
+              accelerated = true;
+            }
+          }
+          if (!accelerated) {
+            list.assign(values);
+          }
+          stats.used_accelerator = stats.used_accelerator || accelerated;
           stats.members += static_cast<std::size_t>(count);
           place_loaded_list(std::move(key), std::move(list));
           ++stats.keys;
@@ -2453,32 +2505,55 @@ StoreMemoryStats Store::memory_stats() const noexcept {
 MemoryReport Store::memory_report() const noexcept {
   MemoryReport r;
   const ZSetOptions* zopts = zset_options();
-  // Every zset: arena used (live + dead) plus its fixed index/cache structures.
+  // Full zsets: arena used (live + dead) plus fixed index/cache structures.
+  // Compact zset blobs are accounted once through the process-wide pool below.
   keyspace_.for_each_zset([&r, zopts](std::string_view, const ZSet& zset) {
     const auto s = zset.memory_stats(zopts);
-    r.used_memory += s.member_storage_bytes + s.score_string_cache_bytes +
-                     s.member_index_allocated_bytes + s.score_index_allocated_bytes +
-                     s.rank_location_cache_allocated_bytes;
+    if (!zset.is_small()) {
+      r.used_memory +=
+          s.member_storage_bytes + s.score_string_cache_bytes +
+          s.member_index_allocated_bytes + s.score_index_allocated_bytes +
+          s.rank_location_cache_allocated_bytes;
+    }
     r.reclaimable_bytes += s.member_storage_dead_bytes;
   });
-  // Every hash: its field-value arena (live + dead) plus the field index.
+  // Full hashes own heap state and a field-value arena. Compact hash blobs live
+  // in KeyspaceStorage and are therefore already included in its footprint.
   keyspace_.for_each_hash([&r](std::string_view, const Hash& hash) {
     const auto s = hash.memory_stats();
-    r.used_memory += s.field_value_live_bytes + s.field_value_dead_bytes +
-                     s.field_index_allocated_bytes;
+    const auto hash_owned_bytes =
+        s.field_value_live_bytes + s.field_value_dead_bytes +
+        s.field_index_allocated_bytes + s.hash_heap_allocated_bytes;
+    r.used_memory += hash_owned_bytes - s.keyspace_accounted_bytes;
     r.reclaimable_bytes += s.field_value_dead_bytes;
+    r.hash_heap_allocated_bytes += s.hash_heap_allocated_bytes;
   });
-  // Every list: value arena/listpack plus PMA reference and rank/select arrays.
+  // PMA lists own a value arena and PMA arrays. Small-list and segmented-leaf
+  // blobs are covered by the process-wide pool/upstream capacity below, so only
+  // the segmented leaf-index vectors are added here.
   keyspace_.for_each_list([&r](std::string_view, const List& list) {
     const auto s = list.memory_stats();
-    r.used_memory += s.value_live_bytes + s.value_dead_bytes +
-                     s.order_allocated_bytes;
+    r.used_memory += s.object_allocated_bytes;
+    if (!list.is_small()) {
+      r.used_memory += s.order_allocated_bytes;
+      if (list.implementation() == ListImplementation::Pma) {
+        r.used_memory += s.value_allocated_bytes;
+      }
+    }
     r.reclaimable_bytes += s.value_dead_bytes;
   });
   // The keyspace itself: key/value arena (live + dead) plus the swiss index and
   // object/type tables.
   r.used_memory += keyspace_.footprint_used_bytes();
   r.reclaimable_bytes += keyspace_.footprint_dead_bytes();
+
+  const auto pool = blob_pool_stats();
+  r.blob_pool_requested_bytes = pool.requested_live_bytes;
+  r.blob_pool_capacity_bytes = pool.upstream_capacity_bytes;
+  r.blob_pool_fragmentation_bytes = pool.overhead_bytes();
+  r.blob_pool_live_allocations = pool.live_allocations;
+  r.blob_pool_upstream_allocations = pool.upstream_allocations;
+  r.used_memory += pool.upstream_capacity_bytes;
   return r;
 }
 

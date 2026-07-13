@@ -5,12 +5,14 @@
 #include <cstring>
 #include <string_view>
 
+#include "goblin/core/string_encoding.hpp"
+
 namespace goblin::core {
 
-// A string key's value, sized to ride inside the 16-byte keyspace object union
+// A string key's encoded value, sized to ride inside the 16-byte keyspace object union
 // (the size ZSet forces on that union, so StringValue's 16 bytes are free). Small
-// values live entirely inline; larger values keep a 6-byte prefix inline and
-// spill the remaining bytes into the shared key arena at {block, offset}.
+// encodings live entirely inline; larger encodings keep a 6-byte prefix inline
+// and spill the remaining bytes into the shared key arena at {block, offset}.
 //
 // The inline-vs-spilled decision is read off `length` alone -- `length <=
 // kInlineCap` is fully inline -- so there is no discriminator bit to reserve and
@@ -31,6 +33,8 @@ struct StringValue {
     char inline_bytes[kInlineCap];  // length <= kInlineCap: the entire value
     Spill spill;
   };
+  // Stored length. It may be zero when --disable-encoding stores an empty value
+  // verbatim; the default encoded form always has at least its type byte.
   std::uint16_t length;
 
   [[nodiscard]] bool is_inline() const noexcept { return length <= kInlineCap; }
@@ -73,8 +77,6 @@ struct StringValue {
 static_assert(sizeof(StringValue) == 16);
 static_assert(StringValue::kInlineCap == StringValue::kPrefixCap + 2 * sizeof(std::uint32_t));
 
-// The largest string value: the length field is 16-bit, so ~64 KiB. Values past
-// this are rejected at the command layer with a pointer to goblin-store.dev.
-inline constexpr std::size_t StringValueMaxBytes = 0xFFFF;
+inline constexpr std::size_t StringValueMaxBytes = kStringMaxBytes;
 
 }  // namespace goblin::core

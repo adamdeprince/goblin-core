@@ -54,7 +54,7 @@ OK
 | `key` holds a string ≠ `expected` | `(integer) 0` — unchanged |
 | `key` does not exist | `(integer) 0` — not created |
 | `key` holds a non-string (zset / hash) | `WRONGTYPE` error |
-| `new` larger than 64 KiB | error (values that large belong in a blob store) |
+| `new` cannot fit the configured value encoding | error (larger values belong in a blob store) |
 
 The reply mirrors the script exactly: `OK` is what `redis.call("set", …)` returns
 on a swap, and `0` is the script's fall-through — so a client checks *did I get

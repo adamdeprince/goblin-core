@@ -1,95 +1,91 @@
 # Goblin Core 100k List Benchmark
 
-Generated on a dedicated benchmark host at 2026-07-12 20:22:22 UTC.
+Generated on a dedicated benchmark host at 2026-07-13 21:37:04 UTC.
+
+## Summary
+
+`goblin-pma` leads `8` of `8` fixed-command rows, reaches `2.80x` the fastest incumbent on middle-list `LINDEX`, RESP population is `49.1%` behind the fastest incumbent, and uses `30.06` RSS-delta bytes/item. `goblin-segmented` leads `8` of `8` fixed-command rows, reaches `2.00x` the fastest incumbent on middle-list `LINDEX`, RESP population is `1.0%` behind the fastest incumbent, and uses `27.57` RSS-delta bytes/item. `goblin-segmented` is the leanest key representation at `17.16` accounted bytes/item versus `18.14` from the leanest incumbent's key-level counter. The leanest incumbent uses `21.38` RSS-delta bytes/item. RESP population and compound-operation rows use the Python RESP pipeline and are client-influenced; fixed-command rows use the C benchmark client.
 
 ## Method
 
 - `100,000` distinct `16`-byte values in one list.
-- Load: multi-value `RPUSH` batches of `128`, pipeline depth `256`.
+- RESP population: multi-value `RPUSH` batches of `128`, pipeline depth `256`.
+- RESP population measures command ingestion, not Goblin Core native snapshot restoration; native restore reconstructs each list in one bulk operation and uses the compatible raw-copy accelerator when present.
 - Fixed-command rates: `200,000` requests, one client, pipeline depth `256`, median of `3` `redis-benchmark` runs.
 - Compound rates use the repository's existing RESP pipeline client and keep the list length constant.
 - Goblin implementation engines use their qualified command family (`goblin-pma` becomes `GOBLIN.PMA.*`); `goblin` exercises the selected standard aliases.
 - Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one proactor thread for single-core parity. The intended target is a modest single-core memory server; the quiet benchmark host is a 64-core machine. Engines run one at a time.
-- RSS is external `ps` RSS. `INFO used_memory` and `MEMORY USAGE` are reported independently; RSS/INFO deltas subtract the empty-server baseline.
+- RSS is read directly from the launched server PID's Linux `/proc/<pid>/status` as `VmRSS + HugetlbPages`; no server-reported RSS field is used. `INFO used_memory` and `MEMORY USAGE` are independent corroborating counters; RSS/INFO deltas subtract the empty-server baseline.
 - Per-key bytes are `MEMORY USAGE` on incumbents and `GOBLIN.MEMORY total_allocated_bytes` on Goblin Core.
-- Incumbent implementations were treated strictly as black-box RESP servers;
-  no incumbent source code was inspected.
+- Incumbents are exercised strictly as black-box RESP servers; their source code is not inspected.
 
-## PMA tuning result
-
-Before the final comparison, the same PMA binary was swept at three maximum
-densities with 100,000 fixed-command requests and two timing rounds. Explicit
-endpoint reservation made `0.97` workable: after compaction it retained 1,548
-contiguous tail slots. Lower density spent more memory for little steady-state
-queue improvement, so the default remains `0.97`.
-
-| maximum density | load items/s | queue pairs/s | key bytes/item |
-| ---: | ---: | ---: | ---: |
-| `0.97` | 965,569 | 190,569 | 26.76 |
-| `0.95` | 1,010,208 | 197,876 | 26.99 |
-| `0.90` | 1,127,615 | 198,669 | 27.58 |
-
-## Load
+## RESP Population
 
 | Engine | items/s | seconds | RPUSH commands |
 | --- | ---: | ---: | ---: |
-| `goblin-pma` | 1,008,768 | 0.0991 | 782 |
-| `redis-7.2.4` | 1,466,991 | 0.0682 | 782 |
-| `redis-8.8` | 1,432,058 | 0.0698 | 782 |
-| `valkey-9.1` | 1,422,831 | 0.0703 | 782 |
-| `dragonfly` | 1,005,229 | 0.0995 | 782 |
+| `goblin-pma` | 772,450 | 0.1295 | 782 |
+| `goblin-segmented` | 1,503,153 | 0.0665 | 782 |
+| `redis-7.2.4` | 1,518,455 | 0.0659 | 782 |
+| `redis-8.8` | 1,484,023 | 0.0674 | 782 |
+| `valkey-9.1` | 1,471,200 | 0.0680 | 782 |
+| `dragonfly` | 1,043,582 | 0.0958 | 782 |
 
 ## Operations
 
-Logical operations per second. Fixed commands use the C load generator; compound rows count a two-command pair as one logical operation.
+Logical operations per second. Fixed commands use the C benchmark client; compound rows count a two-command pair as one logical operation.
 
-| Operation | goblin-pma | redis-7.2.4 | redis-8.8 | valkey-9.1 | dragonfly |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `LLEN control` | 3,033,212 | 2,502,400 | 2,085,333 | 1,819,927 | 1,472,000 |
-| `LINDEX 0` | 2,669,226 | 1,962,667 | 1,771,611 | 1,450,667 | 1,220,683 |
-| `LINDEX 25000` | 2,441,366 | 1,082,119 | 1,070,545 | 1,082,119 | 1,016,203 |
-| `LINDEX 50000` | 2,599,896 | 901,766 | 639,591 | 820,459 | 844,692 |
-| `LINDEX 75000` | 2,274,909 | 1,440,230 | 1,124,674 | 1,205,976 | 823,835 |
-| `LINDEX -1` | 2,566,564 | 2,042,776 | 1,819,927 | 1,482,904 | 1,228,172 |
-| `LRANGE 49992 50007` | 878,035 | 447,857 | 368,678 | 417,937 | 370,726 |
-| `LSET 50000` | 1,627,577 | 905,846 | 594,042 | 772,942 | 761,186 |
-| `LINSERT before middle pivot + LREM inserted value` | 2,259 | 613 | 812 | 653 | 822 |
-| `LPUSH + LPOP` | 214,254 | 202,715 | 195,990 | 194,961 | 177,179 |
-| `RPUSH + RPOP` | 206,107 | 211,736 | 198,869 | 198,861 | 178,823 |
-| `LPUSH 8 values + LPOP count=8` | 56,101 | 61,914 | 61,597 | 59,913 | 53,703 |
-| `RPUSH + LPOP` | 194,751 | 210,393 | 200,022 | 199,588 | 169,785 |
+| Operation | goblin-pma | goblin-segmented | redis-7.2.4 | redis-8.8 | valkey-9.1 | dragonfly |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `LLEN control` | 3,574,857 | 3,512,140 | 2,742,356 | 2,199,912 | 2,001,920 | 1,539,938 |
+| `LINDEX 0` | 2,669,226 | 2,705,297 | 2,152,602 | 1,924,923 | 1,725,793 | 1,275,108 |
+| `LINDEX 25000` | 2,534,076 | 2,249,348 | 1,157,179 | 1,082,119 | 1,112,178 | 1,048,126 |
+| `LINDEX 50000` | 2,669,226 | 1,906,590 | 953,295 | 633,519 | 851,881 | 870,400 |
+| `LINDEX 75000` | 2,383,238 | 1,640,918 | 1,429,943 | 1,163,907 | 1,213,285 | 817,110 |
+| `LINDEX -1` | 2,566,564 | 2,411,952 | 2,199,912 | 1,906,590 | 1,614,452 | 1,259,069 |
+| `LRANGE 49992 50007` | 714,971 | 727,971 | 467,738 | 394,079 | 432,380 | 380,593 |
+| `LSET 50000` | 1,696,542 | 1,836,624 | 944,302 | 597,588 | 803,984 | 788,157 |
+| `LINSERT before middle pivot + LREM inserted value` | 631 | 805 | 614 | 836 | 661 | 825 |
+| `LPUSH + LPOP` | 212,871 | 99,284 | 211,222 | 195,770 | 198,126 | 181,130 |
+| `RPUSH + RPOP` | 204,979 | 97,808 | 214,921 | 200,750 | 198,097 | 183,167 |
+| `LPUSH 8 values + LPOP count=8` | 54,289 | 41,718 | 61,809 | 61,484 | 61,013 | 55,900 |
+| `RPUSH + LPOP` | 179,601 | 58,278 | 212,496 | 200,565 | 199,914 | 173,611 |
 
-## Memory After Load
+## Memory After Population
 
 | Engine | RSS MiB | RSS delta MiB | RSS delta B/item | INFO used MiB | INFO delta B/item | key-reported B/item |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `goblin-pma` | 7.95 | 3.02 | 31.66 | 2.53 | 26.50 | 26.76 |
-| `redis-7.2.4` | 10.97 | 2.04 | 21.34 | 2.93 | 21.15 | 20.33 |
-| `redis-8.8` | 12.17 | 2.11 | 22.08 | 2.78 | 21.15 | 18.37 |
-| `valkey-9.1` | 11.98 | 2.20 | 23.10 | 2.98 | 21.35 | 20.33 |
-| `dragonfly` | 24.52 | 2.49 | 26.13 | 2.00 | 18.15 | 18.14 |
+| `goblin-pma` | 7.99 | 2.87 | 30.06 | 2.14 | 22.40 | 22.40 |
+| `goblin-segmented` | 7.76 | 2.63 | 27.57 | 1.70 | 17.87 | 17.16 |
+| `redis-7.2.4` | 10.97 | 2.04 | 21.38 | 2.93 | 21.15 | 20.33 |
+| `redis-8.8` | 12.15 | 2.11 | 22.12 | 2.78 | 21.15 | 18.37 |
+| `valkey-9.1` | 11.98 | 2.21 | 23.14 | 2.98 | 21.35 | 20.33 |
+| `dragonfly` | 24.58 | 2.50 | 26.21 | 2.00 | 18.15 | 18.14 |
 
 ## Memory After Operations
 
 | Engine | RSS MiB | INFO used MiB | key bytes/item | list length |
 | --- | ---: | ---: | ---: | ---: |
-| `goblin-pma` | 11.02 | 2.88 | 31.17 | 100000 |
-| `redis-7.2.4` | 11.14 | 3.13 | 17.73 | 100000 |
-| `redis-8.8` | 12.31 | 2.99 | 18.37 | 100000 |
-| `valkey-9.1` | 12.25 | 3.16 | 17.73 | 100000 |
-| `dragonfly` | 24.96 | 2.00 | 18.15 | 100000 |
+| `goblin-pma` | 11.35 | 2.54 | 26.64 | 100000 |
+| `goblin-segmented` | 7.89 | 1.77 | 17.22 | 100000 |
+| `redis-7.2.4` | 11.16 | 3.13 | 17.73 | 100000 |
+| `redis-8.8` | 12.28 | 2.99 | 18.37 | 100000 |
+| `valkey-9.1` | 12.23 | 3.16 | 17.73 | 100000 |
+| `dragonfly` | 25.04 | 2.00 | 18.15 | 100000 |
 
 ## Goblin List Internals
 
-| Phase | elements | live value MiB | dead value MiB | value alloc MiB | order capacity | front slack | back slack | order alloc MiB | total alloc MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `after load` | 100,000 | 1.53 | 0.00 | 1.55 | 103,093 | 0 | 1,548 | 1.00 | 2.55 |
-| `after operations` | 100,000 | 1.53 | 0.17 | 1.78 | 122,599 | 8,671 | 2,981 | 1.19 | 2.97 |
+| Engine | representation | phase | elements | live value MiB | dead value MiB | value alloc MiB | slots/leaves | front slack | back slack | order alloc MiB | total alloc MiB |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `goblin-pma` | `pma` | `after population` | 100,000 | 1.53 | 0.00 | 1.53 | 103,093 | 0 | 1,548 | 0.61 | 2.14 |
+| `goblin-pma` | `pma` | `after operations` | 100,000 | 1.53 | 0.17 | 1.82 | 122,599 | 8,671 | 2,981 | 0.72 | 2.54 |
+| `goblin-segmented` | `segmented` | `after population` | 100,000 | 1.63 | 0.00 | 1.63 | 782 | 0 | 0 | 0.01 | 1.64 |
+| `goblin-segmented` | `segmented` | `after operations` | 100,000 | 1.63 | 0.00 | 1.63 | 782 | 0 | 0 | 0.01 | 1.64 |
 
-## Binaries
+## Tested Servers
 
-- `goblin-pma`: `/home/adam/goblin-list-bench-20260712/build-release/goblin-core`
-- `redis-7.2.4`: `/home/adam/bench/redis-7.2.4/src/redis-server`
-- `redis-8.8`: `/home/adam/bench/redis-8.8.0/src/redis-server`
-- `valkey-9.1`: `/home/adam/bench/valkey-9.1.0/src/valkey-server`
-- `dragonfly`: `/home/adam/dragonfly/build-opt/dragonfly`
+- `goblin-pma`
+- `goblin-segmented`
+- `redis-7.2.4`
+- `redis-8.8`
+- `valkey-9.1`
+- `dragonfly`

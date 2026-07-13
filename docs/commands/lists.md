@@ -1,14 +1,14 @@
 # List commands
 
-Goblin Core's PMA backend implements Redis-compatible ordered string lists.
+Goblin Core's adaptive-PMA and segmented-listpack backends implement
+Redis-compatible ordered string lists.
 Commands are atomic in the normal single-owner execution path. The storage
-design is documented in [PMA Lists](../../LISTS.md).
+design is documented in [Goblin Core Lists](../../LISTS.md).
 The measured 100,000-element comparison is in
 [List Benchmark](../../LIST-BENCHMARK.md).
 
-Every PMA operation has an implementation-qualified name. Standard Redis names
-resolve through `--list-implementation pma`, which is the default and currently
-the selector enum's sole value.
+Every operation has implementation-qualified names. Standard Redis names
+resolve through `--list-implementation pma|segmented`; PMA is the default.
 
 | Command | Syntax | Reply |
 |---|---|---|
@@ -26,12 +26,23 @@ the selector enum's sole value.
 | `GOBLIN.PMA.LREM` | `GOBLIN.PMA.LREM key count value` | number removed |
 | `GOBLIN.PMA.LINSERT` | `GOBLIN.PMA.LINSERT key BEFORE\|AFTER pivot value` | new length, `0`, or `-1` |
 
+The segmented backend exposes the identical suffixes under
+`GOBLIN.SEGMENTED.*`: for example, `GOBLIN.SEGMENTED.RPUSH`,
+`GOBLIN.SEGMENTED.LINDEX`, and `GOBLIN.SEGMENTED.LINSERT`. A qualified push
+selects the representation when it creates a key. Later standard or qualified
+list commands operate on that existing representation without conversion.
+
 Negative indexes count back from the tail. `LRANGE` and `LTRIM` use inclusive
 end indexes. `LREM` scans from the head for positive counts, from the tail for
 negative counts, and removes all matches when count is zero.
 
-Keys and list values are limited to 65,535 bytes. A command with multiple new
-values validates the entire input before mutating the list.
+Keys are limited to 65,535 bytes. List values use the shared string encoding:
+raw values contain up to 65,534 logical bytes, while `--use-lz4` can admit a
+larger compressible value when its complete encoding fits 65,535 bytes. A
+command with multiple new values validates the entire input before mutating the
+list. `--disable-encoding` stores list values verbatim, disables LZ4, and permits
+the full 65,535-byte direct value for clients that already use compact binary
+data.
 
 The waiting-client commands (`BLPOP`, `BRPOP`, and related moves) are not part of
 this initial surface. Redis calls them blocking because an empty-list request

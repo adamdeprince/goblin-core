@@ -218,6 +218,9 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(goblin_qjs PUBLIC m Threads::Threads)
 
+find_path(LZ4_INCLUDE_DIR NAMES lz4.h REQUIRED)
+find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
+
 add_library(goblin_core
   src/command.cpp
   src/luau_script.cpp
@@ -227,6 +230,7 @@ add_library(goblin_core
   src/script.cpp
   src/server.cpp
   src/simd.cpp
+  src/string_encoding.cpp
   src/store.cpp
   src/tcl_script.cpp
   src/upython_script.cpp
@@ -242,12 +246,13 @@ set_target_properties(goblin_core PROPERTIES
 target_include_directories(goblin_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE ${LZ4_INCLUDE_DIR})
 
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
-target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs)
+target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs ${LZ4_LIBRARY})
 
 # The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
 # vendored runtime's headers off the shared target include path and hand each
@@ -372,6 +377,16 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
+
+  if(UNIX)
+    add_executable(goblin_core_hset_benchmark benchmarks/hset_benchmark.cpp)
+    set_target_properties(goblin_core_hset_benchmark PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_hset_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
 endif()
 
 if(GOBLIN_CORE_BUILD_TESTS)
@@ -600,6 +615,29 @@ if(GOBLIN_CORE_BUILD_TESTS)
           --redis-server ${REDIS_SERVER_EXECUTABLE}
           --pipeline-depth 32)
       set_tests_properties(goblin_core_redis_differential_pipelined
+        PROPERTIES TIMEOUT 30)
+
+      add_test(
+        NAME goblin_core_segmented_redis_differential_sequential
+        COMMAND
+          ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/redis_differential.py
+          --goblin-bin $<TARGET_FILE:goblin_core_server>
+          --redis-server ${REDIS_SERVER_EXECUTABLE}
+          --goblin-list-prefix GOBLIN.SEGMENTED.)
+      set_tests_properties(goblin_core_segmented_redis_differential_sequential
+        PROPERTIES TIMEOUT 30)
+
+      add_test(
+        NAME goblin_core_segmented_redis_differential_pipelined
+        COMMAND
+          ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/redis_differential.py
+          --goblin-bin $<TARGET_FILE:goblin_core_server>
+          --redis-server ${REDIS_SERVER_EXECUTABLE}
+          --goblin-list-prefix GOBLIN.SEGMENTED.
+          --pipeline-depth 32)
+      set_tests_properties(goblin_core_segmented_redis_differential_pipelined
         PROPERTIES TIMEOUT 30)
     else()
       message(WARNING

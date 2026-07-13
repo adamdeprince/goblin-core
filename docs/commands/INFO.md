@@ -17,25 +17,33 @@ the full payload.
 |---|---|
 | `redis_version` | `7.4.0` — the wire/behaviour compatibility level |
 | `redis_mode` | `standalone` |
-| `list_implementation` | concrete backend selected for standard list commands (`pma` today) |
+| `list_implementation` | concrete backend selected for standard list commands (`pma` or `segmented`; default `pma`) |
 
 ## `# Memory`
 
 | field | meaning |
 |---|---|
-| `used_memory` | what our allocation layers actually hold: every arena's live + dead bytes plus the fixed index/table structures, summed from O(1) counters (no scan) |
+| `used_memory` | what Goblin's allocation layers hold: arena live + dead bytes, fixed index/table structures, full-hash heap state, and actual upstream blob-pool capacity |
 | `used_memory_rss` | the OS resident set size (`ps`-equivalent) |
 | `used_memory_peak` | currently mirrors `used_memory` — Goblin does not yet track a separate high-water mark |
 | `mem_reclaimable_bytes` | the **dead** subset of `used_memory`: bytes orphaned by deletes/overwrites that a compaction would free |
+| `hash_heap_allocated_bytes` | heap-resident state owned by promoted hashes; compact hash handles and blobs live in the keyspace slot/arena instead |
+| `blob_pool_requested_bytes` | live compact zset/list blob bytes requested through the shared blob allocator |
+| `blob_pool_capacity_bytes` | bytes the blob allocator currently holds from its upstream allocator, including live direct blobs over 1 KiB; this amount is included once in `used_memory` |
+| `blob_pool_fragmentation_bytes` | retained pool capacity beyond live requested blob bytes; unlike arena dead bytes, `GOBLIN.OPTIMIZE` does not reclaim it |
+| `blob_pool_live_allocations` | number of live blobs in the pool |
+| `blob_pool_upstream_allocations` | cumulative allocations the pool has requested from its upstream resource |
 | `maxmemory` | `0` — no limit |
 | `maxmemory_policy` | `noeviction` — Goblin never evicts |
 | `mem_fragmentation_ratio` | **internal** fragmentation — see below |
 
 `used_memory` is a real number, not the RSS: it comes from
 [`GOBLIN.MEMORY`](goblin.md)-style accounting rolled up across every zset, hash,
-list, and the keyspace. Because each arena maintains its live/dead byte counts
-incrementally (a `+len` where bytes are written, a `−len` where a member is
-orphaned), computing all of this is O(1) — nothing walks the data.
+list, and the keyspace. Each arena maintains its live/dead byte counts
+incrementally, so the rollup reads counters rather than walking members or
+reparsing blobs. The shared compact-blob pool is tracked at its upstream boundary,
+which makes size-class rounding and retained slabs visible instead of silently
+reporting only requested payload bytes.
 
 ## Fragmentation: a different meaning than Redis
 
@@ -62,16 +70,17 @@ to disk.)
 ### Goblin Core — internal fragmentation (`used_memory / compacted size`)
 
 Goblin manages its own page-aligned `mmap` arenas for the bulk of its data, so it
-**is** the allocator for what matters. There is almost no jemalloc-style overhead
-between `used_memory` and RSS — that leanness is the product's whole memory story,
-and it means `used_memory_rss` sits just barely above `used_memory`. So Redis's
-external ratio would be a near-constant ~`1.0` here: technically true, and useless.
+**is** the allocator for what matters. `used_memory` also includes the actual
+upstream capacity of the remaining compact-blob pool, not merely the live requests
+inside it. Process code, stacks, shared libraries, and general heap metadata still
+make RSS larger, so RSS remains the cross-engine benchmark number.
 
-The fragmentation that actually matters for Goblin lives **above** the allocator,
+The fragmentation Goblin can actively compact lives **above** the allocator,
 inside its own arenas. Those arenas are append-structured: a deleted or overwritten
 member's bytes are *orphaned* — still mapped, no longer referenced — until a
-compaction rewrites the arena. Those `mem_reclaimable_bytes` are the real,
-actionable waste, so that is what the ratio reports:
+compaction rewrites the arena. Those `mem_reclaimable_bytes` are the actionable
+waste used by the ratio. Pool slack is visible separately as
+`blob_pool_fragmentation_bytes` and is not treated as compactable:
 
 ```
 mem_fragmentation_ratio = used_memory / (used_memory − mem_reclaimable_bytes)

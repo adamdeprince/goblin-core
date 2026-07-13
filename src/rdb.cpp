@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "goblin/core/store.hpp"
 
@@ -443,23 +444,46 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
       auto add = [&](std::string_view member, double score) {
         add_member(key, member, score);
       };
-      auto add_list_value = [&](std::string_view value) {
-        if (value.size() > kMaxMemberBytes) {
-          throw rdb_error("list value exceeds 64 KiB in key '" + key + "'");
+      std::vector<std::string> list_values;
+      auto add_list_value = [&](std::string value) {
+        if (list_values.size() ==
+            static_cast<std::size_t>(
+                std::numeric_limits<std::uint32_t>::max())) {
+          throw rdb_error("list is too large in key '" + key + "'");
         }
-        const std::array<std::string_view, 1> one{value};
-        (void)store.rpush(key, one);
-        ++stats.members;
+        list_values.push_back(std::move(value));
+      };
+      auto install_list = [&] {
+        if (list_values.empty()) {
+          return;
+        }
+        std::vector<std::string_view> values;
+        values.reserve(list_values.size());
+        for (const auto& value : list_values) {
+          values.push_back(value);
+        }
+        try {
+          (void)store.rpush(key, values);
+        } catch (const std::length_error&) {
+          throw rdb_error("list value does not fit the configured encoding in "
+                          "key '" + key + "'");
+        }
+        stats.members += values.size();
+        ++stats.keys;
       };
 
       switch (type) {
         case kString: (void)load_string(r); break;
         case kList: {
           const auto count = load_length(r);
+          if (count > std::numeric_limits<std::uint32_t>::max()) {
+            throw rdb_error("list is too large in key '" + key + "'");
+          }
+          list_values.reserve(static_cast<std::size_t>(count));
           for (std::uint64_t i = 0; i < count; ++i) {
             add_list_value(load_string(r));
           }
-          if (count != 0) ++stats.keys;
+          install_list();
           break;
         }
         case kSet: {
@@ -500,8 +524,8 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
           ++stats.keys;
           break;
         case kListZiplist: {
-          const auto count = parse_ziplist_values(load_string(r), add_list_value);
-          if (count != 0) ++stats.keys;
+          (void)parse_ziplist_values(load_string(r), add_list_value);
+          install_list();
           break;
         }
         case kSetIntset:
@@ -512,29 +536,26 @@ SnapshotLoadStats import(Store& store, std::istream& in) {
           break;
         case kListQuicklist: {
           const auto nodes = load_length(r);
-          std::size_t count = 0;
           for (std::uint64_t i = 0; i < nodes; ++i) {
-            count += parse_ziplist_values(load_string(r), add_list_value);
+            (void)parse_ziplist_values(load_string(r), add_list_value);
           }
-          if (count != 0) ++stats.keys;
+          install_list();
           break;
         }
         case kListQuicklist2: {
           const auto nodes = load_length(r);
-          std::size_t count = 0;
           for (std::uint64_t i = 0; i < nodes; ++i) {
             const auto container = load_length(r);
-            const auto blob = load_string(r);
+            auto blob = load_string(r);
             if (container == 1) {  // QUICKLIST_NODE_CONTAINER_PLAIN
-              add_list_value(blob);
-              ++count;
+              add_list_value(std::move(blob));
             } else if (container == 2) {  // QUICKLIST_NODE_CONTAINER_PACKED
-              count += parse_listpack_values(blob, add_list_value);
+              (void)parse_listpack_values(blob, add_list_value);
             } else {
               throw rdb_error("unsupported quicklist node container");
             }
           }
-          if (count != 0) ++stats.keys;
+          install_list();
           break;
         }
         case kHashZipmap:

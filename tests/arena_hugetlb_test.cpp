@@ -79,7 +79,7 @@ int main() {
   }
 
   const char* frozen_field_before = nullptr;
-  hash.for_each([&](std::string_view field, std::string_view) {
+  hash.for_each([&](std::string_view field, EncodedStringView) {
     if (field == "field-0") {
       frozen_field_before = field.data();
     }
@@ -94,7 +94,7 @@ int main() {
   assert(hash.memory_stats().field_value_dead_bytes > 0);
   hash.compact();
   const char* frozen_field_after = nullptr;
-  hash.for_each([&](std::string_view field, std::string_view) {
+  hash.for_each([&](std::string_view field, EncodedStringView) {
     if (field == "field-0") {
       frozen_field_after = field.data();
     }
@@ -103,7 +103,38 @@ int main() {
          "hash compact must retain frozen HugeTLB-backed blocks");
   assert(hash.memory_stats().field_value_dead_bytes == 0);
 
-  std::printf("arena hugetlb OK: frozen hash block retained at %zu-byte pages (%p)\n",
-              hp, static_cast<const void*>(frozen_field_after));
+  // Make enough room in the frozen block to consume the entire ordinary tail.
+  // Once that tail is popped, block 0 becomes the mutable tail and must be
+  // copied off HugeTLB while it is densified/reduced.
+  const auto capacity_before_tail_pop =
+      hash.memory_stats().field_value_allocated_bytes;
+  for (std::size_t id = 1; id < 10; ++id) {
+    assert(hash.set("field-" + std::to_string(id), "short") == 0);
+  }
+  hash.compact();
+  const char* demoted_field = nullptr;
+  hash.for_each([&](std::string_view field, EncodedStringView) {
+    if (field == "field-0") {
+      demoted_field = field.data();
+    }
+  });
+  assert(demoted_field != nullptr);
+  assert(demoted_field != frozen_field_after &&
+         "a HugeTLB block promoted to active tail must be demoted");
+  assert(hash.memory_stats().field_value_allocated_bytes <
+         capacity_before_tail_pop);
+  assert(hash.memory_stats().field_value_dead_bytes == 0);
+  for (std::size_t id = 0; id < 10; ++id) {
+    assert(hash.get("field-" + std::to_string(id)) == "short");
+  }
+  for (std::size_t id = 10; id < kHashFields; ++id) {
+    assert(hash.get("field-" + std::to_string(id)) == large_value);
+  }
+
+  std::printf(
+      "arena hugetlb OK: frozen mapping retained, promoted tail demoted "
+      "from %zu-byte pages (%p -> %p)\n",
+      hp, static_cast<const void*>(frozen_field_after),
+      static_cast<const void*>(demoted_field));
   return 0;
 }

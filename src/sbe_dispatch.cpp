@@ -202,7 +202,8 @@ constexpr std::string_view kErrNotFloat = "value is not a valid float";
 constexpr std::string_view kErrSyntax = "syntax error";
 constexpr std::string_view kWrongTypeMsg = "Operation against a key holding the wrong kind of value";
 constexpr std::string_view kValueTooLargeMsg =
-    "value is larger than the 64 KiB limit; use https://goblin-store.dev";
+    "value does not fit the 65,535-byte encoded limit; use "
+    "https://goblin-store.dev";
 
 // SET expire: absolute ms from base + amount*unit, clamped exactly like command.cpp's
 // compute_when_ms (past -> 0, beyond the 48-bit TTL horizon -> nullopt).
@@ -300,8 +301,9 @@ std::vector<char>& array_scratch(std::size_t need) {
   return buf;
 }
 
-// Bulk replies can be up to the 64 KiB value cap, so (like array replies) they build
-// into the growable heap buffer, not the fixed reply<> scratch.
+// Bulk replies can carry the full 24-bit logical LZ4 value, so (like array
+// replies) they build into the growable heap buffer, not the fixed reply<>
+// scratch.
 void reply_bulk(std::string& out, std::string_view v) {
   std::vector<char>& rbuf =
       array_scratch(kSbeLenPrefix + sbe::MessageHeader::encodedLength() + 4 + v.size() + 16);
@@ -322,22 +324,18 @@ void reply_bulk_or_nil(std::string& out, const std::optional<std::string>& v) {
   }
 }
 
-// GET returns a possibly head/tail-split value; join only on the rare split path.
+// SBE varData requires one contiguous logical payload.
 void reply_bulk_value(std::string& out, const StringValueView& v) {
-  if (v.tail.empty()) {
-    reply_bulk(out, v.head);
-  } else {
-    static thread_local std::string joined;
-    joined.clear();
-    joined.reserve(v.size());
-    joined.append(v.head);
-    joined.append(v.tail);
-    reply_bulk(out, joined);
-  }
+  static thread_local std::string joined;
+  joined.clear();
+  joined.reserve(v.size());
+  v.append_to(joined);
+  reply_bulk(out, joined);
 }
 
 // ZRANGE -> array of member bulk strings.
-void reply_array(std::string& out, const std::vector<std::string_view>& items) {
+template <class Item>
+void reply_array(std::string& out, const std::vector<Item>& items) {
   if (items.size() > kMaxGroup) {
     reply_error(out, "ERR", "result too large for one SBE array reply");
     return;
@@ -778,7 +776,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const bool want_get = (flags & 0x04u) != 0;
       const bool keepttl = (flags & 0x08u) != 0;
 
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
@@ -811,8 +809,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         if (const auto current = store.get(key)) {
           old_value.emplace();
           old_value->reserve(current->size());
-          old_value->append(current->head);
-          old_value->append(current->tail);
+          current->append_to(*old_value);
         }
       }
       if (condition_met) {
@@ -844,7 +841,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view value = g.getValueAsStringView();
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
@@ -857,7 +854,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view value = g.getValueAsStringView();
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
@@ -885,12 +882,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view value = g.getValueAsStringView();
-      const auto current = store.strlen(key).value_or(0);
-      if (current + value.size() > Store::max_value_bytes()) {
+      const auto length = store.append(key, value);
+      if (!length) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, static_cast<long long>(store.append(key, value)));
+      reply_int(out, static_cast<long long>(*length));
       break;
     }
 
@@ -1070,7 +1067,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         g.next();
         const auto f = g.getFieldAsStringView();
         const auto v = g.getValueAsStringView();
-        if (f.size() > Store::max_value_bytes() || v.size() > Store::max_value_bytes()) {
+        if (f.size() > HashStorage::kMaxFieldBytes ||
+            !store.value_fits(v)) {
           too_big = true;
         }
         entries.emplace_back(f, v);
@@ -1094,7 +1092,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = h.getKeyAsStringView();
       const std::string_view field = h.getFieldAsStringView();
       const std::string_view value = h.getValueAsStringView();
-      if (field.size() > Store::max_value_bytes() || value.size() > Store::max_value_bytes()) {
+      if (field.size() > HashStorage::kMaxFieldBytes ||
+          !store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
@@ -1109,7 +1108,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view field = h.getFieldAsStringView();
       const auto v = store.hget(key, field);
       if (v) {
-        reply_bulk(out, *v);
+        reply_bulk_value(out, *v);
       } else {
         reply_nil(out);
       }
@@ -1128,9 +1127,13 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       const std::string_view key = h.getKeyAsStringView();  // key trails the group
       if (wrong_type(store, KeyType::Hash, key, out)) break;
-      static thread_local std::vector<std::optional<std::string_view>> values;
+      static thread_local std::vector<std::optional<std::string>> values;
       values.clear();
-      for (const auto& f : fields) values.push_back(store.hget(key, f));
+      for (const auto& f : fields) {
+        const auto value = store.hget(key, f);
+        values.push_back(value ? std::optional<std::string>(value->to_string())
+                               : std::nullopt);
+      }
       reply_nullable_array(out, values);
       break;
     }
@@ -1155,11 +1158,11 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::HGetAll h;
       h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = h.getKeyAsStringView();
-      static thread_local std::vector<std::string_view> flat;
+      static thread_local std::vector<std::string> flat;
       flat.clear();
-      store.hash_for_each(key, [&](std::string_view f, std::string_view v) {
-        flat.push_back(f);
-        flat.push_back(v);
+      store.hash_for_each(key, [&](std::string_view f, EncodedStringView v) {
+        flat.emplace_back(f);
+        flat.push_back(v.to_string());
       });
       reply_array(out, flat);
       break;
@@ -1171,7 +1174,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = h.getKeyAsStringView();
       static thread_local std::vector<std::string_view> keys;
       keys.clear();
-      store.hash_for_each(key, [&](std::string_view f, std::string_view) { keys.push_back(f); });
+      store.hash_for_each(key, [&](std::string_view f, EncodedStringView) {
+        keys.push_back(f);
+      });
       reply_array(out, keys);
       break;
     }
@@ -1180,9 +1185,11 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::HVals h;
       h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = h.getKeyAsStringView();
-      static thread_local std::vector<std::string_view> vals;
+      static thread_local std::vector<std::string> vals;
       vals.clear();
-      store.hash_for_each(key, [&](std::string_view, std::string_view v) { vals.push_back(v); });
+      store.hash_for_each(key, [&](std::string_view, EncodedStringView v) {
+        vals.push_back(v.to_string());
+      });
       reply_array(out, vals);
       break;
     }
@@ -1308,7 +1315,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         g.next();
         const auto k = g.getKeyAsStringView();
         const auto v = g.getValueAsStringView();
-        if (v.size() > Store::max_value_bytes()) too_big = true;
+        if (!store.value_fits(v)) too_big = true;
         pairs.emplace_back(k, v);
       }
       if (too_big) {
@@ -1340,8 +1347,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         if (v) {
           std::string s;
           s.reserve(v->size());
-          s.append(v->head);
-          s.append(v->tail);
+          v->append_to(s);
           values.push_back(std::move(s));
         } else {
           values.push_back(std::nullopt);
@@ -1389,7 +1395,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view token = g.getTokenAsStringView();
       const std::string_view value = g.getValueAsStringView();
-      if (value.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
@@ -1552,7 +1558,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "invalid expire time in 'goblin.claim' command");
         break;
       }
-      if (token.size() > Store::max_value_bytes()) {
+      if (!store.value_fits(token)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }

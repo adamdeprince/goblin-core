@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "goblin/core/page_arena.hpp"
+#include "goblin/core/string_encoding.hpp"
 
 namespace goblin::core {
 
@@ -69,6 +70,11 @@ class KeyspaceStorage {
   struct TailLocation {
     std::uint32_t block{0};
     std::uint32_t offset{0};
+  };
+
+  struct BlobAllocation {
+    TailLocation location{};
+    char* data{nullptr};
   };
 
   KeyspaceStorage() { configure_chunk_bytes(kDefaultChunkBytes); }
@@ -148,6 +154,67 @@ class KeyspaceStorage {
       throw std::length_error("keyspace value tail too large");
     }
     return append_blob(tail);
+  }
+
+  // Movable object blobs (currently compact hashes) share the same exact-byte
+  // arena as keys and spilled string bodies. The owning object keeps only this
+  // location and its logical byte count; keyspace compaction rewrites both.
+  [[nodiscard]] BlobAllocation reserve_blob(size_type length) {
+    if (length > kMaxBlobBytes) {
+      throw std::length_error("keyspace object blob too large");
+    }
+    const auto r = reserve_run_bytes_split(
+        blocks_, next_offset_, active_bytes_, committed_bytes_, chunk_bytes_,
+        chunk_shift_, chunk_mask_, growth_, kInitialArenaBytes, length);
+    used_bytes_ += length;
+    return {{r.block, r.offset}, r.dst};
+  }
+
+  [[nodiscard]] TailLocation append_object_blob(std::string_view bytes) {
+    const auto allocation = reserve_blob(bytes.size());
+    if (!bytes.empty()) {
+      std::memcpy(allocation.data, bytes.data(), bytes.size());
+    }
+    return allocation.location;
+  }
+
+  [[nodiscard]] const char* blob_data(TailLocation loc) const noexcept {
+    return chunk_ptr(loc.block, loc.offset);
+  }
+
+  [[nodiscard]] char* mutable_blob_data(TailLocation loc) noexcept {
+    return chunk_ptr(loc.block, loc.offset);
+  }
+
+  // Arena growth replaces the tail block after copying its live prefix. A
+  // caller rebuilding an object inside that block can pin the old allocation
+  // until it has finished copying from pointers obtained before the growth.
+  [[nodiscard]] std::shared_ptr<char[]> pin_blob(TailLocation loc) const {
+    assert(loc.block < blocks_.size());
+    return blocks_[loc.block];
+  }
+
+  [[nodiscard]] std::string_view object_blob_view(
+      TailLocation loc, std::uint16_t len) const noexcept {
+    return tail_view(loc, len);
+  }
+
+  void mark_object_blob_dead(std::uint16_t len) noexcept {
+    dead_bytes_ += len;
+  }
+
+  [[nodiscard]] TailLocation append_encoded_tail(
+      const EncodedString& encoded, size_type skip) {
+    assert(skip <= encoded.size());
+    const auto length = encoded.size() - skip;
+    const auto r = reserve_run_bytes_split(
+        blocks_, next_offset_, active_bytes_, committed_bytes_, chunk_bytes_,
+        chunk_shift_, chunk_mask_, growth_, kInitialArenaBytes, length);
+    if (r.dst != nullptr) {
+      encoded.write_range_to(skip, length, r.dst);
+      used_bytes_ += length;
+    }
+    return {r.block, r.offset};
   }
 
   [[nodiscard]] std::string_view tail_view(TailLocation loc,

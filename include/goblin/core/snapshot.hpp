@@ -99,8 +99,12 @@ enum class StringOpcode : std::uint8_t {
 
 enum class ListOpcode : std::uint8_t {
   End = kOpEnd,
-  List = 0x01,  // operands: key, element count, ordered raw values
+  List = 0x01,  // operands: key, canonical values, optional raw-copy marker
 };
+
+// Bump when the raw-list accelerator framing changes. Canonical ordered values
+// remain the fallback.
+inline constexpr std::uint32_t kListAcceleratorVersion = 1;
 
 enum class TtlOpcode : std::uint8_t {
   End = kOpEnd,

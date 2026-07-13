@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "goblin/core/score_format.hpp"
+#include "goblin/core/string_encoding.hpp"
 
 namespace goblin::core::resp {
 
@@ -199,6 +200,13 @@ inline void append_bulk_string(std::string& out, std::string_view value) {
   detail::append_decimal(out, value.size());
   out.append("\r\n", 2);
   out.append(value);
+  out.append("\r\n", 2);
+}
+
+inline void append_bulk_string(std::string& out,
+                               const EncodedStringView& value) {
+  detail::append_bulk_framing(out, value.size());
+  value.append_to(out);
   out.append("\r\n", 2);
 }
 
