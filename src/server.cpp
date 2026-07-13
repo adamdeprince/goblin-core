@@ -489,6 +489,14 @@ template <class NetFn>
 
   std::vector<RingEndpoint> rings;
   rings.reserve(config.rings.size());
+  // NUMA: with --cpu, strictly bind allocations to the pinned CPU's node while the
+  // rings are created, so each ring's prefault lands there and it is node-local by
+  // construction (verified per ring below). node_of_cpu() is -1 off Linux, so this is
+  // a no-op there.
+  const int ring_node = config.cpu >= 0 ? numa::node_of_cpu(config.cpu) : -1;
+  if (ring_node >= 0) {
+    (void)numa::bind_process_to_node(ring_node);
+  }
   for (const auto& rc : config.rings) {
     std::optional<ring::Mapping> mapping;
 #if defined(__linux__)
@@ -513,11 +521,28 @@ template <class NetFn>
                 << std::strerror(errno) << '\n';
       return false;
     }
+    if (ring_node >= 0 && !mapping->numa_all_local(ring_node)) {
+      std::cerr << "goblin-core: ring " << rc.path
+                << " could not be placed on NUMA node " << ring_node << " (CPU "
+                << config.cpu
+                << "); refusing to run a remote ring -- reserve memory"
+                   " (or huge pages) on that node\n";
+      return false;
+    }
     std::cout << "goblin-core: ring " << rc.path << " ready ("
               << mapping->sq_capacity() << " bytes/direction"
               << (mapping->is_hugetlb() ? ", hugetlb" : "") << ")\n";
     rings.push_back(RingEndpoint{.mapping = std::move(*mapping)});
     rings.back().rebind_ring_views();
+  }
+  if (ring_node >= 0) {
+    // Rings placed; restore the runtime allocation policy. Prefer the pinned node for
+    // the arenas only when --numa-arena asked for it; otherwise go back to default.
+    if (config.numa_arena) {
+      (void)numa::prefer_node(ring_node);
+    } else {
+      numa::reset_policy();
+    }
   }
   std::cout << "goblin-core: ring mode -- busy-polling " << rings.size()
             << " ring(s) ahead of the network (100% CPU by design)\n"

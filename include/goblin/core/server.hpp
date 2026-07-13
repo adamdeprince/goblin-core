@@ -39,6 +39,14 @@ struct ServerConfig {
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.
   bool ring_hugetlb{false};
+  // Pin the server to CPU `cpu` (>= 0) and place the ring memory on that CPU's NUMA
+  // node -- strictly, so a ring that cannot be made node-local is a fatal startup
+  // error (a remote ring wrecks the latency it exists for). -1 disables it.
+  int cpu{-1};
+  // Additionally steer the arenas' allocations to the pinned CPU's node (soft,
+  // best-effort). Only meaningful with `cpu` set; off by default because pinning all
+  // of a large server's memory to one node can starve clients co-located on it.
+  bool numa_arena{false};
 };
 
 class Server {

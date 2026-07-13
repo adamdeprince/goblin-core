@@ -39,6 +39,8 @@
 // ring is empty when `head == tail`. Positions are reduced into the buffer with a
 // mask (capacity is a power of two).
 
+#include "goblin/core/numa.hpp"
+
 #include <atomic>
 #include <bit>
 #include <charconv>
@@ -667,6 +669,15 @@ class Mapping {
 
   // Whether the data regions are mirror-mapped (records may straddle the ring end).
   [[nodiscard]] bool mirror() const noexcept { return mirror_; }
+
+  // Verify every page of the header + SQ + CQ regions is resident on NUMA `node`.
+  // Called after creating the ring under a node-bound policy: a remote ring wrecks
+  // the latency it exists for, so the server treats a false here as fatal.
+  [[nodiscard]] bool numa_all_local(int node) const noexcept {
+    return numa::all_on_node(header_, granule_, node) &&
+           numa::all_on_node(sq_, mirror_ ? 2 * sq_cap_ : sq_cap_, node) &&
+           numa::all_on_node(cq_, mirror_ ? 2 * cq_cap_ : cq_cap_, node);
+  }
 
   // ---- reconnect handshake (see Header::epoch) -------------------------------
   // Client: request a fresh connection -- bump the epoch and return the new value.

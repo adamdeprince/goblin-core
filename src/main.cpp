@@ -140,7 +140,9 @@ void print_usage(std::string_view program) {
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
-            << "                               unsafe with fork-COW SAVE, so off by default)\n";
+            << "                               unsafe with fork-COW SAVE, so off by default)\n"
+            << "       [--cpu N]              (Linux: pin to CPU N; ring must be NUMA-local)\n"
+            << "       [--numa-arena]         (Linux: also prefer that node for arenas)\n";
 }
 
 }  // namespace
@@ -225,6 +227,30 @@ int main(int argc, char** argv) {
       // granularity blows up RSS and SIGBUSes the parent if the pool exhausts mid-save.
       // A no-op where huge pages are unavailable, so it is accepted on every platform.
       goblin::core::hugetlb::arena_enabled() = true;
+      continue;
+    }
+
+    if (arg == "--cpu") {
+      // Pin the server to this CPU and place the ring on its NUMA node (fatal if not
+      // local). Linux-only; a no-op elsewhere.
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const std::string_view text = argv[++i];
+      int cpu = 0;
+      const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), cpu);
+      if (ec != std::errc{} || ptr != text.data() + text.size() || cpu < 0) {
+        std::cerr << "goblin-core: invalid --cpu value: " << text << '\n';
+        return 2;
+      }
+      config.cpu = cpu;
+      continue;
+    }
+
+    if (arg == "--numa-arena") {
+      // Also steer arena allocations to the pinned CPU's node (soft). Needs --cpu.
+      config.numa_arena = true;
       continue;
     }
 
@@ -491,6 +517,25 @@ int main(int argc, char** argv) {
             << " avx512vl=" << caps.avx512vl
             << " lsx=" << caps.lsx
             << " lasx=" << caps.lasx << '\n';
+
+#if defined(__linux__)
+  // NUMA: pin to the requested CPU and (opt-in) steer arena memory to its node, before
+  // the store allocates so its arenas honor the policy. The ring's stricter, fatal-if-
+  // remote binding happens at ring-creation time in the server.
+  if (config.cpu >= 0) {
+    if (!goblin::core::numa::pin_to_cpu(config.cpu)) {
+      std::cerr << "goblin-core: --cpu " << config.cpu << ": failed to pin\n";
+      return 1;
+    }
+    if (config.numa_arena) {
+      const int node = goblin::core::numa::node_of_cpu(config.cpu);
+      if (node < 0 || !goblin::core::numa::prefer_node(node)) {
+        std::cerr << "goblin-core: --numa-arena: could not set a NUMA preference for "
+                     "CPU " << config.cpu << " (continuing without it)\n";
+      }
+    }
+  }
+#endif
 
   goblin::core::Store store(store_options);
 
