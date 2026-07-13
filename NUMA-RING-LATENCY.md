@@ -97,6 +97,58 @@ because pinning all of a large server's memory to one node can starve clients co
 on it. Strict for the small, latency-critical ring; soft for the large, capacity-driven
 arenas.
 
+## How the NUMA commands work
+
+Two flags, deliberately asymmetric. Both are Linux-only and use raw `set_mempolicy` /
+`mbind` / `move_pages` syscalls directly — no libnuma dependency, so the server drops the
+flags to no-ops on a kernel or platform that lacks them rather than failing to build or
+run.
+
+**`--cpu N`** does three things, in order:
+
+1. **Pin.** `sched_setaffinity` locks the server thread to CPU `N`, so the busy-poll loop
+   never migrates off the core the ring is tuned for.
+2. **Resolve the node.** `node_of_cpu(N)` reads `/sys/devices/system/node/node*/cpulist`
+   and returns the node whose CPU list contains `N`. (The mapping is usually interleaved:
+   on the 4-node box here, node 1 owns CPUs `1,5,9,13,…`, so `--cpu 5` resolves to node 1.)
+3. **Place the ring strictly.** Before the ring pages are faulted, the process binds its
+   allocation policy to that node with `MPOL_BIND` (strict). First-touch therefore lands
+   the ring on the local node. Then it *verifies* — `move_pages` on every ring region — and
+   if any page is not on the node, the server **refuses to start**. This is the fatal path
+   the 3x measurement above justifies: a strict bind plus an explicit check, not a hope.
+
+Once the rings are placed, the strict bind is lifted and the runtime allocation policy for
+everything else (the arenas, the index, client buffers) is set from `--numa-arena`.
+
+**`--numa-arena`** sets `MPOL_PREFERRED` for the pinned node — a *soft* preference. The
+arena's `mmap` blocks still fault on the pinned node when it has free memory, but if it
+does not, the kernel spills them to another node instead of failing. Without the flag, the
+arena runs under the kernel's default policy (local first-touch, spill on pressure). The
+flag never aborts: capacity is best-effort by design, because reserving a whole node's RAM
+for one server's arenas is a choice only the operator can make.
+
+### An important operational caveat (measured)
+
+A soft preference is only as strong as the node's free memory, and "free" does not mean
+what it looks like. On a 4-node box that was busy doing large file I/O, every node reported
+only a few hundred MB `MemFree` out of 128 GB — the rest was **reclaimable page cache**.
+With the common default `vm.zone_reclaim_mode = 0`, the kernel would rather satisfy an
+allocation from a *remote* node than evict *local* page cache, so `MPOL_PREFERRED` (and
+plain first-touch) placed a fresh 44 MB arena on a neighbor node even though the pinned
+node had 128 GB of cache it could have dropped. The strict `MPOL_BIND` ring, on the same
+run, stayed local — because strict binding forces the local reclaim (or fails) that the
+soft preference declines to force.
+
+The practical reading: on a dedicated box `--numa-arena` lands the arena local as intended;
+on a box also serving files, a soft preference can be quietly overridden by page-cache
+pressure. If arena locality matters there, the levers are `vm.zone_reclaim_mode = 1` (make
+the kernel reclaim locally) or dropping caches before load — neither is goblin's to set, so
+the flag stays honest about being best-effort. The latency-critical ring never depends on
+any of this: it is strict, verified, and fatal-if-remote.
+
+Confirm any of it in `/proc/<pid>/numa_maps`: each mapping's line ends with
+`N<node>=<pages>` giving the resident page count per node.
+
 ## Reproducing
 
 The probe is [`benchmarks/latency_shootout.cpp`](benchmarks/latency_shootout.cpp). It
