@@ -1331,6 +1331,8 @@ class Store {
       std::string_view key, std::string_view field) const;
   [[nodiscard]] bool hexists(std::string_view key, std::string_view field) const;
   [[nodiscard]] bool hdel(std::string_view key, std::string_view field);
+  [[nodiscard]] std::size_t hdel_many(
+      std::string_view key, std::span<const std::string_view> fields);
   [[nodiscard]] std::size_t hlen(std::string_view key) const;
   [[nodiscard]] std::optional<std::size_t> hstrlen(std::string_view key,
                                                    std::string_view field) const;

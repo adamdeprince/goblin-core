@@ -77,6 +77,23 @@ class HashListpack {
     return p_ ? blob_size(len(), count()) : 0;
   }
 
+  // Exact fit check for converting the full representation back to a listpack.
+  // `payload_bytes` is the sum of field and value lengths; each entry also
+  // needs four length bytes plus the three-byte fingerprint/offset directory.
+  [[nodiscard]] static bool can_encode(std::size_t entry_count,
+                                       std::size_t payload_bytes) noexcept {
+    constexpr std::size_t kPerEntryOverhead = 7;
+    if (entry_count > std::numeric_limits<std::uint16_t>::max() ||
+        entry_count >
+            (kHashListpackMaxBlobBytes - kHashListpackHeaderBytes) /
+                kPerEntryOverhead) {
+      return false;
+    }
+    return payload_bytes <= kHashListpackMaxBlobBytes -
+                                kHashListpackHeaderBytes -
+                                entry_count * kPerEntryOverhead;
+  }
+
   // HSET one field. needs_full=true (no mutation) if it would exceed max_entries
   // or the blob-size ceiling -- caller promotes to the full swiss+arena form.
   [[nodiscard]] SetResult set(std::string_view field, std::string_view value,

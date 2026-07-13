@@ -84,8 +84,9 @@ mem_fragmentation_ratio = used_memory / (used_memory − mem_reclaimable_bytes)
 
 The remedy differs, and deliberately: where Redis leans on the allocator's
 probabilistic background defrag, Goblin gives you a **deterministic** one —
-[`GOBLIN.OPTIMIZE key`](goblin.md) rewrites a key's arena tight, and arenas
-auto-compact once dead bytes exceed live (past a floor). `mem_fragmentation_ratio`
+[`GOBLIN.OPTIMIZE key`](goblin.md) rewrites a key's arena tight. Full hashes
+instead auto-evacuate fragmented arena chunks in bounded maintenance steps once
+dead bytes exceed live (past a floor). `mem_fragmentation_ratio`
 is precisely the signal for when that's worth doing.
 
 ### In one line

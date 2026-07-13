@@ -265,6 +265,17 @@ struct ScoreBound {
   add("field_value_dead_bytes", stats.field_value_dead_bytes);
   add("field_value_allocated_bytes", stats.field_value_allocated_bytes);
   add("field_index_allocated_bytes", stats.field_index_allocated_bytes);
+  add("field_compaction_active", stats.field_compaction_active);
+  add("field_compaction_victim_chunk", stats.field_compaction_victim_chunk);
+  add("field_compaction_fields_scanned",
+      stats.field_compaction_fields_scanned);
+  add("field_compaction_fields_total", stats.field_compaction_fields_total);
+  add("field_compaction_candidates_remaining",
+      stats.field_compaction_candidates_remaining);
+  add("field_compaction_relocated_fields",
+      stats.field_compaction_relocated_fields);
+  add("field_compaction_relocated_bytes",
+      stats.field_compaction_relocated_bytes);
   add("total_allocated_bytes", stats.total_allocated_bytes);
 
   return fields;
@@ -1583,11 +1594,10 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::hdel: {
-      long long removed = 0;
-      for (std::size_t i = 1; i < command.args.size(); ++i) {
-        removed += store.hdel(command.args[0], command.args[i]) ? 1 : 0;
-      }
-      resp::append_integer(out, removed);
+      const auto fields = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      resp::append_integer(
+          out, static_cast<long long>(store.hdel_many(command.args[0], fields)));
       return;
     }
 

@@ -1147,9 +1147,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       const std::string_view key = h.getKeyAsStringView();  // key trails the group
       if (wrong_type(store, KeyType::Hash, key, out)) break;
-      long long removed = 0;
-      for (const auto& f : fields) removed += store.hdel(key, f) ? 1 : 0;
-      reply_int(out, removed);
+      reply_int(out, static_cast<long long>(store.hdel_many(key, fields)));
       break;
     }
 

@@ -1032,6 +1032,17 @@ bool Store::hdel(std::string_view key, std::string_view field) {
   return removed;
 }
 
+std::size_t Store::hdel_many(
+    std::string_view key, std::span<const std::string_view> fields) {
+  auto* hash = find_hash(key);
+  if (hash == nullptr) {
+    return 0;
+  }
+  const auto removed = hash->erase_many(fields);
+  erase_if_empty(key, *hash);
+  return removed;
+}
+
 std::size_t Store::hlen(std::string_view key) const {
   const auto* hash = find_hash(key);
   return hash == nullptr ? 0 : hash->size();

@@ -2613,6 +2613,24 @@ void test_hash_listpack_mode() {
       overflow_field.data(), overflow_value.data(),
       HashOptions::kDefaultListpackMaxEntries);
   assert(boundary_overflow.needs_full && boundary.size() == kBoundaryCount);
+  assert(HashListpack::can_encode(kBoundaryCount,
+                                  kBoundaryCount * (14 + 16)));
+  assert(!HashListpack::can_encode(kBoundaryCount + 1,
+                                   (kBoundaryCount + 1) * (14 + 16)));
+
+  // A full hash that is still too large for the compact blob must reject
+  // demotion from byte accounting alone. Rebuilding the first ~1,700 entries
+  // after every HDEL is a severe scaling defect on large, shrinking hashes.
+  Hash shrinking;
+  std::vector<std::string> shrinking_fields;
+  shrinking_fields.reserve(3000);
+  for (int i = 0; i < 3000; ++i) {
+    shrinking_fields.push_back("shrinking-field-" + std::to_string(i));
+    assert(shrinking.set(shrinking_fields.back(), "sixteen-byte-val") == 1);
+  }
+  assert(!shrinking.is_small());
+  assert(shrinking.erase(shrinking_fields.front()));
+  assert(!shrinking.is_small() && shrinking.size() == 2999);
 
   // A threshold of zero takes the same forced-full multi-field path used by
   // the compact/full crossover benchmark.
@@ -2705,6 +2723,143 @@ void test_hash_bulk_reserve_growth() {
       "hash-field-" + std::to_string(kBatch * kBatches - 1);
   assert(hash.get(last_field) == "v");
   assert(index_capacity_changes < 64);
+}
+
+void test_hash_storage_bounded_compaction() {
+  using goblin::core::Hash;
+  using goblin::core::HashOptions;
+  using goblin::core::HashStorage;
+
+  constexpr std::size_t kInitialCount = 10;
+  HashStorage storage(HashStorage::kMinChunkBytes);
+  std::vector<std::string> fields;
+  std::vector<std::string> values;
+  fields.reserve(32);
+  values.reserve(32);
+  for (std::size_t id = 0; id < kInitialCount; ++id) {
+    fields.push_back("field-" + std::to_string(id));
+    values.emplace_back(30000, static_cast<char>('a' + id));
+    assert(storage.push_back(fields.back(), values.back()) == id);
+  }
+  values[0].assign(40000, 'x');
+  storage.set_value(0, values[0]);
+  values[1].assign(10000, 'y');
+  storage.set_value(1, values[1]);
+
+  auto expected_live_bytes = [&] {
+    std::size_t bytes = 0;
+    for (std::size_t id = 0; id < fields.size(); ++id) {
+      bytes += fields[id].size() + values[id].size();
+    }
+    return bytes;
+  };
+  auto check = [&] {
+    assert(storage.size() == fields.size());
+    assert(storage.live_bytes() == expected_live_bytes());
+    for (std::size_t id = 0; id < fields.size(); ++id) {
+      assert(storage.view(static_cast<std::uint32_t>(id)) == fields[id]);
+      assert(storage.value(static_cast<std::uint32_t>(id)) == values[id]);
+    }
+  };
+
+  check();
+  const auto capacity_before = storage.byte_capacity();
+  const auto selection = storage.compact_step(/*work_budget=*/1,
+                                               /*byte_budget=*/4096);
+  assert(selection.work_done == 1);
+  assert(selection.progress.active());
+  assert(selection.progress.candidates_remaining ==
+         storage.chunk_slot_count() - 1);
+  check();
+  std::size_t reclaimed = 0;
+  for (std::size_t step_count = 0; reclaimed == 0; ++step_count) {
+    assert(step_count < 100);
+    const auto step = storage.compact_step(/*work_budget=*/3,
+                                           /*byte_budget=*/4096);
+    assert(step.work_done <= 3);
+    reclaimed += step.bytes_reclaimed;
+    check();
+  }
+  assert(reclaimed > 0);
+  assert(storage.byte_capacity() < capacity_before);
+  assert(storage.recycled_chunk_count() > 0);
+
+  // The released logical chunk id is reused instead of consuming the 32-bit
+  // arena address space monotonically under update-heavy workloads.
+  const auto recycled_before = storage.recycled_chunk_count();
+  for (std::size_t extra = 0;
+       storage.recycled_chunk_count() == recycled_before && extra < 16;
+       ++extra) {
+    const auto id = fields.size();
+    fields.push_back("extra-" + std::to_string(extra));
+    values.emplace_back(30000, 'z');
+    assert(storage.push_back(fields.back(), values.back()) == id);
+  }
+  assert(storage.recycled_chunk_count() < recycled_before);
+  check();
+
+  // A dense-id swap can move a victim reference behind the scan cursor. The
+  // verification/rescan path must relocate that moved reference before release.
+  HashStorage swapped(HashStorage::kMinChunkBytes);
+  std::vector<std::string> swap_fields;
+  std::vector<std::string> swap_values;
+  for (std::size_t id = 0; id < 8; ++id) {
+    swap_fields.push_back("swap-" + std::to_string(id));
+    swap_values.emplace_back(30000, static_cast<char>('a' + id));
+    assert(swapped.push_back(swap_fields.back(), swap_values.back()) == id);
+  }
+  swap_values.back().assign(40000, 'q');
+  swapped.set_value(7, swap_values.back());
+  HashStorage::CompactionStepResult started;
+  for (std::size_t step_count = 0;
+       started.progress.fields_scanned < 2; ++step_count) {
+    assert(step_count < 100);
+    started = swapped.compact_step(/*work_budget=*/2,
+                                   /*byte_budget=*/4096);
+    assert(started.work_done <= 2);
+    assert(started.progress.active());
+  }
+  swapped.orphan(1);
+  swapped.copy_ref(1, 7);
+  swapped.pop_back();
+  swap_fields[1] = std::move(swap_fields.back());
+  swap_fields.pop_back();
+  swap_values[1] = std::move(swap_values.back());
+  swap_values.pop_back();
+  bool completed = false;
+  for (std::size_t step_count = 0; !completed; ++step_count) {
+    assert(step_count < 100);
+    const auto step = swapped.compact_step(/*work_budget=*/2,
+                                           /*byte_budget=*/4096);
+    assert(step.work_done <= 2);
+    completed = step.completed;
+    for (std::size_t id = 0; id < swap_fields.size(); ++id) {
+      assert(swapped.view(static_cast<std::uint32_t>(id)) == swap_fields[id]);
+      assert(swapped.value(static_cast<std::uint32_t>(id)) == swap_values[id]);
+    }
+  }
+
+  // Explicit optimization remains the immediate full rebuild and cancels any
+  // in-progress bounded maintenance state.
+  Hash hash(HashOptions{.chunk_bytes = HashStorage::kMinChunkBytes,
+                        .listpack_max_entries = 0});
+  for (std::size_t id = 0; id < swap_fields.size(); ++id) {
+    assert(hash.set(swap_fields[id], swap_values[id]) == 1);
+  }
+  const std::string grown(50000, 'g');
+  assert(hash.set(swap_fields[0], grown) == 0);
+  const auto maintenance = hash.compact_step(/*work_budget=*/1,
+                                              /*byte_budget=*/1024);
+  assert(maintenance.progress.active());
+  assert(hash.memory_stats().field_compaction_active == 1);
+  hash.compact();
+  const auto compacted = hash.memory_stats();
+  assert(compacted.field_compaction_active == 0);
+  assert(compacted.field_value_dead_bytes == 0);
+  assert(hash.get(swap_fields[0]) == grown);
+  for (std::size_t id = 1; id < swap_fields.size(); ++id) {
+    assert(hash.get(swap_fields[id]) == swap_values[id]);
+  }
 }
 
 void test_adaptive_pma_rank_select() {
@@ -4887,6 +5042,7 @@ int main() {
   test_zset_listpack_mode();
   test_hash_listpack_mode();
   test_hash_bulk_reserve_growth();
+  test_hash_storage_bounded_compaction();
   test_adaptive_pma_rank_select();
   test_list_listpack_and_pma();
   test_list_commands();

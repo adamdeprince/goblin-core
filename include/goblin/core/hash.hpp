@@ -40,6 +40,13 @@ struct HashMemoryStats {
   std::size_t field_value_dead_bytes{0};
   std::size_t field_value_allocated_bytes{0};
   std::size_t field_index_allocated_bytes{0};
+  std::size_t field_compaction_active{0};
+  std::size_t field_compaction_victim_chunk{0};
+  std::size_t field_compaction_fields_scanned{0};
+  std::size_t field_compaction_fields_total{0};
+  std::size_t field_compaction_candidates_remaining{0};
+  std::size_t field_compaction_relocated_fields{0};
+  std::size_t field_compaction_relocated_bytes{0};
   std::size_t total_allocated_bytes{0};
 };
 
@@ -103,7 +110,9 @@ class Hash {
       }
       ensure_full();
     }
-    return set_full(field, value);
+    const auto added = set_full(field, value);
+    maybe_compact();
+    return added;
   }
 
   long long set_many(
@@ -124,6 +133,7 @@ class Hash {
     for (const auto& [field, value] : fields) {
       added += set_full(field, value);
     }
+    maybe_compact();
     return added;
   }
 
@@ -148,6 +158,7 @@ class Hash {
     const auto field_id = fs.storage->push_back(field, value);
     fs.fields.insert_absent(fs.storage->view(field_id),
                             ZSetMemberMeta{.member_id = field_id});
+    maybe_compact();
     return 1;
   }
 
@@ -174,19 +185,39 @@ class Hash {
     if (auto* lp = small_ptr()) {
       return lp->erase(field);
     }
-    auto& fs = full();
-    auto* meta = fs.fields.find(field);
-    if (meta == nullptr) {
+    if (!erase_full(field)) {
       return false;
     }
-    const auto field_id = meta->member_id;
-    fs.storage->orphan(field_id);
-    const bool erased = fs.fields.erase(field);
-    assert(erased);
-    move_last_field_into_slot(field_id);
     maybe_compact();
     maybe_demote_to_small();
-    return erased;
+    return true;
+  }
+
+  // Multi-field HDEL performs at most one bounded maintenance step for the
+  // whole atomic command, regardless of its argument count.
+  std::size_t erase_many(std::span<const std::string_view> fields) {
+    std::size_t removed = 0;
+    if (auto* lp = small_ptr()) {
+      for (const auto field : fields) {
+        removed += lp->erase(field) ? 1 : 0;
+      }
+      return removed;
+    }
+    for (const auto field : fields) {
+      removed += erase_full(field) ? 1 : 0;
+    }
+    maybe_compact();
+    maybe_demote_to_small();
+    return removed;
+  }
+
+  [[nodiscard]] HashStorage::CompactionStepResult compact_step(
+      std::size_t work_budget = 256,
+      std::size_t byte_budget = std::size_t{64} << 10) {
+    if (is_small()) {
+      return {};
+    }
+    return full().storage->compact_step(work_budget, byte_budget);
   }
 
   // Iterate every (field, value). Listpack order is insertion order; full form
@@ -243,6 +274,16 @@ class Hash {
     stats.field_value_dead_bytes = fs.storage->dead_bytes();
     stats.field_value_allocated_bytes = fs.storage->allocated_bytes();
     stats.field_index_allocated_bytes = fs.fields.allocated_bytes();
+    const auto progress = fs.storage->compaction_progress();
+    stats.field_compaction_active = progress.active() ? 1 : 0;
+    stats.field_compaction_victim_chunk =
+        progress.active() ? progress.victim_chunk : 0;
+    stats.field_compaction_fields_scanned = progress.fields_scanned;
+    stats.field_compaction_fields_total = progress.fields_total;
+    stats.field_compaction_candidates_remaining =
+        progress.candidates_remaining;
+    stats.field_compaction_relocated_fields = progress.relocated_fields;
+    stats.field_compaction_relocated_bytes = progress.relocated_bytes;
     stats.total_allocated_bytes =
         stats.field_value_allocated_bytes + stats.field_index_allocated_bytes;
     return stats;
@@ -379,6 +420,11 @@ class Hash {
     if (n > options_.listpack_max_entries) {
       return;
     }
+    // Avoid attempting an O(N) rebuild after every HDEL while a large hash is
+    // still far above the 64 KiB listpack ceiling.
+    if (!HashListpack::can_encode(n, full().storage->live_bytes())) {
+      return;
+    }
     HashListpack lp;
     auto& fs = full();
     for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(n); ++id) {
@@ -397,13 +443,29 @@ class Hash {
         field,
         [&](ZSetMemberMeta& meta) {
           fs.storage->set_value(meta.member_id, value);
-          maybe_compact();
         },
         [&]() {
           const auto field_id = fs.storage->push_back(field, value);
           return ZSetMemberMeta{.member_id = field_id};
         });
     return inserted ? 1 : 0;
+  }
+
+  bool erase_full(std::string_view field) {
+    auto& fs = full();
+    const auto slot = fs.fields.find_slot(field);
+    if (!slot) {
+      return false;
+    }
+    const auto field_id = fs.fields.member_id_at(*slot);
+    const auto last_id = static_cast<std::uint32_t>(fs.storage->size() - 1);
+    fs.storage->prepare_copy_ref(field_id, last_id);
+    fs.storage->orphan(field_id);
+    const bool erased = fs.fields.erase_at_index(*slot);
+    assert(erased);
+    (void)erased;
+    move_last_field_into_slot(field_id);
+    return true;
   }
 
   void move_last_field_into_slot(std::uint32_t removed_field_id) {
@@ -425,13 +487,17 @@ class Hash {
       return;
     }
     auto& fs = full();
-    if (fs.storage->dead_bytes() >= kAutoCompactDeadFloor &&
-        fs.storage->dead_bytes() >= fs.storage->live_bytes()) {
-      compact();
+    if (fs.storage->compaction_active() ||
+        (fs.storage->dead_bytes() >= kAutoCompactDeadFloor &&
+         fs.storage->dead_bytes() >= fs.storage->live_bytes())) {
+      (void)fs.storage->compact_step(kAutoCompactWorkBudget,
+                                     kAutoCompactByteBudget);
     }
   }
 
   static constexpr std::size_t kAutoCompactDeadFloor = std::size_t{1} << 20;
+  static constexpr std::size_t kAutoCompactWorkBudget = 8;
+  static constexpr std::size_t kAutoCompactByteBudget = std::size_t{16} << 10;
 
   HashOptions options_;
   std::variant<HashListpack, std::unique_ptr<FullState>> rep_;

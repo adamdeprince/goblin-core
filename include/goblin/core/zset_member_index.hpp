@@ -292,24 +292,33 @@ class MemberIndex {
     return {&slots_[index].meta, true};
   }
 
-  // Single-hash upsert: one existence probe, and on miss one insert-slot probe
-  // after ensuring capacity. `on_existing(meta)` runs for a hit; `make_meta()`
-  // runs only on insert (so the caller can push storage only when needed).
-  // Returns true if a new slot was inserted.
+  // Single-hash upsert. A probe returns either the matching slot or the first
+  // reusable tombstone/empty slot in the same table walk. `on_existing(meta)`
+  // runs for a hit; `make_meta()` runs only on insert (so the caller can push
+  // storage only when needed). A miss is probed again only when making room
+  // rebuilds the table. Returns true if a new slot was inserted.
   template <class OnExisting, class MakeMeta>
   bool find_or_emplace(std::string_view member, OnExisting&& on_existing,
                        MakeMeta&& make_meta) {
     const auto hash = hash_member(member);
+    ProbeResult probe{npos, false};
     if (capacity_ != 0) {
-      const auto existing = find_index_with_hash(member, hash);
-      if (existing != npos) {
-        on_existing(slots_[existing].meta);
+      probe = find_or_insert_index_with_hash(member, hash);
+      if (probe.found) {
+        on_existing(slots_[probe.index].meta);
         return false;
       }
     }
-    ensure_capacity_for_insert();
-    // Rehash (if any) preserves absence; hash is still valid for bucketing.
-    const auto index = find_insert_index(hash);
+
+    if (ensure_capacity_for_insert()) {
+      // Rehash preserves absence, but the saved insertion slot is stale.
+      probe = find_or_insert_index_with_hash(member, hash);
+    }
+    if (probe.index == npos) {
+      throw std::logic_error("member index has no insertion slot");
+    }
+
+    const auto index = probe.index;
     const auto old_control = control_[index];
     slots_[index].meta = make_meta();
     set_control(index, fingerprint(hash));
@@ -406,6 +415,11 @@ class MemberIndex {
   static constexpr size_type kMinTombstonesForSameCapacityCleanup = 4096;
   static constexpr size_type npos = std::numeric_limits<size_type>::max();
 
+  struct ProbeResult {
+    size_type index;
+    bool found;
+  };
+
   [[nodiscard]] static bool is_full_control(std::uint8_t control) noexcept {
     return control < kEmpty;
   }
@@ -489,10 +503,10 @@ class MemberIndex {
     return static_cast<hash_type>(hash);
   }
 
-  void ensure_capacity_for_insert() {
+  bool ensure_capacity_for_insert() {
     if (capacity_ == 0) {
       rehash(kGroupWidth);
-      return;
+      return true;
     }
 
     if (size_ + tombstones_ + 1 > max_usable(capacity_)) {
@@ -501,7 +515,9 @@ class MemberIndex {
       } else {
         rehash(grow_capacity(capacity_));
       }
+      return true;
     }
+    return false;
   }
 
   void allocate_capacity(size_type requested_capacity) {
@@ -562,6 +578,54 @@ class MemberIndex {
     }
 
     return npos;
+  }
+
+  [[nodiscard]] ProbeResult find_or_insert_index_with_hash(
+      std::string_view member, hash_type hash) const {
+    const auto needle = fingerprint(hash);
+    auto group_start = bucket(hash);
+    auto first_deleted = npos;
+
+    for (size_type probed = 0; probed < capacity_; probed += kGroupWidth) {
+      const auto* group = control_.data() + group_start;
+      auto matches = match_byte(group, needle);
+      while (matches != 0) {
+        const auto offset = first_set_bit(matches);
+        auto index = group_start + offset;
+        if (index >= capacity_) {
+          index -= capacity_;
+        }
+
+        if (simd::bytes_equal(member_view(slots_[index].meta.get()), member)) {
+          return {index, true};
+        }
+        matches &= matches - 1;
+      }
+
+      const auto deleted = match_byte(group, kDeleted);
+      if (first_deleted == npos && deleted != 0) {
+        first_deleted = group_start + first_set_bit(deleted);
+        if (first_deleted >= capacity_) {
+          first_deleted -= capacity_;
+        }
+      }
+
+      const auto empty = match_byte(group, kEmpty);
+      if (empty != 0) {
+        auto index = group_start + first_set_bit(empty);
+        if (index >= capacity_) {
+          index -= capacity_;
+        }
+        return {first_deleted == npos ? index : first_deleted, false};
+      }
+
+      group_start += kGroupWidth;
+      if (group_start >= capacity_) {
+        group_start -= capacity_;
+      }
+    }
+
+    return {first_deleted, false};
   }
 
   [[nodiscard]] size_type find_insert_index(hash_type hash) const {

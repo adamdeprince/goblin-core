@@ -312,10 +312,13 @@ no empty slot, so a lookup of a missing member scans the whole table.
 `GOBLIN.OPTIMIZE` and `GOBLIN.MEMORY` work on hash and list keys too. On a hash,
 `GOBLIN.OPTIMIZE <key>` reclaims dead arena bytes left by value updates and field
 deletes and repacks the field index. On a list it rebuilds the value arena and
-packs the adaptive PMA at its configured density. All three structures
-auto-compact: once dead (reclaimable) arena bytes exceed the live bytes past a
-type-specific floor, the structure rebuilds itself, so update/delete-heavy keys
-bound their own footprint without a manual `GOBLIN.OPTIMIZE`.
+packs the adaptive PMA at its configured density. Hash auto-compaction is a
+different, bounded serving path: once dead (reclaimable) arena bytes exceed the
+live bytes past the floor, normal hash mutations scan and evacuate one fragmented
+arena chunk in fixed work/byte steps. The emptied chunk is released and its
+32-bit arena slot is recycled. This bounds per-command maintenance without a
+whole-hash rebuild; `GOBLIN.OPTIMIZE` remains the explicit immediate rebuild and
+field-index repack.
 
 `--member-index-growth <factor>` sets how much the member index grows on each
 rehash (default `2^0.25 ≈ 1.19`), for both the zset member index and the hash

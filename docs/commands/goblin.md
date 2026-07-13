@@ -177,6 +177,13 @@ observable rather than estimated. Works on a zset, hash, or list key; replies ni
 for a missing key (or one of another type). The numbers reflect the current
 layout, so they change after [`GOBLIN.OPTIMIZE`](#goblin-optimize).
 
+For a full hash, `field_compaction_active`, `field_compaction_victim_chunk`,
+`field_compaction_candidates_remaining`, `field_compaction_fields_scanned`,
+`field_compaction_fields_total`, and the relocated field/byte counters expose
+bounded automatic arena maintenance while it is in progress. Candidate count
+falls during budgeted victim selection; field progress follows during that
+chunk's evacuation.
+
 ## GOBLIN.OPTIMIZE
 
 ```
@@ -187,8 +194,10 @@ Compacts a zset, hash, or list **in place**. Zsets and hashes reclaim dead arena
 bytes and repack their member/field index to `density`, a load factor in `(0, 1]`
 (default `0.97`). Lists rebuild their value arena and compact their PMA using the
 server's list-density setting. The command replies with bytes reclaimed, or nil
-when the key is absent. These structures also auto-compact under heavy churn, so
-this is an explicit trigger, not a requirement. The process-wide signal for
+when the key is absent. Hashes also reclaim fragmented arena chunks
+automatically under heavy churn, using bounded work and byte budgets on normal
+mutations; that path leaves the field index intact. `GOBLIN.OPTIMIZE` is the
+explicit immediate full rebuild and index repack. The process-wide signal for
 *when* compaction is worthwhile is [`INFO`](INFO.md)'s
 `mem_fragmentation_ratio`.
 
