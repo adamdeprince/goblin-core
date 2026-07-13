@@ -53,8 +53,14 @@ using goblin::core::SbeRingClient;
 
 namespace {
 
-constexpr int kServerCore = 2;   // busy-poll server / socket server pinned here (Linux)
-constexpr int kClientCore = 3;   // measuring thread pinned here (Linux)
+// Pin cores, overridable via SERVER_CORE / CLIENT_CORE env vars -- so a NUMA run can
+// put the client on a core local to (or remote from) the server's ring node.
+inline int env_core(const char* name, int dflt) {
+  const char* e = std::getenv(name);
+  return e != nullptr ? std::atoi(e) : dflt;
+}
+const int kServerCore = env_core("SERVER_CORE", 2);  // busy-poll server pinned here
+const int kClientCore = env_core("CLIENT_CORE", 3);  // measuring thread pinned here
 constexpr double kWindowSec = 2.0;
 constexpr double kWarmupSec = 0.3;
 constexpr int kCard = 10;        // cardinality of the zset / hash under test
