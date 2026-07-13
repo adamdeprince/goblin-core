@@ -11,6 +11,8 @@
 #include <lz4.h>
 #include <lz4hc.h>
 
+#include "goblin/core/simd_ops.hpp"
+
 namespace goblin::core {
 namespace {
 
@@ -442,14 +444,16 @@ bool EncodedStringView::range_equals(std::size_t offset,
           ? std::min(logical.size(), head_.size() - offset)
           : 0;
   if (from_head != 0 &&
-      head_.substr(offset, from_head) != logical.substr(0, from_head)) {
+      !simd::bytes_equal_n(head_.data() + offset, logical.data(), from_head)) {
     return false;
   }
   const auto tail_offset = offset + from_head > head_.size()
                                ? offset + from_head - head_.size()
                                : 0;
-  return tail_.substr(tail_offset, logical.size() - from_head) ==
-         logical.substr(from_head);
+  const auto from_tail = logical.size() - from_head;
+  return from_tail == 0 ||
+         simd::bytes_equal_n(tail_.data() + tail_offset,
+                             logical.data() + from_head, from_tail);
 }
 
 void EncodedStringView::append_to(std::string& destination) const {

@@ -78,6 +78,31 @@ class SegmentedList {
       return;
     }
 
+    // Full endpoint leaf: splice a new one-entry leaf instead of decoding the
+    // packed neighbor. Matches the multi-value endpoint fast path.
+    if (index == 0 && leaves_.front().size() == leaf_entries_) {
+      ListListpack leaf;
+      if (!leaf.insert(0, value, leaf_entries_, encoding_, compression_)) {
+        throw std::length_error("list value does not fit packed leaf");
+      }
+      reserve_leaf_count(leaves_.size() + 1);
+      leaves_.insert(leaves_.begin(), std::move(leaf));
+      ++size_;
+      rebuild_index();
+      return;
+    }
+    if (index == size_ && leaves_.back().size() == leaf_entries_) {
+      ListListpack leaf;
+      if (!leaf.insert(0, value, leaf_entries_, encoding_, compression_)) {
+        throw std::length_error("list value does not fit packed leaf");
+      }
+      reserve_leaf_count(leaves_.size() + 1);
+      leaves_.push_back(std::move(leaf));
+      ++size_;
+      rebuild_index();
+      return;
+    }
+
     const auto bias = index == size_ ? LeafBias::Back
                                      : index == 0 ? LeafBias::Front
                                                   : LeafBias::Balanced;
@@ -132,11 +157,67 @@ class SegmentedList {
       return;
     }
 
-    const auto bias = index == size_ ? LeafBias::Back
-                                     : index == 0 ? LeafBias::Front
-                                                  : LeafBias::Balanced;
+    // Residual endpoint capacity: fill the active leaf first, then pack any
+    // remainder into new adjacent leaves. Avoids decoding the endpoint leaf.
+    if (index == size_) {
+      auto& tail = leaves_.back();
+      std::size_t cursor = 0;
+      while (cursor < values.size() && tail.size() < leaf_entries_) {
+        if (!tail.insert(tail.size(), values[cursor], leaf_entries_, encoding_,
+                         compression_)) {
+          break;
+        }
+        ++cursor;
+      }
+      if (cursor != 0) {
+        add_count(leaves_.size() - 1, static_cast<int>(cursor));
+        size_ += cursor;
+      }
+      if (cursor == values.size()) {
+        return;
+      }
+      auto additions = build_view_leaves(values.subspan(cursor));
+      reserve_leaf_count(leaves_.size() + additions.size());
+      leaves_.insert(leaves_.end(),
+                     std::make_move_iterator(additions.begin()),
+                     std::make_move_iterator(additions.end()));
+      size_ += values.size() - cursor;
+      rebuild_index();
+      return;
+    }
+    if (index == 0) {
+      auto& head = leaves_.front();
+      std::size_t cursor = values.size();
+      while (cursor != 0 && head.size() < leaf_entries_) {
+        // LPUSH semantics: values are already in final list order, so the
+        // last remaining argument is the next front insert.
+        if (!head.insert(0, values[cursor - 1], leaf_entries_, encoding_,
+                         compression_)) {
+          break;
+        }
+        --cursor;
+      }
+      const auto filled = values.size() - cursor;
+      if (filled != 0) {
+        add_count(0, static_cast<int>(filled));
+        size_ += filled;
+      }
+      if (cursor == 0) {
+        return;
+      }
+      auto additions = build_view_leaves(values.subspan(0, cursor));
+      reserve_leaf_count(leaves_.size() + additions.size());
+      leaves_.insert(leaves_.begin(),
+                     std::make_move_iterator(additions.begin()),
+                     std::make_move_iterator(additions.end()));
+      size_ += cursor;
+      rebuild_index();
+      return;
+    }
+
+    const auto bias = LeafBias::Balanced;
     std::vector<std::string> combined;
-    const auto location = index == size_ ? tail_location() : locate(index);
+    const auto location = locate(index);
     const auto leaf = location.leaf;
     const auto offset = location.offset;
     combined = leaf_values(leaf);
@@ -146,6 +227,39 @@ class SegmentedList {
 
     replace_leaf(leaf, combined, bias);
     size_ += values.size();
+  }
+
+  // Promote a compact listpack into this segmented list without re-encoding.
+  // Common case (small form is one leaf-sized blob) is a single move.
+  void adopt_listpack(ListListpack leaf) {
+    const auto count = leaf.size();
+    if (count == 0) {
+      leaves_.clear();
+      fenwick_.clear();
+      size_ = 0;
+      return;
+    }
+    if (count <= leaf_entries_) {
+      leaves_.clear();
+      leaves_.push_back(std::move(leaf));
+      size_ = count;
+      rebuild_index();
+      return;
+    }
+    // Rare: small-form threshold exceeds leaf entry cap. Split by encoded views.
+    std::vector<std::string> logical;
+    logical.reserve(count);
+    leaf.for_each(
+        [&logical](EncodedStringView value) {
+          logical.push_back(value.to_string());
+        },
+        encoding_);
+    std::vector<std::string_view> views;
+    views.reserve(logical.size());
+    for (const auto& item : logical) {
+      views.push_back(item);
+    }
+    assign(views);
   }
 
   [[nodiscard]] EncodedStringView at(std::size_t index) const noexcept {
@@ -583,11 +697,22 @@ class SegmentedList {
         leaves_[left].size() + leaves_[right].size() > leaf_entries_) {
       return;
     }
-    auto values = leaf_values(left);
-    auto tail = leaf_values(right);
-    values.insert(values.end(), std::make_move_iterator(tail.begin()),
-                  std::make_move_iterator(tail.end()));
-    replace_leaf_range(left, 2, values, LeafBias::Balanced);
+    // Single-allocation entry concat preserves encodings and avoids decoding.
+    ListListpack merged;
+    if (!merged.concat(leaves_[left], leaf_entries_) ||
+        !merged.concat(leaves_[right], leaf_entries_)) {
+      // Byte ceiling blocked a pure entry-count merge; fall back to the
+      // balanced rebuild from logical values.
+      auto values = leaf_values(left);
+      auto tail = leaf_values(right);
+      values.insert(values.end(), std::make_move_iterator(tail.begin()),
+                    std::make_move_iterator(tail.end()));
+      replace_leaf_range(left, 2, values, LeafBias::Balanced);
+      return;
+    }
+    leaves_[left] = std::move(merged);
+    leaves_.erase(leaves_.begin() + static_cast<std::ptrdiff_t>(right));
+    rebuild_index();
   }
 
   std::vector<ListListpack> leaves_;

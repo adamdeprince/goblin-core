@@ -363,10 +363,9 @@ class List {
       return;
     }
     if (const auto* lp = small_ptr()) {
-      const auto stop = count > lp->size() - first ? lp->size() : first + count;
-      for (auto index = first; index < stop; ++index) {
-        fn(lp->at(index, options_->string_encoding));
-      }
+      // Linear scan once; avoid at()-per-index which rewalks the blob.
+      lp->for_range(first, count, std::forward<Fn>(fn),
+                    options_->string_encoding);
       return;
     }
     if (const auto* segmented = segmented_ptr()) {
@@ -382,12 +381,7 @@ class List {
   [[nodiscard]] std::optional<std::size_t> find_first(
       std::string_view value, std::size_t first = 0) const {
     if (const auto* lp = small_ptr()) {
-      for (auto index = first; index < lp->size(); ++index) {
-        if (lp->at(index, options_->string_encoding) == value) {
-          return index;
-        }
-      }
-      return std::nullopt;
+      return lp->find_first(value, first, options_->string_encoding);
     }
     if (const auto* segmented = segmented_ptr()) {
       return (*segmented)->find_first(value, first);
@@ -402,13 +396,7 @@ class List {
       std::string_view value, std::size_t end) const {
     end = std::min(end, size());
     if (const auto* lp = small_ptr()) {
-      while (end != 0) {
-        --end;
-        if (lp->at(end, options_->string_encoding) == value) {
-          return end;
-        }
-      }
-      return std::nullopt;
+      return lp->find_last(value, end, options_->string_encoding);
     }
     if (const auto* segmented = segmented_ptr()) {
       return (*segmented)->find_last(value, end);
@@ -538,12 +526,9 @@ class List {
     if (options_->implementation == ListImplementation::Segmented) {
       auto state = std::make_unique<SegmentedList>(
           options_->string_encoding, options_->string_compression);
-      lp->for_each(
-          [&state](EncodedStringView value) {
-            const auto logical = value.to_string();
-            state->insert(state->size(), logical);
-          },
-          options_->string_encoding);
+      // Move the compact blob into the segmented representation without
+      // decoding/re-encoding every entry (common case: one leaf).
+      state->adopt_listpack(std::move(*lp));
       rep_.template emplace<SegmentedStatePtr>(std::move(state));
       return;
     }

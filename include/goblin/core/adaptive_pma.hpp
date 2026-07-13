@@ -22,8 +22,13 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(__BMI2__)
+#include <immintrin.h>
+#endif
 
 #include "goblin/core/list_value_arena.hpp"
 
@@ -200,8 +205,8 @@ class AdaptivePma {
         const auto begin = first - values.size();
         for (size_type index = 0; index < values.size(); ++index) {
           write_slot(begin + index, values[index]);
-          set_occupied(begin + index, true);
         }
+        set_occupied_range(begin, begin + values.size(), true);
         size_ = next_size;
         return;
       }
@@ -209,10 +214,11 @@ class AdaptivePma {
     if (rank == size_) {
       const auto last = select_slot(size_ - 1);
       if (capacity() - last - 1 >= values.size()) {
+        const auto begin = last + 1;
         for (size_type index = 0; index < values.size(); ++index) {
-          write_slot(last + 1 + index, values[index]);
-          set_occupied(last + 1 + index, true);
+          write_slot(begin + index, values[index]);
         }
+        set_occupied_range(begin, begin + values.size(), true);
         size_ = next_size;
         return;
       }
@@ -276,11 +282,9 @@ class AdaptivePma {
 
   template <class Fn>
   void for_each(Fn&& fn) const {
-    for (size_type slot = 0; slot < capacity(); ++slot) {
-      if (is_occupied(slot)) {
-        fn(read_slot(slot));
-      }
-    }
+    for_each_occupied(0, capacity(), [&](size_type slot) {
+      fn(read_slot(slot));
+    });
   }
 
   template <class Fn>
@@ -289,13 +293,14 @@ class AdaptivePma {
       return;
     }
     auto remaining = std::min(count, size_ - first);
-    for (size_type slot = select_slot(first);
-         slot < capacity() && remaining != 0; ++slot) {
-      if (is_occupied(slot)) {
-        fn(read_slot(slot));
-        --remaining;
+    for_each_occupied(select_slot(first), capacity(), [&](size_type slot) {
+      if (remaining == 0) {
+        return false;
       }
-    }
+      fn(read_slot(slot));
+      --remaining;
+      return remaining != 0;
+    });
   }
 
   template <class Predicate>
@@ -305,15 +310,16 @@ class AdaptivePma {
       return std::nullopt;
     }
     auto rank = first;
-    for (size_type slot = select_slot(first); slot < capacity(); ++slot) {
-      if (is_occupied(slot)) {
-        if (predicate(read_slot(slot))) {
-          return rank;
-        }
-        ++rank;
+    std::optional<size_type> found;
+    for_each_occupied(select_slot(first), capacity(), [&](size_type slot) {
+      if (predicate(read_slot(slot))) {
+        found = rank;
+        return false;
       }
-    }
-    return std::nullopt;
+      ++rank;
+      return true;
+    });
+    return found;
   }
 
   template <class Predicate>
@@ -324,20 +330,20 @@ class AdaptivePma {
       return std::nullopt;
     }
     auto rank = end - 1;
-    for (size_type cursor = select_slot(rank) + 1; cursor != 0;) {
-      const auto slot = --cursor;
-      if (!is_occupied(slot)) {
-        continue;
-      }
+    const auto last_slot = select_slot(rank);
+    std::optional<size_type> found;
+    for_each_occupied_reverse(0, last_slot + 1, [&](size_type slot) {
       if (predicate(read_slot(slot))) {
-        return rank;
+        found = rank;
+        return false;
       }
       if (rank == 0) {
-        return std::nullopt;
+        return false;
       }
       --rank;
-    }
-    return std::nullopt;
+      return true;
+    });
+    return found;
   }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
@@ -445,6 +451,21 @@ class AdaptivePma {
     return (occupied_[slot / 64] & (std::uint64_t{1} << (slot % 64))) != 0;
   }
 
+  void fenwick_add(size_type word_index, std::int32_t delta) noexcept {
+    if (delta == 0) {
+      return;
+    }
+    for (size_type node = word_index + 1; node < fenwick_.size();
+         node += node & (~node + 1)) {
+      if (delta > 0) {
+        fenwick_[node] += static_cast<std::uint32_t>(delta);
+      } else {
+        assert(fenwick_[node] >= static_cast<std::uint32_t>(-delta));
+        fenwick_[node] -= static_cast<std::uint32_t>(-delta);
+      }
+    }
+  }
+
   void set_occupied(size_type slot, bool occupied) noexcept {
     const auto word_index = slot / 64;
     const auto mask = std::uint64_t{1} << (slot % 64);
@@ -454,27 +475,55 @@ class AdaptivePma {
     }
     if (occupied) {
       occupied_[word_index] |= mask;
+      fenwick_add(word_index, 1);
     } else {
       occupied_[word_index] &= ~mask;
-    }
-    for (size_type node = word_index + 1; node < fenwick_.size();
-         node += node & (~node + 1)) {
-      if (occupied) {
-        ++fenwick_[node];
-      } else {
-        assert(fenwick_[node] != 0);
-        --fenwick_[node];
-      }
+      fenwick_add(word_index, -1);
     }
   }
 
+  // Set or clear every occupancy bit in [begin, end). Contiguous endpoint
+  // batches use this so the fenwick tree is touched once per word, not once
+  // per element.
+  void set_occupied_range(size_type begin, size_type end, bool occupied) noexcept {
+    if (begin >= end) {
+      return;
+    }
+    assert(end <= capacity());
+    size_type word = begin / 64;
+    const size_type last_word = (end - 1) / 64;
+    for (; word <= last_word; ++word) {
+      std::uint64_t mask = ~std::uint64_t{0};
+      if (word == begin / 64) {
+        mask &= ~((std::uint64_t{1} << (begin % 64)) - 1);
+      }
+      if (word == last_word && end % 64 != 0) {
+        mask &= (std::uint64_t{1} << (end % 64)) - 1;
+      }
+      const auto prior = occupied_[word];
+      if (occupied) {
+        occupied_[word] = prior | mask;
+      } else {
+        occupied_[word] = prior & ~mask;
+      }
+      const auto delta = static_cast<std::int32_t>(std::popcount(occupied_[word])) -
+                         static_cast<std::int32_t>(std::popcount(prior));
+      fenwick_add(word, delta);
+    }
+  }
+
+  // Linear fenwick rebuild from leaf word popcounts. Called after bulk
+  // occupancy rewrites in redistribute().
   void rebuild_fenwick() noexcept {
     fenwick_.assign(occupied_.size() + 1, 0);
     for (size_type word = 0; word < occupied_.size(); ++word) {
-      const auto count = static_cast<std::uint32_t>(std::popcount(occupied_[word]));
-      for (size_type node = word + 1; node < fenwick_.size();
-           node += node & (~node + 1)) {
-        fenwick_[node] += count;
+      fenwick_[word + 1] =
+          static_cast<std::uint32_t>(std::popcount(occupied_[word]));
+    }
+    for (size_type node = 1; node < fenwick_.size(); ++node) {
+      const auto parent = node + (node & (~node + 1));
+      if (parent < fenwick_.size()) {
+        fenwick_[parent] += fenwick_[node];
       }
     }
   }
@@ -497,6 +546,24 @@ class AdaptivePma {
     return result;
   }
 
+  // Select the 1-based nth set bit within a 64-bit word (n >= 1).
+  [[nodiscard]] static size_type select_bit_in_word(
+      std::uint64_t bits, std::uint32_t n) noexcept {
+    assert(n >= 1);
+    assert(static_cast<std::uint32_t>(std::popcount(bits)) >= n);
+#if defined(__BMI2__)
+    // Deposit the single 1 of 1<<(n-1) onto the set bits of `bits`, then ctz.
+    return static_cast<size_type>(
+        std::countr_zero(_pdep_u64(std::uint64_t{1} << (n - 1), bits)));
+#else
+    auto word = bits;
+    for (std::uint32_t i = 1; i < n; ++i) {
+      word &= word - 1;
+    }
+    return static_cast<size_type>(std::countr_zero(word));
+#endif
+  }
+
   [[nodiscard]] size_type select_slot(size_type rank) const noexcept {
     assert(rank < size_);
     auto remaining = static_cast<std::uint32_t>(rank + 1);
@@ -510,11 +577,92 @@ class AdaptivePma {
       }
     }
     assert(prefix_words < occupied_.size());
-    auto bits = occupied_[prefix_words];
-    for (std::uint32_t n = 1; n < remaining; ++n) {
-      bits &= bits - 1;
+    return prefix_words * 64 +
+           select_bit_in_word(occupied_[prefix_words], remaining);
+  }
+
+  // Invoke fn(slot) for every occupied slot in [begin, end). If fn returns
+  // false, iteration stops early. Void-returning fn is treated as continue.
+  template <class Fn>
+  void for_each_occupied(size_type begin, size_type end, Fn&& fn) const {
+    if (begin >= end || occupied_.empty()) {
+      return;
     }
-    return prefix_words * 64 + std::countr_zero(bits);
+    end = std::min(end, capacity());
+    begin = std::min(begin, end);
+    size_type word = begin / 64;
+    const size_type last_word = (end - 1) / 64;
+    auto bits = occupied_[word];
+    bits &= ~((std::uint64_t{1} << (begin % 64)) - 1);
+    if (word == last_word && end % 64 != 0) {
+      bits &= (std::uint64_t{1} << (end % 64)) - 1;
+    }
+    while (true) {
+      while (bits != 0) {
+        const auto slot =
+            word * 64 + static_cast<size_type>(std::countr_zero(bits));
+        bits &= bits - 1;
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, size_type>,
+                                     bool>) {
+          if (!fn(slot)) {
+            return;
+          }
+        } else {
+          fn(slot);
+        }
+      }
+      if (word == last_word) {
+        return;
+      }
+      ++word;
+      bits = occupied_[word];
+      if (word == last_word && end % 64 != 0) {
+        bits &= (std::uint64_t{1} << (end % 64)) - 1;
+      }
+    }
+  }
+
+  // Invoke fn(slot) for occupied slots in [begin, end) from high to low.
+  template <class Fn>
+  void for_each_occupied_reverse(size_type begin, size_type end,
+                                 Fn&& fn) const {
+    if (begin >= end || occupied_.empty()) {
+      return;
+    }
+    end = std::min(end, capacity());
+    begin = std::min(begin, end);
+    size_type word = (end - 1) / 64;
+    const size_type first_word = begin / 64;
+    auto bits = occupied_[word];
+    if (end % 64 != 0) {
+      bits &= (std::uint64_t{1} << (end % 64)) - 1;
+    }
+    if (word == first_word) {
+      bits &= ~((std::uint64_t{1} << (begin % 64)) - 1);
+    }
+    while (true) {
+      while (bits != 0) {
+        const auto bit = static_cast<size_type>(63 - std::countl_zero(bits));
+        const auto slot = word * 64 + bit;
+        bits &= ~(std::uint64_t{1} << bit);
+        if constexpr (std::is_same_v<std::invoke_result_t<Fn, size_type>,
+                                     bool>) {
+          if (!fn(slot)) {
+            return;
+          }
+        } else {
+          fn(slot);
+        }
+      }
+      if (word == first_word) {
+        return;
+      }
+      --word;
+      bits = occupied_[word];
+      if (word == first_word) {
+        bits &= ~((std::uint64_t{1} << (begin % 64)) - 1);
+      }
+    }
   }
 
   [[nodiscard]] ListValueRef read_slot(size_type slot) const noexcept {
@@ -582,39 +730,103 @@ class AdaptivePma {
     }
     offsets_[dst] = offsets_[src];
     lengths_[dst] = lengths_[src];
-    set_occupied(dst, true);
-    set_occupied(src, false);
+    // Transfer occupancy with one bit clear and one bit set. Same-word moves
+    // update fenwick once with a net-zero popcount change (skip entirely).
+    const auto src_word = src / 64;
+    const auto dst_word = dst / 64;
+    const auto src_mask = std::uint64_t{1} << (src % 64);
+    const auto dst_mask = std::uint64_t{1} << (dst % 64);
+    occupied_[src_word] &= ~src_mask;
+    occupied_[dst_word] |= dst_mask;
+    if (src_word != dst_word) {
+      fenwick_add(src_word, -1);
+      fenwick_add(dst_word, 1);
+    }
   }
 
   [[nodiscard]] size_type nearby_empty_left(size_type from) const noexcept {
+    if (from == 0) {
+      return capacity();
+    }
     const auto floor = from > kNearbyShiftLimit ? from - kNearbyShiftLimit : 0;
-    for (size_type slot = from; slot > floor; --slot) {
-      if (!is_occupied(slot - 1)) {
-        return slot - 1;
+    // Scan [floor, from) for a zero bit, high to low.
+    size_type word = (from - 1) / 64;
+    const size_type first_word = floor / 64;
+    auto bits = ~occupied_[word];
+    if (from % 64 != 0) {
+      bits &= (std::uint64_t{1} << (from % 64)) - 1;
+    } else {
+      // from is word-aligned; the previous word is fully in range below.
+    }
+    if (word == first_word) {
+      bits &= ~((std::uint64_t{1} << (floor % 64)) - 1);
+    }
+    // Limit to capacity bits.
+    const auto cap_bits = capacity();
+    while (true) {
+      // Mask out slots at or beyond capacity (should not appear for left scan).
+      if (word * 64 + 64 > cap_bits) {
+        const auto valid = cap_bits - word * 64;
+        if (valid < 64) {
+          bits &= (std::uint64_t{1} << valid) - 1;
+        }
+      }
+      if (bits != 0) {
+        const auto bit = static_cast<size_type>(63 - std::countl_zero(bits));
+        return word * 64 + bit;
+      }
+      if (word == first_word) {
+        return capacity();
+      }
+      --word;
+      bits = ~occupied_[word];
+      if (word == first_word) {
+        bits &= ~((std::uint64_t{1} << (floor % 64)) - 1);
       }
     }
-    return capacity();
   }
 
   [[nodiscard]] size_type nearby_empty_right(size_type from) const noexcept {
     const auto stop = std::min(capacity(), from + kNearbyShiftLimit + 1);
-    for (size_type slot = from; slot < stop; ++slot) {
-      if (!is_occupied(slot)) {
-        return slot;
+    if (from >= stop) {
+      return capacity();
+    }
+    size_type word = from / 64;
+    const size_type last_word = (stop - 1) / 64;
+    auto bits = ~occupied_[word];
+    bits &= ~((std::uint64_t{1} << (from % 64)) - 1);
+    if (word == last_word && stop % 64 != 0) {
+      bits &= (std::uint64_t{1} << (stop % 64)) - 1;
+    }
+    // Do not report empty slots past capacity within the last partial word.
+    if (word * 64 + 64 > capacity()) {
+      bits &= (std::uint64_t{1} << (capacity() % 64)) - 1;
+    }
+    while (true) {
+      if (bits != 0) {
+        return word * 64 + static_cast<size_type>(std::countr_zero(bits));
+      }
+      if (word == last_word) {
+        return capacity();
+      }
+      ++word;
+      bits = ~occupied_[word];
+      if (word == last_word && stop % 64 != 0) {
+        bits &= (std::uint64_t{1} << (stop % 64)) - 1;
+      }
+      if (word * 64 + 64 > capacity()) {
+        bits &= (std::uint64_t{1} << (capacity() % 64)) - 1;
       }
     }
-    return capacity();
   }
 
   [[nodiscard]] std::vector<ListValueRef> values_in(size_type begin,
                                                      size_type end) const {
     std::vector<ListValueRef> values;
     values.reserve(rank_before(end) - rank_before(begin));
-    for (size_type slot = begin; slot < end; ++slot) {
-      if (is_occupied(slot)) {
-        values.push_back(read_slot(slot));
-      }
-    }
+    for_each_occupied(begin, end, [&](size_type slot) {
+      values.push_back(read_slot(slot));
+    });
     return values;
   }
 
@@ -623,8 +835,21 @@ class AdaptivePma {
   }
 
   void clear_occupancy(size_type begin, size_type end) noexcept {
-    for (size_type slot = begin; slot < end; ++slot) {
-      occupied_[slot / 64] &= ~(std::uint64_t{1} << (slot % 64));
+    if (begin >= end) {
+      return;
+    }
+    assert(end <= capacity());
+    size_type word = begin / 64;
+    const size_type last_word = (end - 1) / 64;
+    for (; word <= last_word; ++word) {
+      std::uint64_t mask = ~std::uint64_t{0};
+      if (word == begin / 64) {
+        mask &= ~((std::uint64_t{1} << (begin % 64)) - 1);
+      }
+      if (word == last_word && end % 64 != 0) {
+        mask &= (std::uint64_t{1} << (end % 64)) - 1;
+      }
+      occupied_[word] &= ~mask;
     }
   }
 

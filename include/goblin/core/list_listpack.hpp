@@ -239,6 +239,48 @@ class ListListpack {
     return removed;
   }
 
+  // Concatenate another listpack's entries onto this one with a single
+  // allocation. Preserves stored encodings; used by segmented leaf merges.
+  [[nodiscard]] bool concat(
+      const ListListpack& other, std::size_t max_entries,
+      std::size_t max_blob_bytes = kListListpackMaxBlobBytes) {
+    const auto self = unpack();
+    const auto tail = other.unpack();
+    const auto total_count =
+        static_cast<std::size_t>(self.count) + tail.count;
+    if (total_count > max_entries ||
+        total_count > std::numeric_limits<std::uint16_t>::max()) {
+      return false;
+    }
+    const auto total_len =
+        static_cast<std::size_t>(self.len) + static_cast<std::size_t>(tail.len);
+    if (kListListpackHeaderBytes + total_len > max_blob_bytes) {
+      return false;
+    }
+    if (tail.count == 0) {
+      return true;
+    }
+    if (self.count == 0) {
+      // Copy other wholesale.
+      if (other.p_ == nullptr) {
+        replace_blob(nullptr);
+        return true;
+      }
+      char* next = alloc_blob(tail.len);
+      std::memcpy(next, other.p_, kListListpackHeaderBytes + tail.len);
+      replace_blob(next);
+      return true;
+    }
+    char* next = alloc_blob(static_cast<std::uint32_t>(total_len));
+    write_header(next, static_cast<std::uint32_t>(total_len),
+                 static_cast<std::uint16_t>(total_count));
+    char* dst = next + kListListpackHeaderBytes;
+    std::memcpy(dst, self.entries, self.len);
+    std::memcpy(dst + self.len, tail.entries, tail.len);
+    replace_blob(next);
+    return true;
+  }
+
   template <class Fn>
   void for_each(Fn&& fn, StringEncodingOptions encoding = {}) const {
     const auto hdr = unpack();
@@ -258,12 +300,10 @@ class ListListpack {
       return;
     }
     const auto stop = std::min<std::size_t>(hdr.count, first + count);
-    std::size_t offset = 0;
-    for (std::size_t index = 0; index < stop; ++index) {
+    std::size_t offset = offset_of(first, hdr);
+    for (std::size_t index = first; index < stop; ++index) {
       const auto entry = read_entry(hdr.entries + offset);
-      if (index >= first) {
-        fn(view_entry(hdr.entries + offset, encoding));
-      }
+      fn(view_entry(hdr.entries + offset, encoding));
       offset += entry.bytes();
     }
   }
@@ -272,10 +312,13 @@ class ListListpack {
       std::string_view value, std::size_t first = 0,
       StringEncodingOptions encoding = {}) const {
     const auto hdr = unpack();
-    std::size_t offset = 0;
-    for (std::size_t index = 0; index < hdr.count; ++index) {
+    if (first >= hdr.count) {
+      return std::nullopt;
+    }
+    std::size_t offset = offset_of(first, hdr);
+    for (std::size_t index = first; index < hdr.count; ++index) {
       const auto entry = read_entry(hdr.entries + offset);
-      if (index >= first && view_entry(hdr.entries + offset, encoding) == value) {
+      if (view_entry(hdr.entries + offset, encoding) == value) {
         return index;
       }
       offset += entry.bytes();
