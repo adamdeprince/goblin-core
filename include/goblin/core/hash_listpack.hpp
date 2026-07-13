@@ -103,7 +103,8 @@ class HashListpack {
       return {.needs_full = true};
     }
     const Header hdr = unpack();
-    const FindResult found = find_field(field, hdr);
+    const auto fp = fingerprint(field);
+    const FindResult found = find_field(field, hdr, fp);
     const std::size_t new_elem = entry_size(field.size(), value.size());
 
     if (found.found()) {
@@ -118,13 +119,13 @@ class HashListpack {
         }
         return {.added = false, .needs_full = false};
       }
-      // Different size: project erase + re-append.
+      // Different size: one exact-fit rebuild (not erase + append).
       const std::size_t projected = hdr.len - old_elem + new_elem;
       if (blob_size(projected, hdr.count) > kHashListpackMaxBlobBytes) {
         return {.added = false, .needs_full = true};
       }
-      erase_at(found.entry_offset, found.index);
-      append_entry(field, value);
+      replace_entry_at(found.entry_offset, found.index, field, value, hdr,
+                       old_elem, new_elem);
       return {.added = false, .needs_full = false};
     }
 
@@ -135,7 +136,7 @@ class HashListpack {
             kHashListpackMaxBlobBytes) {
       return {.added = false, .needs_full = true};
     }
-    append_entry(field, value);
+    append_entry(field, value, fp, hdr);
     return {.added = true, .needs_full = false};
   }
 
@@ -148,12 +149,12 @@ class HashListpack {
       return {};
     }
 
+    const Header hdr = unpack();
     static thread_local std::vector<PendingEntry> merged;
     merged.clear();
-    merged.reserve(size() + fields.size());
-    for_each([&](std::string_view field, std::string_view value) {
-      merged.push_back(
-          PendingEntry{field, value, fingerprint(field)});
+    merged.reserve(static_cast<std::size_t>(hdr.count) + fields.size());
+    for_each_hdr(hdr, [&](std::string_view field, std::string_view value) {
+      merged.push_back(PendingEntry{field, value, fingerprint(field)});
     });
 
     long long added = 0;
@@ -190,7 +191,7 @@ class HashListpack {
   [[nodiscard]] std::optional<std::string_view> get(
       std::string_view field) const {
     const Header hdr = unpack();
-    const FindResult found = find_field(field, hdr);
+    const FindResult found = find_field(field, hdr, fingerprint(field));
     if (!found.found()) {
       return std::nullopt;
     }
@@ -203,37 +204,30 @@ class HashListpack {
   }
 
   [[nodiscard]] bool contains(std::string_view field) const {
-    return find_field(field, unpack()).found();
+    const Header hdr = unpack();
+    return find_field(field, hdr, fingerprint(field)).found();
   }
 
   // HDEL. Returns true if the field was present.
   bool erase(std::string_view field) {
     const Header hdr = unpack();
-    const FindResult found = find_field(field, hdr);
+    const FindResult found = find_field(field, hdr, fingerprint(field));
     if (!found.found()) {
       return false;
     }
-    erase_at(found.entry_offset, found.index);
+    erase_at(found.entry_offset, found.index, hdr);
     return true;
   }
 
   // HSETNX helper: true if field is absent (caller then set()).
   [[nodiscard]] bool absent(std::string_view field) const {
-    return !find_field(field, unpack()).found();
+    const Header hdr = unpack();
+    return !find_field(field, hdr, fingerprint(field)).found();
   }
 
   template <class Fn>
   void for_each(Fn&& fn) const {
-    const Header hdr = unpack();
-    std::size_t off = 0;
-    const auto* e = hdr.entries;
-    for (std::size_t i = 0; i < hdr.count; ++i) {
-      const auto [flen, vlen] = lengths_at(e + off);
-      const std::string_view f(e + off + 4, flen);
-      const std::string_view v(e + off + 4 + flen, vlen);
-      fn(f, v);
-      off += entry_size(flen, vlen);
-    }
+    for_each_hdr(unpack(), std::forward<Fn>(fn));
   }
 
  private:
@@ -280,6 +274,19 @@ class HashListpack {
   [[nodiscard]] std::size_t count() const noexcept { return unpack().count; }
   [[nodiscard]] std::uint32_t len() const noexcept { return unpack().len; }
 
+  template <class Fn>
+  static void for_each_hdr(const Header& hdr, Fn&& fn) {
+    std::size_t off = 0;
+    const auto* e = hdr.entries;
+    for (std::size_t i = 0; i < hdr.count; ++i) {
+      const auto [flen, vlen] = lengths_at(e + off);
+      const std::string_view f(e + off + 4, flen);
+      const std::string_view v(e + off + 4 + flen, vlen);
+      fn(f, v);
+      off += entry_size(flen, vlen);
+    }
+  }
+
   static void write_header(char* p, std::uint32_t entries_len,
                            std::uint16_t n) noexcept {
     std::memcpy(p, &entries_len, sizeof(entries_len));
@@ -315,12 +322,8 @@ class HashListpack {
     std::size_t entries_len = 0;
     for (const auto& entry : entries) {
       entries_len += entry_size(entry.field.size(), entry.value.size());
-      if (blob_size(entries_len, entries.size()) >
-          kHashListpackMaxBlobBytes) {
-        return false;
-      }
     }
-    return true;
+    return blob_size(entries_len, entries.size()) <= kHashListpackMaxBlobBytes;
   }
 
   [[nodiscard]] static std::pair<std::size_t, std::size_t> lengths_at(
@@ -330,6 +333,13 @@ class HashListpack {
     std::memcpy(&flen, e, sizeof(flen));
     std::memcpy(&vlen, e + 2, sizeof(vlen));
     return {flen, vlen};
+  }
+
+  // Compare path only needs the field length (value length is unused).
+  [[nodiscard]] static std::size_t field_len_at(const char* e) noexcept {
+    std::uint16_t flen = 0;
+    std::memcpy(&flen, e, sizeof(flen));
+    return flen;
   }
 
   [[nodiscard]] static std::uint16_t offset_at(const Header& hdr,
@@ -344,6 +354,20 @@ class HashListpack {
     std::memcpy(hdr.offsets + index * 2, &offset, sizeof(offset));
   }
 
+  static void write_entry_bytes(char* dst, std::string_view field,
+                                std::string_view value) noexcept {
+    const auto flen = static_cast<std::uint16_t>(field.size());
+    const auto vlen = static_cast<std::uint16_t>(value.size());
+    std::memcpy(dst, &flen, sizeof(flen));
+    std::memcpy(dst + 2, &vlen, sizeof(vlen));
+    if (!field.empty()) {
+      std::memcpy(dst + 4, field.data(), field.size());
+    }
+    if (!value.empty()) {
+      std::memcpy(dst + 4 + field.size(), value.data(), value.size());
+    }
+  }
+
   [[nodiscard]] static std::uint8_t fingerprint(
       std::string_view field) noexcept {
     auto hash = std::hash<std::string_view>{}(field);
@@ -353,9 +377,8 @@ class HashListpack {
     return static_cast<std::uint8_t>(hash);
   }
 
-  [[nodiscard]] FindResult find_field(std::string_view field,
-                                      const Header& hdr) const noexcept {
-    const auto needle = fingerprint(field);
+  [[nodiscard]] FindResult find_field(std::string_view field, const Header& hdr,
+                                      std::uint8_t needle) const noexcept {
     std::size_t base = 0;
     while (base + simd::kFingerprintGroupWidth <= hdr.count) {
       auto matches =
@@ -365,8 +388,7 @@ class HashListpack {
             base + static_cast<std::size_t>(std::countr_zero(matches));
         matches &= matches - 1;
         const auto off = offset_at(hdr, index);
-        const auto [flen, vlen] = lengths_at(hdr.entries + off);
-        (void)vlen;
+        const auto flen = field_len_at(hdr.entries + off);
         if (simd::bytes_equal(
                 std::string_view(hdr.entries + off + 4, flen), field)) {
           return {.entry_offset = off, .index = index};
@@ -379,8 +401,7 @@ class HashListpack {
         continue;
       }
       const auto off = offset_at(hdr, base);
-      const auto [flen, vlen] = lengths_at(hdr.entries + off);
-      (void)vlen;
+      const auto flen = field_len_at(hdr.entries + off);
       if (simd::bytes_equal(
               std::string_view(hdr.entries + off + 4, flen), field)) {
         return {.entry_offset = off, .index = base};
@@ -389,8 +410,7 @@ class HashListpack {
     return {};
   }
 
-  void erase_at(std::size_t off, std::size_t index) {
-    const Header hdr = unpack();
+  void erase_at(std::size_t off, std::size_t index, const Header& hdr) {
     const auto [flen, vlen] = lengths_at(hdr.entries + off);
     const std::size_t elem = entry_size(flen, vlen);
     const std::uint32_t new_len = hdr.len - static_cast<std::uint32_t>(elem);
@@ -403,18 +423,28 @@ class HashListpack {
     char* np = alloc_blob(new_len, new_count);
     write_header(np, new_len, new_count);
     const Header next = unpack_blob(np);
-    for (std::size_t src = 0, dst = 0; src < hdr.count; ++src) {
-      if (src == index) {
-        continue;
-      }
-      next.fingerprints[dst] = hdr.fingerprints[src];
-      auto entry_offset = offset_at(hdr, src);
-      if (entry_offset > off) {
-        entry_offset = static_cast<std::uint16_t>(entry_offset - elem);
-      }
-      write_offset(next, dst, entry_offset);
-      ++dst;
+
+    // Bulk-copy the directory around the removed slot.
+    if (index > 0) {
+      std::memcpy(next.fingerprints, hdr.fingerprints, index);
+      std::memcpy(next.offsets, hdr.offsets, index * 2);
     }
+    if (index + 1 < hdr.count) {
+      const auto tail = static_cast<std::size_t>(hdr.count) - index - 1;
+      std::memcpy(next.fingerprints + index, hdr.fingerprints + index + 1,
+                  tail);
+      std::memcpy(next.offsets + index * 2, hdr.offsets + (index + 1) * 2,
+                  tail * 2);
+    }
+    // Offsets after the erased entry shrink by elem.
+    for (std::size_t dst = 0; dst < new_count; ++dst) {
+      auto entry_offset = offset_at(next, dst);
+      if (entry_offset > off) {
+        write_offset(next, dst,
+                     static_cast<std::uint16_t>(entry_offset - elem));
+      }
+    }
+
     std::memcpy(next.entries, hdr.entries, off);
     std::memcpy(next.entries + off, hdr.entries + off + elem,
                 hdr.len - off - elem);
@@ -422,35 +452,72 @@ class HashListpack {
     p_ = np;
   }
 
-  void append_entry(std::string_view field, std::string_view value) {
-    const Header hdr = unpack();
+  // Rewrite one entry at a known slot in a single exact-fit allocation. Field
+  // identity (and therefore fingerprint) is unchanged; only the value size
+  // differs from the in-place path.
+  void replace_entry_at(std::size_t off, std::size_t index,
+                        std::string_view field, std::string_view value,
+                        const Header& hdr, std::size_t old_elem,
+                        std::size_t new_elem) {
+    const std::uint32_t new_len =
+        hdr.len - static_cast<std::uint32_t>(old_elem) +
+        static_cast<std::uint32_t>(new_elem);
+    char* np = alloc_blob(new_len, hdr.count);
+    write_header(np, new_len, hdr.count);
+    const Header next = unpack_blob(np);
+
+    std::memcpy(next.fingerprints, hdr.fingerprints, hdr.count);
+    std::memcpy(next.offsets, hdr.offsets,
+                static_cast<std::size_t>(hdr.count) * 2);
+    const auto delta = static_cast<std::int32_t>(new_elem) -
+                       static_cast<std::int32_t>(old_elem);
+    if (delta != 0) {
+      for (std::size_t i = 0; i < hdr.count; ++i) {
+        if (i == index) {
+          continue;
+        }
+        auto entry_offset = offset_at(next, i);
+        if (entry_offset > off) {
+          write_offset(
+              next, i,
+              static_cast<std::uint16_t>(
+                  static_cast<std::int32_t>(entry_offset) + delta));
+        }
+      }
+    }
+
+    if (off != 0) {
+      std::memcpy(next.entries, hdr.entries, off);
+    }
+    write_entry_bytes(next.entries + off, field, value);
+    const std::size_t tail = hdr.len - off - old_elem;
+    if (tail != 0) {
+      std::memcpy(next.entries + off + new_elem, hdr.entries + off + old_elem,
+                  tail);
+    }
+    free_blob(p_);
+    p_ = np;
+  }
+
+  void append_entry(std::string_view field, std::string_view value,
+                    std::uint8_t fp, const Header& hdr) {
     const std::size_t elem = entry_size(field.size(), value.size());
     const std::uint32_t new_len = hdr.len + static_cast<std::uint32_t>(elem);
     const auto new_count = static_cast<std::uint16_t>(hdr.count + 1);
     char* np = alloc_blob(new_len, new_count);
     write_header(np, new_len, new_count);
     const Header next = unpack_blob(np);
-    for (std::size_t index = 0; index < hdr.count; ++index) {
-      next.fingerprints[index] = hdr.fingerprints[index];
-      write_offset(next, index, offset_at(hdr, index));
+    if (hdr.count != 0) {
+      std::memcpy(next.fingerprints, hdr.fingerprints, hdr.count);
+      std::memcpy(next.offsets, hdr.offsets,
+                  static_cast<std::size_t>(hdr.count) * 2);
     }
-    next.fingerprints[hdr.count] = fingerprint(field);
+    next.fingerprints[hdr.count] = fp;
     write_offset(next, hdr.count, static_cast<std::uint16_t>(hdr.len));
-    char* dst = next.entries;
     if (hdr.len != 0) {
-      std::memcpy(dst, hdr.entries, hdr.len);
+      std::memcpy(next.entries, hdr.entries, hdr.len);
     }
-    char* el = dst + hdr.len;
-    const auto flen = static_cast<std::uint16_t>(field.size());
-    const auto vlen = static_cast<std::uint16_t>(value.size());
-    std::memcpy(el, &flen, sizeof(flen));
-    std::memcpy(el + 2, &vlen, sizeof(vlen));
-    if (!field.empty()) {
-      std::memcpy(el + 4, field.data(), field.size());
-    }
-    if (!value.empty()) {
-      std::memcpy(el + 4 + field.size(), value.data(), value.size());
-    }
+    write_entry_bytes(next.entries + hdr.len, field, value);
     free_blob(p_);
     p_ = np;
   }
@@ -470,18 +537,7 @@ class HashListpack {
       const auto& entry = entries[index];
       next.fingerprints[index] = entry.fingerprint;
       write_offset(next, index, offset);
-      char* dst = next.entries + offset;
-      const auto field_len = static_cast<std::uint16_t>(entry.field.size());
-      const auto value_len = static_cast<std::uint16_t>(entry.value.size());
-      std::memcpy(dst, &field_len, sizeof(field_len));
-      std::memcpy(dst + 2, &value_len, sizeof(value_len));
-      if (!entry.field.empty()) {
-        std::memcpy(dst + 4, entry.field.data(), entry.field.size());
-      }
-      if (!entry.value.empty()) {
-        std::memcpy(dst + 4 + entry.field.size(), entry.value.data(),
-                    entry.value.size());
-      }
+      write_entry_bytes(next.entries + offset, entry.field, entry.value);
       offset = static_cast<std::uint16_t>(
           offset + entry_size(entry.field.size(), entry.value.size()));
     }

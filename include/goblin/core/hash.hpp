@@ -111,7 +111,10 @@ class Hash {
       ensure_full();
     }
     const auto added = set_full(field, value);
-    maybe_compact();
+    // Fresh inserts create no dead bytes; only value updates can.
+    if (added == 0) {
+      maybe_compact();
+    }
     return added;
   }
 
@@ -130,10 +133,16 @@ class Hash {
     }
     reserve_additional(fields.size());
     long long added = 0;
+    long long updates = 0;
     for (const auto& [field, value] : fields) {
-      added += set_full(field, value);
+      const auto inserted = set_full(field, value);
+      added += inserted;
+      updates += 1 - inserted;
     }
-    maybe_compact();
+    // Only value updates orphan arena bytes.
+    if (updates != 0) {
+      maybe_compact();
+    }
     return added;
   }
 
@@ -158,7 +167,7 @@ class Hash {
     const auto field_id = fs.storage->push_back(field, value);
     fs.fields.insert_absent(fs.storage->view(field_id),
                             ZSetMemberMeta{.member_id = field_id});
-    maybe_compact();
+    // Insert-only: no dead bytes, so skip auto-compaction.
     return 1;
   }
 

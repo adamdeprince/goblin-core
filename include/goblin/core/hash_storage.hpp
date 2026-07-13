@@ -222,15 +222,16 @@ class HashStorage {
       throw std::length_error("hash field id space exhausted");
     }
     // Make every post-append metadata push non-allocating. If reserve throws,
-    // sizes and arena accounting are still unchanged.
+    // sizes and arena accounting are still unchanged. Refs grow in lockstep via
+    // reserve()/reserve_additional(), so one capacity check is enough.
     const auto required = field_offsets_.size() + 1;
-    if (field_offsets_.capacity() < required ||
-        field_lengths_.capacity() < required ||
-        value_lengths_.capacity() < required ||
-        relocation_blocks_.capacity() <
-            relocation_directory_entries(required)) {
+    if (field_offsets_.capacity() < required) {
       reserve_additional(1);
     }
+    assert(field_lengths_.capacity() >= required);
+    assert(value_lengths_.capacity() >= required);
+    assert(relocation_blocks_.capacity() >=
+           relocation_directory_entries(required));
     const auto field_off = append_bytes(field, value);
     if ((field_offsets_.size() & kRelocationBlockMask) == 0) {
       relocation_blocks_.push_back({});
