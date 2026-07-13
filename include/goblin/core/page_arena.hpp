@@ -126,15 +126,18 @@ struct PageBlockDeleter {
 [[nodiscard]] inline std::shared_ptr<char[]> try_promote_to_huge(
     const std::shared_ptr<char[]>& block, std::size_t used, std::size_t chunk_bytes) {
 #if defined(GOBLIN_HAVE_MMAP)
-  if (hugetlb::is_hugepage_multiple(chunk_bytes)) {
-    if (void* hp = hugetlb::try_alloc(chunk_bytes)) {
-      auto huge = std::shared_ptr<char[]>(static_cast<char*>(hp),
-                                          PageBlockDeleter{chunk_bytes, true});
-      if (used != 0 && block) {
-        std::memcpy(huge.get(), block.get(), used);
-      }
-      return huge;
+  // Gate on the process switch first: is_hugepage_multiple hits a cached sysfs
+  // size, but try_alloc is the expensive path; skip all of it when disabled.
+  if (!hugetlb::arena_enabled() || !hugetlb::is_hugepage_multiple(chunk_bytes)) {
+    return nullptr;
+  }
+  if (void* hp = hugetlb::try_alloc(chunk_bytes)) {
+    auto huge = std::shared_ptr<char[]>(static_cast<char*>(hp),
+                                        PageBlockDeleter{chunk_bytes, true});
+    if (used != 0 && block) {
+      std::memcpy(huge.get(), block.get(), used);
     }
+    return huge;
   }
 #else
   (void)block;
@@ -142,6 +145,24 @@ struct PageBlockDeleter {
   (void)chunk_bytes;
 #endif
   return nullptr;
+}
+
+// Freeze-to-max helper for the append paths: when a block can no longer accept
+// the next item, optionally re-home it onto one huge page and account the
+// capacity jump in `committed_bytes`. Returns true if promotion happened.
+// Callers that are about to *evacuate* the block (compaction) must not call
+// this -- promoting a block you are about to free wastes a huge page and a
+// full-chunk memcpy.
+inline bool maybe_freeze_block_to_huge(std::shared_ptr<char[]>& block,
+                                       std::size_t used, std::size_t chunk_bytes,
+                                       std::size_t current_capacity,
+                                       std::size_t& committed_bytes) {
+  if (auto huge = try_promote_to_huge(block, used, chunk_bytes)) {
+    committed_bytes += chunk_bytes - current_capacity;
+    block = std::move(huge);
+    return true;
+  }
+  return false;
 }
 
 // Grow a block to `new_bytes`: allocate a fresh block, copy `used` bytes over,
@@ -220,16 +241,10 @@ struct RunReservation {
       committed_bytes += committed - active_bytes;
       active_bytes = committed;
     } else {  // would straddle chunk_bytes; freeze this block, take the next slot
-      // Freeze-to-max: when huge pages are enabled and chunk_bytes is a huge multiple,
-      // re-home the just-filled block onto one huge page (eat the memcpy once). It is
-      // now exactly chunk_bytes, so a normal frozen block's unused tail is never
-      // committed -- only a huge block, which is a full page regardless, reaches max.
-      if (hugetlb::arena_enabled()) {
-        if (auto huge = try_promote_to_huge(blocks[block_index], block_offset, chunk_bytes)) {
-          committed_bytes += chunk_bytes - active_bytes;
-          blocks[block_index] = std::move(huge);
-        }
-      }
+      // Freeze-to-max: re-home onto one huge page when enabled (eat the memcpy once).
+      // A normal frozen block stays at its grown size; only a huge block reaches max.
+      (void)maybe_freeze_block_to_huge(blocks[block_index], block_offset,
+                                       chunk_bytes, active_bytes, committed_bytes);
       next_offset += chunk_bytes - block_offset;
       block_offset = 0;
       block_index += 1;
@@ -295,16 +310,9 @@ struct RunReservationSplit {
       committed_bytes += committed - active_bytes;
       active_bytes = committed;
     } else {  // would straddle chunk_bytes; freeze this block, take the next slot
-      // Freeze-to-max: when huge pages are enabled and chunk_bytes is a huge multiple,
-      // re-home the just-filled block onto one huge page (eat the memcpy once). It is
-      // now exactly chunk_bytes, so a normal frozen block's unused tail is never
-      // committed -- only a huge block, which is a full page regardless, reaches max.
-      if (hugetlb::arena_enabled()) {
-        if (auto huge = try_promote_to_huge(blocks[block_index], block_offset, chunk_bytes)) {
-          committed_bytes += chunk_bytes - active_bytes;
-          blocks[block_index] = std::move(huge);
-        }
-      }
+      // Freeze-to-max: same policy as reserve_run_bytes (shared helper).
+      (void)maybe_freeze_block_to_huge(blocks[block_index], block_offset,
+                                       chunk_bytes, active_bytes, committed_bytes);
       next_offset += chunk_bytes - block_offset;
       block_offset = 0;
       block_index += 1;

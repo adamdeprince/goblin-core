@@ -313,4 +313,165 @@ inline constexpr std::size_t kFingerprintGroupWidth = 16;
   return std::nullopt;
 }
 
+// ---- Bitset helpers for 0/1 knapsack / subset-sum (tail-donor packing) ----
+// Reachable sums live in a little-endian bitset of uint64_t words. The hot step
+// is `bits |= bits << weight`; the OR of large word arrays is SIMD-friendly.
+
+// dst[i] |= src[i] for `n` uint64 words. Widest OR available at compile time
+// (AVX-512/AVX2/SSE2 on x86, NEON on AArch64, LASX/LSX on LoongArch).
+inline void or_u64_words(std::uint64_t* dst, const std::uint64_t* src,
+                         std::size_t n) noexcept {
+  std::size_t i = 0;
+#if defined(__AVX512F__)
+  while (i + 8 <= n) {
+    const __m512i a =
+        _mm512_loadu_si512(reinterpret_cast<const void*>(dst + i));
+    const __m512i b =
+        _mm512_loadu_si512(reinterpret_cast<const void*>(src + i));
+    _mm512_storeu_si512(reinterpret_cast<void*>(dst + i), _mm512_or_si512(a, b));
+    i += 8;
+  }
+#endif
+#if defined(__AVX2__)
+  while (i + 4 <= n) {
+    const __m256i a =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(dst + i));
+    const __m256i b =
+        _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i),
+                        _mm256_or_si256(a, b));
+    i += 4;
+  }
+#endif
+#if defined(__SSE2__)
+  while (i + 2 <= n) {
+    const __m128i a =
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(dst + i));
+    const __m128i b =
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), _mm_or_si128(a, b));
+    i += 2;
+  }
+#elif defined(__aarch64__)
+  while (i + 2 <= n) {
+    const uint64x2_t a = vld1q_u64(dst + i);
+    const uint64x2_t b = vld1q_u64(src + i);
+    vst1q_u64(dst + i, vorrq_u64(a, b));
+    i += 2;
+  }
+#elif defined(__loongarch_asx)
+  // LASX: 256-bit = 4×u64 (same width as AVX2).
+  while (i + 4 <= n) {
+    const __m256i a =
+        __lasx_xvld(const_cast<std::uint64_t*>(dst + i), 0);
+    const __m256i b =
+        __lasx_xvld(const_cast<std::uint64_t*>(src + i), 0);
+    __lasx_xvst(__lasx_xvor_v(a, b), dst + i, 0);
+    i += 4;
+  }
+  // Remainder: LSX 128-bit = 2×u64 (LASX builds always have LSX).
+  while (i + 2 <= n) {
+    const __m128i a =
+        __lsx_vld(const_cast<std::uint64_t*>(dst + i), 0);
+    const __m128i b =
+        __lsx_vld(const_cast<std::uint64_t*>(src + i), 0);
+    __lsx_vst(__lsx_vor_v(a, b), dst + i, 0);
+    i += 2;
+  }
+#elif defined(__loongarch_sx)
+  // LSX only (no LASX): 128-bit = 2×u64.
+  while (i + 2 <= n) {
+    const __m128i a =
+        __lsx_vld(const_cast<std::uint64_t*>(dst + i), 0);
+    const __m128i b =
+        __lsx_vld(const_cast<std::uint64_t*>(src + i), 0);
+    __lsx_vst(__lsx_vor_v(a, b), dst + i, 0);
+    i += 2;
+  }
+#endif
+  for (; i < n; ++i) {
+    dst[i] |= src[i];
+  }
+}
+
+// Write `dst = src << shift_bits` for a bitset of `nwords` uint64 words.
+// Bits at or above `nwords * 64` are dropped. Used with a separate OR pass so
+// the 0/1 knapsack step is `dst = bits; shl(dst, bits, w); or(bits, dst)`.
+inline void shl_u64_bitset(std::uint64_t* dst, const std::uint64_t* src,
+                           std::size_t nwords, std::size_t shift_bits) noexcept {
+  if (nwords == 0) {
+    return;
+  }
+  if (shift_bits == 0) {
+    std::memcpy(dst, src, nwords * sizeof(std::uint64_t));
+    return;
+  }
+  const std::size_t word_shift = shift_bits / 64;
+  const std::size_t bit_shift = shift_bits % 64;
+  if (word_shift >= nwords) {
+    std::memset(dst, 0, nwords * sizeof(std::uint64_t));
+    return;
+  }
+  // High → low so we can theoretically alias, but we require dst != src.
+  std::memset(dst, 0, word_shift * sizeof(std::uint64_t));
+  if (bit_shift == 0) {
+    std::memcpy(dst + word_shift, src,
+                (nwords - word_shift) * sizeof(std::uint64_t));
+    return;
+  }
+  // dst[i] = src[i - word_shift] << bit_shift
+  //        | src[i - word_shift - 1] >> (64 - bit_shift)
+  for (std::size_t i = nwords; i-- > word_shift;) {
+    const std::size_t base = i - word_shift;
+    std::uint64_t word = src[base] << bit_shift;
+    if (base > 0) {
+      word |= src[base - 1] >> (64 - bit_shift);
+    }
+    dst[i] = word;
+  }
+}
+
+// bits |= bits << shift_bits into a pre-sized workspace (same nwords).
+// Returns via `bits` (reachable sums after adding one 0/1 item of that weight).
+inline void bitset_or_shl_u64(std::uint64_t* bits, std::uint64_t* workspace,
+                              std::size_t nwords,
+                              std::size_t shift_bits) noexcept {
+  if (shift_bits == 0 || nwords == 0) {
+    return;
+  }
+  shl_u64_bitset(workspace, bits, nwords, shift_bits);
+  or_u64_words(bits, workspace, nwords);
+}
+
+// Highest set bit index in [0, max_bit] inclusive, or npos if none.
+[[nodiscard]] inline std::size_t bitset_msb_u64(const std::uint64_t* bits,
+                                                std::size_t max_bit) noexcept {
+  if (bits == nullptr) {
+    return static_cast<std::size_t>(-1);
+  }
+  std::size_t word = max_bit / 64;
+  const std::size_t bit = max_bit % 64;
+  // Mask off bits above max_bit in the top word (bit==63 → full word).
+  std::uint64_t top = bits[word];
+  if (bit < 63) {
+    top &= (std::uint64_t{1} << (bit + 1)) - 1u;
+  }
+  if (top != 0) {
+    return word * 64 + static_cast<std::size_t>(63 - std::countl_zero(top));
+  }
+  while (word > 0) {
+    --word;
+    if (bits[word] != 0) {
+      return word * 64 +
+             static_cast<std::size_t>(63 - std::countl_zero(bits[word]));
+    }
+  }
+  return static_cast<std::size_t>(-1);
+}
+
+[[nodiscard]] inline bool bitset_test_u64(const std::uint64_t* bits,
+                                          std::size_t bit) noexcept {
+  return (bits[bit / 64] >> (bit % 64)) & 1u;
+}
+
 }  // namespace goblin::core::simd

@@ -3,6 +3,7 @@
 // re-homed onto a huge page (freeze-to-max promotion). Skips cleanly (exit 0) when
 // no huge pages are reserved, so it never fails a host without them.
 
+#include "goblin/core/hash.hpp"
 #include "goblin/core/page_arena.hpp"
 
 #undef NDEBUG
@@ -12,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using namespace goblin::core;  // NOLINT
@@ -63,7 +66,44 @@ int main() {
   }
   hugetlb::arena_enabled() = true;  // restore
 
-  std::printf("arena hugetlb OK: frozen block huge-backed at %zu-byte pages (aligned %p)\n",
-              hp, blocks[0].get());
+  // Give the single-page probe back before building a hash so this also runs on
+  // a host with only one reserved page.
+  blocks.clear();
+  nblocks.clear();
+
+  Hash hash(HashOptions{.chunk_bytes = chunk, .listpack_max_entries = 0});
+  constexpr std::size_t kHashFields = 40;
+  const std::string large_value(HashStorage::kMaxValueBytes, 'v');
+  for (std::size_t id = 0; id < kHashFields; ++id) {
+    assert(hash.set("field-" + std::to_string(id), large_value) == 1);
+  }
+
+  const char* frozen_field_before = nullptr;
+  hash.for_each([&](std::string_view field, std::string_view) {
+    if (field == "field-0") {
+      frozen_field_before = field.data();
+    }
+  });
+  assert(frozen_field_before != nullptr);
+  assert(reinterpret_cast<std::uintptr_t>(frozen_field_before) % hp == 0 &&
+         "first hash field should live at the start of a frozen huge block");
+
+  // Fragment the frozen block itself. OPTIMIZE must densify it in place and
+  // rebuild the field index without replacing its HugeTLB mapping.
+  assert(hash.set("field-0", "short") == 0);
+  assert(hash.memory_stats().field_value_dead_bytes > 0);
+  hash.compact();
+  const char* frozen_field_after = nullptr;
+  hash.for_each([&](std::string_view field, std::string_view) {
+    if (field == "field-0") {
+      frozen_field_after = field.data();
+    }
+  });
+  assert(frozen_field_after == frozen_field_before &&
+         "hash compact must retain frozen HugeTLB-backed blocks");
+  assert(hash.memory_stats().field_value_dead_bytes == 0);
+
+  std::printf("arena hugetlb OK: frozen hash block retained at %zu-byte pages (%p)\n",
+              hp, static_cast<const void*>(frozen_field_after));
   return 0;
 }

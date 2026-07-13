@@ -243,27 +243,23 @@ class Hash {
     }
   }
 
-  // Rebuild: listpack re-packs for free (no dead bytes); full form drops
-  // orphaned arena bytes and may demote back to listpack when small enough.
+  // Compact the arena in place so frozen HugeTLB-backed blocks survive, then
+  // rebuild only the field index at the requested density. The full form may
+  // demote back to listpack when small enough.
   void compact(double field_index_density = kDefaultFieldIndexDensity) {
     if (is_small()) {
       return;  // listpack has no fragmentation
     }
     auto& fs = full();
+    fs.storage->compact();
     const auto n = static_cast<std::uint32_t>(fs.storage->size());
-    auto new_storage = std::make_unique<HashStorage>(
-        fs.storage->chunk_bytes(), options_.member_index_growth);
-    new_storage->reserve(n);
-    MemberIndex<HashStorage> new_index(new_storage.get(),
+    MemberIndex<HashStorage> new_index(fs.storage.get(),
                                        options_.member_index_growth);
     new_index.reserve_for_density(n, field_index_density);
     for (std::uint32_t id = 0; id < n; ++id) {
-      const auto new_id =
-          new_storage->push_back(fs.storage->view(id), fs.storage->value(id));
-      new_index.insert_packed(new_storage->view(new_id),
-                              ZSetMemberMeta{.member_id = new_id});
+      new_index.insert_packed(fs.storage->view(id),
+                              ZSetMemberMeta{.member_id = id});
     }
-    fs.storage = std::move(new_storage);
     fs.fields = std::move(new_index);
     fs.fields.set_members(fs.storage.get());
     maybe_demote_to_small();

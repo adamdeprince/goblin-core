@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "goblin/core/page_arena.hpp"
+#include "goblin/core/simd_ops.hpp"
 
 namespace goblin::core {
 
@@ -41,11 +43,17 @@ namespace goblin::core {
 //
 // Fragmentation: a same-or-smaller value update overwrites in place; a larger
 // value re-appends the value only and orphans the old value bytes; a removed
-// field orphans field+value. Orphaned (dead) bytes are tracked per chunk. Bounded
-// compaction evacuates one chunk over multiple maintenance steps, then releases
-// and recycles its logical chunk number. It scans the dense field ids directly,
-// so the steady-state field reference remains eight bytes and compaction needs
-// no per-field reverse map.
+// field orphans field+value. Orphaned (dead) bytes are tracked per chunk.
+//
+// Bounded compaction is **tail-donor**:
+//   1. Pick a holey frozen chunk (not the active tail).
+//   2. Densify that chunk's live bytes to the front (clear internal holes).
+//   3. Fill remaining free capacity by moving live blobs *from the active tail*
+//      into the target (SIMD bitset 0/1 knapsack / subset-sum when the free
+//      window is modest; first-fit decreasing for multi-MiB free regions).
+//   4. Densify and shrink the active tail so only the last block grows/shrinks
+//      with demand. Frozen blocks stay full-size (huge-page backed when enabled).
+// Fully-dead frozen chunks are released without a densify pass.
 class HashStorage {
  public:
   using size_type = std::size_t;
@@ -53,7 +61,9 @@ class HashStorage {
   enum class CompactionPhase : std::uint8_t {
     idle,
     select,
-    scan,
+    densify,      // repack live bytes in the target chunk
+    donate,       // pull from active tail into free space
+    shrink_tail,  // densify + shrink the active block
   };
 
   struct CompactionProgress {
@@ -133,9 +143,11 @@ class HashStorage {
     if (compaction_.phase == CompactionPhase::select) {
       result.candidates_remaining =
           compaction_.selection_limit - compaction_.selection_cursor;
-    } else if (compaction_.phase == CompactionPhase::scan) {
-      result.fields_total = compaction_.scan_limit;
-      result.fields_scanned = compaction_.scan_cursor;
+    } else if (compaction_.phase == CompactionPhase::densify ||
+               compaction_.phase == CompactionPhase::donate ||
+               compaction_.phase == CompactionPhase::shrink_tail) {
+      result.fields_total = compaction_.fields_total;
+      result.fields_scanned = compaction_.fields_scanned;
     }
     result.relocated_fields = compaction_.relocated_fields;
     result.relocated_bytes = compaction_.relocated_bytes;
@@ -253,11 +265,19 @@ class HashStorage {
     }
     const size_type old_value_len = value_lengths_[field_id];
     const auto old_value_offset = value_offset(field_id);
-    if (value.size() <= old_value_len) {
+    if (value.size() == old_value_len) {
+      // Same-width HSET: overwrite only; no dead-byte accounting.
       if (!value.empty()) {
         std::memcpy(chunk_ptr(old_value_offset), value.data(), value.size());
       }
-      mark_dead(old_value_offset, old_value_len - value.size());
+      return;
+    }
+    if (value.size() < old_value_len) {
+      if (!value.empty()) {
+        std::memcpy(chunk_ptr(old_value_offset), value.data(), value.size());
+      }
+      mark_dead(old_value_offset + static_cast<std::uint32_t>(value.size()),
+                old_value_len - value.size());
       value_lengths_[field_id] = static_cast<std::uint16_t>(value.size());
       return;
     }
@@ -311,10 +331,9 @@ class HashStorage {
     field_offsets_[dst] = field_offsets_[src];
     field_lengths_[dst] = field_lengths_[src];
     value_lengths_[dst] = value_lengths_[src];
-    if (compaction_active() && dst < compaction_.scan_cursor &&
-        references_chunk(dst, compaction_.victim_chunk)) {
-      // A swap-remove can move a victim reference behind an incremental scan's
-      // cursor. The bounded scan repeats when this flag is observed.
+    // Tail-donor densify/donate re-scans field ids when a swap-remove lands a
+    // reference that still touches the target or the active donor.
+    if (compaction_active()) {
       compaction_.rescan_required = true;
     }
   }
@@ -334,13 +353,10 @@ class HashStorage {
     }
   }
 
-  // Perform bounded maintenance on one fragmented arena chunk. `work_budget`
-  // counts chunk candidates during victim selection and field references during
-  // evacuation; `byte_budget` bounds copied bytes, except that one field/value
-  // pair may exceed it (an individual value is atomic and capped at 64 KiB).
-  // Calls may be interleaved with normal mutations. A swap-remove behind the
-  // cursor requests another bounded pass; per-chunk accounting prevents release
-  // while any live byte remains.
+  // Bounded tail-donor maintenance. `work_budget` counts selection candidates
+  // and field visits during densify/donate; `byte_budget` bounds bytes copied
+  // from the tail into the target (one field/value unit may exceed it). Safe to
+  // interleave with mutations; a swap-remove sets rescan_required.
   [[nodiscard]] CompactionStepResult compact_step(
       size_type work_budget = 256,
       size_type byte_budget = size_type{64} << 10) {
@@ -367,46 +383,91 @@ class HashStorage {
         }
         continue;
       }
-      assert(compaction_.phase == CompactionPhase::scan);
-      if (compaction_.scan_cursor < compaction_.scan_limit) {
-        const auto id = static_cast<std::uint32_t>(compaction_.scan_cursor);
-        const auto bytes = relocation_bytes(id, compaction_.victim_chunk);
-        if (bytes != 0 && result.bytes_moved != 0 &&
-            bytes > byte_budget - std::min(byte_budget, result.bytes_moved)) {
+
+      if (compaction_.phase == CompactionPhase::densify) {
+        const auto target = compaction_.victim_chunk;
+        auto& usage = chunk_usage_[target];
+        if (usage.written == usage.dead) {
+          // No live bytes: free the frozen chunk (returns a huge page to the pool).
+          if (target != active_chunk_) {
+            result.bytes_reclaimed = release_chunk(target);
+          } else {
+            // Empty active: collapse accounting; keep a tiny active cursor.
+            result.bytes_reclaimed = shrink_active_after_densify();
+          }
+          compaction_ = {};
+          result.completed = true;
           break;
         }
-        ++compaction_.scan_cursor;
-        const auto moved = relocate_from_chunk(id, compaction_.victim_chunk);
-        result.bytes_moved += moved;
+        densify_chunk(target);
         ++result.work_done;
-        if (moved != 0) {
-          ++compaction_.relocated_fields;
-          compaction_.relocated_bytes += moved;
+        compaction_.fields_scanned = size();
+        compaction_.fields_total = size();
+        if (target == active_chunk_) {
+          // Active-only fragmentation: densify + shrink, no donor.
+          result.bytes_reclaimed = shrink_active_after_densify();
+          compaction_ = {};
+          result.completed = true;
+          break;
         }
-        continue;
-      }
-      if (compaction_.rescan_required) {
+        compaction_.phase = CompactionPhase::donate;
         compaction_.rescan_required = false;
-        compaction_.scan_cursor = 0;
-        compaction_.scan_limit = size();
         continue;
       }
 
-      const auto victim = compaction_.victim_chunk;
-      auto& usage = chunk_usage_[victim];
-      if (usage.written != usage.dead) {
-        // Accounting says a live byte remains. Retain the chunk and scan again
-        // instead of risking a dangling global offset.
-        compaction_.scan_cursor = 0;
-        compaction_.scan_limit = size();
+      if (compaction_.phase == CompactionPhase::donate) {
+        if (compaction_.rescan_required) {
+          compaction_.rescan_required = false;
+        }
+        const auto target = compaction_.victim_chunk;
+        const auto free_space =
+            chunk_usage_[target].capacity - chunk_usage_[target].written;
+        if (free_space == 0 || active_chunk_ == kNoChunk ||
+            active_chunk_ == target) {
+          compaction_.phase = CompactionPhase::shrink_tail;
+          continue;
+        }
+        const auto moved =
+            donate_from_tail(target, free_space, byte_budget - result.bytes_moved,
+                             work_budget - result.work_done, result);
+        if (moved == 0 && result.work_done < work_budget) {
+          compaction_.phase = CompactionPhase::shrink_tail;
+          continue;
+        }
+        if (result.bytes_moved >= byte_budget ||
+            result.work_done >= work_budget) {
+          break;  // resume donate/shrink on the next step
+        }
+        compaction_.phase = CompactionPhase::shrink_tail;
         continue;
       }
-      result.bytes_reclaimed = release_chunk(victim);
+
+      assert(compaction_.phase == CompactionPhase::shrink_tail);
+      result.bytes_reclaimed += shrink_active_after_densify();
+      ++result.work_done;
       compaction_ = {};
       result.completed = true;
     }
     result.progress = compaction_progress();
     return result;
+  }
+
+  // Drain every fragmented chunk in place. Explicit optimization is allowed to
+  // do unbounded work, but it must not rebuild the arena: frozen blocks may be
+  // backed by a finite HugeTLB pool and replacing them while they are still live
+  // forces the replacement blocks onto base pages.
+  void compact() {
+    constexpr auto kUnlimited = std::numeric_limits<size_type>::max();
+    while (compaction_active() || dead_bytes_ != 0) {
+      const auto dead_before = dead_bytes_;
+      const auto result = compact_step(kUnlimited, kUnlimited);
+      if (!result.progress.active() && dead_bytes_ == dead_before) {
+        // No candidate despite non-zero dead accounting would otherwise spin
+        // forever in a release build.
+        assert(dead_bytes_ == 0);
+        break;
+      }
+    }
   }
 
  private:
@@ -435,11 +496,20 @@ class HashStorage {
     size_type selection_limit{0};
     size_type best_dead{0};
     size_type best_written{1};
-    size_type scan_cursor{0};
-    size_type scan_limit{0};
+    size_type fields_total{0};
+    size_type fields_scanned{0};
     size_type relocated_fields{0};
     size_type relocated_bytes{0};
     bool rescan_required{false};
+  };
+
+  // One movable unit from the active tail into a target chunk.
+  struct DonorItem {
+    std::uint32_t field_id{0};
+    size_type bytes{0};
+    bool move_field{false};
+    bool move_value{false};
+    bool as_contiguous_pair{false};
   };
 
   [[nodiscard]] std::uint32_t value_offset(
@@ -627,19 +697,17 @@ class HashStorage {
     usage.capacity = committed;
   }
 
+  // Rotate the append cursor onto a fresh active chunk. The full block freezes;
+  // with huge pages enabled it is re-homed onto one huge page (eat the memcpy
+  // once). The new active starts small and grows with demand -- only the tail
+  // is allowed to grow/shrink.
   void rotate_active_chunk(size_type first_run_bytes) {
-    // Freeze-to-max: the active chunk is full and about to be frozen. When huge pages
-    // are enabled and chunk_bytes_ is a huge multiple, re-home it onto one huge page
-    // (eat the memcpy once) so a frozen hash chunk is a single 2 MiB page -- one TLB
-    // entry instead of hundreds. Copying into a fresh block is also COW-safe. On
-    // failure or when disabled the chunk stays at its grown normal-page size.
-    if (active_chunk_ != kNoChunk && hugetlb::arena_enabled()) {
-      if (auto huge = try_promote_to_huge(chunks_[active_chunk_], active_offset_,
-                                          chunk_bytes_)) {
-        auto& usage = chunk_usage_[active_chunk_];
-        committed_bytes_ += chunk_bytes_ - usage.capacity;
+    if (active_chunk_ != kNoChunk) {
+      auto& usage = chunk_usage_[active_chunk_];
+      if (maybe_freeze_block_to_huge(chunks_[active_chunk_], active_offset_,
+                                     chunk_bytes_, usage.capacity,
+                                     committed_bytes_)) {
         usage.capacity = chunk_bytes_;
-        chunks_[active_chunk_] = std::move(huge);
       }
     }
     make_active_chunk(first_run_bytes);
@@ -672,6 +740,8 @@ class HashStorage {
     ensure_active_capacity(active_offset_ + total);
     const auto offset = encode_offset(active_chunk_, active_offset_);
     auto* dst = chunks_[active_chunk_].get() + active_offset_;
+    // Empty string_view::data() may be nullptr; memcpy of size 0 with a null
+    // source is UB, so gate each half.
     if (!field.empty()) {
       std::memcpy(dst, field.data(), field.size());
     }
@@ -690,17 +760,51 @@ class HashStorage {
     compaction_.selection_limit = chunk_usage_.size();
   }
 
+  // Prefer holey *frozen* chunks (not the active tail). Fully-dead frozen chunks
+  // win so we can free a huge page without densify. Active is only chosen when
+  // it is the sole fragmented chunk (densify + shrink, no donor).
   void inspect_compaction_candidate(size_type candidate) noexcept {
     assert(candidate < compaction_.selection_limit);
     const auto chunk = static_cast<std::uint32_t>(candidate);
     const auto& usage = chunk_usage_[chunk];
-    if (chunks_[chunk] && usage.dead != 0 &&
-        (compaction_.victim_chunk == kNoChunk ||
-         usage.dead * compaction_.best_written >
-             compaction_.best_dead * usage.written ||
-         (usage.dead * compaction_.best_written ==
-              compaction_.best_dead * usage.written &&
-          usage.dead > compaction_.best_dead))) {
+    if (!chunks_[chunk] || usage.dead == 0) {
+      return;
+    }
+
+    const bool fully_dead = usage.written == usage.dead;
+    const bool have = compaction_.victim_chunk != kNoChunk;
+    const bool best_fully_dead =
+        have && compaction_.best_dead != 0 &&
+        compaction_.best_dead == compaction_.best_written;
+    const bool is_active = chunk == active_chunk_;
+    const bool best_is_active =
+        have && compaction_.victim_chunk == active_chunk_;
+
+    if (fully_dead) {
+      if (is_active && have && !best_is_active) {
+        return;  // keep a freeable frozen chunk over an empty-able active
+      }
+      if (!have || !best_fully_dead || usage.dead > compaction_.best_dead ||
+          (usage.dead == compaction_.best_dead && !is_active && best_is_active)) {
+        compaction_.victim_chunk = chunk;
+        compaction_.best_dead = usage.dead;
+        compaction_.best_written = usage.written;
+      }
+      return;
+    }
+    if (best_fully_dead) {
+      return;
+    }
+    if (is_active && have && !best_is_active) {
+      return;  // prefer any holey frozen target over the tail
+    }
+    if (!have ||
+        usage.dead * compaction_.best_written >
+            compaction_.best_dead * usage.written ||
+        (usage.dead * compaction_.best_written ==
+             compaction_.best_dead * usage.written &&
+         usage.dead > compaction_.best_dead) ||
+        (best_is_active && !is_active)) {
       compaction_.victim_chunk = chunk;
       compaction_.best_dead = usage.dead;
       compaction_.best_written = usage.written;
@@ -708,96 +812,419 @@ class HashStorage {
   }
 
   [[nodiscard]] bool finish_compaction_selection() {
-    const auto victim = compaction_.victim_chunk;
-    if (victim == kNoChunk) {
+    if (compaction_.victim_chunk == kNoChunk) {
       compaction_ = {};
       return false;
     }
-    if (victim == active_chunk_) {
-      // Evacuation must never append back into its victim.
-      rotate_active_chunk(0);
-    }
-    compaction_.phase = CompactionPhase::scan;
-    compaction_.victim_chunk = victim;
-    compaction_.scan_limit = size();
+    compaction_.phase = CompactionPhase::densify;
+    compaction_.fields_total = size();
+    compaction_.fields_scanned = 0;
     return true;
   }
 
-  [[nodiscard]] size_type relocation_bytes(std::uint32_t field_id,
-                                            std::uint32_t victim) const noexcept {
-    if (field_id >= size()) {
-      return 0;
+  // Repack every live blob that lives on `chunk` to a dense prefix. Dead holes
+  // disappear; free capacity becomes capacity - live at the end of the block.
+  void densify_chunk(std::uint32_t chunk) {
+    auto& usage = chunk_usage_[chunk];
+    const size_type live = usage.written - usage.dead;
+    if (usage.dead == 0) {
+      if (chunk == active_chunk_) {
+        active_offset_ = usage.written;
+      }
+      return;
     }
-    size_type bytes = 0;
-    if (offset_references_chunk(field_offsets_[field_id],
-                                field_lengths_[field_id], victim)) {
-      bytes += field_lengths_[field_id];
+    if (live == 0) {
+      // All bytes dead: clear accounting. Caller releases frozen chunks; active
+      // keeps the slot and shrinks to the floor.
+      used_bytes_ -= usage.written;
+      dead_bytes_ -= usage.dead;
+      usage.written = 0;
+      usage.dead = 0;
+      if (chunk == active_chunk_) {
+        active_offset_ = 0;
+      }
+      return;
     }
-    if (offset_references_chunk(value_offset(field_id),
-                                value_lengths_[field_id], victim)) {
-      bytes += value_lengths_[field_id];
+
+    // Snapshot live field/value bytes that reside on this chunk, then rewrite.
+    // Temp holds a packed image; refs are updated to the new dense layout.
+    std::vector<char> packed;
+    packed.reserve(live);
+    struct RefUpdate {
+      std::uint32_t field_id;
+      size_type packed_off;
+      size_type field_len;
+      size_type value_len;
+      bool both;  // field||value contiguous in packed
+      bool field_only;
+      bool value_only;
+    };
+    std::vector<RefUpdate> updates;
+    updates.reserve(size());
+
+    for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(size()); ++id) {
+      const auto flen = static_cast<size_type>(field_lengths_[id]);
+      const auto vlen = static_cast<size_type>(value_lengths_[id]);
+      const auto f_off = field_offsets_[id];
+      const auto v_off = value_offset(id);
+      const bool field_here = offset_references_chunk(f_off, flen, chunk);
+      const bool value_here = offset_references_chunk(v_off, vlen, chunk);
+      if (!field_here && !value_here) {
+        continue;
+      }
+      const size_type pack_at = packed.size();
+      if (field_here && value_here && value_is_contiguous(id)) {
+        const auto field = view(id);
+        const auto val = value(id);
+        packed.insert(packed.end(), field.begin(), field.end());
+        packed.insert(packed.end(), val.begin(), val.end());
+        updates.push_back({id, pack_at, flen, vlen, true, false, false});
+      } else {
+        if (field_here) {
+          const auto field = view(id);
+          const size_type at = packed.size();
+          packed.insert(packed.end(), field.begin(), field.end());
+          updates.push_back({id, at, flen, 0, false, true, false});
+        }
+        if (value_here) {
+          const auto val = value(id);
+          const size_type at = packed.size();
+          packed.insert(packed.end(), val.begin(), val.end());
+          updates.push_back({id, at, 0, vlen, false, false, true});
+        }
+      }
     }
-    return bytes;
+    assert(packed.size() == live);
+
+    // COW if the frozen block is shared (fork), then write the dense prefix.
+    if (chunks_[chunk].use_count() > 1) {
+      chunks_[chunk] =
+          grow_page_block(chunks_[chunk], 0, usage.capacity);
+    }
+    if (live != 0) {
+      std::memcpy(chunks_[chunk].get(), packed.data(), live);
+    }
+
+    for (const auto& u : updates) {
+      if (u.both) {
+        field_offsets_[u.field_id] =
+            encode_offset(chunk, u.packed_off);
+        clear_relocated_value_offset(u.field_id);
+      } else if (u.field_only) {
+        field_offsets_[u.field_id] =
+            encode_offset(chunk, u.packed_off);
+      } else if (u.value_only) {
+        set_relocated_value_offset(u.field_id,
+                                   encode_offset(chunk, u.packed_off));
+      }
+    }
+
+    // Drop dead accounting for this chunk: used/dead both lose the hole bytes.
+    used_bytes_ -= usage.dead;
+    dead_bytes_ -= usage.dead;
+    usage.written = live;
+    usage.dead = 0;
+    if (chunk == active_chunk_) {
+      active_offset_ = live;
+    }
   }
 
-  [[nodiscard]] size_type relocate_from_chunk(std::uint32_t field_id,
-                                               std::uint32_t victim) {
-    if (field_id >= size()) {
-      return 0;
+  // Write field||value at the end of a densified target's live prefix.
+  [[nodiscard]] std::uint32_t append_into_chunk(std::uint32_t chunk,
+                                                std::string_view field,
+                                                std::string_view value) {
+    const auto total = field.size() + value.size();
+    auto& usage = chunk_usage_[chunk];
+    assert(total == 0 || usage.written + total <= usage.capacity);
+    if (total == 0) {
+      return encode_offset(chunk, usage.written);
     }
-    const auto old_field_offset = field_offsets_[field_id];
-    const auto old_value_offset = value_offset(field_id);
-    const auto field_len = static_cast<size_type>(field_lengths_[field_id]);
-    const auto value_len = static_cast<size_type>(value_lengths_[field_id]);
-    const bool move_field =
-        offset_references_chunk(old_field_offset, field_len, victim);
-    const bool move_value =
-        offset_references_chunk(old_value_offset, value_len, victim);
-    if (!move_field && !move_value) {
-      return 0;
+    if (chunks_[chunk].use_count() > 1) {
+      chunks_[chunk] =
+          grow_page_block(chunks_[chunk], usage.written, usage.capacity);
+    }
+    const auto offset = encode_offset(chunk, usage.written);
+    auto* dst = chunks_[chunk].get() + usage.written;
+    if (!field.empty()) {
+      std::memcpy(dst, field.data(), field.size());
+    }
+    if (!value.empty()) {
+      std::memcpy(dst + field.size(), value.data(), value.size());
+    }
+    usage.written += total;
+    used_bytes_ += total;
+    return offset;
+  }
+
+  void collect_donor_items(std::vector<DonorItem>& out) const {
+    out.clear();
+    if (active_chunk_ == kNoChunk) {
+      return;
+    }
+    const auto tail = active_chunk_;
+    for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(size()); ++id) {
+      const auto flen = static_cast<size_type>(field_lengths_[id]);
+      const auto vlen = static_cast<size_type>(value_lengths_[id]);
+      const bool field_on =
+          offset_references_chunk(field_offsets_[id], flen, tail);
+      const bool value_on =
+          offset_references_chunk(value_offset(id), vlen, tail);
+      if (!field_on && !value_on) {
+        continue;
+      }
+      if (field_on && value_on && value_is_contiguous(id)) {
+        out.push_back({id, flen + vlen, true, true, true});
+      } else {
+        // Prefer contiguous pairs; split pieces are separate knapsack items.
+        if (field_on && flen != 0) {
+          out.push_back({id, flen, true, false, false});
+        }
+        if (value_on && vlen != 0) {
+          out.push_back({id, vlen, false, true, false});
+        }
+        if (field_on && flen == 0 && value_on && vlen == 0) {
+          out.push_back({id, 0, true, true, true});
+        }
+      }
+    }
+  }
+
+  // 0/1 knapsack / subset-sum: maximize total bytes ≤ capacity (the single
+  // trailing free region after densify). Bitset DP with SIMD word-ORs when the
+  // free window fits in memory; first-fit decreasing beyond that.
+  void select_donor_subset(std::vector<DonorItem>& items, size_type capacity,
+                           std::vector<std::size_t>& chosen) const {
+    chosen.clear();
+    if (items.empty() || capacity == 0) {
+      return;
+    }
+    // Drop items that cannot fit alone.
+    std::vector<DonorItem> fit;
+    fit.reserve(items.size());
+    for (const auto& item : items) {
+      if (item.bytes > 0 && item.bytes <= capacity) {
+        fit.push_back(item);
+      }
+    }
+    if (fit.empty()) {
+      return;
     }
 
-    const auto field = view(field_id);
-    const auto old_value = value(field_id);
-    // A contiguous value moves with its field even when that field is empty.
-    // Updating the (otherwise unused) empty-field offset keeps the pair
-    // contiguous and lets an empty relocation block be reclaimed.
-    if (move_value && value_is_contiguous(field_id)) {
-      field_offsets_[field_id] = append_bytes(field, old_value);
-      clear_relocated_value_offset(field_id);
-    } else {
-      auto new_field_offset = kContiguousValueOffset;
-      auto new_value_offset = kContiguousValueOffset;
-      if (move_field) {
-        new_field_offset = append_bytes(field, {});
-      }
-      try {
-        if (move_value) {
-          assert(!value_is_contiguous(field_id));
-          new_value_offset = append_bytes({}, old_value);
+    // Bitset of (capacity+1) bits ≈ capacity/8 bytes, plus a same-sized
+    // workspace for `bits |= bits << w`, plus who[] for reconstruction.
+    // Cap keeps the temporary tables reasonable on the compaction path.
+    constexpr size_type kDpCapacityCap = size_type{256} << 10;
+    if (capacity <= kDpCapacityCap && fit.size() <= 8192) {
+      const std::size_t nbits = static_cast<std::size_t>(capacity) + 1;
+      const std::size_t nwords = (nbits + 63) / 64;
+      std::vector<std::uint64_t> bits(nwords, 0);
+      std::vector<std::uint64_t> workspace(nwords, 0);
+      // who[s] = fit index that first made sum s reachable; npos = unset.
+      std::vector<std::uint32_t> who(nbits, std::numeric_limits<std::uint32_t>::max());
+      bits[0] = 1;
+
+      for (std::size_t i = 0; i < fit.size(); ++i) {
+        const auto w = static_cast<std::size_t>(fit[i].bytes);
+        // workspace = bits << w, then bits |= workspace (SIMD OR of words).
+        simd::shl_u64_bitset(workspace.data(), bits.data(), nwords, w);
+        // Record newly set sums before merging (for reconstruction).
+        for (std::size_t wi = 0; wi < nwords; ++wi) {
+          std::uint64_t newly = workspace[wi] & ~bits[wi];
+          // Mask off bits above capacity in the last word.
+          if (wi + 1 == nwords && (nbits % 64) != 0) {
+            const std::uint64_t mask =
+                (std::uint64_t{1} << (nbits % 64)) - 1u;
+            newly &= mask;
+          }
+          while (newly != 0) {
+            const auto bit = static_cast<std::size_t>(std::countr_zero(newly));
+            newly &= newly - 1;
+            const std::size_t s = wi * 64 + bit;
+            if (s <= static_cast<std::size_t>(capacity) &&
+                who[s] == std::numeric_limits<std::uint32_t>::max()) {
+              who[s] = static_cast<std::uint32_t>(i);
+            }
+          }
         }
-      } catch (...) {
-        // The first copy is not published yet. Account it as dead so arena
-        // invariants remain exact while the original references stay live.
-        if (new_field_offset != kContiguousValueOffset) {
-          mark_dead(new_field_offset, field_len);
+        simd::or_u64_words(bits.data(), workspace.data(), nwords);
+        // Clear any bits above capacity that shift may have set in the last word.
+        if ((nbits % 64) != 0) {
+          const std::uint64_t mask =
+              (std::uint64_t{1} << (nbits % 64)) - 1u;
+          bits[nwords - 1] &= mask;
         }
-        throw;
       }
-      if (new_field_offset != kContiguousValueOffset) {
-        field_offsets_[field_id] = new_field_offset;
+
+      const std::size_t best =
+          simd::bitset_msb_u64(bits.data(), static_cast<std::size_t>(capacity));
+      if (best == static_cast<std::size_t>(-1) || best == 0) {
+        items.clear();
+        return;
       }
-      if (new_value_offset != kContiguousValueOffset) {
-        set_relocated_value_offset(field_id, new_value_offset);
+
+      std::vector<DonorItem> picked;
+      picked.reserve(fit.size());
+      std::size_t s = best;
+      while (s > 0) {
+        const auto i = who[s];
+        assert(i != std::numeric_limits<std::uint32_t>::max());
+        assert(i < fit.size());
+        assert(fit[i].bytes <= s);
+        picked.push_back(fit[i]);
+        s -= fit[i].bytes;
+      }
+      items.swap(picked);
+      chosen.clear();
+      for (std::size_t i = 0; i < items.size(); ++i) {
+        chosen.push_back(i);
+      }
+      return;
+    }
+
+    // First-fit decreasing (free window larger than the DP table budget).
+    std::sort(fit.begin(), fit.end(),
+              [](const DonorItem& a, const DonorItem& b) {
+                return a.bytes > b.bytes;
+              });
+    size_type left = capacity;
+    items.clear();
+    for (const auto& item : fit) {
+      if (item.bytes <= left) {
+        items.push_back(item);
+        chosen.push_back(items.size() - 1);
+        left -= item.bytes;
       }
     }
-    if (move_field) {
-      mark_dead(old_field_offset, field_len);
+  }
+
+  // Move selected tail items into the densified target. Returns bytes moved.
+  [[nodiscard]] size_type donate_from_tail(std::uint32_t target,
+                                           size_type free_space,
+                                           size_type byte_budget,
+                                           size_type work_budget,
+                                           CompactionStepResult& result) {
+    if (free_space == 0 || byte_budget == 0 || work_budget == 0) {
+      return 0;
     }
-    if (move_value) {
-      mark_dead(old_value_offset, value_len);
+    std::vector<DonorItem> items;
+    collect_donor_items(items);
+    result.work_done += 1;  // collection pass
+
+    std::vector<std::size_t> chosen;
+    select_donor_subset(items, std::min(free_space, byte_budget), chosen);
+
+    size_type moved = 0;
+    for (const auto idx : chosen) {
+      if (result.work_done >= work_budget && moved != 0) {
+        break;
+      }
+      const auto& item = items[idx];
+      if (moved + item.bytes > byte_budget && moved != 0) {
+        break;
+      }
+      // Re-validate the item still lives on the active tail (mutations).
+      if (active_chunk_ == kNoChunk) {
+        break;
+      }
+      const auto flen = static_cast<size_type>(field_lengths_[item.field_id]);
+      const auto vlen = static_cast<size_type>(value_lengths_[item.field_id]);
+      const auto f_off = field_offsets_[item.field_id];
+      const auto v_off = value_offset(item.field_id);
+      const bool field_on =
+          offset_references_chunk(f_off, flen, active_chunk_);
+      const bool value_on =
+          offset_references_chunk(v_off, vlen, active_chunk_);
+      if (item.as_contiguous_pair) {
+        if (!(field_on && value_on && value_is_contiguous(item.field_id))) {
+          ++result.work_done;
+          continue;
+        }
+        if (chunk_usage_[target].written + flen + vlen >
+            chunk_usage_[target].capacity) {
+          break;
+        }
+        const auto field = view(item.field_id);
+        const auto val = value(item.field_id);
+        const auto new_off = append_into_chunk(target, field, val);
+        mark_dead(f_off, flen);
+        mark_dead(v_off, vlen);
+        field_offsets_[item.field_id] = new_off;
+        clear_relocated_value_offset(item.field_id);
+        moved += flen + vlen;
+        ++compaction_.relocated_fields;
+        compaction_.relocated_bytes += flen + vlen;
+      } else if (item.move_field && !item.move_value) {
+        if (!field_on) {
+          ++result.work_done;
+          continue;
+        }
+        if (chunk_usage_[target].written + flen >
+            chunk_usage_[target].capacity) {
+          break;
+        }
+        const auto field = view(item.field_id);
+        const auto new_off = append_into_chunk(target, field, {});
+        mark_dead(f_off, flen);
+        field_offsets_[item.field_id] = new_off;
+        moved += flen;
+        ++compaction_.relocated_fields;
+        compaction_.relocated_bytes += flen;
+      } else if (item.move_value && !item.move_field) {
+        if (!value_on) {
+          ++result.work_done;
+          continue;
+        }
+        if (chunk_usage_[target].written + vlen >
+            chunk_usage_[target].capacity) {
+          break;
+        }
+        const auto val = value(item.field_id);
+        const auto new_off = append_into_chunk(target, {}, val);
+        mark_dead(v_off, vlen);
+        set_relocated_value_offset(item.field_id, new_off);
+        moved += vlen;
+        ++compaction_.relocated_fields;
+        compaction_.relocated_bytes += vlen;
+      }
+      result.bytes_moved += item.bytes;
+      ++result.work_done;
+      ++compaction_.fields_scanned;
     }
-    return (move_field ? field_len : 0) + (move_value ? value_len : 0);
+    return moved;
+  }
+
+  // Densify the active tail and shrink its physical allocation toward live size.
+  [[nodiscard]] size_type shrink_active_after_densify() {
+    if (active_chunk_ == kNoChunk) {
+      return 0;
+    }
+    densify_chunk(active_chunk_);
+    auto& usage = chunk_usage_[active_chunk_];
+    const size_type live = usage.written;  // dead cleared by densify
+    active_offset_ = live;
+    const size_type want =
+        live == 0 ? kInitialArenaBytes
+                  : std::min(chunk_bytes_,
+                             std::max(kInitialArenaBytes,
+                                      page_block_alloc_bytes(live)));
+    // Never grow here; only shrink (or COW to unique) when capacity is larger.
+    if (want >= usage.capacity && chunks_[active_chunk_].use_count() == 1) {
+      return 0;
+    }
+    const size_type target_cap = std::min(usage.capacity, want);
+    if (target_cap == usage.capacity &&
+        chunks_[active_chunk_].use_count() == 1) {
+      return 0;
+    }
+    auto fresh = grow_page_block(chunks_[active_chunk_], live, target_cap);
+    const size_type new_cap = page_block_alloc_bytes(target_cap);
+    const size_type reclaimed =
+        usage.capacity > new_cap ? usage.capacity - new_cap : 0;
+    committed_bytes_ -= usage.capacity;
+    committed_bytes_ += new_cap;
+    usage.capacity = new_cap;
+    chunks_[active_chunk_] = std::move(fresh);
+    return reclaimed;
   }
 
   [[nodiscard]] size_type release_chunk(std::uint32_t chunk) {

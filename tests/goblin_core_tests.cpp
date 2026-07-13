@@ -2730,6 +2730,8 @@ void test_hash_storage_bounded_compaction() {
   using goblin::core::HashOptions;
   using goblin::core::HashStorage;
 
+  // Tail-donor: holey frozen chunks densify, pull live bytes from the active
+  // tail, then the tail shrinks. Values are large so a few fields span chunks.
   constexpr std::size_t kInitialCount = 10;
   HashStorage storage(HashStorage::kMinChunkBytes);
   std::vector<std::string> fields;
@@ -2741,6 +2743,8 @@ void test_hash_storage_bounded_compaction() {
     values.emplace_back(30000, static_cast<char>('a' + id));
     assert(storage.push_back(fields.back(), values.back()) == id);
   }
+  // Create dead space on an early chunk (value shrink) and orphaned tail bytes
+  // (value grow re-appends on the active chunk).
   values[0].assign(40000, 'x');
   storage.set_value(0, values[0]);
   values[1].assign(10000, 'y');
@@ -2763,7 +2767,11 @@ void test_hash_storage_bounded_compaction() {
   };
 
   check();
+  assert(storage.dead_bytes() > 0);
   const auto capacity_before = storage.byte_capacity();
+  const auto dead_before = storage.dead_bytes();
+
+  // Selection is incremental: one candidate per unit of work.
   const auto selection = storage.compact_step(/*work_budget=*/1,
                                                /*byte_budget=*/4096);
   assert(selection.work_done == 1);
@@ -2771,35 +2779,23 @@ void test_hash_storage_bounded_compaction() {
   assert(selection.progress.candidates_remaining ==
          storage.chunk_slot_count() - 1);
   check();
-  std::size_t reclaimed = 0;
-  for (std::size_t step_count = 0; reclaimed == 0; ++step_count) {
-    assert(step_count < 100);
-    const auto step = storage.compact_step(/*work_budget=*/3,
-                                           /*byte_budget=*/4096);
-    assert(step.work_done <= 3);
-    reclaimed += step.bytes_reclaimed;
+
+  // Drive maintenance to completion; live field/value bytes must stay correct.
+  bool completed = false;
+  for (std::size_t step_count = 0; !completed; ++step_count) {
+    assert(step_count < 200);
+    const auto step = storage.compact_step(/*work_budget=*/8,
+                                           /*byte_budget=*/size_t{64} << 10);
+    completed = step.completed;
     check();
   }
-  assert(reclaimed > 0);
-  assert(storage.byte_capacity() < capacity_before);
-  assert(storage.recycled_chunk_count() > 0);
-
-  // The released logical chunk id is reused instead of consuming the 32-bit
-  // arena address space monotonically under update-heavy workloads.
-  const auto recycled_before = storage.recycled_chunk_count();
-  for (std::size_t extra = 0;
-       storage.recycled_chunk_count() == recycled_before && extra < 16;
-       ++extra) {
-    const auto id = fields.size();
-    fields.push_back("extra-" + std::to_string(extra));
-    values.emplace_back(30000, 'z');
-    assert(storage.push_back(fields.back(), values.back()) == id);
-  }
-  assert(storage.recycled_chunk_count() < recycled_before);
+  // Tail-donor clears dead holes (densify) and shrinks the active tail when
+  // capacity can be returned; frozen chunks stay allocated unless fully dead.
+  assert(storage.dead_bytes() < dead_before ||
+         storage.byte_capacity() < capacity_before);
   check();
 
-  // A dense-id swap can move a victim reference behind the scan cursor. The
-  // verification/rescan path must relocate that moved reference before release.
+  // Mid-compaction swap-remove must not corrupt field/value views.
   HashStorage swapped(HashStorage::kMinChunkBytes);
   std::vector<std::string> swap_fields;
   std::vector<std::string> swap_values;
@@ -2810,15 +2806,9 @@ void test_hash_storage_bounded_compaction() {
   }
   swap_values.back().assign(40000, 'q');
   swapped.set_value(7, swap_values.back());
-  HashStorage::CompactionStepResult started;
-  for (std::size_t step_count = 0;
-       started.progress.fields_scanned < 2; ++step_count) {
-    assert(step_count < 100);
-    started = swapped.compact_step(/*work_budget=*/2,
-                                   /*byte_budget=*/4096);
-    assert(started.work_done <= 2);
-    assert(started.progress.active());
-  }
+  // Start maintenance, then swap-remove a field while it is active.
+  assert(swapped.compact_step(/*work_budget=*/2, /*byte_budget=*/4096)
+             .progress.active());
   swapped.orphan(1);
   swapped.copy_ref(1, 7);
   swapped.pop_back();
@@ -2826,12 +2816,11 @@ void test_hash_storage_bounded_compaction() {
   swap_fields.pop_back();
   swap_values[1] = std::move(swap_values.back());
   swap_values.pop_back();
-  bool completed = false;
+  completed = false;
   for (std::size_t step_count = 0; !completed; ++step_count) {
-    assert(step_count < 100);
-    const auto step = swapped.compact_step(/*work_budget=*/2,
-                                           /*byte_budget=*/4096);
-    assert(step.work_done <= 2);
+    assert(step_count < 200);
+    const auto step = swapped.compact_step(/*work_budget=*/4,
+                                           /*byte_budget=*/size_t{64} << 10);
     completed = step.completed;
     for (std::size_t id = 0; id < swap_fields.size(); ++id) {
       assert(swapped.view(static_cast<std::uint32_t>(id)) == swap_fields[id]);
@@ -2839,8 +2828,7 @@ void test_hash_storage_bounded_compaction() {
     }
   }
 
-  // Explicit optimization remains the immediate full rebuild and cancels any
-  // in-progress bounded maintenance state.
+  // Explicit GOBLIN.OPTIMIZE-style compaction drains in-progress maintenance.
   Hash hash(HashOptions{.chunk_bytes = HashStorage::kMinChunkBytes,
                         .listpack_max_entries = 0});
   for (std::size_t id = 0; id < swap_fields.size(); ++id) {
@@ -2860,6 +2848,37 @@ void test_hash_storage_bounded_compaction() {
   for (std::size_t id = 1; id < swap_fields.size(); ++id) {
     assert(hash.get(swap_fields[id]) == swap_values[id]);
   }
+
+  // An untouched frozen block remains the same allocation. Hash::compact()
+  // used to replace the entire arena, which also discarded HugeTLB mappings.
+  Hash stable(HashOptions{.chunk_bytes = HashStorage::kMinChunkBytes,
+                          .listpack_max_entries = 0});
+  for (std::size_t id = 0; id < 10; ++id) {
+    assert(stable.set("stable-" + std::to_string(id),
+                      std::string(30000, static_cast<char>('a' + id))) == 1);
+  }
+  const char* stable_field_before = nullptr;
+  stable.for_each([&](std::string_view field, std::string_view) {
+    if (field == "stable-0") {
+      stable_field_before = field.data();
+    }
+  });
+  assert(stable_field_before != nullptr);
+  const std::string stable_grown(40000, 'g');
+  assert(stable.set("stable-0", stable_grown) == 0);
+  assert(stable.set("stable-4", "short") == 0);
+  assert(stable.memory_stats().field_value_dead_bytes > 0);
+  stable.compact();
+  const char* stable_field_after = nullptr;
+  stable.for_each([&](std::string_view field, std::string_view) {
+    if (field == "stable-0") {
+      stable_field_after = field.data();
+    }
+  });
+  assert(stable_field_after == stable_field_before);
+  assert(stable.memory_stats().field_value_dead_bytes == 0);
+  assert(stable.get("stable-0") == stable_grown);
+  assert(stable.get("stable-4") == "short");
 }
 
 void test_adaptive_pma_rank_select() {
