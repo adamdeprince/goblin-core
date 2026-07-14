@@ -1,8 +1,10 @@
 // Native HSET speed, latency, and process-memory benchmark.
 //
-// This is intentionally a black-box RESP client. It starts each configured
-// server on a fresh localhost port, generates the bulk and mixed workloads in
-// C++, reads resident memory from /proc, and writes JSON plus Markdown results.
+// Incumbents use black-box RESP/TCP. Goblin can additionally be driven through
+// the typed SBE client over its shared-memory ring, using the same workloads and
+// correctness checks. The harness writes JSON plus Markdown results.
+
+#include "goblin/core/sbe_ring_client.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,11 +23,13 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <random>
 #include <regex>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -42,6 +46,9 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -61,7 +68,10 @@ struct EngineSpec {
   std::string kind;
   fs::path binary;
 
-  [[nodiscard]] bool is_goblin() const { return kind == "goblin"; }
+  [[nodiscard]] bool is_goblin() const {
+    return kind == "goblin" || kind == "goblin-sbe";
+  }
+  [[nodiscard]] bool is_sbe() const { return kind == "goblin-sbe"; }
 };
 
 struct Config {
@@ -94,6 +104,8 @@ struct Config {
   std::uint64_t seed = 0xC0FFEE;
   double settle_seconds = 0.5;
   double timeout_seconds = 600.0;
+  int server_core = -1;
+  int client_core = -1;
   bool skip_large = false;
   bool skip_small = false;
   bool skip_relocation = false;
@@ -140,9 +152,9 @@ EngineSpec parse_engine(std::string_view text) {
   EngineSpec spec{std::string(text.substr(0, first)),
                   std::string(text.substr(first + 1, second - first - 1)),
                   std::string(text.substr(second + 1))};
-  if (spec.kind != "goblin" && spec.kind != "redis" &&
-      spec.kind != "dragonfly") {
-    fail("engine kind must be goblin, redis, or dragonfly");
+  if (spec.kind != "goblin" && spec.kind != "goblin-sbe" && spec.kind != "redis" &&
+      spec.kind != "dragonfly" && spec.kind != "mini-redis-go") {
+    fail("engine kind must be goblin, goblin-sbe, redis, dragonfly, or mini-redis-go");
   }
   return spec;
 }
@@ -174,6 +186,8 @@ void print_help(const char* program) {
       << "  --mixed-samples N\n"
       << "  --mixed-rounds N\n"
       << "  --goblin-arg VALUE            repeatable\n"
+      << "  --server-core N               pin each server on Linux\n"
+      << "  --client-core N               pin this harness and child clients on Linux\n"
       << "  --output-json PATH\n"
       << "  --report PATH\n";
 }
@@ -251,6 +265,10 @@ Config parse_args(int argc, char** argv) {
       config.settle_seconds = std::stod(next_arg(argc, argv, i));
     } else if (arg == "--timeout") {
       config.timeout_seconds = std::stod(next_arg(argc, argv, i));
+    } else if (arg == "--server-core") {
+      config.server_core = std::stoi(next_arg(argc, argv, i));
+    } else if (arg == "--client-core") {
+      config.client_core = std::stoi(next_arg(argc, argv, i));
     } else if (arg == "--skip-large") {
       config.skip_large = true;
     } else if (arg == "--skip-small") {
@@ -306,7 +324,25 @@ Config parse_args(int argc, char** argv) {
   if (config.settle_seconds < 0.0 || config.timeout_seconds <= 0.0) {
     fail("settle time must be non-negative and timeout must be positive");
   }
+  if (config.server_core < -1 || config.client_core < -1) {
+    fail("CPU cores must be non-negative or -1 for unpinned");
+  }
   return config;
+}
+
+void pin_current_process(int core) {
+  if (core < 0) return;
+#ifdef __linux__
+  if (core >= CPU_SETSIZE) fail("CPU core is outside cpu_set_t range");
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  CPU_SET(core, &set);
+  if (::sched_setaffinity(0, sizeof(set), &set) != 0) {
+    fail(errno_message("sched_setaffinity"));
+  }
+#else
+  (void)core;
+#endif
 }
 
 struct RespValue {
@@ -365,6 +401,13 @@ class RespClient {
     }
   }
 
+  RespClient(const fs::path& ring_path, double timeout_seconds) {
+    const auto wait = std::chrono::milliseconds(
+        static_cast<long long>(std::ceil(timeout_seconds * 1000.0)));
+    sbe_ = goblin::core::SbeRingClient::open(ring_path.c_str(), wait);
+    if (!sbe_) fail("could not open SBE ring: " + ring_path.string());
+  }
+
   RespClient(const RespClient&) = delete;
   RespClient& operator=(const RespClient&) = delete;
   ~RespClient() {
@@ -372,6 +415,7 @@ class RespClient {
   }
 
   RespValue command(const std::vector<std::string>& parts) {
+    if (sbe_) return sbe_command(parts);
     std::string wire;
     wire.reserve(128);
     append_command(wire, parts);
@@ -382,6 +426,14 @@ class RespClient {
   std::pair<std::int64_t, double> pipeline(
       std::int64_t count, int depth,
       const std::function<std::vector<std::string>(std::int64_t)>& build) {
+    if (sbe_) {
+      const auto started = Clock::now();
+      for (std::int64_t index = 0; index < count; ++index) {
+        (void)command(build(index));
+      }
+      return {count,
+              std::chrono::duration<double>(Clock::now() - started).count()};
+    }
     const auto started = Clock::now();
     std::string wire;
     wire.reserve(static_cast<std::size_t>(depth) * 256);
@@ -403,10 +455,139 @@ class RespClient {
     return {count, std::chrono::duration<double>(Clock::now() - started).count()};
   }
 
+  double benchmark_sbe_point(const std::vector<std::string>& command,
+                             int requests, std::int64_t keyspace,
+                             std::uint64_t seed) {
+    if (!sbe_) fail("SBE point benchmark requested for a RESP client");
+    if (command.empty()) fail("empty SBE point command");
+    std::uint64_t state = seed;
+    std::array<char, 96> key_buffer{};
+    std::array<char, 96> field_buffer{};
+    const auto started = Clock::now();
+    for (int request = 0; request < requests; ++request) {
+      state = state * 6'364'136'223'846'793'005ULL + 1'442'695'040'888'963'407ULL;
+      const auto random = static_cast<std::int64_t>(
+          state % static_cast<std::uint64_t>(std::max<std::int64_t>(1, keyspace)));
+      const auto key = render_random_token(command.at(1), random, key_buffer);
+      if (command[0] == "HSET") {
+        const auto field = render_random_token(command.at(2), random, field_buffer);
+        const std::array<std::pair<std::string_view, std::string_view>, 1> entries{{
+            {field, command.at(3)}}};
+        (void)sbe_->hset(key, entries);
+      } else if (command[0] == "HGET") {
+        const auto field = render_random_token(command.at(2), random, field_buffer);
+        (void)sbe_->hget(key, field);
+      } else {
+        fail("unsupported SBE point command: " + command[0]);
+      }
+    }
+    const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
+    return static_cast<double>(requests) / seconds;
+  }
+
  private:
   int fd_ = -1;
+  std::optional<goblin::core::SbeRingClient> sbe_;
   std::string input_;
   std::size_t input_pos_ = 0;
+
+  static RespValue integer(std::int64_t value) {
+    RespValue response;
+    response.type = RespValue::Type::integer;
+    response.integer = value;
+    return response;
+  }
+
+  static RespValue string(std::string value) {
+    RespValue response;
+    response.type = RespValue::Type::string;
+    response.string = std::move(value);
+    return response;
+  }
+
+  static std::string_view render_random_token(
+      std::string_view pattern, std::int64_t value, std::array<char, 96>& output) {
+    constexpr std::string_view token = "__rand_int__";
+    const auto position = pattern.find(token);
+    if (position == std::string_view::npos) return pattern;
+    if (pattern.size() - token.size() + kRandomTokenDigits > output.size()) {
+      fail("random-token command component is too long");
+    }
+    std::memcpy(output.data(), pattern.data(), position);
+    std::array<char, 32> digits{};
+    const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), value);
+    if (converted.ec != std::errc{}) fail("random token formatting failed");
+    const auto digit_count = static_cast<std::size_t>(converted.ptr - digits.data());
+    if (digit_count > static_cast<std::size_t>(kRandomTokenDigits)) {
+      fail("random token value exceeds its fixed width");
+    }
+    const auto zeroes = static_cast<std::size_t>(kRandomTokenDigits) - digit_count;
+    std::memset(output.data() + position, '0', zeroes);
+    std::memcpy(output.data() + position + zeroes, digits.data(), digit_count);
+    const auto suffix = pattern.substr(position + token.size());
+    std::memcpy(output.data() + position + kRandomTokenDigits,
+                suffix.data(), suffix.size());
+    return {output.data(), position + kRandomTokenDigits + suffix.size()};
+  }
+
+  RespValue sbe_command(const std::vector<std::string>& parts) {
+    if (parts.empty()) fail("empty benchmark command");
+    auto& client = *sbe_;
+    const auto& verb = parts.front();
+    if (verb == "PING") {
+      if (!client.ping()) fail("SBE PING failed");
+      return string("PONG");
+    }
+    if (verb == "HSET") {
+      if (parts.size() < 4 || parts.size() % 2 != 0) fail("invalid HSET command");
+      std::vector<std::pair<std::string_view, std::string_view>> entries;
+      entries.reserve((parts.size() - 2) / 2);
+      for (std::size_t index = 2; index < parts.size(); index += 2) {
+        entries.emplace_back(parts[index], parts[index + 1]);
+      }
+      return integer(client.hset(parts[1], entries));
+    }
+    if (verb == "HGET") {
+      const auto value = client.hget(parts.at(1), parts.at(2));
+      return value ? string(*value) : RespValue{};
+    }
+    if (verb == "HDEL") {
+      std::vector<std::string_view> fields;
+      fields.reserve(parts.size() - 2);
+      for (std::size_t index = 2; index < parts.size(); ++index) {
+        fields.push_back(parts[index]);
+      }
+      return integer(client.hdel(parts.at(1), fields));
+    }
+    if (verb == "HLEN") return integer(client.hlen(parts.at(1)));
+    if (verb == "DEL") {
+      std::vector<std::string_view> keys;
+      keys.reserve(parts.size() - 1);
+      for (std::size_t index = 1; index < parts.size(); ++index) {
+        keys.push_back(parts[index]);
+      }
+      return integer(client.del(keys));
+    }
+    if (verb == "INFO") return string(client.info());
+    if (verb == "GOBLIN.OPTIMIZE") {
+      const double density = parts.size() > 2 ? std::stod(parts[2]) : 0.0;
+      const auto reclaimed = client.optimize(parts.at(1), density);
+      return reclaimed ? integer(*reclaimed) : RespValue{};
+    }
+    if (verb == "GOBLIN.MEMORY") {
+      const auto fields = client.memory(parts.at(1));
+      if (!fields) return {};
+      RespValue response;
+      response.type = RespValue::Type::array;
+      response.array.reserve(fields->size() * 2);
+      for (const auto& [name, value] : *fields) {
+        response.array.push_back(string(name));
+        response.array.push_back(string(value));
+      }
+      return response;
+    }
+    fail("SBE benchmark adapter does not support command: " + verb);
+  }
 
   void send_all(std::string_view data) {
     std::size_t sent = 0;
@@ -593,8 +774,11 @@ fs::path temporary_directory(std::string_view prefix) {
 class ServerProcess {
  public:
   ServerProcess() = default;
-  ServerProcess(pid_t pid, int port, fs::path temp_dir)
-      : pid_(pid), port_(port), temp_dir_(std::move(temp_dir)) {}
+  ServerProcess(pid_t pid, int port, fs::path temp_dir, fs::path ring_path = {})
+      : pid_(pid),
+        port_(port),
+        temp_dir_(std::move(temp_dir)),
+        ring_path_(std::move(ring_path)) {}
   ServerProcess(const ServerProcess&) = delete;
   ServerProcess& operator=(const ServerProcess&) = delete;
   ServerProcess(ServerProcess&& other) noexcept { *this = std::move(other); }
@@ -604,6 +788,7 @@ class ServerProcess {
       pid_ = std::exchange(other.pid_, -1);
       port_ = other.port_;
       temp_dir_ = std::move(other.temp_dir_);
+      ring_path_ = std::move(other.ring_path_);
     }
     return *this;
   }
@@ -611,6 +796,7 @@ class ServerProcess {
 
   [[nodiscard]] pid_t pid() const { return pid_; }
   [[nodiscard]] int port() const { return port_; }
+  [[nodiscard]] const fs::path& ring_path() const { return ring_path_; }
 
   void stop() {
     if (pid_ > 0) {
@@ -631,18 +817,25 @@ class ServerProcess {
       fs::remove_all(temp_dir_, error);
       temp_dir_.clear();
     }
+    ring_path_.clear();
   }
 
  private:
   pid_t pid_ = -1;
   int port_ = 0;
   fs::path temp_dir_;
+  fs::path ring_path_;
 };
 
-pid_t spawn_server(std::vector<std::string> arguments) {
+pid_t spawn_server(std::vector<std::string> arguments,
+                   bool limit_go_runtime = false, int server_core = -1) {
   const pid_t child = ::fork();
   if (child < 0) fail(errno_message("fork"));
   if (child == 0) {
+    pin_current_process(server_core);
+    if (limit_go_runtime) {
+      (void)::setenv("GOMAXPROCS", "1", 1);
+    }
     const int null_fd = ::open("/dev/null", O_RDWR);
     if (null_fd >= 0) {
       ::dup2(null_fd, STDIN_FILENO);
@@ -679,9 +872,15 @@ ServerProcess start_engine(const EngineSpec& spec, const Config& config,
                            const std::vector<std::string>& extra_goblin_args = {}) {
   const int port = free_port();
   fs::path temp_dir;
+  fs::path ring_path;
   std::vector<std::string> command{spec.binary.string()};
-  if (spec.kind == "goblin") {
+  if (spec.is_goblin()) {
     command.insert(command.end(), {"--port", std::to_string(port)});
+    if (spec.is_sbe()) {
+      temp_dir = temporary_directory("goblin-sbe-hset-bench");
+      ring_path = temp_dir / "requests.ring";
+      command.insert(command.end(), {"--ring", ring_path.string(), "1mb"});
+    }
     command.insert(command.end(), config.goblin_args.begin(), config.goblin_args.end());
     command.insert(command.end(), extra_goblin_args.begin(), extra_goblin_args.end());
   } else if (spec.kind == "redis") {
@@ -691,15 +890,30 @@ ServerProcess start_engine(const EngineSpec& spec, const Config& config,
                                    std::to_string(port), "--save", "",
                                    "--appendonly", "no", "--protected-mode", "no",
                                    "--dir", temp_dir.string()});
-  } else {
+  } else if (spec.kind == "dragonfly") {
     temp_dir = temporary_directory("goblin-dragonfly-bench");
     command.insert(command.end(), {"--bind", "127.0.0.1", "--port",
                                    std::to_string(port), "--proactor_threads=1",
                                    "--maxmemory=0", "--dir", temp_dir.string()});
+  } else {
+    command.insert(command.end(), {"-bind", "127.0.0.1", "-port",
+                                   std::to_string(port), "-appendonly=false",
+                                   "-metrics-addr="});
   }
-  ServerProcess server(spawn_server(std::move(command)), port, std::move(temp_dir));
+  const bool limit_go_runtime = spec.kind == "mini-redis-go";
+  ServerProcess server(spawn_server(std::move(command), limit_go_runtime,
+                                    config.server_core), port,
+                       std::move(temp_dir), std::move(ring_path));
   wait_for_server(server);
   return server;
+}
+
+std::unique_ptr<RespClient> open_benchmark_client(
+    const EngineSpec& spec, const ServerProcess& server, double timeout_seconds) {
+  if (spec.is_sbe()) {
+    return std::make_unique<RespClient>(server.ring_path(), timeout_seconds);
+  }
+  return std::make_unique<RespClient>(server.port(), timeout_seconds);
 }
 
 std::string zero_padded(std::int64_t value, int width, int base = 10) {
@@ -777,7 +991,13 @@ void sleep_seconds(double seconds) {
   if (seconds > 0.0) std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
 }
 
-std::uint64_t process_resident_bytes(pid_t pid) {
+std::uint64_t process_resident_bytes(pid_t pid, bool use_ps = false) {
+  if (use_ps) {
+    const auto result = run_capture({"/bin/ps", "-o", "rss=", "-p",
+                                     std::to_string(pid)}, 5.0);
+    if (result.exit_code != 0) fail("ps failed while reading process RSS");
+    return std::stoull(result.output) * 1024;
+  }
   const fs::path status = "/proc/" + std::to_string(pid) + "/status";
   if (fs::exists(status)) {
     std::ifstream input(status);
@@ -803,7 +1023,12 @@ std::uint64_t process_resident_bytes(pid_t pid) {
 
 std::map<std::string, std::string> info_fields(RespClient& client) {
   std::map<std::string, std::string> result;
-  const auto response = client.command({"INFO", "memory"});
+  RespValue response;
+  try {
+    response = client.command({"INFO", "memory"});
+  } catch (const std::exception&) {
+    return result;
+  }
   if (response.type != RespValue::Type::string) return result;
   std::istringstream lines(response.string);
   std::string line;
@@ -856,7 +1081,8 @@ MemorySample memory_sample(RespClient& client, const ServerProcess& server,
                            const std::vector<std::string>& sample_keys = {}) {
   const auto info = info_fields(client);
   MemorySample sample;
-  sample.rss_bytes = static_cast<std::int64_t>(process_resident_bytes(server.pid()));
+  sample.rss_bytes = static_cast<std::int64_t>(
+      process_resident_bytes(server.pid(), spec.kind == "mini-redis-go"));
   if (const auto found = info.find("used_memory"); found != info.end()) {
     sample.used_memory_bytes = parse_int64(found->second);
   }
@@ -869,9 +1095,13 @@ MemorySample memory_sample(RespClient& client, const ServerProcess& server,
       }
       if (sample.goblin_memory.empty()) sample.goblin_memory = std::move(stats);
     } else {
-      const auto response = client.command({"MEMORY", "USAGE", key});
-      if (response.type == RespValue::Type::integer) {
-        reported.push_back(static_cast<double>(response.integer));
+      try {
+        const auto response = client.command({"MEMORY", "USAGE", key});
+        if (response.type == RespValue::Type::integer) {
+          reported.push_back(static_cast<double>(response.integer));
+        }
+      } catch (const std::exception&) {
+        // Some RESP-compatible incumbents expose neither INFO nor MEMORY USAGE.
       }
     }
   }
@@ -1029,8 +1259,22 @@ double redis_benchmark_rps(const Config& config, const ServerProcess& server,
 }
 
 double benchmark_point(const Config& config, const ServerProcess& server,
+                       const EngineSpec& spec, RespClient& client,
                        const std::vector<std::string>& command,
                        std::int64_t keyspace) {
+  if (spec.is_sbe()) {
+    if (config.warmup_requests > 0) {
+      (void)client.benchmark_sbe_point(
+          command, config.warmup_requests, keyspace, config.seed);
+    }
+    std::vector<double> rates;
+    for (int round = 0; round < config.rounds; ++round) {
+      rates.push_back(client.benchmark_sbe_point(
+          command, config.requests, keyspace,
+          config.seed + static_cast<std::uint64_t>(round + 1)));
+    }
+    return median(std::move(rates));
+  }
   if (config.warmup_requests > 0) {
     (void)redis_benchmark_rps(config, server, command, config.warmup_requests, keyspace);
   }
@@ -1145,7 +1389,8 @@ struct MixedHashResult {
 
 LargeHashResult run_large_once(const EngineSpec& spec, const Config& config) {
   auto server = start_engine(spec, config);
-  RespClient client(server.port(), config.timeout_seconds);
+  auto client_storage = open_benchmark_client(spec, server, config.timeout_seconds);
+  auto& client = *client_storage;
   const std::string key = "hsetbench:large:" + std::to_string(::getpid()) + ":" + spec.label;
   LargeHashResult result;
   result.engine = spec;
@@ -1168,7 +1413,7 @@ LargeHashResult run_large_once(const EngineSpec& spec, const Config& config) {
   result.loaded_after_optimize = memory_sample(client, server, spec, {key});
 
   result.update_hset_operations_per_second = benchmark_point(
-      config, server,
+      config, server, spec, client,
       {"HSET", key, "field:__rand_int__",
        std::string(static_cast<std::size_t>(config.value_bytes), 'u')},
       config.large_fields);
@@ -1258,7 +1503,8 @@ LargeHashResult run_large(const EngineSpec& spec, const Config& config) {
 }
 
 void verify_small_hashes(RespClient& client, std::int64_t hashes,
-                         int fields_per_hash, int value_bytes) {
+                         int fields_per_hash, int value_bytes,
+                         bool verify_middle_update = false) {
   for (const auto hash_id : std::array<std::int64_t, 3>{0, hashes / 2, hashes - 1}) {
     const auto key = small_key(hash_id);
     if (!client.command({"HLEN", key}).is_integer(fields_per_hash)) {
@@ -1270,13 +1516,22 @@ void verify_small_hashes(RespClient& client, std::int64_t hashes,
         response.string != fixed_value(ordinal, value_bytes, 'v')) {
       fail("small hash value verification failed");
     }
+    if (verify_middle_update) {
+      const auto middle = client.command(
+          {"HGET", key, small_field(fields_per_hash / 2)});
+      if (middle.type != RespValue::Type::string ||
+          middle.string != std::string(static_cast<std::size_t>(value_bytes), 'u')) {
+        fail("small hash point probe did not update the intended keyspace");
+      }
+    }
   }
 }
 
 SmallHashResult run_small_once(const EngineSpec& spec, const Config& config,
                                int fields_per_hash) {
   auto server = start_engine(spec, config);
-  RespClient client(server.port(), config.timeout_seconds);
+  auto client_storage = open_benchmark_client(spec, server, config.timeout_seconds);
+  auto& client = *client_storage;
   SmallHashResult result;
   result.engine = spec;
   result.hashes = std::max<std::int64_t>(1, config.small_total_fields / fields_per_hash);
@@ -1297,11 +1552,12 @@ SmallHashResult run_small_once(const EngineSpec& spec, const Config& config,
   sleep_seconds(config.settle_seconds);
   result.loaded = memory_sample(client, server, spec, sample_keys);
   result.update_hset_operations_per_second = benchmark_point(
-      config, server,
+      config, server, spec, client,
       {"HSET", "h:__rand_int__", small_field(fields_per_hash / 2),
        std::string(static_cast<std::size_t>(config.value_bytes), 'u')},
       result.hashes);
-  verify_small_hashes(client, result.hashes, fields_per_hash, config.value_bytes);
+  verify_small_hashes(client, result.hashes, fields_per_hash, config.value_bytes,
+                      /*verify_middle_update=*/true);
   sleep_seconds(config.settle_seconds);
   result.after_updates = memory_sample(client, server, spec, sample_keys);
   return result;
@@ -1398,7 +1654,8 @@ RelocationResult run_relocation_once(const EngineSpec& spec, const Config& confi
                                      std::string_view pattern, double density,
                                      int round_index) {
   auto server = start_engine(spec, config, {"--hash-listpack-max-entries", "0"});
-  RespClient client(server.port(), config.timeout_seconds);
+  auto client_storage = open_benchmark_client(spec, server, config.timeout_seconds);
+  auto& client = *client_storage;
   std::ostringstream density_text;
   density_text << density;
   const std::string key = "hsetbench:relocation:" + std::to_string(::getpid()) +
@@ -1451,7 +1708,8 @@ RelocationResult run_relocation_once(const EngineSpec& spec, const Config& confi
   sleep_seconds(config.settle_seconds);
   result.grown_before_optimize = memory_sample(client, server, spec, {key});
   result.hget_operations_per_second = benchmark_point(
-      config, server, {"HGET", key, "field:__rand_int__"}, config.relocation_fields);
+      config, server, spec, client, {"HGET", key, "field:__rand_int__"},
+      config.relocation_fields);
   result.optimize = optimize_hash(client, spec, key, config.optimize_density);
   verify_relocation(client, key, config.relocation_fields, ids,
                     config.value_bytes, config.grown_value_bytes);
@@ -1631,7 +1889,8 @@ LatencyStats latency_stats(std::vector<double> values) {
 MixedHashResult run_mixed_once(const EngineSpec& spec, const Config& config,
                                int round_index) {
   auto server = start_engine(spec, config);
-  RespClient client(server.port(), config.timeout_seconds);
+  auto client_storage = open_benchmark_client(spec, server, config.timeout_seconds);
+  auto& client = *client_storage;
   const std::string key = "hsetbench:mixed:" + std::to_string(::getpid()) + ":" +
                           spec.label + ":" + std::to_string(round_index);
   MixedHashResult result;
@@ -1863,14 +2122,16 @@ void write_json(const Config& config, const BenchmarkResults& results) {
   if (!output) fail("cannot open JSON output");
   output << "{\n  \"generated_at\": " << json_escape(results.generated_at)
          << ",\n  \"config\": {\n"
-         << "    \"rss_source\": \"/proc/<pid>/status VmRSS + HugetlbPages\",\n"
-         << "    \"client\": \"native C++ RESP harness\",\n"
+         << "    \"rss_source\": \"ps -o rss= for mini-redis-go; /proc/<pid>/status VmRSS + HugetlbPages otherwise\",\n"
+         << "    \"client\": \"native C++ RESP/TCP or typed SBE/shared-memory-ring harness\",\n"
          << "    \"large_fields\": " << config.large_fields << ",\n"
          << "    \"small_total_fields\": " << config.small_total_fields << ",\n"
          << "    \"value_bytes\": " << config.value_bytes << ",\n"
          << "    \"grown_value_bytes\": " << config.grown_value_bytes << ",\n"
          << "    \"hset_batch\": " << config.hset_batch << ",\n"
          << "    \"pipeline\": " << config.pipeline << ",\n"
+         << "    \"server_core\": " << config.server_core << ",\n"
+         << "    \"client_core\": " << config.client_core << ",\n"
          << "    \"requests\": " << config.requests << ",\n"
          << "    \"rounds\": " << config.rounds << ",\n"
          << "    \"construction_rounds\": " << config.construction_rounds << ",\n"
@@ -1987,20 +2248,133 @@ void write_report(const Config& config, const BenchmarkResults& results) {
   if (!out) fail("cannot open Markdown report output");
   out << "# Goblin Core HSET Speed and Memory Benchmark\n\n"
       << "Generated by the native C++ harness on a dedicated benchmark host at "
-      << results.generated_at << ".\n\n"
-      << "## Method\n\n"
+      << results.generated_at << ".\n\n";
+
+  if (!results.large.empty()) {
+    const auto rss_per_field = [](const LargeHashResult& result) {
+      return static_cast<double>(result.loaded_after_optimize.rss_bytes -
+                                 result.baseline.rss_bytes) /
+             result.fields;
+    };
+    const LargeHashResult* leanest_goblin = nullptr;
+    const LargeHashResult* fastest_goblin_load = nullptr;
+    const LargeHashResult* fastest_incumbent_load = nullptr;
+    const LargeHashResult* redis_7 = nullptr;
+    const LargeHashResult* redis_8 = nullptr;
+    for (const auto& result : results.large) {
+      if (result.engine.is_goblin()) {
+        if (leanest_goblin == nullptr ||
+            rss_per_field(result) < rss_per_field(*leanest_goblin)) {
+          leanest_goblin = &result;
+        }
+        if (fastest_goblin_load == nullptr ||
+            result.load_fields_per_second > fastest_goblin_load->load_fields_per_second) {
+          fastest_goblin_load = &result;
+        }
+      } else if (fastest_incumbent_load == nullptr ||
+                 result.load_fields_per_second >
+                     fastest_incumbent_load->load_fields_per_second) {
+        fastest_incumbent_load = &result;
+      }
+      if (result.engine.label == "redis-7.2.4") redis_7 = &result;
+      if (result.engine.label == "redis-8.8") redis_8 = &result;
+    }
+
+    int goblin_update_rows = 0;
+    int goblin_update_wins = 0;
+    for (const auto& result : results.small) {
+      if (!result.engine.is_goblin()) continue;
+      ++goblin_update_rows;
+      double incumbent_best = 0.0;
+      for (const auto& candidate : results.small) {
+        if (candidate.fields_per_hash == result.fields_per_hash &&
+            !candidate.engine.is_goblin()) {
+          incumbent_best = std::max(incumbent_best,
+                                    candidate.update_hset_operations_per_second);
+        }
+      }
+      if (result.update_hset_operations_per_second > incumbent_best) {
+        ++goblin_update_wins;
+      }
+    }
+
+    out << "## Summary\n\n";
+    if (leanest_goblin != nullptr) {
+      out << "At one million fields, the leaner Goblin transport uses `"
+          << fixed(rss_per_field(*leanest_goblin)) << "` RSS bytes/field";
+      if (redis_8 != nullptr) {
+        out << ", `"
+            << fixed((1.0 - rss_per_field(*leanest_goblin) /
+                               rss_per_field(*redis_8)) *
+                         100.0,
+                     1)
+            << "%` less than Redis 8.8";
+      }
+      if (redis_7 != nullptr) {
+        out << " and `"
+            << fixed((1.0 - rss_per_field(*leanest_goblin) /
+                               rss_per_field(*redis_7)) *
+                         100.0,
+                     1)
+            << "%` less than Redis 7.2.4";
+      }
+      out << ". ";
+    }
+    if (goblin_update_rows != 0) {
+      out << "The Goblin TCP and ring rows beat the fastest incumbent in `"
+          << goblin_update_wins << "` of `" << goblin_update_rows
+          << "` existing-field small-hash HSET comparisons. ";
+    }
+    if (fastest_goblin_load != nullptr && fastest_incumbent_load != nullptr) {
+      out << "Goblin loses the million-field construction race: its faster `"
+          << fastest_goblin_load->engine.label << "` row is `"
+          << fixed((1.0 - fastest_goblin_load->load_fields_per_second /
+                             fastest_incumbent_load->load_fields_per_second) *
+                       100.0,
+                   1)
+          << "%` behind `" << fastest_incumbent_load->engine.label << "`. ";
+    }
+    if (!results.mixed.empty()) {
+      double goblin_p999_min = std::numeric_limits<double>::infinity();
+      double goblin_p999_max = 0.0;
+      double incumbent_p999_min = std::numeric_limits<double>::infinity();
+      double incumbent_p999_max = 0.0;
+      for (const auto& result : results.mixed) {
+        auto& minimum = result.engine.is_goblin() ? goblin_p999_min
+                                                  : incumbent_p999_min;
+        auto& maximum = result.engine.is_goblin() ? goblin_p999_max
+                                                  : incumbent_p999_max;
+        minimum = std::min(minimum, result.latency_us.p999);
+        maximum = std::max(maximum, result.latency_us.p999);
+      }
+      if (std::isfinite(goblin_p999_min) && std::isfinite(incumbent_p999_min)) {
+        out << "The remaining weakness is insertion-compaction tail latency: "
+            << "Goblin's mixed p99.9 is `" << fixed(goblin_p999_min)
+            << "-" << fixed(goblin_p999_max)
+            << " us`, versus `" << fixed(incumbent_p999_min) << "-"
+            << fixed(incumbent_p999_max) << " us` for the incumbents.";
+      }
+    }
+    out << "\n\n";
+  }
+
+  out << "## Method\n\n"
       << "- Every scenario starts a fresh server; engines run one at a time.\n"
+      << "- Linux affinity: server core `" << config.server_core
+      << "`, client/load-generator core `" << config.client_core
+      << "` (`-1` means unpinned). Ring client and server must not share a core.\n"
       << "- Before the empty-server baseline, every engine constructs and deletes a `"
       << grouped(config.baseline_warmup_fields)
       << "`-field fixed-width hash, then settles.\n"
-      << "- RSS is read directly from `/proc/<pid>/status` as `VmRSS + HugetlbPages`; no server-reported RSS field is used.\n"
-      << "- Bulk workloads, response validation, mixed latency, process control, aggregation, and report generation run in this native C++ executable. Point probes use the C `redis-benchmark` client.\n"
+      << "- RSS is read from the launched server PID: mini-redis-go uses `ps -o rss=`, while other engines use `/proc/<pid>/status` as `VmRSS + HugetlbPages`; no server-reported RSS field is used.\n"
+      << "- Transport matrix: Goblin Core is measured over RESP/TCP and typed SBE/shared-memory ring; every incumbent is measured over RESP/TCP. No UDS row is included.\n"
+      << "- Bulk workloads, response validation, mixed latency, process control, aggregation, and report generation run in this native C++ executable. TCP point probes use `redis-benchmark`; ring point probes use the typed C++ SBE client.\n"
       << "- Bulk loads use multi-field `HSET` batches of `" << config.hset_batch
-      << "` and pipeline depth `" << config.pipeline
-      << "`; timing includes native client encoding. Point rates use `"
+      << "`. RESP/TCP uses pipeline depth `" << config.pipeline
+      << "`; SBE/ring currently keeps one request outstanding. Timing includes native client encoding. Point rates use `"
       << grouped(config.requests) << "` requests and the median of `" << config.rounds
       << "` probes in each of `" << config.construction_rounds << "` fresh servers.\n"
-      << "- Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one proactor thread for single-core parity.\n"
+      << "- Redis and Valkey use `benchmarks/redis-parity.conf`; Dragonfly uses one proactor thread for single-core parity. mini-redis-go runs as an external binary with `GOMAXPROCS=1`, AOF disabled, and metrics disabled.\n"
       << "- Goblin uses default string encoding and its configured compact-hash policy. Incumbents are exercised strictly as black-box RESP servers.\n\n";
 
   if (!results.large.empty()) {
@@ -2058,24 +2432,31 @@ void write_report(const Config& config, const BenchmarkResults& results) {
                                 : std::nullopt)
           << " |\n";
     }
-    const auto goblin = std::find_if(results.large.begin(), results.large.end(),
-                                     [](const auto& result) { return result.engine.is_goblin(); });
-    if (goblin != results.large.end()) {
+    const bool has_goblin = std::any_of(
+        results.large.begin(), results.large.end(),
+        [](const auto& result) { return result.engine.is_goblin(); });
+    if (has_goblin) {
       out << "\n### Goblin Large-Hash Internals\n\n"
-          << "| Phase | fields | live MiB | dead MiB | arena MiB | index MiB | total MiB |\n"
-          << "| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
-      const auto internal_row = [&](std::string_view phase, const MemorySample& sample) {
-        out << "| `" << phase << "` | " << grouped(goblin->fields) << " | "
+          << "| Engine | Phase | fields | live MiB | dead MiB | arena MiB | index MiB | total MiB |\n"
+          << "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+      const auto internal_row = [&](const LargeHashResult& goblin,
+                                    std::string_view phase,
+                                    const MemorySample& sample) {
+        out << "| `" << goblin.engine.label << "` | `" << phase << "` | "
+            << grouped(goblin.fields) << " | "
             << fixed(goblin_stat(sample, "field_value_live_bytes") / 1048576.0) << " | "
             << fixed(goblin_stat(sample, "field_value_dead_bytes") / 1048576.0) << " | "
             << fixed(goblin_stat(sample, "field_value_allocated_bytes") / 1048576.0) << " | "
             << fixed(goblin_stat(sample, "field_index_allocated_bytes") / 1048576.0) << " | "
             << fixed(goblin_stat(sample, "total_allocated_bytes") / 1048576.0) << " |\n";
       };
-      internal_row("loaded before optimize", goblin->loaded_before_optimize);
-      internal_row("loaded after optimize", goblin->loaded_after_optimize);
-      internal_row("grown before optimize", goblin->grown_before_optimize);
-      internal_row("grown after optimize", goblin->grown_after_optimize);
+      for (const auto& goblin : results.large) {
+        if (!goblin.engine.is_goblin()) continue;
+        internal_row(goblin, "loaded before optimize", goblin.loaded_before_optimize);
+        internal_row(goblin, "loaded after optimize", goblin.loaded_after_optimize);
+        internal_row(goblin, "grown before optimize", goblin.grown_before_optimize);
+        internal_row(goblin, "grown after optimize", goblin.grown_after_optimize);
+      }
     }
   }
 
@@ -2136,7 +2517,7 @@ void write_report(const Config& config, const BenchmarkResults& results) {
     out << "\n## Mixed Hash Write Latency\n\n"
         << "A seeded depth-one workload starts with `" << grouped(config.mixed_fields)
         << "` fields, warms `" << grouped(config.mixed_warmup) << "` operations, and measures `"
-        << grouped(config.mixed_samples) << "` unpipelined RESP round trips in C++.\n\n"
+        << grouped(config.mixed_samples) << "` unpipelined transport round trips in C++.\n\n"
         << "| Engine | ops/s | insert/update/delete/grow | p50 us | p95 us | p99 us | p99.9 us | max us | RSS B/field | dead MiB | compacting | final fields |\n"
         << "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
     for (const auto& result : results.mixed) {
@@ -2248,6 +2629,7 @@ int main(int argc, char** argv) {
   ::signal(SIGPIPE, SIG_IGN);
   try {
     const Config config = parse_args(argc, argv);
+    pin_current_process(config.client_core);
     (void)run_benchmarks(config);
     std::cout << "wrote " << config.output_json << '\n'
               << "wrote " << config.report << '\n';

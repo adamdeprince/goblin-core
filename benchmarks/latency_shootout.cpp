@@ -1,6 +1,6 @@
 // Unpipelined single-op round-trip latency: Goblin Core's SBE-over-shared-memory-ring
-// against RESP-over-Unix-socket on Goblin itself and on every Redis-family incumbent
-// (Redis 7.2.4, Redis 8.8, Valkey 9.1, Dragonfly).
+// against RESP-over-Unix-socket on Goblin itself and on the established Redis-family
+// incumbents. A TCP mode exists for engines that do not yet expose a Unix socket.
 //
 // One C++ client and one rdtscp timing method drive every engine, so the only variable
 // is (transport, protocol, server) -- not the client language. Each op is a synchronous
@@ -8,12 +8,13 @@
 // figure to read) plus p90/p99/min over a fixed window.
 //
 // Low cardinality is deliberate. The zset holds 10 members and the hash 10 fields, so at
-// these thresholds every engine is on its compact/listpack small-collection path and there
-// is almost no data-structure work per op. What remains is wire-path overhead -- which is
-// exactly the combined SBE/ring story.
+// these thresholds the configured established engines are on their compact small-collection
+// paths and there is almost no data-structure work per op. What remains is wire-path overhead
+// -- which is exactly the combined SBE/ring story.
 //
 //   latency_shootout ring <goblin-core> [label]   # Goblin SBE over the shared-memory ring
 //   latency_shootout uds  <socket> <label>        # RESP over a Unix socket (any engine)
+//   latency_shootout tcp  <host> <port> <label>   # RESP over TCP (any engine)
 //
 // Emits one CSV line per op on stdout for the driver to aggregate:
 //   LAT,<label>,<op>,<p50us>,<p90us>,<p99us>,<minus>,<meanus>,<n>
@@ -36,7 +37,10 @@
 #include <string_view>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -145,7 +149,7 @@ void measure(const char* label, const char* op, Op&& fn) {
 // reply's leading type byte so callers can spot an error ('-') during setup. No pipelining.
 class RespConn {
  public:
-  static RespConn connect(const char* path) {
+  static RespConn connect_uds(const char* path) {
     const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("socket");
     sockaddr_un addr{};
@@ -154,6 +158,23 @@ class RespConn {
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
       ::close(fd);
       throw std::runtime_error(std::string("connect ") + path);
+    }
+    return RespConn(fd);
+  }
+
+  static RespConn connect_tcp(const char* host, int port) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) throw std::runtime_error("socket");
+    const int one = 1;
+    (void)::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<std::uint16_t>(port));
+    if (::inet_pton(AF_INET, host, &addr.sin_addr) != 1 ||
+        ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      ::close(fd);
+      throw std::runtime_error(std::string("connect ") + host + ":" +
+                               std::to_string(port));
     }
     return RespConn(fd);
   }
@@ -300,12 +321,11 @@ int run_ring(const char* server, const char* label) {
   return 0;
 }
 
-// ---- RESP over a Unix socket (Goblin or any Redis-family incumbent) -----------------------
-int run_uds(const char* socket_path, const char* label) {
+// ---- RESP over a connected Unix or TCP socket ---------------------------------------------
+int run_resp(RespConn conn, const char* label, const char* transport,
+             bool allow_unsupported) {
   pin_to(kClientCore);
   calibrate_hw_ticks();
-
-  RespConn conn = RespConn::connect(socket_path);
 
   // Populate: ZADD 10 members, HSET 10 fields, SET one string.
   std::vector<std::string_view> zadd = {"ZADD", kZKey};
@@ -316,10 +336,15 @@ int run_uds(const char* socket_path, const char* label) {
     hset.push_back(kField[i]);
     hset.push_back(kVal[i]);
   }
-  if (conn.command(zadd) == '-' || conn.command(hset) == '-')
-    { std::fprintf(stderr, "uds: setup command errored on %s\n", label); return 1; }
   const std::vector<std::string_view> setcmd = {"SET", kSKey, "v"};
-  (void)conn.command(setcmd);
+  const bool strings_supported = conn.command(setcmd) != '-';
+  const bool hashes_supported = conn.command(hset) != '-';
+  const bool zsets_supported = conn.command(zadd) != '-';
+  if (!allow_unsupported &&
+      (!strings_supported || !hashes_supported || !zsets_supported)) {
+    std::fprintf(stderr, "%s: setup command errored on %s\n", transport, label);
+    return 1;
+  }
 
   const std::string zmem = std::string("m") + kTarget;
   const std::string hfield = std::string("f") + kTarget;
@@ -330,14 +355,29 @@ int run_uds(const char* socket_path, const char* label) {
   const std::vector<std::string_view> c_zadd   = {"ZADD", kZKey, "5.5", zmem};
   const std::vector<std::string_view> c_zscore = {"ZSCORE", kZKey, zmem};
 
-  std::fprintf(stderr, "[%s] RESP / Unix socket (zset=%d, hash=%d):\n", label, kCard, kCard);
-  measure(label, "SET",    [&] { (void)conn.command(c_set); });
-  measure(label, "GET",    [&] { (void)conn.command(c_get); });
-  measure(label, "HSET",   [&] { (void)conn.command(c_hset); });
-  measure(label, "HGET",   [&] { (void)conn.command(c_hget); });
-  measure(label, "ZADD",   [&] { (void)conn.command(c_zadd); });
-  measure(label, "ZSCORE", [&] { (void)conn.command(c_zscore); });
+  std::fprintf(stderr, "[%s] RESP / %s (zset=%d, hash=%d):\n", label,
+               transport, kCard, kCard);
+  if (strings_supported) {
+    measure(label, "SET", [&] { (void)conn.command(c_set); });
+    measure(label, "GET", [&] { (void)conn.command(c_get); });
+  }
+  if (hashes_supported) {
+    measure(label, "HSET", [&] { (void)conn.command(c_hset); });
+    measure(label, "HGET", [&] { (void)conn.command(c_hget); });
+  }
+  if (zsets_supported) {
+    measure(label, "ZADD", [&] { (void)conn.command(c_zadd); });
+    measure(label, "ZSCORE", [&] { (void)conn.command(c_zscore); });
+  }
   return 0;
+}
+
+int run_uds(const char* socket_path, const char* label) {
+  return run_resp(RespConn::connect_uds(socket_path), label, "Unix socket", false);
+}
+
+int run_tcp(const char* host, int port, const char* label) {
+  return run_resp(RespConn::connect_tcp(host, port), label, "TCP", true);
 }
 
 }  // namespace
@@ -347,9 +387,12 @@ int main(int argc, char** argv) {
     return run_ring(argv[2], argc >= 4 ? argv[3] : "goblin-sbe-ring");
   if (argc >= 4 && std::strcmp(argv[1], "uds") == 0)
     return run_uds(argv[2], argv[3]);
+  if (argc >= 5 && std::strcmp(argv[1], "tcp") == 0)
+    return run_tcp(argv[2], std::atoi(argv[3]), argv[4]);
   std::fprintf(stderr,
                "usage:\n"
                "  latency_shootout ring <goblin-core> [label]\n"
-               "  latency_shootout uds  <socket> <label>\n");
+               "  latency_shootout uds  <socket> <label>\n"
+               "  latency_shootout tcp  <host> <port> <label>\n");
   return 2;
 }

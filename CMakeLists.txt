@@ -380,12 +380,32 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
 
   if(UNIX)
     add_executable(goblin_core_hset_benchmark benchmarks/hset_benchmark.cpp)
+    if(TARGET goblin_sbe_headers)
+      target_link_libraries(goblin_core_hset_benchmark PRIVATE goblin_sbe_headers)
+      target_include_directories(goblin_core_hset_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    endif()
     set_target_properties(goblin_core_hset_benchmark PROPERTIES
       CXX_STANDARD 23
       CXX_STANDARD_REQUIRED ON
       CXX_EXTENSIONS OFF)
     target_compile_options(goblin_core_hset_benchmark PRIVATE
       -Wall -Wextra -Wpedantic)
+
+    if(TARGET goblin_sbe_headers)
+      add_executable(goblin_core_list_sbe_benchmark
+        benchmarks/list_sbe_benchmark.cpp)
+      target_link_libraries(goblin_core_list_sbe_benchmark PRIVATE
+        goblin_sbe_headers)
+      target_include_directories(goblin_core_list_sbe_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+      set_target_properties(goblin_core_list_sbe_benchmark PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_list_sbe_benchmark PRIVATE
+        -Wall -Wextra -Wpedantic)
+    endif()
   endif()
 endif()
 

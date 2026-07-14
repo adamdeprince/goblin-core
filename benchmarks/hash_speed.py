@@ -21,6 +21,7 @@ from zset_benchmark import (  # noqa: E402
     redis_benchmark_rps,
     start_dragonfly,
     start_goblin,
+    start_mini_redis,
     start_redis,
 )
 
@@ -32,6 +33,8 @@ def start_engine(kind: str, binary: Path):
         return start_redis(binary)
     if kind == "dragonfly":
         return start_dragonfly(binary)
+    if kind == "mini-redis-go":
+        return start_mini_redis(binary)
     raise ValueError(f"unknown engine kind: {kind}")
 
 
@@ -87,7 +90,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", action="append", required=True,
                         metavar="LABEL:KIND:PATH",
-                        help="engine (kind = goblin|redis); repeatable")
+                        help="engine; repeatable")
     parser.add_argument("--redis-benchmark", required=True, type=Path)
     parser.add_argument("--keyspace", type=int, default=1_000_000)
     parser.add_argument("--requests", type=int, default=2_000_000)

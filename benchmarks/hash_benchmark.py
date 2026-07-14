@@ -33,10 +33,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zset_benchmark import (  # noqa: E402  (path insert above)
     RespClient,
     goblin_memory_stats,
+    process_ps_rss_mib,
     process_rss_mib,
     redis_used_memory_mib,
     start_dragonfly,
     start_goblin,
+    start_mini_redis,
     start_redis,
 )
 
@@ -78,6 +80,8 @@ def start_engine(kind: str, binary: Path):
         return start_redis(binary)
     if kind == "dragonfly":
         return start_dragonfly(binary)
+    if kind == "mini-redis-go":
+        return start_mini_redis(binary)
     raise ValueError(f"unknown engine kind: {kind}")
 
 
@@ -89,7 +93,10 @@ def bench_once(label: str, kind: str, binary: Path, fields: int, batch: int,
         client = RespClient("127.0.0.1", server.port, timeout=600.0)
         try:
             key = f"hbench:{label}"
-            rss_base = process_rss_mib(server.process.pid)
+            rss_reader = (
+                process_ps_rss_mib if kind == "mini-redis-go" else process_rss_mib
+            )
+            rss_base = rss_reader(server.process.pid)
 
             client.pipeline(hset_commands(fields, key, batch, value_bytes), pipeline)
 
@@ -97,13 +104,15 @@ def bench_once(label: str, kind: str, binary: Path, fields: int, batch: int,
                 client.command("GOBLIN.OPTIMIZE", key, optimize_density)
 
             time.sleep(settle)
-            rss_after = process_rss_mib(server.process.pid)
+            rss_after = rss_reader(server.process.pid)
             rss_delta = rss_after - rss_base
 
             if kind == "goblin":
                 stats = goblin_memory_stats(client, key)
                 used_mib = (stats["total_allocated_bytes"] / (1024.0 * 1024.0)
                             if stats and "total_allocated_bytes" in stats else None)
+            elif kind == "mini-redis-go":
+                used_mib = None
             else:
                 used_mib = redis_used_memory_mib(client)
 
@@ -131,9 +140,11 @@ def parse_engine(spec: str) -> tuple[str, str, Path]:
         raise argparse.ArgumentTypeError(
             f"--engine expects LABEL:KIND:PATH, got {spec!r}")
     label, kind, path = parts
-    if kind not in ("goblin", "redis", "dragonfly"):
+    if kind not in ("goblin", "redis", "dragonfly", "mini-redis-go"):
         raise argparse.ArgumentTypeError(
-            f"kind must be goblin|redis|dragonfly, got {kind!r}")
+            "kind must be goblin|redis|dragonfly|mini-redis-go, "
+            f"got {kind!r}"
+        )
     return label, kind, Path(path)
 
 
@@ -141,7 +152,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", action="append", type=parse_engine, required=True,
                         metavar="LABEL:KIND:PATH",
-                        help="engine to test; repeatable (kind = goblin|redis)")
+                        help="engine to test; repeatable")
     parser.add_argument("--sizes", default="250000,500000,1000000,2000000,4000000",
                         help="comma-separated field counts to sweep")
     parser.add_argument("--value-bytes", type=int, default=16,

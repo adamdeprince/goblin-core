@@ -71,6 +71,18 @@
 #include "goblin_sbe/HSetNx.h"
 #include "goblin_sbe/HStrLen.h"
 #include "goblin_sbe/HVals.h"
+// List
+#include "goblin_sbe/LIndex.h"
+#include "goblin_sbe/LInsert.h"
+#include "goblin_sbe/LLen.h"
+#include "goblin_sbe/LPop.h"
+#include "goblin_sbe/LPush.h"
+#include "goblin_sbe/LRange.h"
+#include "goblin_sbe/LRem.h"
+#include "goblin_sbe/LSet.h"
+#include "goblin_sbe/LTrim.h"
+#include "goblin_sbe/RPop.h"
+#include "goblin_sbe/RPush.h"
 // Zset
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
@@ -107,6 +119,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -119,6 +132,14 @@ namespace goblin::core {
 
 // The embedded language for a script command (matches the wire's language byte).
 enum class Language : std::uint8_t { lua = 0, luau, wren, tcl, micropython, quickjs };
+
+// Selects the representation only when a push creates a new list. Existing lists
+// retain their representation; `selected` follows the server's --list-implementation.
+enum class SbeListImplementation : std::uint8_t {
+  selected = 0,
+  pma = 1,
+  segmented = 2,
+};
 
 // SET options; expireMode: 0 none, 1 EX, 2 PX, 3 EXAT, 4 PXAT.
 struct SetOptions {
@@ -414,6 +435,97 @@ class SbeRingClient {
     return as_int();
   }
 
+  // ---- list ------------------------------------------------------------------
+  [[nodiscard]] long long lpush(
+      std::string_view key, std::span<const std::string_view> values,
+      SbeListImplementation implementation = SbeListImplementation::selected,
+      bool only_if_exists = false, ms t = kDefaultTimeout) {
+    return list_push<goblin_sbe::LPush>(key, values, implementation,
+                                        only_if_exists, t);
+  }
+  [[nodiscard]] long long rpush(
+      std::string_view key, std::span<const std::string_view> values,
+      SbeListImplementation implementation = SbeListImplementation::selected,
+      bool only_if_exists = false, ms t = kDefaultTimeout) {
+    return list_push<goblin_sbe::RPush>(key, values, implementation,
+                                        only_if_exists, t);
+  }
+  [[nodiscard]] std::optional<std::string> lpop(
+      std::string_view key, ms t = kDefaultTimeout) {
+    return list_pop_one<goblin_sbe::LPop>(key, t);
+  }
+  [[nodiscard]] std::optional<std::string> rpop(
+      std::string_view key, ms t = kDefaultTimeout) {
+    return list_pop_one<goblin_sbe::RPop>(key, t);
+  }
+  [[nodiscard]] std::optional<std::vector<std::string>> lpop(
+      std::string_view key, std::size_t count, ms t = kDefaultTimeout) {
+    return list_pop_many<goblin_sbe::LPop>(key, count, t);
+  }
+  [[nodiscard]] std::optional<std::vector<std::string>> rpop(
+      std::string_view key, std::size_t count, ms t = kDefaultTimeout) {
+    return list_pop_many<goblin_sbe::RPop>(key, count, t);
+  }
+  [[nodiscard]] long long llen(std::string_view key, ms t = kDefaultTimeout) {
+    return key_int<goblin_sbe::LLen>(key, t);
+  }
+  [[nodiscard]] std::optional<std::string> lindex(
+      std::string_view key, long long index, ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LIndex>(key.size());
+    m.index(index);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_bulk_or_nil();
+  }
+  [[nodiscard]] std::vector<std::string> lrange(
+      std::string_view key, long long start, long long stop,
+      ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LRange>(key.size());
+    m.start(start).stop(stop);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_array();
+  }
+  void lset(std::string_view key, long long index, std::string_view value,
+            ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LSet>(key.size() + value.size());
+    m.index(index);
+    m.putKey(key.data(), u32(key.size()));
+    m.putValue(value.data(), u32(value.size()));
+    finish(m, t);
+    (void)as_status();
+  }
+  void ltrim(std::string_view key, long long start, long long stop,
+             ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LTrim>(key.size());
+    m.start(start).stop(stop);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    (void)as_status();
+  }
+  [[nodiscard]] long long lrem(std::string_view key, long long count,
+                               std::string_view value,
+                               ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LRem>(key.size() + value.size());
+    m.count(count);
+    m.putKey(key.data(), u32(key.size()));
+    m.putValue(value.data(), u32(value.size()));
+    finish(m, t);
+    return as_int();
+  }
+  [[nodiscard]] long long linsert(std::string_view key, bool before,
+                                  std::string_view pivot,
+                                  std::string_view value,
+                                  ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::LInsert>(key.size() + pivot.size() + value.size());
+    m.before(before ? 1 : 0);
+    m.putKey(key.data(), u32(key.size()));
+    m.putPivot(pivot.data(), u32(pivot.size()));
+    m.putValue(value.data(), u32(value.size()));
+    finish(m, t);
+    return as_int();
+  }
+
   // ---- zset ------------------------------------------------------------------
   [[nodiscard]] long long zadd(std::string_view key, std::span<const Scored> members, ms t = kDefaultTimeout) {
     std::size_t need = key.size();
@@ -675,6 +787,47 @@ class SbeRingClient {
     return as_int();
   }
   template <class Msg>
+  long long list_push(std::string_view key,
+                      std::span<const std::string_view> values,
+                      SbeListImplementation implementation,
+                      bool only_if_exists, ms t) {
+    if (values.empty() || values.size() > std::numeric_limits<std::uint16_t>::max()) {
+      throw std::invalid_argument("SbeRingClient: list push requires 1..65535 values");
+    }
+    std::size_t need = key.size();
+    for (const auto value : values) need += value.size();
+    auto m = build<Msg>(need);
+    m.implementation(static_cast<std::uint8_t>(implementation));
+    m.onlyIfExists(only_if_exists ? 1 : 0);
+    auto& group = m.valuesCount(u16(values.size()));
+    for (const auto value : values) {
+      group.next().putValue(value.data(), u32(value.size()));
+    }
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_int();
+  }
+  template <class Msg>
+  std::optional<std::string> list_pop_one(std::string_view key, ms t) {
+    auto m = build<Msg>(key.size());
+    m.count(-1);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_bulk_or_nil();
+  }
+  template <class Msg>
+  std::optional<std::vector<std::string>> list_pop_many(
+      std::string_view key, std::size_t count, ms t) {
+    if (count > static_cast<std::size_t>(std::numeric_limits<long long>::max())) {
+      throw std::invalid_argument("SbeRingClient: list pop count is out of range");
+    }
+    auto m = build<Msg>(key.size());
+    m.count(static_cast<long long>(count));
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_array_or_nil();
+  }
+  template <class Msg>
   long long expire_impl(std::string_view key, long long amount, std::uint8_t flags, ms t) {
     Msg m = build<Msg>(key.size());
     m.amount(amount).flags(flags);
@@ -792,6 +945,11 @@ class SbeRingClient {
     auto& g = r.items();
     while (g.hasNext()) { g.next(); const auto v = g.getValueAsStringView(); out.emplace_back(v.data(), v.size()); }
     return out;
+  }
+  [[nodiscard]] std::optional<std::vector<std::string>> as_array_or_nil() {
+    throw_if_error();
+    if (reply_is<goblin_sbe::NilReply>()) return std::nullopt;
+    return as_array();
   }
   [[nodiscard]] std::vector<std::pair<std::string, double>> as_scored_array() {
     throw_if_error();

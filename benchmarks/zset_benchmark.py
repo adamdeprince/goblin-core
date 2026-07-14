@@ -137,6 +137,7 @@ class ServerProcess:
     port: int
     temp_dir: Path | None = None
     unix_socket: str | None = None
+    ring_path: Path | None = None
 
     def stop(self) -> None:
         if self.process.poll() is None:
@@ -338,6 +339,36 @@ def start_dragonfly(binary: Path, unix_socket: str | None = None) -> ServerProce
     return server
 
 
+def start_mini_redis(binary: Path) -> ServerProcess:
+    """Start the external mini-redis-go benchmark target over loopback TCP."""
+    binary = resolve_executable(binary, "mini-redis-go server")
+    port = free_port()
+    command = [
+        str(binary),
+        "-bind",
+        "127.0.0.1",
+        "-port",
+        str(port),
+        "-appendonly=false",
+        "-metrics-addr=",
+    ]
+    environment = os.environ.copy()
+    environment["GOMAXPROCS"] = "1"
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+    )
+    server = ServerProcess("mini-redis-go", process, port)
+    try:
+        wait_for_server(port)
+    except Exception:
+        server.stop()
+        raise
+    return server
+
+
 def process_resident_bytes(pid: int) -> int:
     """Read true process residency without trusting the server's INFO output."""
     status = Path(f"/proc/{pid}/status")
@@ -365,6 +396,14 @@ def process_resident_bytes(pid: int) -> int:
 
 def process_rss_mib(pid: int) -> float:
     return process_resident_bytes(pid) / (1024.0 * 1024.0)
+
+
+def process_ps_rss_mib(pid: int) -> float:
+    """Read the process RSS reported by ps, in MiB."""
+    output = subprocess.check_output(
+        ["ps", "-o", "rss=", "-p", str(pid)], text=True
+    )
+    return int(output.strip() or "0") / 1024.0
 
 
 def redis_info_fields(

@@ -1,6 +1,6 @@
 // End-to-end SbeRingClient across the command families: fork the server with a ring,
-// open the client, and exercise strings, keyspace/TTL, hash, zset, a GOBLIN.* native,
-// admin, and scripting -- asserting the decoded replies. Proves the full C++ client.
+// open the client, and exercise strings, keyspace/TTL, hash, list, zset, a GOBLIN.*
+// native, admin, and scripting -- asserting the decoded replies.
 //
 //   sbe_client_test <path-to-goblin-core>
 
@@ -23,6 +23,7 @@
 
 using goblin::core::RespValue;
 using goblin::core::SbeRingClient;
+using goblin::core::SbeListImplementation;
 
 int main(int argc, char** argv) {
   if (argc < 2) { std::fprintf(stderr, "usage: sbe_client_test <goblin-core>\n"); return 2; }
@@ -102,6 +103,38 @@ int main(int argc, char** argv) {
   }
   assert(c->hdel("h", V{"f1", "f2"}) == 2);
 
+  // list: both representations plus scalar/count POP reply forms.
+  assert(c->rpush("list", V{"a", "b", "c"},
+                  SbeListImplementation::segmented) == 3);
+  assert(c->lpush("list", V{"x", "y"}) == 5);
+  assert(c->llen("list") == 5);
+  assert(c->lindex("list", 2) == "a");
+  assert((c->lrange("list", 0, -1) ==
+          std::vector<std::string>{"y", "x", "a", "b", "c"}));
+  c->lset("list", 2, "A");
+  assert(c->linsert("list", true, "A", "p") == 6);
+  assert(c->lrem("list", 0, "x") == 1);
+  c->ltrim("list", 1, -1);
+  assert(c->lpop("list") == "p");
+  {
+    const auto popped = c->rpop("list", 2);
+    assert(popped && *popped == std::vector<std::string>({"c", "b"}));
+  }
+  assert(c->lpop("list") == "A");
+  assert(!c->lpop("list").has_value());
+  assert(!c->lpop("missing-list", 2).has_value());
+  assert(c->rpush("pma-list", V{"one", "two"},
+                  SbeListImplementation::pma) == 2);
+  assert(c->lpush("missing-pushx", V{"x"},
+                  SbeListImplementation::selected,
+                  /*only_if_exists=*/true) == 0);
+
+  bool list_wrong_type = false;
+  try { (void)c->llen("word"); } catch (const std::runtime_error&) {
+    list_wrong_type = true;
+  }
+  assert(list_wrong_type);
+
   // zset
   using S = std::vector<SbeRingClient::Scored>;
   assert(c->zadd("z", S{{1.5, "a"}, {2.0, "b"}, {3.0, "c"}}) == 3);
@@ -152,6 +185,6 @@ int main(int argc, char** argv) {
   ::waitpid(pid, nullptr, 0);
   ::unlink(ring.c_str());
   ::unlink(sock.c_str());
-  std::puts("sbe client OK: full command surface over the ring (strings/keyspace/hash/zset/natives/admin/scripting)");
+  std::puts("sbe client OK: full command surface over the ring (strings/keyspace/hash/list/zset/natives/admin/scripting)");
   return 0;
 }

@@ -9,7 +9,9 @@ stable-length endpoint and pivot churn. Every engine runs alone.
 
 Example:
   ./benchmarks/list_benchmark.py \
-    --engine goblin-pma:goblin-pma:/path/to/goblin-core \
+    --engine goblin-resp-tcp:goblin:/path/to/goblin-core \
+    --engine goblin-sbe-ring:goblin-sbe:/path/to/goblin-core \
+    --sbe-benchmark /path/to/goblin_core_list_sbe_benchmark \
     --engine redis-7.2.4:redis:/path/to/redis-7.2.4/redis-server \
     --engine redis-8.8:redis:/path/to/redis-8.8/redis-server \
     --engine valkey-9.1:redis:/path/to/valkey-9.1/valkey-server \
@@ -23,9 +25,12 @@ import json
 import math
 import os
 import platform
+import shutil
 import signal
 import socket
 import statistics
+import subprocess
+import tempfile
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -52,8 +57,12 @@ class EngineSpec:
         return self.kind == "goblin" or self.kind.startswith("goblin-")
 
     @property
+    def is_sbe(self) -> bool:
+        return self.kind == "goblin-sbe"
+
+    @property
     def list_prefix(self) -> str:
-        if self.kind == "goblin":
+        if self.kind in ("goblin", "goblin-sbe"):
             return ""
         if self.kind.startswith("goblin-"):
             implementation = self.kind.removeprefix("goblin-")
@@ -62,6 +71,11 @@ class EngineSpec:
 
     def list_command(self, name: str) -> str:
         return f"{self.list_prefix}{name}"
+
+    def supports_list_command(self, name: str) -> bool:
+        if self.kind != "mini-redis-go":
+            return True
+        return name in {"LLEN", "LRANGE", "LPUSH", "RPUSH", "LPOP", "RPOP"}
 
 
 @dataclass
@@ -112,9 +126,9 @@ def parse_engine(spec: str) -> EngineSpec:
         and bool(goblin_implementation)
         and goblin_implementation.replace("-", "").isalnum()
     )
-    if kind not in ("redis", "dragonfly") and not valid_goblin_kind:
+    if kind not in ("redis", "dragonfly", "mini-redis-go") and not valid_goblin_kind:
         raise argparse.ArgumentTypeError(
-            "engine kind must be redis, dragonfly, goblin, or "
+            "engine kind must be redis, dragonfly, mini-redis-go, goblin, or "
             f"goblin-IMPLEMENTATION; got {kind!r}"
         )
     return EngineSpec(label=label, kind=kind, binary=Path(path).expanduser())
@@ -186,15 +200,43 @@ def start_engine(spec: EngineSpec, args: argparse.Namespace) -> zbench.ServerPro
         extra_args = ["--list-implementation", args.standard_list_implementation]
         if args.goblin_max_density is not None:
             extra_args.extend(["--list-max-density", str(args.goblin_max_density)])
-        return zbench.start_goblin(
-            spec.binary,
-            rank_cache=False,
-            rank_cache_mode="off",
-            extra_args=extra_args,
-        )
+        ring_dir: Path | None = None
+        if spec.is_sbe:
+            ring_dir = Path(tempfile.mkdtemp(prefix="goblin-list-sbe-bench-"))
+            ring_path = ring_dir / "requests.ring"
+            extra_args.extend(["--ring", str(ring_path), "1mb"])
+        try:
+            server = zbench.start_goblin(
+                spec.binary,
+                rank_cache=False,
+                rank_cache_mode="off",
+                extra_args=extra_args,
+            )
+        except Exception:
+            if ring_dir is not None:
+                shutil.rmtree(ring_dir, ignore_errors=True)
+            raise
+        if ring_dir is not None:
+            server.temp_dir = ring_dir
+            server.ring_path = ring_dir / "requests.ring"
+        pin_process(server.process.pid, args.server_core)
+        return server
     if spec.kind == "redis":
-        return zbench.start_redis(spec.binary)
-    return zbench.start_dragonfly(spec.binary)
+        server = zbench.start_redis(spec.binary)
+    elif spec.kind == "mini-redis-go":
+        server = zbench.start_mini_redis(spec.binary)
+    else:
+        server = zbench.start_dragonfly(spec.binary)
+    pin_process(server.process.pid, args.server_core)
+    return server
+
+
+def pin_process(pid: int, core: int) -> None:
+    if core < 0:
+        return
+    if not hasattr(os, "sched_setaffinity"):
+        return
+    os.sched_setaffinity(pid, {core})
 
 
 def key_memory_usage(client: zbench.RespClient, key: str) -> int | None:
@@ -216,7 +258,11 @@ def memory_sample(
     except Exception:
         length = None
     return MemorySample(
-        rss_mib=zbench.process_rss_mib(server.process.pid),
+        rss_mib=(
+            zbench.process_ps_rss_mib(server.process.pid)
+            if spec.kind == "mini-redis-go"
+            else zbench.process_rss_mib(server.process.pid)
+        ),
         info_used_memory_mib=zbench.redis_used_memory_mib(client),
         key_memory_usage_bytes=key_memory_usage(client, key),
         list_length=length if isinstance(length, int) else None,
@@ -248,13 +294,16 @@ def check_loaded_list(
     if length != members:
         raise RuntimeError(f"loaded list length is {length}, expected {members}")
     for index in (0, members // 2, members - 1):
-        expect_bulk(
-            client,
-            item_value(index, value_bytes),
-            spec.list_command("LINDEX"),
-            key,
-            index,
-        )
+        expected = item_value(index, value_bytes).encode()
+        if spec.supports_list_command("LINDEX"):
+            response = client.command(spec.list_command("LINDEX"), key, index)
+        else:
+            response = client.command(spec.list_command("LRANGE"), key, index, index)
+            response = response[0] if isinstance(response, list) and response else None
+        if response != expected:
+            raise RuntimeError(
+                f"loaded list value at {index} is {response!r}, expected {expected!r}"
+            )
 
 
 def operation(
@@ -328,6 +377,51 @@ def benchmark_pipeline(
     )
 
 
+def benchmark_sbe_phase(
+    args: argparse.Namespace,
+    server: zbench.ServerProcess,
+    action: str,
+    key: str,
+    **options: object,
+) -> tuple[int, float]:
+    if server.ring_path is None:
+        raise RuntimeError("SBE list benchmark server has no ring path")
+    command = [
+        str(args.sbe_benchmark),
+        "--ring",
+        str(server.ring_path),
+        "--action",
+        action,
+        "--key",
+        key,
+    ]
+    for name, value in options.items():
+        command.extend([f"--{name.replace('_', '-')}", str(value)])
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=args.timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"SBE list phase {action!r} failed: {completed.stderr.strip()}"
+        )
+    fields: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        name, separator, value = line.partition("=")
+        if separator:
+            fields[name] = value
+    try:
+        return int(fields["commands"]), float(fields["seconds"])
+    except (KeyError, ValueError) as error:
+        raise RuntimeError(
+            f"SBE list phase {action!r} returned malformed output: "
+            f"{completed.stdout!r}"
+        ) from error
+
+
 def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
     server = start_engine(spec, args)
     try:
@@ -336,17 +430,29 @@ def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
             key = f"listbench:{os.getpid()}:{spec.label}"
             baseline = memory_sample(client, server, spec, key)
 
-            load_commands, load_seconds = zbench.time_pipeline(
-                client,
-                rpush_commands(
-                    args.members,
+            if spec.is_sbe:
+                load_commands, load_seconds = benchmark_sbe_phase(
+                    args,
+                    server,
+                    "load",
                     key,
-                    args.load_batch,
-                    args.value_bytes,
-                    spec.list_command("RPUSH"),
-                ),
-                args.pipeline,
-            )
+                    members=args.members,
+                    value_bytes=args.value_bytes,
+                    batch=args.load_batch,
+                    implementation="selected",
+                )
+            else:
+                load_commands, load_seconds = zbench.time_pipeline(
+                    client,
+                    rpush_commands(
+                        args.members,
+                        key,
+                        args.load_batch,
+                        args.value_bytes,
+                        spec.list_command("RPUSH"),
+                    ),
+                    args.pipeline,
+                )
             check_loaded_list(client, spec, key, args.members, args.value_bytes)
             if spec.is_goblin:
                 client.command("GOBLIN.OPTIMIZE", key)
@@ -360,158 +466,268 @@ def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
             range_start = max(0, middle - range_half)
             range_stop = min(args.members - 1, range_start + args.range_size - 1)
 
-            operations = [
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "llen",
-                    "LLEN control",
-                    [spec.list_command("LLEN"), key],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lindex_head",
-                    "LINDEX 0",
-                    [spec.list_command("LINDEX"), key, 0],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lindex_quarter",
-                    f"LINDEX {quarter}",
-                    [spec.list_command("LINDEX"), key, quarter],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lindex_middle",
-                    f"LINDEX {middle}",
-                    [spec.list_command("LINDEX"), key, middle],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lindex_three_quarters",
-                    f"LINDEX {three_quarters}",
-                    [spec.list_command("LINDEX"), key, three_quarters],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lindex_tail",
-                    "LINDEX -1",
-                    [spec.list_command("LINDEX"), key, -1],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lrange_middle",
-                    f"LRANGE {range_start} {range_stop}",
-                    [spec.list_command("LRANGE"), key, range_start, range_stop],
-                ),
-                benchmark_fixed_command(
-                    args,
-                    server,
-                    "lset_middle",
-                    f"LSET {middle}",
-                    [
-                        spec.list_command("LSET"),
-                        key,
-                        middle,
-                        "s" * args.value_bytes,
-                    ],
-                ),
-            ]
+            operations: list[OperationResult] = []
 
-            pivot = client.command(spec.list_command("LINDEX"), key, middle)
-            if not isinstance(pivot, bytes):
-                raise RuntimeError("middle pivot disappeared before LINSERT phase")
-            operations.append(
-                benchmark_pipeline(
-                    client,
-                    args,
-                    "middle_insert_remove",
-                    "LINSERT before middle pivot + LREM inserted value",
-                    args.middle_pairs,
-                    middle_insert_remove_commands(
-                        key,
-                        pivot,
+            def add_sbe_phase(
+                name: str,
+                description: str,
+                logical_operations: int,
+                action: str,
+                **options: object,
+            ) -> None:
+                command_count, seconds = benchmark_sbe_phase(
+                    args, server, action, key, **options
+                )
+                operations.append(
+                    operation(
+                        name,
+                        description,
+                        "native C++ SBE over shared-memory ring; one outstanding request",
+                        logical_operations,
+                        command_count,
+                        seconds,
+                    )
+                )
+
+            def add_fixed(
+                command_name: str,
+                name: str,
+                description: str,
+                *arguments: object,
+            ) -> None:
+                if spec.supports_list_command(command_name):
+                    if spec.is_sbe:
+                        options: dict[str, object] = {
+                            "operation": command_name,
+                            "requests": args.requests,
+                            "value_bytes": args.value_bytes,
+                        }
+                        if command_name in ("LINDEX", "LSET"):
+                            options["index"] = arguments[0]
+                        elif command_name == "LRANGE":
+                            options["start"] = arguments[0]
+                            options["stop"] = arguments[1]
+                        rates: list[tuple[int, float]] = []
+                        for _ in range(args.rounds):
+                            rates.append(
+                                benchmark_sbe_phase(
+                                    args, server, "fixed", key, **options
+                                )
+                            )
+                        rates.sort(key=lambda result: result[1])
+                        command_count, seconds = rates[len(rates) // 2]
+                        operations.append(
+                            operation(
+                                name,
+                                description,
+                                f"native C++ SBE/ring median of {args.rounds}; "
+                                "one outstanding request",
+                                args.requests,
+                                command_count,
+                                seconds,
+                            )
+                        )
+                    else:
+                        operations.append(
+                            benchmark_fixed_command(
+                                args,
+                                server,
+                                name,
+                                description,
+                                [spec.list_command(command_name), key, *arguments],
+                            )
+                        )
+
+            add_fixed("LLEN", "llen", "LLEN control")
+            add_fixed("LINDEX", "lindex_head", "LINDEX 0", 0)
+            add_fixed("LINDEX", "lindex_quarter", f"LINDEX {quarter}", quarter)
+            add_fixed("LINDEX", "lindex_middle", f"LINDEX {middle}", middle)
+            add_fixed(
+                "LINDEX",
+                "lindex_three_quarters",
+                f"LINDEX {three_quarters}",
+                three_quarters,
+            )
+            add_fixed("LINDEX", "lindex_tail", "LINDEX -1", -1)
+            add_fixed(
+                "LRANGE",
+                "lrange_middle",
+                f"LRANGE {range_start} {range_stop}",
+                range_start,
+                range_stop,
+            )
+            add_fixed(
+                "LSET",
+                "lset_middle",
+                f"LSET {middle}",
+                middle,
+                "s" * args.value_bytes,
+            )
+
+            if spec.supports_list_command("LINSERT") and spec.supports_list_command(
+                "LREM"
+            ):
+                if spec.is_sbe:
+                    add_sbe_phase(
+                        "middle_insert_remove",
+                        "LINSERT before middle pivot + LREM inserted value",
                         args.middle_pairs,
-                        args.value_bytes,
-                        spec.list_command("LINSERT"),
-                        spec.list_command("LREM"),
-                    ),
-                )
-            )
-            operations.append(
-                benchmark_pipeline(
-                    client,
-                    args,
-                    "head_stack",
-                    "LPUSH + LPOP",
-                    args.endpoint_pairs,
-                    paired_endpoint_commands(
-                        key,
+                        "middle",
+                        pairs=args.middle_pairs,
+                        index=middle,
+                        value_bytes=args.value_bytes,
+                    )
+                else:
+                    pivot = client.command(spec.list_command("LINDEX"), key, middle)
+                    if not isinstance(pivot, bytes):
+                        raise RuntimeError(
+                            "middle pivot disappeared before LINSERT phase"
+                        )
+                    operations.append(
+                        benchmark_pipeline(
+                            client,
+                            args,
+                            "middle_insert_remove",
+                            "LINSERT before middle pivot + LREM inserted value",
+                            args.middle_pairs,
+                            middle_insert_remove_commands(
+                                key,
+                                pivot,
+                                args.middle_pairs,
+                                args.value_bytes,
+                                spec.list_command("LINSERT"),
+                                spec.list_command("LREM"),
+                            ),
+                        )
+                    )
+            if spec.supports_list_command("LPUSH") and spec.supports_list_command(
+                "LPOP"
+            ):
+                if spec.is_sbe:
+                    add_sbe_phase(
+                        "head_stack",
+                        "LPUSH + LPOP",
                         args.endpoint_pairs,
-                        args.value_bytes,
-                        spec.list_command("LPUSH"),
-                        spec.list_command("LPOP"),
-                        "h",
-                    ),
-                )
-            )
-            operations.append(
-                benchmark_pipeline(
-                    client,
-                    args,
-                    "tail_stack",
-                    "RPUSH + RPOP",
-                    args.endpoint_pairs,
-                    paired_endpoint_commands(
-                        key,
+                        "endpoint",
+                        pairs=args.endpoint_pairs,
+                        value_bytes=args.value_bytes,
+                        push="LPUSH",
+                        pop="LPOP",
+                        prefix="h",
+                    )
+                else:
+                    operations.append(
+                        benchmark_pipeline(
+                            client,
+                            args,
+                            "head_stack",
+                            "LPUSH + LPOP",
+                            args.endpoint_pairs,
+                            paired_endpoint_commands(
+                                key,
+                                args.endpoint_pairs,
+                                args.value_bytes,
+                                spec.list_command("LPUSH"),
+                                spec.list_command("LPOP"),
+                                "h",
+                            ),
+                        )
+                    )
+            if spec.supports_list_command("RPUSH") and spec.supports_list_command(
+                "RPOP"
+            ):
+                if spec.is_sbe:
+                    add_sbe_phase(
+                        "tail_stack",
+                        "RPUSH + RPOP",
                         args.endpoint_pairs,
-                        args.value_bytes,
-                        spec.list_command("RPUSH"),
-                        spec.list_command("RPOP"),
-                        "t",
-                    ),
-                )
-            )
-            operations.append(
-                benchmark_pipeline(
-                    client,
-                    args,
-                    "counted_head_pop",
-                    f"LPUSH {args.pop_width} values + LPOP count={args.pop_width}",
-                    args.counted_pop_pairs,
-                    counted_pop_commands(
-                        key,
+                        "endpoint",
+                        pairs=args.endpoint_pairs,
+                        value_bytes=args.value_bytes,
+                        push="RPUSH",
+                        pop="RPOP",
+                        prefix="t",
+                    )
+                else:
+                    operations.append(
+                        benchmark_pipeline(
+                            client,
+                            args,
+                            "tail_stack",
+                            "RPUSH + RPOP",
+                            args.endpoint_pairs,
+                            paired_endpoint_commands(
+                                key,
+                                args.endpoint_pairs,
+                                args.value_bytes,
+                                spec.list_command("RPUSH"),
+                                spec.list_command("RPOP"),
+                                "t",
+                            ),
+                        )
+                    )
+            if spec.kind != "mini-redis-go":
+                if spec.is_sbe:
+                    add_sbe_phase(
+                        "counted_head_pop",
+                        f"LPUSH {args.pop_width} values + LPOP count={args.pop_width}",
                         args.counted_pop_pairs,
-                        args.pop_width,
-                        args.value_bytes,
-                        spec.list_command("LPUSH"),
-                        spec.list_command("LPOP"),
-                    ),
-                )
-            )
-            operations.append(
-                benchmark_pipeline(
-                    client,
-                    args,
-                    "queue",
-                    "RPUSH + LPOP",
-                    args.endpoint_pairs,
-                    paired_endpoint_commands(
-                        key,
+                        "counted",
+                        pairs=args.counted_pop_pairs,
+                        width=args.pop_width,
+                        value_bytes=args.value_bytes,
+                    )
+                else:
+                    operations.append(
+                        benchmark_pipeline(
+                            client,
+                            args,
+                            "counted_head_pop",
+                            f"LPUSH {args.pop_width} values + LPOP count={args.pop_width}",
+                            args.counted_pop_pairs,
+                            counted_pop_commands(
+                                key,
+                                args.counted_pop_pairs,
+                                args.pop_width,
+                                args.value_bytes,
+                                spec.list_command("LPUSH"),
+                                spec.list_command("LPOP"),
+                            ),
+                        )
+                    )
+            if spec.supports_list_command("RPUSH") and spec.supports_list_command(
+                "LPOP"
+            ):
+                if spec.is_sbe:
+                    add_sbe_phase(
+                        "queue",
+                        "RPUSH + LPOP",
                         args.endpoint_pairs,
-                        args.value_bytes,
-                        spec.list_command("RPUSH"),
-                        spec.list_command("LPOP"),
-                        "q",
-                    ),
-                )
-            )
+                        "endpoint",
+                        pairs=args.endpoint_pairs,
+                        value_bytes=args.value_bytes,
+                        push="RPUSH",
+                        pop="LPOP",
+                        prefix="q",
+                    )
+                else:
+                    operations.append(
+                        benchmark_pipeline(
+                            client,
+                            args,
+                            "queue",
+                            "RPUSH + LPOP",
+                            args.endpoint_pairs,
+                            paired_endpoint_commands(
+                                key,
+                                args.endpoint_pairs,
+                                args.value_bytes,
+                                spec.list_command("RPUSH"),
+                                spec.list_command("LPOP"),
+                                "q",
+                            ),
+                        )
+                    )
 
             final_length = client.command(spec.list_command("LLEN"), key)
             if final_length != args.members:
@@ -563,7 +779,32 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     labels = [result.label for result in results]
     by_label = {result.label: result for result in results}
-    operation_names = [op.name for op in results[0].operations]
+    operation_descriptions = {
+        "llen": "LLEN control",
+        "lindex_head": "LINDEX 0",
+        "lindex_quarter": f"LINDEX {args.members // 4}",
+        "lindex_middle": f"LINDEX {args.members // 2}",
+        "lindex_three_quarters": f"LINDEX {args.members * 3 // 4}",
+        "lindex_tail": "LINDEX -1",
+        "lrange_middle": (
+            f"LRANGE {max(0, args.members // 2 - args.range_size // 2)} "
+            f"{min(args.members - 1, max(0, args.members // 2 - args.range_size // 2) + args.range_size - 1)}"
+        ),
+        "lset_middle": f"LSET {args.members // 2}",
+        "middle_insert_remove": "LINSERT before middle pivot + LREM inserted value",
+        "head_stack": "LPUSH + LPOP",
+        "tail_stack": "RPUSH + RPOP",
+        "counted_head_pop": (
+            f"LPUSH {args.pop_width} values + LPOP count={args.pop_width}"
+        ),
+        "queue": "RPUSH + LPOP",
+    }
+    operation_names = list(operation_descriptions)
+
+    def find_operation(
+        result: EngineResult, name: str
+    ) -> OperationResult | None:
+        return next((op for op in result.operations if op.name == name), None)
 
     summary: list[str] = []
     goblins = [
@@ -575,9 +816,9 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
     if goblins and incumbents:
         fixed_names = operation_names[:8]
         incumbent_middle = max(
-            next(op for op in result.operations if op.name == "lindex_middle")
-            .logical_operations_per_second
+            op.logical_operations_per_second
             for result in incumbents
+            if (op := find_operation(result, "lindex_middle")) is not None
         )
         best_incumbent_rss_per_item = min(
             (result.memory_after_load.rss_mib - result.memory_baseline.rss_mib)
@@ -604,19 +845,24 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         fastest_load = max(result.load_items_per_second for result in incumbents)
         goblin_sentences = []
         for goblin in goblins:
-            fixed_wins = sum(
-                next(op for op in goblin.operations if op.name == name)
-                .logical_operations_per_second
-                > max(
-                    next(op for op in result.operations if op.name == name)
-                    .logical_operations_per_second
+            fixed_wins = 0
+            for name in fixed_names:
+                goblin_op = find_operation(goblin, name)
+                incumbent_ops = [
+                    op.logical_operations_per_second
                     for result in incumbents
-                )
-                for name in fixed_names
-            )
-            goblin_middle = next(
-                op for op in goblin.operations if op.name == "lindex_middle"
-            ).logical_operations_per_second
+                    if (op := find_operation(result, name)) is not None
+                ]
+                if (
+                    goblin_op is not None
+                    and incumbent_ops
+                    and goblin_op.logical_operations_per_second > max(incumbent_ops)
+                ):
+                    fixed_wins += 1
+            goblin_middle_op = find_operation(goblin, "lindex_middle")
+            if goblin_middle_op is None:
+                raise RuntimeError("Goblin result omitted middle-list LINDEX")
+            goblin_middle = goblin_middle_op.logical_operations_per_second
             goblin_rss_per_item = (
                 goblin.memory_after_load.rss_mib
                 - goblin.memory_baseline.rss_mib
@@ -633,7 +879,7 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
                 f"`{goblin.label}` leads `{fixed_wins}` of "
                 f"`{len(fixed_names)}` fixed-command rows, reaches "
                 f"`{goblin_middle / incumbent_middle:.2f}x` the fastest "
-                f"incumbent on middle-list `LINDEX`, RESP population is "
+                f"incumbent on middle-list `LINDEX`, population is "
                 f"{load_comparison} "
                 f"the fastest incumbent, and uses `{goblin_rss_per_item:.2f}` "
                 "RSS-delta bytes/item."
@@ -654,9 +900,10 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
             "",
             " ".join(goblin_sentences) + allocation_sentence +
             " The leanest incumbent uses "
-            f"`{best_incumbent_rss_per_item:.2f}` RSS-delta bytes/item. RESP "
-            "population and compound-operation rows use the Python RESP pipeline and are "
-            "client-influenced; fixed-command rows use the C benchmark client.",
+            f"`{best_incumbent_rss_per_item:.2f}` RSS-delta bytes/item. TCP "
+            "compound rows use the Python RESP pipeline; ring rows use the native "
+            "C++ SBE client with one request outstanding. Fixed TCP rows use "
+            "`redis-benchmark`.",
             "",
         ]
 
@@ -669,15 +916,24 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "## Method",
         "",
         f"- `{args.members:,}` distinct `{args.value_bytes}`-byte values in one list.",
-        f"- RESP population: multi-value `RPUSH` batches of `{args.load_batch}`, pipeline depth "
-        f"`{args.pipeline}`.",
-        "- RESP population measures command ingestion, not Goblin Core native "
+        f"- Population: multi-value `RPUSH` batches of `{args.load_batch}`. "
+        f"RESP/TCP uses pipeline depth `{args.pipeline}`; SBE/ring currently keeps "
+        "one request outstanding.",
+        "- Population measures command ingestion, not Goblin Core native "
         "snapshot restoration; native restore reconstructs each list in one bulk "
         "operation and uses the compatible raw-copy accelerator when present.",
-        f"- Fixed-command rates: `{args.requests:,}` requests, one client, pipeline "
-        f"depth `{args.pipeline}`, median of `{args.rounds}` `redis-benchmark` runs.",
-        "- Compound rates use the repository's existing RESP pipeline client and "
-        "keep the list length constant.",
+        f"- Fixed-command rates: `{args.requests:,}` requests and one client. "
+        f"RESP/TCP uses pipeline depth `{args.pipeline}` and the median of "
+        f"`{args.rounds}` `redis-benchmark` runs. SBE/ring uses the median of "
+        f"`{args.rounds}` native C++ runs with one request outstanding.",
+        "- Compound rates keep the list length constant. TCP engines use the "
+        "existing RESP pipeline client; the ring row uses the native typed SBE client.",
+        "- Transport matrix: Goblin Core is measured as `goblin-resp-tcp` and "
+        "`goblin-sbe-ring`; every incumbent is measured over RESP/TCP. No UDS row "
+        "is included.",
+        f"- Linux affinity: server core `{args.server_core}`, client/load-generator "
+        f"core `{args.client_core}` (`-1` means unpinned). Ring client and server "
+        "must not share a core.",
         "- Goblin implementation engines use their qualified command family "
         "(`goblin-pma` becomes `GOBLIN.PMA.*`); `goblin` exercises the selected "
         "standard aliases.",
@@ -685,16 +941,22 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "proactor thread for single-core parity. The intended target is a modest "
         "single-core memory server; the quiet benchmark host is a 64-core machine. "
         "Engines run one at a time.",
-        "- RSS is read directly from the launched server PID's Linux "
-        "`/proc/<pid>/status` as `VmRSS + HugetlbPages`; no server-reported RSS "
-        "field is used. `INFO used_memory` and `MEMORY USAGE` are independent "
+        "- mini-redis-go runs as an external TCP server with `GOMAXPROCS=1`, "
+        "AOF disabled, and metrics disabled. Unsupported commands are shown as "
+        "`n/a`, not timed error replies.",
+        "- RSS is read from the launched server PID: mini-redis-go uses "
+        "`ps -o rss=`, while the other engines use Linux `/proc/<pid>/status` "
+        "as `VmRSS + HugetlbPages`. No server-reported RSS field is used. "
+        "`INFO used_memory` and `MEMORY USAGE` are independent "
         "corroborating counters; RSS/INFO deltas subtract the empty-server baseline.",
-        "- Per-key bytes are `MEMORY USAGE` on incumbents and "
-        "`GOBLIN.MEMORY total_allocated_bytes` on Goblin Core.",
+        "- Per-key bytes are `MEMORY USAGE` where an incumbent exposes it and "
+        "`GOBLIN.MEMORY total_allocated_bytes` on Goblin Core. mini-redis-go "
+        "exposes neither `INFO memory` nor `MEMORY USAGE`, so its RSS is the "
+        "cross-engine memory measurement.",
         "- Incumbents are exercised strictly as black-box RESP servers; their "
         "source code is not inspected.",
         "",
-        "## RESP Population",
+        "## Population",
         "",
         "| Engine | items/s | seconds | RPUSH commands |",
         "| --- | ---: | ---: | ---: |",
@@ -709,19 +971,23 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "",
         "## Operations",
         "",
-        "Logical operations per second. Fixed commands use the C benchmark client; "
-        "compound rows count a two-command pair as one logical operation.",
+        "Logical operations per second. Fixed TCP commands use `redis-benchmark`; "
+        "ring commands use the native C++ SBE client. Compound rows count a "
+        "two-command pair as one logical operation.",
         "",
         "| Operation | " + " | ".join(labels) + " |",
         "| --- | " + " | ".join("---:" for _ in labels) + " |",
     ]
     for name in operation_names:
-        description = next(op.description for op in results[0].operations if op.name == name)
         cells = []
         for label in labels:
-            op = next(op for op in by_label[label].operations if op.name == name)
-            cells.append(f"{op.logical_operations_per_second:,.0f}")
-        lines.append(f"| `{description}` | " + " | ".join(cells) + " |")
+            op = find_operation(by_label[label], name)
+            cells.append(
+                "n/a" if op is None else f"{op.logical_operations_per_second:,.0f}"
+            )
+        lines.append(
+            f"| `{operation_descriptions[name]}` | " + " | ".join(cells) + " |"
+        )
 
     lines += [
         "",
@@ -840,9 +1106,16 @@ def write_outputs(args: argparse.Namespace, results: Sequence[EngineResult]) -> 
             "counted_pop_pairs": args.counted_pop_pairs,
             "pop_width": args.pop_width,
             "settle_seconds": args.settle_seconds,
+            "server_core": args.server_core,
+            "client_core": args.client_core,
             "standard_list_implementation": args.standard_list_implementation,
             "goblin_max_density": args.goblin_max_density,
             "redis_benchmark": args.redis_benchmark.name,
+            "sbe_benchmark": (
+                args.sbe_benchmark.name
+                if any(spec.is_sbe for spec in args.engine)
+                else None
+            ),
         },
         "results": [asdict(result) for result in results],
     }
@@ -867,6 +1140,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=Path,
         default=Path("redis-benchmark"),
         help="C load generator used for fixed-command throughput",
+    )
+    parser.add_argument(
+        "--sbe-benchmark",
+        type=Path,
+        default=Path("goblin_core_list_sbe_benchmark"),
+        help="native workload runner used by goblin-sbe engines",
     )
     parser.add_argument(
         "--standard-list-implementation",
@@ -895,6 +1174,18 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--pop-width", type=int, default=8)
     parser.add_argument("--settle-seconds", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--server-core",
+        type=int,
+        default=-1,
+        help="pin each launched server to this Linux CPU (-1 disables)",
+    )
+    parser.add_argument(
+        "--client-core",
+        type=int,
+        default=-1,
+        help="pin this harness and child load generators (-1 disables)",
+    )
     parser.add_argument(
         "--output-json",
         type=Path,
@@ -927,6 +1218,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("--range-size cannot exceed --members")
     if args.settle_seconds < 0 or args.timeout <= 0:
         parser.error("--settle-seconds must be non-negative and --timeout positive")
+    if args.server_core < -1 or args.client_core < -1:
+        parser.error("CPU cores must be non-negative or -1")
     if args.goblin_max_density is not None and not (
         0.0 < args.goblin_max_density <= 1.0
     ):
@@ -936,6 +1229,10 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         args.redis_benchmark = zbench.resolve_executable(
             args.redis_benchmark, "redis-benchmark"
         )
+        if any(spec.is_sbe for spec in args.engine):
+            args.sbe_benchmark = zbench.resolve_executable(
+                args.sbe_benchmark, "Goblin SBE list benchmark"
+            )
         for spec in args.engine:
             zbench.resolve_executable(spec.binary, f"{spec.label} binary")
     except FileNotFoundError as error:
@@ -945,16 +1242,25 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
+    pin_process(0, args.client_core)
     results: list[EngineResult] = []
     for spec in args.engine:
         print(f"benchmarking {spec.label}...", file=sys.stderr, flush=True)
         result = run_engine(spec, args)
         results.append(result)
-        middle = next(op for op in result.operations if op.name == "lindex_middle")
+        middle = next(
+            (op for op in result.operations if op.name == "lindex_middle"), None
+        )
         rss_delta = result.memory_after_load.rss_mib - result.memory_baseline.rss_mib
+        middle_rate = (
+            "n/a"
+            if middle is None
+            else f"{middle.logical_operations_per_second:,.0f} ops/s"
+        )
+        transport = "SBE/ring" if spec.is_sbe else "RESP/TCP"
         print(
-            f"  RESP population {result.load_items_per_second:,.0f} items/s, "
-            f"middle LINDEX {middle.logical_operations_per_second:,.0f} ops/s, "
+            f"  {transport} population {result.load_items_per_second:,.0f} items/s, "
+            f"middle LINDEX {middle_rate}, "
             f"RSS delta {rss_delta:.2f} MiB",
             file=sys.stderr,
             flush=True,

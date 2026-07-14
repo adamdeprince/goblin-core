@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zset_benchmark import (  # noqa: E402
     start_dragonfly,
     start_goblin,
+    start_mini_redis,
     start_redis,
 )
 
@@ -30,6 +31,8 @@ def start_engine(kind: str, binary: Path):
         return start_redis(binary)
     if kind == "dragonfly":
         return start_dragonfly(binary)
+    if kind == "mini-redis-go":
+        return start_mini_redis(binary)
     raise ValueError(kind)
 
 
@@ -80,13 +83,22 @@ def main() -> int:
             ping = probe(args.pin_core, args.probe, port, args.ping_ops, True)
             conc = {c: rb_ping(args.pin_core, args.redis_benchmark, port, c, args.rb_ops)
                     for c in (1, 50, 500)}
-            tail = probe(args.pin_core, args.probe, port, args.tail_ops, False)
+            tail = None
+            if kind != "mini-redis-go":
+                tail = probe(args.pin_core, args.probe, port, args.tail_ops, False)
+            tail_text = (
+                "ZADD-tail n/a"
+                if tail is None
+                else (
+                    f"ZADD-tail p50={tail['p50']:.1f} p99={tail['p99']:.1f} "
+                    f"p999={tail['p999']:.1f} max={tail['max']:.0f}us"
+                )
+            )
             print(f"{label:>10}: ping-p50={ping['p50']:.1f}us p99={ping['p99']:.1f}us | "
                   f"c1 {conc[1][0]/1000:.0f}K/{conc[1][1]}ms  "
                   f"c50 {conc[50][0]/1000:.0f}K/{conc[50][1]}ms  "
                   f"c500 {conc[500][0]/1000:.0f}K/{conc[500][1]}ms | "
-                  f"ZADD-tail p50={tail['p50']:.1f} p99={tail['p99']:.1f} "
-                  f"p999={tail['p999']:.1f} max={tail['max']:.0f}us")
+                  f"{tail_text}")
         finally:
             server.stop()
     return 0

@@ -469,4 +469,66 @@
   <sbe:message name="GoblinLoad" id="84" description="GOBLIN.LOAD path -> IntReply (keys) | ErrorReply">
     <data name="path" id="1" type="varData"/>
   </sbe:message>
+
+  <!-- ============================ Lists (batch 9, ids 85-95) ================== -->
+  <!-- implementation: 0 selected default, 1 PMA, 2 segmented. It only affects
+       creation on a push; an existing list retains its representation. -->
+  <sbe:message name="LPush" id="85" description="LPUSH/LPUSHX key value... -> IntReply">
+    <field name="implementation" id="1" type="uint8"/>
+    <field name="onlyIfExists"   id="2" type="uint8"/>
+    <group name="values" id="3" dimensionType="groupSizeEncoding">
+      <data name="value" id="1" type="varData"/>
+    </group>
+    <data name="key" id="4" type="varData"/>
+  </sbe:message>
+  <sbe:message name="RPush" id="86" description="RPUSH/RPUSHX key value... -> IntReply">
+    <field name="implementation" id="1" type="uint8"/>
+    <field name="onlyIfExists"   id="2" type="uint8"/>
+    <group name="values" id="3" dimensionType="groupSizeEncoding">
+      <data name="value" id="1" type="varData"/>
+    </group>
+    <data name="key" id="4" type="varData"/>
+  </sbe:message>
+  <!-- count=-1 is the scalar form; count>=0 is the counted array form. -->
+  <sbe:message name="LPop" id="87" description="LPOP key [count] -> BulkReply/NilReply/ArrayReply">
+    <field name="count" id="1" type="int64"/>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="RPop" id="88" description="RPOP key [count] -> BulkReply/NilReply/ArrayReply">
+    <field name="count" id="1" type="int64"/>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LLen" id="89" description="LLEN key -> IntReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LIndex" id="90" description="LINDEX key index -> BulkReply | NilReply">
+    <field name="index" id="1" type="int64"/>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LRange" id="91" description="LRANGE key start stop -> ArrayReply">
+    <field name="start" id="1" type="int64"/>
+    <field name="stop"  id="2" type="int64"/>
+    <data name="key" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LSet" id="92" description="LSET key index value -> StatusReply | ErrorReply">
+    <field name="index" id="1" type="int64"/>
+    <data name="key"   id="2" type="varData"/>
+    <data name="value" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LTrim" id="93" description="LTRIM key start stop -> StatusReply">
+    <field name="start" id="1" type="int64"/>
+    <field name="stop"  id="2" type="int64"/>
+    <data name="key" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LRem" id="94" description="LREM key count value -> IntReply">
+    <field name="count" id="1" type="int64"/>
+    <data name="key"   id="2" type="varData"/>
+    <data name="value" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="LInsert" id="95" description="LINSERT key BEFORE|AFTER pivot value -> IntReply">
+    <field name="before" id="1" type="uint8"/>
+    <data name="key"   id="2" type="varData"/>
+    <data name="pivot" id="3" type="varData"/>
+    <data name="value" id="4" type="varData"/>
+  </sbe:message>
 </sbe:messageSchema>

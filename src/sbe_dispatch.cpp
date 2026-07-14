@@ -60,6 +60,18 @@
 #include "goblin_sbe/HStrLen.h"
 #include "goblin_sbe/HVals.h"
 #include "goblin_sbe/NullableArrayReply.h"
+// List (batch 9)
+#include "goblin_sbe/LIndex.h"
+#include "goblin_sbe/LInsert.h"
+#include "goblin_sbe/LLen.h"
+#include "goblin_sbe/LPop.h"
+#include "goblin_sbe/LPush.h"
+#include "goblin_sbe/LRange.h"
+#include "goblin_sbe/LRem.h"
+#include "goblin_sbe/LSet.h"
+#include "goblin_sbe/LTrim.h"
+#include "goblin_sbe/RPop.h"
+#include "goblin_sbe/RPush.h"
 // Standard-command tail (batch 4)
 #include "goblin_sbe/Echo.h"
 #include "goblin_sbe/GetRange.h"
@@ -191,6 +203,17 @@ constexpr std::uint16_t kScript = sbe::Script::sbeTemplateId();
 constexpr std::uint16_t kGoblinMemory = sbe::GoblinMemory::sbeTemplateId();
 constexpr std::uint16_t kGoblinSave = sbe::GoblinSave::sbeTemplateId();
 constexpr std::uint16_t kGoblinLoad = sbe::GoblinLoad::sbeTemplateId();
+constexpr std::uint16_t kLPush = sbe::LPush::sbeTemplateId();
+constexpr std::uint16_t kRPush = sbe::RPush::sbeTemplateId();
+constexpr std::uint16_t kLPop = sbe::LPop::sbeTemplateId();
+constexpr std::uint16_t kRPop = sbe::RPop::sbeTemplateId();
+constexpr std::uint16_t kLLen = sbe::LLen::sbeTemplateId();
+constexpr std::uint16_t kLIndex = sbe::LIndex::sbeTemplateId();
+constexpr std::uint16_t kLRange = sbe::LRange::sbeTemplateId();
+constexpr std::uint16_t kLSet = sbe::LSet::sbeTemplateId();
+constexpr std::uint16_t kLTrim = sbe::LTrim::sbeTemplateId();
+constexpr std::uint16_t kLRem = sbe::LRem::sbeTemplateId();
+constexpr std::uint16_t kLInsert = sbe::LInsert::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -591,6 +614,10 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
     case kHGetAll: case kHKeys: case kHVals: case kHLen: case kHExists:
     case kHStrLen: case kHIncrBy: case kGoblinHCad: case kGoblinHSetGt:
       return KeyType::Hash;
+    case kLPush: case kRPush: case kLPop: case kRPop: case kLLen:
+    case kLIndex: case kLRange: case kLSet: case kLTrim: case kLRem:
+    case kLInsert:
+      return KeyType::List;
     case kGet: case kGetSet: case kGetDel: case kStrLen: case kAppend:
     case kIncr: case kDecr: case kIncrBy: case kDecrBy: case kIncrByFloat:
     case kGetRange: case kSetRange:
@@ -613,6 +640,7 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
     std::uint16_t tid, const char* buf, std::uint16_t block_length, std::uint64_t buflen) {
   switch (tid) {
     case kZAdd: case kZRem: case kHSet: case kHMGet: case kHDel:
+    case kLPush: case kRPush:
       return std::nullopt;  // key trails a group -> guarded inline in the handler
     default:
       break;
@@ -634,6 +662,25 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
     return true;
   }
   return false;
+}
+
+[[nodiscard]] bool decode_list_implementation(
+    std::uint8_t wire, std::optional<ListImplementation>& implementation,
+    std::string& out) {
+  switch (wire) {
+    case 0:
+      implementation.reset();
+      return true;
+    case 1:
+      implementation = ListImplementation::Pma;
+      return true;
+    case 2:
+      implementation = ListImplementation::Segmented;
+      return true;
+    default:
+      reply_error(out, "ERR", "invalid list implementation");
+      return false;
+  }
 }
 
 void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
@@ -1055,6 +1102,181 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       break;
     }
 
+    case kLPush:
+    case kRPush: {
+      static thread_local std::vector<std::string_view> values;
+      values.clear();
+      bool too_big = false;
+      std::string_view key;
+      std::uint8_t implementation_wire = 0;
+      bool only_if_exists = false;
+
+      if (tid == kLPush) {
+        sbe::LPush command;
+        command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        implementation_wire = command.implementation();
+        only_if_exists = command.onlyIfExists() != 0;
+        auto& group = command.values();
+        while (group.hasNext()) {
+          group.next();
+          const auto value = group.getValueAsStringView();
+          too_big = too_big || !store.value_fits(value);
+          values.push_back(value);
+        }
+        key = command.getKeyAsStringView();
+      } else {
+        sbe::RPush command;
+        command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        implementation_wire = command.implementation();
+        only_if_exists = command.onlyIfExists() != 0;
+        auto& group = command.values();
+        while (group.hasNext()) {
+          group.next();
+          const auto value = group.getValueAsStringView();
+          too_big = too_big || !store.value_fits(value);
+          values.push_back(value);
+        }
+        key = command.getKeyAsStringView();
+      }
+
+      if (wrong_type(store, KeyType::List, key, out)) break;
+      if (values.empty()) {
+        reply_error(out, "ERR", "wrong number of arguments for list push command");
+        break;
+      }
+      if (too_big) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      std::optional<ListImplementation> implementation;
+      if (!decode_list_implementation(implementation_wire, implementation, out)) break;
+      const auto length = tid == kLPush
+                              ? store.lpush(key, values, only_if_exists, implementation)
+                              : store.rpush(key, values, only_if_exists, implementation);
+      reply_int(out, length);
+      break;
+    }
+
+    case kLPop:
+    case kRPop: {
+      long long count = -1;
+      std::string_view key;
+      if (tid == kLPop) {
+        sbe::LPop command;
+        command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        count = command.count();
+        key = command.getKeyAsStringView();
+      } else {
+        sbe::RPop command;
+        command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        count = command.count();
+        key = command.getKeyAsStringView();
+      }
+      if (count == -1) {
+        reply_bulk_or_nil(out, tid == kLPop ? store.lpop(key) : store.rpop(key));
+        break;
+      }
+      if (count < 0) {
+        reply_error(out, "ERR", "value is out of range, must be positive");
+        break;
+      }
+      if (!store.exists(key)) {
+        reply_nil(out);
+        break;
+      }
+      const auto values = tid == kLPop
+                              ? store.lpop(key, static_cast<std::size_t>(count))
+                              : store.rpop(key, static_cast<std::size_t>(count));
+      reply_array(out, values);
+      break;
+    }
+
+    case kLLen: {
+      sbe::LLen command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, static_cast<long long>(store.llen(command.getKeyAsStringView())));
+      break;
+    }
+
+    case kLIndex: {
+      sbe::LIndex command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto value = store.lindex(command.getKeyAsStringView(), command.index());
+      if (value) {
+        reply_bulk(out, value->to_string());
+      } else {
+        reply_nil(out);
+      }
+      break;
+    }
+
+    case kLRange: {
+      sbe::LRange command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto encoded = store.lrange(command.getKeyAsStringView(), command.start(),
+                                        command.stop());
+      static thread_local std::vector<std::string> values;
+      values.clear();
+      values.reserve(encoded.size());
+      for (const auto value : encoded) values.push_back(value.to_string());
+      reply_array(out, values);
+      break;
+    }
+
+    case kLSet: {
+      sbe::LSet command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto key = command.getKeyAsStringView();
+      const auto value = command.getValueAsStringView();
+      if (!store.value_fits(value)) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      switch (store.lset(key, command.index(), value)) {
+        case Store::ListSetResult::Stored:
+          reply_status(out, "OK");
+          break;
+        case Store::ListSetResult::MissingKey:
+          reply_error(out, "ERR", "no such key");
+          break;
+        case Store::ListSetResult::OutOfRange:
+          reply_error(out, "ERR", "index out of range");
+          break;
+      }
+      break;
+    }
+
+    case kLTrim: {
+      sbe::LTrim command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      store.ltrim(command.getKeyAsStringView(), command.start(), command.stop());
+      reply_status(out, "OK");
+      break;
+    }
+
+    case kLRem: {
+      sbe::LRem command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto key = command.getKeyAsStringView();
+      const auto value = command.getValueAsStringView();
+      reply_int(out, static_cast<long long>(store.lrem(key, command.count(), value)));
+      break;
+    }
+
+    case kLInsert: {
+      sbe::LInsert command;
+      command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto key = command.getKeyAsStringView();
+      const auto pivot = command.getPivotAsStringView();
+      const auto value = command.getValueAsStringView();
+      if (!store.value_fits(value)) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      reply_int(out, store.linsert(key, command.before() != 0, pivot, value));
+      break;
+    }
+
     case kHSet: {
       sbe::HSet h;
       h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
@@ -1082,7 +1304,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, store.hset_many(key, entries));
+      if (entries.size() == 1) {
+        reply_int(out, store.hset(key, entries.front().first,
+                                 entries.front().second));
+      } else {
+        reply_int(out, store.hset_many(key, entries));
+      }
       break;
     }
 
@@ -1699,7 +1926,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     }
 
     default:
-      reply_error(out, "ERR", "unknown command over the SBE wire");
+      reply_error(out, "ERR",
+                  std::string("unknown SBE template id ") + std::to_string(tid));
       break;
   }
 }
