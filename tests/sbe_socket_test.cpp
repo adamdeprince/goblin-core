@@ -11,7 +11,10 @@
 #include "goblin_sbe/IntReply.h"
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/Ping.h"
+#include "goblin_sbe/PubSubPush.h"
+#include "goblin_sbe/Publish.h"
 #include "goblin_sbe/StatusReply.h"
+#include "goblin_sbe/Subscribe.h"
 #include "goblin_sbe/ZAdd.h"
 
 #include <csignal>  // kill / SIGTERM (not transitively included via <sys/wait.h> on macOS)
@@ -132,10 +135,63 @@ int main(int argc, char** argv) {
     assert(r.value() == 1);
   }
 
+  // Typed Pub/Sub stays available over sockets. A self-publication puts the
+  // asynchronous push ahead of the Publish IntReply on the same byte stream.
+  {
+    char buf[128];
+    goblin_sbe::Subscribe subscribe;
+    subscribe.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+    subscribe.channelsCount(1).next().putChannel("ticks", 5);
+    const auto total = static_cast<std::uint32_t>(
+        goblin_sbe::MessageHeader::encodedLength() + subscribe.encodedLength());
+    std::memcpy(buf, &total, kSbeLenPrefix);
+    assert(::send(fd, buf, kSbeLenPrefix + total, 0) > 0);
+
+    assert(read_frame(fd, acc, frame) == goblin_sbe::PubSubPush::sbeTemplateId());
+    goblin_sbe::MessageHeader ack_header(frame.data(), frame.size());
+    goblin_sbe::PubSubPush ack;
+    ack.wrapForDecode(frame.data(), goblin_sbe::MessageHeader::encodedLength(),
+                      ack_header.blockLength(), ack_header.version(), frame.size());
+    assert(ack.kind() == 2);
+    assert(ack.subscriptionCount() == 1);
+    assert(ack.getPatternAsStringView().empty());
+    assert(ack.getChannelAsStringView() == "ticks");
+  }
+
+  {
+    char buf[128];
+    goblin_sbe::Publish publish;
+    publish.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+    publish.putChannel("ticks", 5);
+    publish.putPayload("101.25", 6);
+    const auto total = static_cast<std::uint32_t>(
+        goblin_sbe::MessageHeader::encodedLength() + publish.encodedLength());
+    std::memcpy(buf, &total, kSbeLenPrefix);
+    assert(::send(fd, buf, kSbeLenPrefix + total, 0) > 0);
+
+    assert(read_frame(fd, acc, frame) == goblin_sbe::PubSubPush::sbeTemplateId());
+    goblin_sbe::MessageHeader push_header(frame.data(), frame.size());
+    goblin_sbe::PubSubPush push;
+    push.wrapForDecode(frame.data(), goblin_sbe::MessageHeader::encodedLength(),
+                       push_header.blockLength(), push_header.version(), frame.size());
+    assert(push.kind() == 0);
+    assert(push.getPatternAsStringView().empty());
+    assert(push.getChannelAsStringView() == "ticks");
+    assert(push.getPayloadAsStringView() == "101.25");
+
+    assert(read_frame(fd, acc, frame) == goblin_sbe::IntReply::sbeTemplateId());
+    goblin_sbe::MessageHeader reply_header(frame.data(), frame.size());
+    goblin_sbe::IntReply reply;
+    reply.wrapForDecode(frame.data(), goblin_sbe::MessageHeader::encodedLength(),
+                        reply_header.blockLength(), reply_header.version(),
+                        frame.size());
+    assert(reply.value() == 1);
+  }
+
   ::close(fd);
   ::kill(pid, SIGTERM);
   ::waitpid(pid, nullptr, 0);
   ::unlink(sock.c_str());
-  std::puts("sbe socket OK: GOBLINS! magic over a UNIX socket -> SBE dispatch (PING, ZADD)");
+  std::puts("sbe socket OK: GOBLINS! magic over a UNIX socket -> SBE dispatch and Pub/Sub");
   return 0;
 }

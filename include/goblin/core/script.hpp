@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -31,7 +33,7 @@ class Store;
 // atomically and the reusable scratch buffers below are never aliased.
 class ScriptEngine {
  public:
-  explicit ScriptEngine(Store& store);
+  explicit ScriptEngine(Store& store, NestedCommandDispatch nested_dispatch = {});
   ~ScriptEngine();
 
   ScriptEngine(const ScriptEngine&) = delete;
@@ -68,6 +70,7 @@ class ScriptEngine {
   int eval_runner(lua_State* L);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   lua_State* L_ = nullptr;
   // 40-hex SHA1 of the source -> precompiled Lua bytecode. Caching the compiled
   // chunk (not the source) is what lets EVALSHA skip the parse/compile step.

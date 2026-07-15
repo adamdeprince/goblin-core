@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -25,7 +27,7 @@ class Store;
 // other engines: lazy VM, one shared Store, atomic under the single-threaded loop.
 class WrenEngine {
  public:
-  explicit WrenEngine(Store& store);
+  explicit WrenEngine(Store& store, NestedCommandDispatch nested_dispatch = {});
   ~WrenEngine();
 
   WrenEngine(const WrenEngine&) = delete;
@@ -65,6 +67,7 @@ class WrenEngine {
            std::string& out);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   WrenVM* vm_ = nullptr;
   // 40-hex SHA1 of the source -> handle to the precompiled wrapper Fn. Caching
   // the compiled function is what lets EVALSHA skip re-interpreting the source.

@@ -292,7 +292,9 @@ void WrenEngine::foreign_call(WrenVM* vm, bool raise_on_error) {
   }
 
   call_reply_.clear();
-  handle_command_into(store_, call_args_, call_reply_, CommandExecutionOptions{});
+  handle_command_into(
+      store_, call_args_, call_reply_,
+      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
 
   if (!call_reply_.empty() && call_reply_.front() == '-') {
     const std::string_view msg = resp_error_message(call_reply_);
@@ -381,7 +383,8 @@ void WrenEngine::note_write(std::string_view text) {
   std::cerr << "goblin-core wren print: " << text;
 }
 
-WrenEngine::WrenEngine(Store& store) : store_(store) {}
+WrenEngine::WrenEngine(Store& store, NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 WrenEngine::~WrenEngine() {
   if (vm_ != nullptr) {

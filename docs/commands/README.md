@@ -17,9 +17,11 @@ The data-type commands that share this key space are documented separately:
 **[strings.md](strings.md)** (`SET` / `GET` / `INCR` / `GETRANGE` / …),
 **[lists.md](lists.md)** (`GOBLIN.PMA.LPUSH` / `GOBLIN.PMA.LINDEX` / standard aliases / …),
 **[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`), and **[ttl.md](ttl.md)**
-(`EXPIRE` / `TTL` / `PERSIST` / …). Goblin Core's own additions — memory
-introspection, compaction, snapshots, and the native `GOBLIN.CAD`
-compare-and-delete — are in **[goblin.md](goblin.md)**.
+(`EXPIRE` / `TTL` / `PERSIST` / …). The **[Pub/Sub reference](pubsub.md)**
+covers subscriptions, publishing, introspection, wire-mode behavior, and slow
+consumers. Goblin Core's own additions — memory introspection, compaction,
+snapshots, and the native `GOBLIN.CAD` compare-and-delete — are in
+**[goblin.md](goblin.md)**.
 
 ## Why more than one?
 

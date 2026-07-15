@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Goblin Core SBE (Simple Binary Encoding) wire schema - the binary alternative to
-  RESP, switched on by the GOBL magic. Codegen is a maintainer step (like
+  RESP, switched on by the GOBLINS! magic. Codegen is a maintainer step (like
   `capnp compile` / gperf): run SbeTool on this file to regenerate the header-only
   C++ codecs under sbe/generated/. Ordinary builds only compile the generated
   headers - SBE C++ has no runtime library.
@@ -105,6 +105,22 @@
     <group name="entries" id="1" dimensionType="groupSizeEncoding">
       <data name="key"   id="1" type="varData"/>
       <data name="value" id="2" type="varData"/>
+    </group>
+  </sbe:message>
+  <!-- Unsolicited Pub/Sub delivery and subscription acknowledgement. kind:
+       0 message, 1 pmessage, 2 subscribe, 3 psubscribe, 4 unsubscribe,
+       5 punsubscribe. Unused var-data fields are empty. -->
+  <sbe:message name="PubSubPush" id="12" description="asynchronous Pub/Sub delivery or acknowledgement">
+    <field name="kind" id="1" type="uint8"/>
+    <field name="subscriptionCount" id="2" type="uint32"/>
+    <data name="pattern" id="3" type="varData"/>
+    <data name="channel" id="4" type="varData"/>
+    <data name="payload" id="5" type="varData"/>
+  </sbe:message>
+  <sbe:message name="PubSubNumSubReply" id="13" description="PUBSUB NUMSUB channel/count pairs">
+    <group name="items" id="1" dimensionType="groupSizeEncoding">
+      <field name="subscriberCount" id="1" type="uint32"/>
+      <data name="channel" id="2" type="varData"/>
     </group>
   </sbe:message>
 
@@ -530,5 +546,39 @@
     <data name="key"   id="2" type="varData"/>
     <data name="pivot" id="3" type="varData"/>
     <data name="value" id="4" type="varData"/>
+  </sbe:message>
+
+  <!-- =========================== Pub/Sub (batch 10, ids 96-101) ============== -->
+  <sbe:message name="Subscribe" id="96" description="SUBSCRIBE channel... -> PubSubPush acknowledgement(s)">
+    <group name="channels" id="1" dimensionType="groupSizeEncoding">
+      <data name="channel" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="Unsubscribe" id="97" description="UNSUBSCRIBE [channel...] -> PubSubPush acknowledgement(s)">
+    <group name="channels" id="1" dimensionType="groupSizeEncoding">
+      <data name="channel" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="PSubscribe" id="98" description="PSUBSCRIBE pattern... -> PubSubPush acknowledgement(s)">
+    <group name="patterns" id="1" dimensionType="groupSizeEncoding">
+      <data name="pattern" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="PUnsubscribe" id="99" description="PUNSUBSCRIBE [pattern...] -> PubSubPush acknowledgement(s)">
+    <group name="patterns" id="1" dimensionType="groupSizeEncoding">
+      <data name="pattern" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="Publish" id="100" description="PUBLISH channel payload -> IntReply">
+    <data name="channel" id="1" type="varData"/>
+    <data name="payload" id="2" type="varData"/>
+  </sbe:message>
+  <!-- operation: 0 CHANNELS (zero args or one glob), 1 NUMSUB (channels),
+       2 NUMPAT (zero args). -->
+  <sbe:message name="PubSub" id="101" description="PUBSUB introspection">
+    <field name="operation" id="1" type="uint8"/>
+    <group name="args" id="2" dimensionType="groupSizeEncoding">
+      <data name="arg" id="1" type="varData"/>
+    </group>
   </sbe:message>
 </sbe:messageSchema>

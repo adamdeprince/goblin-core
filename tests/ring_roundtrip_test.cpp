@@ -90,6 +90,26 @@ int main(int argc, char** argv) {
     expect(*client, {"ZADD", "foo", "1", "x"},
            "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
 
+    // RESP negotiation is connection-local and may happen after ordinary RESP2
+    // traffic. Pipeline a command behind HELLO to prove the new version applies
+    // immediately to the next buffered command.
+    client->send(std::vector<std::string_view>{"HELLO", "3"});
+    client->send(std::vector<std::string_view>{"GET", "missing-resp3"});
+    const auto hello3 = client->read_reply();
+    assert(hello3 && hello3->starts_with("%7\r\n"));
+    assert(hello3->find("$5\r\nproto\r\n:3\r\n") != std::string::npos);
+    const auto null3 = client->read_reply();
+    assert(null3 && *null3 == "_\r\n");
+    expect(*client, {"ZSCORE", "z", "b"}, ",2\r\n");
+    expect(*client, {"HSET", "resp3-hash", "field", "value"}, ":1\r\n");
+    expect(*client, {"HGETALL", "resp3-hash"},
+           "%1\r\n$5\r\nfield\r\n$5\r\nvalue\r\n");
+
+    const auto hello2 = reply_of(*client, {"HELLO", "2"});
+    assert(hello2.starts_with("*14\r\n"));
+    assert(hello2.find("$5\r\nproto\r\n:2\r\n") != std::string::npos);
+    expect(*client, {"GET", "missing-resp2"}, "$-1\r\n");
+
     // A value larger than one record: the request and the reply each split across
     // several ring records and reassemble.
     const std::string big(5000, 'z');

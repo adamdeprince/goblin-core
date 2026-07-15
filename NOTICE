@@ -16,6 +16,12 @@ Goblin Core does not vendor Sorted Containers source code. The C++ implementatio
 is an independent implementation of the documented design approach: sorted
 blocks, per-block maximum values, and a compact rank index.
 
+Pub/Sub subscriber sets use the vendored header-only unordered_dense library:
+
+  ankerl::unordered_dense  Copyright (c) 2022 Martin Leitner-Ankerl (MIT)
+                           https://github.com/martinus/unordered_dense
+                           third_party/unordered_dense/LICENSE
+
 --------------------------------------------------------------------------------
 
 Scripting (EVAL / EVALSHA / SCRIPT)

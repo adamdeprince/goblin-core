@@ -8,11 +8,14 @@ scale, and leads every sorted-set and hash operation measured. See the
 [x86 benchmarks](BENCHMARKS.md) and [Loongson 3A6000 benchmarks](LOONGSON_BENCHMARKS.md),
 and the [ring latency shootout](LATENCY-SHOOTOUT.md) — a full request/reply round trip in
 about 220 ns over a shared-memory ring (written up in [this post](blogs/ring-latency.md)).
+The [Pub/Sub benchmark](PUBSUB-BENCHMARK.md) covers end-to-end delivery, fanout,
+literal routing, glob matching, and subscription memory against the same field.
 For a real-world run at scale, see the
 [Lichess leaderboard replay](blogs/lichess-leaderboard.md): every rated game in Lichess
 history, 14.3 billion `ZADD`s into one sorted set, held in about half the memory of Redis.
-The implementation focuses first on sorted sets, hashes, strings, and lists with
-compact layouts and a deliberately growing Redis-compatible command surface.
+The implementation focuses first on sorted sets, hashes, strings, lists, and
+Pub/Sub with compact layouts and a deliberately growing Redis-compatible command
+surface.
 
 **Because no CTO ever wants to say: "We're letting you go — the cloud bill got too high."**
 
@@ -27,7 +30,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 
 - Source-only C++23 Redis-like server from [Goblin Reactor](https://goblinreactor.com).
 - Current scope includes sorted sets, hashes, strings, lists, TTLs, counters,
-  scripting, and `PING`; it is not yet the full Redis command surface.
+  Pub/Sub, scripting, and `PING`; it is not yet the full Redis command surface.
 - Primary design: vector-backed zset indexes and compact hash/member storage
   instead of pointer-heavy skiplist layouts.
 - Memory is the point: after a load-then-`GOBLIN.OPTIMIZE` sequence, Goblin Core
@@ -70,10 +73,15 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   segmented-listpack algorithm classes, rank indexes, endpoint bias, and memory
   controls. Their repeatable
   cross-engine results are in [LIST-BENCHMARK.md](LIST-BENCHMARK.md).
+- Pub/Sub results are in [PUBSUB-BENCHMARK.md](PUBSUB-BENCHMARK.md), including
+  Goblin over RESP2/UDS and SBE over 4 KiB rings against every incumbent over
+  RESP2/UDS.
 
 ## Current Commands
 
 - `PING [message]`
+- `HELLO [2|3]`
+- `ECHO message`
 - `ZCARD key`
 - `ZADD key score member [score member ...]`
 - `ZRANGE key start stop [WITHSCORES]`
@@ -108,6 +116,14 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `LTRIM key start stop`
 - `LREM key count value`
 - `LINSERT key BEFORE|AFTER pivot value`
+- `SUBSCRIBE channel [channel ...]`
+- `UNSUBSCRIBE [channel ...]`
+- `PSUBSCRIBE pattern [pattern ...]`
+- `PUNSUBSCRIBE [pattern ...]`
+- `PUBLISH channel message`
+- `PUBSUB CHANNELS [pattern]`
+- `PUBSUB NUMSUB [channel ...]`
+- `PUBSUB NUMPAT`
 
 These standard list names resolve through `--list-implementation pma|segmented`
 (`segmented` is the default). Both backends are also addressable directly with
@@ -117,7 +133,16 @@ multiple list implementations coexist and be benchmarked without changing the
 standard compatibility surface.
 
 The protocol handler accepts RESP array commands and a basic inline command
-format for local testing.
+format for local testing. Connections start in RESP2; `HELLO 3` selects RESP3 for
+that connection and `HELLO 2` switches it back. See
+[the HELLO command](docs/commands/HELLO.md) for native RESP3 reply shapes.
+
+Pub/Sub is available over RESP2, RESP3, and SBE on every transport. RESP2 uses
+the traditional subscribed mode; RESP3 uses push frames and keeps ordinary
+commands available while subscribed. Literal channels use direct lookup and
+patterns use Redis-compatible glob matching. See the
+[Pub/Sub command reference](docs/commands/pubsub.md) for delivery frames, SBE
+templates, and slow-consumer behavior.
 
 ## Scripting
 
@@ -154,9 +179,9 @@ rescore) — the ranking flips between them.
 
 Goblin Core is growing toward the full Redis command surface with tighter memory
 layouts and faster execution paths. This build covers sorted sets, hashes,
-strings, lists, TTLs, counters, and scripting; Pub/Sub is next. JavaScript and
-Python are embedded for modern programmers, with Lua, Luau, Wren, and Tcl
-available when another runtime fits the job.
+strings, lists, TTLs, counters, Pub/Sub, and scripting. JavaScript and Python are
+embedded for modern programmers, with Lua, Luau, Wren, and Tcl available when
+another runtime fits the job.
 
 The deliberate boundary is infrastructure policy. Goblin Core does not provide
 an append-only write log, replication, or cluster mode. Point-in-time
@@ -294,12 +319,27 @@ redis-cli-ring /tmp/a SET foo bar     # the proof-of-concept ring client
 
 Transport and protocol are independent: both ordinary sockets and shared-memory
 rings support RESP and the SBE binary wire. An endpoint selects SBE with the
-one-time `GOBLINS!` handshake; otherwise it speaks RESP.
+one-time `GOBLINS!` handshake; otherwise it speaks RESP2 by default and may select
+RESP3 with `HELLO 3`.
 
 With rings the server busy-polls them in priority order (the first can starve the
 second, by design) and pegs a core at 100%; with no rings it stays event-driven and
 idle-cheap. A one-header C++ client (`goblin/core/ring_client.hpp`) drives a ring in
 a few lines. Full details: **[docs/ring-buffers.md](docs/ring-buffers.md)**.
+
+`--unsolicited-output-buffer-bytes <bytes>` sizes each client's anonymous
+`mmap`-backed Pub/Sub output FIFO. The default is one native page; every positive
+value is rounded up to a whole number of pages. A client whose next complete
+message cannot fit is removed from all subscriptions and disconnected, so slow
+consumers cannot grow the heap or cause silent message loss.
+
+At startup the `goblin-core` executable calls
+`mlockall(MCL_CURRENT | MCL_FUTURE)` so the heap and later allocations remain
+resident. Arena blocks, ring regions, and Pub/Sub FIFOs also call `mlock`
+explicitly; rings and Pub/Sub FIFOs are prefaulted before they enter service.
+Linux deployments must raise `RLIMIT_MEMLOCK` or grant the process permission to
+lock memory. A rejected or unimplemented process-wide lock emits a startup
+warning; the explicit core-mapping locks are still attempted.
 
 `--rank-cache` enables the exact member-id-to-score-location cache for faster
 `ZRANK` lookups at roughly 4 bytes per member. It is off by default because it

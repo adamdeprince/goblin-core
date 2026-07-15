@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.6.0
+  VERSION 0.7.0
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -35,6 +35,7 @@ set(GOBLIN_CORE_HTML_DOCS
   ${CMAKE_CURRENT_SOURCE_DIR}/html/MICROBENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LISTS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/PERFORMANCE_BRIEF.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/PUBSUB-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/RING-BENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/RELEASE-HISTORY.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/styles.css)
@@ -223,6 +224,7 @@ find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 
 add_library(goblin_core
   src/command.cpp
+  src/pubsub.cpp
   src/luau_script.cpp
   src/rdb.cpp
   src/resp_parser.cpp
@@ -238,6 +240,8 @@ add_library(goblin_core
   src/quickjs_script.cpp)
 
 target_compile_features(goblin_core PUBLIC cxx_std_23)
+target_compile_definitions(goblin_core PRIVATE
+  GOBLIN_CORE_VERSION="${PROJECT_VERSION}")
 set_target_properties(goblin_core PROPERTIES
   CXX_STANDARD 23
   CXX_STANDARD_REQUIRED ON
@@ -247,7 +251,9 @@ target_include_directories(goblin_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  PRIVATE ${LZ4_INCLUDE_DIR})
+  PRIVATE
+    ${LZ4_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unordered_dense/include)
 
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
@@ -311,7 +317,7 @@ if(GPERF_EXECUTABLE)
     VERBATIM)
 endif()
 
-# SBE (Simple Binary Encoding) wire (sbe/goblin_sbe.xml): the "GOBL"-magic binary
+# SBE (Simple Binary Encoding) wire (sbe/goblin_sbe.xml): the "GOBLINS!"-magic binary
 # alternative to RESP. SBE C++ is header-only -- there is NO runtime library to
 # find_package; ordinary builds just compile the checked-in generated codecs under
 # sbe/generated/ (a maintainer step regenerates them with SbeTool, the same pattern
@@ -393,6 +399,19 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
       -Wall -Wextra -Wpedantic)
 
     if(TARGET goblin_sbe_headers)
+      add_executable(goblin_core_pubsub_benchmark
+        benchmarks/pubsub_benchmark.cpp)
+      target_link_libraries(goblin_core_pubsub_benchmark PRIVATE
+        goblin_sbe_headers)
+      target_include_directories(goblin_core_pubsub_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+      set_target_properties(goblin_core_pubsub_benchmark PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_pubsub_benchmark PRIVATE
+        -Wall -Wextra -Wpedantic)
+
       add_executable(goblin_core_list_sbe_benchmark
         benchmarks/list_sbe_benchmark.cpp)
       target_link_libraries(goblin_core_list_sbe_benchmark PRIVATE
@@ -420,6 +439,34 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  add_executable(goblin_core_pubsub_test tests/pubsub_test.cpp)
+  target_link_libraries(goblin_core_pubsub_test PRIVATE goblin_core)
+  target_include_directories(goblin_core_pubsub_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unordered_dense/include)
+  if(TARGET goblin_sbe_headers)
+    target_link_libraries(goblin_core_pubsub_test PRIVATE goblin_sbe_headers)
+    target_compile_definitions(goblin_core_pubsub_test PRIVATE GOBLIN_HAS_SBE=1)
+  endif()
+  set_target_properties(goblin_core_pubsub_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_pubsub COMMAND goblin_core_pubsub_test)
+
+  add_executable(goblin_core_resp3_socket_test tests/resp3_socket_test.cpp)
+  target_link_libraries(goblin_core_resp3_socket_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_resp3_socket_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_resp3_socket
+    COMMAND goblin_core_resp3_socket_test $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_resp3_socket PROPERTIES TIMEOUT 60)
+
+  add_executable(goblin_core_pubsub_socket_test tests/pubsub_socket_test.cpp)
+  target_link_libraries(goblin_core_pubsub_socket_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_pubsub_socket_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_pubsub_socket
+    COMMAND goblin_core_pubsub_socket_test $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_pubsub_socket PROPERTIES TIMEOUT 60)
 
   # SBE dispatch test (framed request -> Store -> generic reply).
   if(TARGET goblin_sbe_headers)
@@ -686,6 +733,7 @@ install(
     BENCHMARKS.md
     MICROBENCHMARKS.md
     PERFORMANCE_BRIEF.md
+    PUBSUB-BENCHMARK.md
     RELEASE.md
     LICENSE
     NOTICE

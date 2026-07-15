@@ -178,6 +178,7 @@ void test_command_perfect_hash() {
   assert(type_of({"PING"}) == CT::ping);
   assert(type_of({"ping"}) == CT::ping);
   assert(type_of({"PiNg"}) == CT::ping);
+  assert(type_of({"hello", "3"}) == CT::hello);
   assert(type_of({"zscore", "k", "m"}) == CT::zscore);
   assert(type_of({"zRaNgE", "k", "0", "-1"}) == CT::zrange);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
@@ -223,6 +224,54 @@ void test_resp_array_writer_small_header_table() {
   out.clear();
   goblin::core::resp::append_array_header(out, 257);
   assert(out == "*257\r\n");
+}
+
+void test_resp3_hello_and_reply_shapes() {
+  using goblin::core::CommandExecutionOptions;
+  using goblin::core::Store;
+  using goblin::core::resp::Version;
+
+  Store store;
+  Version version = Version::resp2;
+  const auto run = [&](std::initializer_list<std::string_view> fields) {
+    std::vector<std::string_view> views(fields);
+    std::string out;
+    goblin::core::handle_command_into(
+        store, views, out,
+        CommandExecutionOptions{.resp_version = &version, .connection_id = 42});
+    return out;
+  };
+
+  assert(run({"GET", "missing"}) == "$-1\r\n");
+
+  const std::string hello3 = run({"HELLO", "3"});
+  assert(version == Version::resp3);
+  assert(hello3.starts_with("%7\r\n"));
+  assert(hello3.find("$5\r\nproto\r\n:3\r\n") != std::string::npos);
+  assert(hello3.find("$2\r\nid\r\n:42\r\n") != std::string::npos);
+  assert(run({"GET", "missing"}) == "_\r\n");
+
+  assert(run({"HSET", "h", "field", "value"}) == ":1\r\n");
+  assert(run({"HGETALL", "h"}) ==
+         "%1\r\n$5\r\nfield\r\n$5\r\nvalue\r\n");
+
+  assert(run({"ZADD", "z", "1.5", "member"}) == ":1\r\n");
+  assert(run({"ZSCORE", "z", "member"}) == ",1.5\r\n");
+  assert(run({"ZRANGE", "z", "0", "-1", "WITHSCORES"}) ==
+         "*1\r\n*2\r\n$6\r\nmember\r\n,1.5\r\n");
+  assert(run({"INCRBYFLOAT", "counter", "1.25"}) == ",1.25\r\n");
+  assert(run({"GOBLIN.MEMORY", "h"}).starts_with("%"));
+
+  assert(run({"HELLO", "4"}) ==
+         "-NOPROTO unsupported protocol version\r\n");
+  assert(version == Version::resp3);
+
+  const std::string hello2 = run({"HELLO", "2"});
+  assert(version == Version::resp2);
+  assert(hello2.starts_with("*14\r\n"));
+  assert(hello2.find("$5\r\nproto\r\n:2\r\n") != std::string::npos);
+  assert(run({"GET", "missing"}) == "$-1\r\n");
+  assert(run({"HELLO"}).starts_with("*14\r\n"));
 }
 
 void test_command_dispatch() {
@@ -5136,6 +5185,10 @@ void test_eval_error_paths() {
   const auto nested = run_script(
       store, engine, {"EVAL", "return redis.call('eval', 'return 1', '0')", "0"});
   assert(!nested.empty() && nested.front() == '-');
+  // Connection protocol state cannot be changed from inside a script.
+  const auto hello = run_script(
+      store, engine, {"EVAL", "return redis.call('hello', '3')", "0"});
+  assert(!hello.empty() && hello.front() == '-');
   // Bad numkeys is a clean error, not a crash.
   const auto badkeys =
       run_script(store, engine, {"EVAL", "return 1", "-1"});
@@ -5803,6 +5856,67 @@ return 0)");
   assert(execute_fields(store, {"GOBLIN.CAD", "lk", "secret"}) == ":0\r\n");
 }
 
+void test_publish_from_every_script_engine() {
+  struct Probe {
+    int calls{0};
+  } probe;
+  const goblin::core::NestedCommandDispatch dispatch{
+      .context = &probe,
+      .publish = [](void* context, std::string_view channel,
+                    std::string_view payload) {
+        auto& state = *static_cast<Probe*>(context);
+        ++state.calls;
+        assert(channel == "events");
+        assert(payload == "payload");
+        return 7LL;
+      }};
+
+  goblin::core::Store store;
+  {
+    goblin::core::ScriptEngine engine(store, dispatch);
+    assert(run_script(store, engine,
+                      {"EVAL", "return redis.call('publish','events','payload')", "0"}) ==
+           ":7\r\n");
+  }
+  {
+    goblin::core::LuauEngine engine(store, dispatch);
+    assert(run_luau(store, engine,
+                    {"LUAU.EVAL",
+                     "return redis.call('publish','events','payload')", "0"}) ==
+           ":7\r\n");
+  }
+  {
+    goblin::core::WrenEngine engine(store, dispatch);
+    assert(run_wren(store, engine,
+                    {"WREN.EVAL",
+                     "return Redis.call([\"publish\",\"events\",\"payload\"])",
+                     "0"}) == ":7\r\n");
+  }
+  {
+    goblin::core::TclEngine engine(store, dispatch);
+    assert(run_tcl(store, engine,
+                   {"TCL.EVAL", "redis call publish events payload", "0"}) ==
+           ":7\r\n");
+  }
+  {
+    goblin::core::UPythonEngine engine(store, dispatch);
+    assert(run_upython(
+               store, engine,
+               {"UPYTHON.EVAL",
+                "reply = redis.call('publish','events','payload')", "0"}) ==
+           ":7\r\n");
+  }
+  {
+    goblin::core::QuickJsEngine engine(store, dispatch);
+    assert(run_quickjs(
+               store, engine,
+               {"QUICKJS.EVAL",
+                "return redis.call('publish','events','payload')", "0"}) ==
+           ":7\r\n");
+  }
+  assert(probe.calls == 6);
+}
+
 // SCRIPT LOAD / EVALSHA / SCRIPT FLUSH on every engine, showing the cached
 // (precompiled) script runs by digest, is repeatable, and reports NOSCRIPT for an
 // unknown or flushed digest. This exercises each engine's precompile path: LOAD
@@ -5940,6 +6054,17 @@ void test_ring_reply_framing() {
   assert(!ring::reply_end("$3\r\nba"));              // bulk body not all there
   assert(!ring::reply_end("*2\r\n$3\r\nfoo\r\n"));    // array missing an element
   assert(!ring::reply_end("+OK\r"));                 // no terminator yet
+  const std::string null3 = "_\r\n";
+  const std::string double3 = ",1.25\r\n";
+  const std::string map3 = "%1\r\n$1\r\nk\r\n$1\r\nv\r\n";
+  const std::string nested3 = "*1\r\n*2\r\n$1\r\nm\r\n,2.5\r\n";
+  const std::string push3 = ">2\r\n+notice\r\n:1\r\n";
+  assert(ring::reply_end(null3) == null3.size());
+  assert(ring::reply_end(double3) == double3.size());
+  assert(ring::reply_end(map3) == map3.size());
+  assert(ring::reply_end(nested3) == nested3.size());
+  assert(ring::reply_end(push3) == push3.size());
+  assert(!ring::reply_end("%1\r\n$1\r\nk\r\n"));
   // Encoding matches the RESP array-of-bulk-strings wire form.
   const std::string_view args[] = {"SET", "k", "v"};
   assert(ring::encode_command(args) == "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n");
@@ -6026,6 +6151,7 @@ int main() {
   test_command_perfect_hash();
   test_resp_bulk_writer_small_header_table();
   test_resp_array_writer_small_header_table();
+  test_resp3_hello_and_reply_shapes();
   test_resp_bulk_wire_size_matches_output();
   test_zrange_withscores_batch_matches_streaming_append();
   test_zrange_withscores_fused_matches_legacy_append();
@@ -6076,6 +6202,7 @@ int main() {
   test_quickjs_scripting();
   test_quickjs_without_engine_is_unavailable();
   test_compare_and_delete_idiom();
+  test_publish_from_every_script_engine();
   test_evalsha_runs_cached_script();
 
   test_keyspace_storage_and_string_value();

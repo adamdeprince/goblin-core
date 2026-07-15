@@ -4,16 +4,20 @@
 #include "goblin/core/store.hpp"
 
 #include <bit>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+
+#include <sys/mman.h>
 
 namespace {
 
@@ -148,6 +152,22 @@ parse_list_implementation(std::string_view text) {
   return std::nullopt;
 }
 
+void lock_server_memory() noexcept {
+  if (::mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+    return;
+  }
+  const int error = errno;
+  std::cerr << "goblin-core: warning: mlockall failed: "
+            << std::strerror(error);
+  if (error == ENOSYS) {
+    std::cerr << "; core mmap regions remain individually locked, but the "
+                 "general heap may be swapped on this OS\n";
+  } else {
+    std::cerr << "; memory may be swapped (raise RLIMIT_MEMLOCK or grant the "
+                 "process permission to lock memory)\n";
+  }
+}
+
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
@@ -170,6 +190,7 @@ void print_usage(std::string_view program) {
             << "       [--load SNAPSHOT]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
+            << "       [--unsolicited-output-buffer-bytes BYTES]\n"
             << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
@@ -604,6 +625,20 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--unsolicited-output-buffer-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_positive_size(argv[++i]);
+      if (!bytes) {
+        std::cerr << "goblin-core: invalid unsolicited output buffer byte count\n";
+        return 2;
+      }
+      config.unsolicited_output_buffer_bytes = *bytes;
+      continue;
+    }
+
     std::cerr << "goblin-core: unknown option: " << arg << '\n';
     print_usage(argv[0]);
     return 2;
@@ -636,6 +671,11 @@ int main(int argc, char** argv) {
     }
   }
 #endif
+
+  // Keep the server heap and every future allocation resident. The call can be
+  // restricted by RLIMIT_MEMLOCK in ordinary shells and containers, so failure
+  // is visible but does not make the compatibility server unusable there.
+  lock_server_memory();
 
   goblin::core::Store store(store_options);
 

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "goblin/core/score_format.hpp"
+#include "goblin/core/resp_version.hpp"
 #include "goblin/core/string_encoding.hpp"
 
 namespace goblin::core::resp {
@@ -59,6 +60,8 @@ inline constexpr auto kSmallBulkHeaders =
     make_small_headers('$', std::make_index_sequence<65>{});
 inline constexpr auto kSmallArrayHeaders =
     make_small_headers('*', std::make_index_sequence<257>{});
+inline constexpr auto kSmallPushHeaders =
+    make_small_headers('>', std::make_index_sequence<17>{});
 
 template <class Int>
 inline void append_decimal(std::string& out, Int value) {
@@ -516,8 +519,40 @@ inline void append_bulk_double(std::string& out, double value) {
   append_bulk_string(out, view);
 }
 
+inline void append_double(std::string& out, std::string_view value) {
+  out.push_back(',');
+  out.append(value);
+  out.append("\r\n", 2);
+}
+
+inline void append_double(std::string& out, double value) {
+  std::array<char, 32> buffer;
+  std::string fallback;
+  std::string_view text;
+  if (std::isnan(value)) {
+    text = "nan";
+  } else if (std::isinf(value)) {
+    text = value < 0 ? "-inf" : "inf";
+  } else {
+    text = score_format::try_format_finite_to_buffer(value, buffer);
+    if (text.empty()) {
+      fallback = score_format::fallback(value);
+      text = fallback;
+    }
+  }
+  append_double(out, text);
+}
+
 inline void append_null_bulk_string(std::string& out) {
   out.append("$-1\r\n");
+}
+
+inline void append_null(std::string& out, Version version) {
+  if (version == Version::resp3) {
+    out.append("_\r\n");
+  } else {
+    append_null_bulk_string(out);
+  }
 }
 
 inline void append_array_header(std::string& out, std::size_t count) {
@@ -529,6 +564,23 @@ inline void append_array_header(std::string& out, std::size_t count) {
     detail::append_decimal(out, count);
     out.append("\r\n");
   }
+}
+
+inline void append_push_header(std::string& out, std::size_t count) {
+  if (count < detail::kSmallPushHeaders.size()) {
+    const auto& header = detail::kSmallPushHeaders[count];
+    out.append(header.bytes.data(), header.size);
+  } else {
+    out.push_back('>');
+    detail::append_decimal(out, count);
+    out.append("\r\n", 2);
+  }
+}
+
+inline void append_map_header(std::string& out, std::size_t count) {
+  out.push_back('%');
+  detail::append_decimal(out, count);
+  out.append("\r\n", 2);
 }
 
 [[nodiscard]] std::string simple_string(std::string_view value);

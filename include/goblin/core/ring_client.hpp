@@ -13,6 +13,7 @@
 #include "goblin/core/ring_buffer.hpp"
 
 #include <chrono>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -46,7 +47,8 @@ namespace goblin::core::ring {
 
 // The byte length of the first complete RESP reply in `s` starting at `pos`, or
 // nullopt if `s` does not yet hold a whole reply. Recurses through arrays. Handles
-// the RESP2 reply types the server emits: + - : $ *.
+// RESP2 and RESP3 reply types emitted by the server. Aggregate types recurse;
+// attributes include the reply they decorate.
 [[nodiscard]] inline std::optional<std::size_t> reply_end(std::string_view s,
                                                           std::size_t pos = 0) {
   if (pos >= s.size()) {
@@ -67,8 +69,14 @@ namespace goblin::core::ring {
     case '+':
     case '-':
     case ':':
+    case ',':  // RESP3 double
+    case '(':  // RESP3 big number
+    case '#':  // RESP3 boolean
+    case '_':  // RESP3 null
       return line_end;
-    case '$': {
+    case '$':
+    case '!':  // RESP3 blob error
+    case '=': {  // RESP3 verbatim string
       long long len = 0;
       if (!parse_count(len)) {
         return std::nullopt;
@@ -79,7 +87,9 @@ namespace goblin::core::ring {
       const std::size_t need = line_end + static_cast<std::size_t>(len) + 2;
       return need <= s.size() ? std::optional<std::size_t>(need) : std::nullopt;
     }
-    case '*': {
+    case '*':
+    case '~':  // RESP3 set
+    case '>': {  // RESP3 push
       long long n = 0;
       if (!parse_count(n)) {
         return std::nullopt;
@@ -94,6 +104,25 @@ namespace goblin::core::ring {
           return std::nullopt;
         }
         cur = *sub;
+      }
+      return cur;
+    }
+    case '%':
+    case '|': {  // RESP3 map / attributes
+      long long n = 0;
+      if (!parse_count(n) || n < 0) {
+        return std::nullopt;
+      }
+      std::size_t cur = line_end;
+      for (long long i = 0; i < n * 2; ++i) {
+        const auto sub = reply_end(s, cur);
+        if (!sub) {
+          return std::nullopt;
+        }
+        cur = *sub;
+      }
+      if (s[pos] == '|') {
+        return reply_end(s, cur);
       }
       return cur;
     }

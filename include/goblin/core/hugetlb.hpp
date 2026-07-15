@@ -106,7 +106,13 @@ namespace goblin::core::hugetlb {
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB |
                        (shift << MAP_HUGE_SHIFT),
                    -1, 0);
-  return p == MAP_FAILED ? nullptr : p;
+  if (p == MAP_FAILED) {
+    return nullptr;
+  }
+  // HugeTLB pages are inherently resident on Linux. Keep the explicit lock so
+  // all arena mmap paths share the same contract and accounting policy.
+  (void)::mlock(p, bytes);
+  return p;
 }
 
 // Release a mapping obtained from try_alloc(). munmap is the same call as for a

@@ -92,8 +92,9 @@ struct PageBlockDeleter {
 
 // Allocate a block able to hold at least `bytes`. >= a page -> mmap (page-aligned,
 // reclaimable on free); smaller -> malloc. The returned shared_ptr frees it the
-// right way. Uninitialized (like the previous new char[] / make_unique_for_overwrite);
-// only written bytes fault in.
+// right way. The mapping is explicitly locked even though the server executable
+// also requests MCL_FUTURE: this keeps arena residency correct for library users
+// and on kernels whose process lock policy does not cover a later mapping.
 [[nodiscard]] inline std::shared_ptr<char[]> alloc_page_block(std::size_t bytes) {
 #if defined(GOBLIN_HAVE_MMAP)
   if (bytes >= page_bytes()) {
@@ -103,6 +104,7 @@ struct PageBlockDeleter {
     if (ptr == MAP_FAILED) {
       throw std::bad_alloc();
     }
+    (void)::mlock(ptr, mapped_bytes);
     return std::shared_ptr<char[]>(static_cast<char*>(ptr),
                                    PageBlockDeleter{mapped_bytes, true});
   }

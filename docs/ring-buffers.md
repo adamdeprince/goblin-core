@@ -80,6 +80,11 @@ sends into the SQ, and the server writes the RESP reply into the CQ. The server
 reassembles the SQ byte stream with its normal RESP parser, so a single ring record
 may hold one command, several pipelined commands, or part of a large one.
 
+RESP connections begin in RESP2. [`HELLO 3`](commands/HELLO.md) selects RESP3 for
+that socket or ring endpoint, even after earlier RESP commands; `HELLO 2` switches
+it back. Negotiation is per connection and does not change the initial `GOBLINS!`
+selection used by SBE.
+
 With SBE, the one-time magic is followed by length-prefixed binary messages. Scores
 and counts travel as native numeric fields and the server dispatches on the SBE
 template id. The ring still carries a byte stream; only the protocol interpreting
@@ -140,6 +145,35 @@ For SBE, `goblin/core/sbe_ring_client.hpp` provides the corresponding header-onl
 client for the full binary command surface. SBE can also be used over TCP or a
 Unix-domain socket by sending the same `GOBLINS!` handshake followed by framed SBE
 messages.
+
+The SBE client also exposes typed Pub/Sub without falling back to RESP:
+
+```cpp
+const std::string_view channels[] = {"prices"};
+auto acks = client->subscribe(channels);
+auto delivered = client->publish("prices", "101.25");
+auto update = client->read_pubsub();
+```
+
+Asynchronous Pub/Sub frames share the CQ with ordinary replies. Both carry an
+internal sequence, so a self-published message stays ahead of the synchronous
+`PUBLISH` reply that follows it. The client recognizes `PubSubPush` while waiting
+for an ordinary response and retains it for `try_read_pubsub()` or
+`read_pubsub()`.
+
+## Unsolicited output capacity
+
+Each socket client and ring endpoint owns an anonymous `mmap`-backed FIFO for
+serialized Pub/Sub delivery. It is separate from the ordinary command-reply
+buffer, is prefaulted and `mlock`ed before use, and defaults to one native page.
+Set a different requested capacity with `--unsolicited-output-buffer-bytes`;
+Goblin always rounds it up to whole native pages.
+
+If a complete frame cannot fit, the endpoint is removed from every subscription
+instead of dropping the frame. A socket is closed. A ring endpoint remains
+detached until its client reconnects by advancing the ring epoch; reconnect also
+drains abandoned SQ/CQ data and resets protocol state. See the
+[Pub/Sub command reference](commands/pubsub.md) for command and wire semantics.
 
 ## Constraints and notes
 

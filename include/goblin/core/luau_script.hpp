@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -28,7 +30,7 @@ class Store;
 // corrupt another's globals.
 class LuauEngine {
  public:
-  explicit LuauEngine(Store& store);
+  explicit LuauEngine(Store& store, NestedCommandDispatch nested_dispatch = {});
   ~LuauEngine();
 
   LuauEngine(const LuauEngine&) = delete;
@@ -54,6 +56,7 @@ class LuauEngine {
   int redis_call_impl(lua_State* L, bool raise_on_error);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   lua_State* L_ = nullptr;  // the frozen base state; scripts run on child threads
   std::unordered_map<std::string, std::string> scripts_;  // 40-hex SHA1 -> body
 

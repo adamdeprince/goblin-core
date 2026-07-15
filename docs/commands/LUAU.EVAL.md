@@ -65,8 +65,9 @@ are frozen (`luaL_sandbox`), and every script runs on its own sandboxed thread
 globals. Unlike `EVAL`, a script *may* create globals — but only on its own
 throw-away thread, so they never leak.
 
-**Wire protocol.** The server speaks RESP2, so `redis.setresp(3)` is accepted but
-has no effect.
+**Wire protocol.** Client connections may negotiate RESP3 with `HELLO 3`.
+`redis.setresp(3)` is accepted inside Luau for compatibility, but script-side
+`redis.call` conversion remains RESP2.
 
 ## Sandbox
 

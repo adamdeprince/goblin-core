@@ -29,7 +29,7 @@ Inside the script, the global `redis` table (also aliased `server`) exposes:
 | `redis.status_reply(s)` | Returns `{ok = s}` — converts to a RESP status (`+`) reply. |
 | `redis.sha1hex(s)` | The 40-character SHA1 hex digest of `s`. |
 | `redis.log(level, msg, ...)` | Write to the server log. `level` is one of `redis.LOG_DEBUG/LOG_VERBOSE/LOG_NOTICE/LOG_WARNING`. |
-| `redis.setresp(n)` | Accepts 2 or 3; the server speaks RESP2, so 3 is a no-op. |
+| `redis.setresp(n)` | Accepts 2 or 3. Script-side `redis.call` conversion remains RESP2; client connections negotiate RESP3 independently with `HELLO 3`. |
 | `redis.replicate_commands()` | Returns `true` (no-op — Goblin Core does not replicate). |
 | `redis.set_repl(x)` | No-op; `redis.REPL_NONE/REPL_AOF/REPL_SLAVE/REPL_REPLICA/REPL_ALL` are defined. |
 | `redis.breakpoint()`, `redis.debug()` | No-ops, return `false`. |

@@ -155,8 +155,8 @@ inline void sha1_hex_into(std::string_view data, char* out40) {
   return true;
 }
 
-// Commands a script may not invoke via redis.call: the scripting and transaction
-// entry points (which would otherwise let a script re-enter EVAL / LUAU.EVAL).
+// Commands a script may not invoke via redis.call: scripting/transaction entry
+// points and commands that mutate connection state (HELLO/SUBSCRIBE).
 [[nodiscard]] inline bool command_blocked_in_script(std::string_view name) {
   return equals_upper(name, "EVAL") || equals_upper(name, "EVALSHA") ||
          equals_upper(name, "SCRIPT") || equals_upper(name, "LUAU.EVAL") ||
@@ -169,7 +169,9 @@ inline void sha1_hex_into(std::string_view data, char* out40) {
          equals_upper(name, "QUICKJS.EVALSHA") || equals_upper(name, "QUICKJS.SCRIPT") ||
          equals_upper(name, "MULTI") ||
          equals_upper(name, "EXEC") || equals_upper(name, "WATCH") ||
-         equals_upper(name, "SUBSCRIBE");
+         equals_upper(name, "SUBSCRIBE") || equals_upper(name, "UNSUBSCRIBE") ||
+         equals_upper(name, "PSUBSCRIBE") || equals_upper(name, "PUNSUBSCRIBE") ||
+         equals_upper(name, "PUBSUB") || equals_upper(name, "HELLO");
 }
 
 // Strip CRLF so a would-be RESP error/status line keeps the framing intact.

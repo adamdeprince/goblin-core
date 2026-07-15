@@ -56,11 +56,7 @@ fi
 
 if [[ "$BUILD_HTML" == "1" || "$BUILD_HTML" == "true" ]]; then
   "$PYTHON" "$ROOT/scripts/build_html_docs.py" \
-    --output "$ROOT/html" \
-    "$ROOT/README.md" \
-    "$ROOT/BENCHMARKS.md" \
-    "$ROOT/MICROBENCHMARKS.md" \
-    "$ROOT/PERFORMANCE_BRIEF.md"
+    --output "$ROOT/html"
 fi
 
 echo "wrote $REPORT"

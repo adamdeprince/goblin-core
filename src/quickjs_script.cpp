@@ -348,11 +348,15 @@ JSValue js_redis_log(JSContext* ctx, JSValueConst, int argc,
 const std::string& QuickJsEngine::invoke(
     std::span<const std::string_view> call_args) {
   call_reply_.clear();
-  handle_command_into(store_, call_args, call_reply_, CommandExecutionOptions{});
+  handle_command_into(
+      store_, call_args, call_reply_,
+      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
   return call_reply_;
 }
 
-QuickJsEngine::QuickJsEngine(Store& store) : store_(store) {}
+QuickJsEngine::QuickJsEngine(Store& store,
+                             NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 QuickJsEngine::~QuickJsEngine() {
   if (context_ != nullptr) {

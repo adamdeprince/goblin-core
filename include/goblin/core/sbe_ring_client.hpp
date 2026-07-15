@@ -25,6 +25,8 @@
 #include "goblin_sbe/MapReply.h"
 #include "goblin_sbe/NilReply.h"
 #include "goblin_sbe/NullableArrayReply.h"
+#include "goblin_sbe/PubSubNumSubReply.h"
+#include "goblin_sbe/PubSubPush.h"
 #include "goblin_sbe/RespValueReply.h"
 #include "goblin_sbe/ScoredArrayReply.h"
 #include "goblin_sbe/StatusReply.h"
@@ -110,6 +112,12 @@
 #include "goblin_sbe/GoblinTdRescore.h"
 #include "goblin_sbe/GoblinZWindow.h"
 #include "goblin_sbe/Info.h"
+#include "goblin_sbe/PSubscribe.h"
+#include "goblin_sbe/PUnsubscribe.h"
+#include "goblin_sbe/PubSub.h"
+#include "goblin_sbe/Publish.h"
+#include "goblin_sbe/Subscribe.h"
+#include "goblin_sbe/Unsubscribe.h"
 // Scripting
 #include "goblin_sbe/Eval.h"
 #include "goblin_sbe/EvalSha.h"
@@ -119,6 +127,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
 #include <optional>
 #include <span>
@@ -160,6 +169,23 @@ struct RespValue {
   long long integer = 0;
   std::string str;                  // bulk / status / error text
   std::vector<RespValue> elements;  // array (map: flattened key,value,key,value...)
+};
+
+enum class PubSubKind : std::uint8_t {
+  message = 0,
+  pattern_message = 1,
+  subscribe = 2,
+  pattern_subscribe = 3,
+  unsubscribe = 4,
+  pattern_unsubscribe = 5,
+};
+
+struct PubSubMessage {
+  PubSubKind kind{PubSubKind::message};
+  std::uint32_t subscription_count{0};
+  std::string pattern;
+  std::string channel;
+  std::string payload;
 };
 
 class SbeRingClient {
@@ -221,6 +247,136 @@ class SbeRingClient {
     auto m = build<goblin_sbe::Info>(0);
     finish(m, timeout);
     return as_bulk();
+  }
+
+  // ---- Pub/Sub ---------------------------------------------------------------
+  [[nodiscard]] std::vector<PubSubMessage> subscribe(
+      std::span<const std::string_view> channels, ms timeout = kDefaultTimeout) {
+    require_pubsub_names(channels, "subscribe");
+    auto message = build<goblin_sbe::Subscribe>(total_bytes(channels));
+    auto& group = message.channelsCount(u16(channels.size()));
+    for (const auto channel : channels) {
+      group.next().putChannel(channel.data(), u32(channel.size()));
+    }
+    return finish_pubsub(message, channels.size(), timeout);
+  }
+
+  [[nodiscard]] std::vector<PubSubMessage> unsubscribe(
+      std::span<const std::string_view> channels = {},
+      ms timeout = kDefaultTimeout) {
+    require_pubsub_count(channels, "unsubscribe");
+    auto message = build<goblin_sbe::Unsubscribe>(total_bytes(channels));
+    auto& group = message.channelsCount(u16(channels.size()));
+    for (const auto channel : channels) {
+      group.next().putChannel(channel.data(), u32(channel.size()));
+    }
+    const std::size_t expected = channels.empty()
+                                     ? std::max<std::size_t>(literal_subscriptions_, 1)
+                                     : channels.size();
+    return finish_pubsub(message, expected, timeout);
+  }
+
+  [[nodiscard]] std::vector<PubSubMessage> psubscribe(
+      std::span<const std::string_view> patterns, ms timeout = kDefaultTimeout) {
+    require_pubsub_names(patterns, "psubscribe");
+    auto message = build<goblin_sbe::PSubscribe>(total_bytes(patterns));
+    auto& group = message.patternsCount(u16(patterns.size()));
+    for (const auto pattern : patterns) {
+      group.next().putPattern(pattern.data(), u32(pattern.size()));
+    }
+    return finish_pubsub(message, patterns.size(), timeout);
+  }
+
+  [[nodiscard]] std::vector<PubSubMessage> punsubscribe(
+      std::span<const std::string_view> patterns = {},
+      ms timeout = kDefaultTimeout) {
+    require_pubsub_count(patterns, "punsubscribe");
+    auto message = build<goblin_sbe::PUnsubscribe>(total_bytes(patterns));
+    auto& group = message.patternsCount(u16(patterns.size()));
+    for (const auto pattern : patterns) {
+      group.next().putPattern(pattern.data(), u32(pattern.size()));
+    }
+    const std::size_t expected = patterns.empty()
+                                     ? std::max<std::size_t>(pattern_subscriptions_, 1)
+                                     : patterns.size();
+    return finish_pubsub(message, expected, timeout);
+  }
+
+  [[nodiscard]] long long publish(std::string_view channel,
+                                  std::string_view payload,
+                                  ms timeout = kDefaultTimeout) {
+    auto message = build<goblin_sbe::Publish>(channel.size() + payload.size());
+    message.putChannel(channel.data(), u32(channel.size()));
+    message.putPayload(payload.data(), u32(payload.size()));
+    finish(message, timeout);
+    return as_int();
+  }
+
+  [[nodiscard]] std::vector<std::string> pubsub_channels(
+      std::optional<std::string_view> pattern = std::nullopt,
+      ms timeout = kDefaultTimeout) {
+    auto message = build<goblin_sbe::PubSub>(pattern ? pattern->size() : 0);
+    message.operation(0);
+    auto& args = message.argsCount(pattern ? 1 : 0);
+    if (pattern) {
+      args.next().putArg(pattern->data(), u32(pattern->size()));
+    }
+    finish(message, timeout);
+    return as_array();
+  }
+
+  [[nodiscard]] std::vector<std::pair<std::string, std::uint32_t>> pubsub_numsub(
+      std::span<const std::string_view> channels,
+      ms timeout = kDefaultTimeout) {
+    require_pubsub_count(channels, "pubsub_numsub");
+    auto message = build_pubsub(1, channels);
+    finish(message, timeout);
+    throw_if_error();
+    if (!reply_is<goblin_sbe::PubSubNumSubReply>()) unexpected();
+    auto reply = decode<goblin_sbe::PubSubNumSubReply>();
+    auto& items = reply.items();
+    std::vector<std::pair<std::string, std::uint32_t>> result;
+    result.reserve(static_cast<std::size_t>(items.count()));
+    while (items.hasNext()) {
+      auto& item = items.next();
+      const auto count = item.subscriberCount();
+      result.emplace_back(item.getChannelAsStringView(), count);
+    }
+    return result;
+  }
+
+  [[nodiscard]] long long pubsub_numpat(ms timeout = kDefaultTimeout) {
+    auto message = build_pubsub(2, {});
+    finish(message, timeout);
+    return as_int();
+  }
+
+  [[nodiscard]] std::optional<PubSubMessage> try_read_pubsub() {
+    if (!pending_pubsub_.empty()) {
+      auto message = std::move(pending_pubsub_.front());
+      pending_pubsub_.pop_front();
+      return message;
+    }
+    while (auto record = cq_.peek()) {
+      cqbuf_.append(*record);
+      cq_.pop();
+    }
+    if (!extract_buffered_frame()) {
+      return std::nullopt;
+    }
+    if (!reply_is<goblin_sbe::PubSubPush>()) {
+      throw std::runtime_error("SbeRingClient: unexpected synchronous reply while reading Pub/Sub");
+    }
+    return decode_pubsub();
+  }
+
+  [[nodiscard]] PubSubMessage read_pubsub(ms timeout = kDefaultTimeout) {
+    if (auto ready = try_read_pubsub()) {
+      return std::move(*ready);
+    }
+    read_frame(timeout, true);
+    if (!reply_is<goblin_sbe::PubSubPush>()) unexpected();
+    return decode_pubsub();
   }
 
   // ---- strings ---------------------------------------------------------------
@@ -726,6 +882,32 @@ class SbeRingClient {
   static std::uint32_t u32(std::size_t n) { return static_cast<std::uint32_t>(n); }
   static std::uint16_t u16(std::size_t n) { return static_cast<std::uint16_t>(n); }
 
+  [[nodiscard]] static std::size_t total_bytes(
+      std::span<const std::string_view> values) noexcept {
+    std::size_t result = 0;
+    for (const auto value : values) {
+      result += value.size();
+    }
+    return result;
+  }
+
+  static void require_pubsub_count(std::span<const std::string_view> values,
+                                   std::string_view operation) {
+    if (values.size() > std::numeric_limits<std::uint16_t>::max()) {
+      throw std::invalid_argument("SbeRingClient: " + std::string(operation) +
+                                  " accepts at most 65535 names");
+    }
+  }
+
+  static void require_pubsub_names(std::span<const std::string_view> values,
+                                   std::string_view operation) {
+    require_pubsub_count(values, operation);
+    if (values.empty()) {
+      throw std::invalid_argument("SbeRingClient: " + std::string(operation) +
+                                  " requires at least one name");
+    }
+  }
+
   // Wrap a stack-local SBE flyweight over sendbuf_. Flyweights are just
   // (buffer, offset, length) — no heap, no type erasure. Returning by value
   // keeps the hot path free of std::any emplace/cast.
@@ -870,6 +1052,45 @@ class SbeRingClient {
     read_frame(timeout);
   }
 
+  goblin_sbe::PubSub build_pubsub(
+      std::uint8_t operation, std::span<const std::string_view> args) {
+    require_pubsub_count(args, "pubsub");
+    auto message = build<goblin_sbe::PubSub>(total_bytes(args));
+    message.operation(operation);
+    auto& group = message.argsCount(u16(args.size()));
+    for (const auto arg : args) {
+      group.next().putArg(arg.data(), u32(arg.size()));
+    }
+    return message;
+  }
+
+  template <class Msg>
+  [[nodiscard]] std::vector<PubSubMessage> finish_pubsub(
+      Msg& message, std::size_t acknowledgements, ms timeout) {
+    const std::uint32_t length = static_cast<std::uint32_t>(
+        goblin_sbe::MessageHeader::encodedLength() + message.encodedLength());
+    std::memcpy(sendbuf_.data(), &length, kSbeLenPrefix);
+    sq_.send(std::string_view(sendbuf_.data(), kSbeLenPrefix + length),
+             [] { return false; });
+
+    std::vector<PubSubMessage> result;
+    result.reserve(acknowledgements);
+    while (result.size() < acknowledgements) {
+      read_frame(timeout, true);
+      throw_if_error();
+      if (!reply_is<goblin_sbe::PubSubPush>()) unexpected();
+      auto push = decode_pubsub();
+      if (push.kind == PubSubKind::message ||
+          push.kind == PubSubKind::pattern_message) {
+        pending_pubsub_.push_back(std::move(push));
+        continue;
+      }
+      apply_subscription_ack(push);
+      result.push_back(std::move(push));
+    }
+    return result;
+  }
+
   // ---- reply decoding --------------------------------------------------------
   [[nodiscard]] goblin_sbe::MessageHeader reply_header() {
     return goblin_sbe::MessageHeader(last_frame_.data(), last_frame_.size());
@@ -883,6 +1104,48 @@ class SbeRingClient {
     m.wrapForDecode(last_frame_.data(), goblin_sbe::MessageHeader::encodedLength(), h.blockLength(),
                     h.version(), last_frame_.size());
     return m;
+  }
+
+  [[nodiscard]] PubSubMessage decode_pubsub() {
+    auto reply = decode<goblin_sbe::PubSubPush>();
+    PubSubMessage result;
+    result.kind = static_cast<PubSubKind>(reply.kind());
+    result.subscription_count = reply.subscriptionCount();
+    const auto pattern = reply.getPatternAsStringView();
+    const auto channel = reply.getChannelAsStringView();
+    const auto payload = reply.getPayloadAsStringView();
+    result.pattern.assign(pattern.data(), pattern.size());
+    result.channel.assign(channel.data(), channel.size());
+    result.payload.assign(payload.data(), payload.size());
+    return result;
+  }
+
+  void apply_subscription_ack(const PubSubMessage& message) noexcept {
+    const std::size_t old_total = literal_subscriptions_ + pattern_subscriptions_;
+    const std::size_t new_total = message.subscription_count;
+    switch (message.kind) {
+      case PubSubKind::subscribe:
+        if (new_total > old_total) literal_subscriptions_ += new_total - old_total;
+        break;
+      case PubSubKind::pattern_subscribe:
+        if (new_total > old_total) pattern_subscriptions_ += new_total - old_total;
+        break;
+      case PubSubKind::unsubscribe:
+        if (old_total > new_total) {
+          literal_subscriptions_ -=
+              std::min(literal_subscriptions_, old_total - new_total);
+        }
+        break;
+      case PubSubKind::pattern_unsubscribe:
+        if (old_total > new_total) {
+          pattern_subscriptions_ -=
+              std::min(pattern_subscriptions_, old_total - new_total);
+        }
+        break;
+      case PubSubKind::message:
+      case PubSubKind::pattern_message:
+        break;
+    }
   }
   void throw_if_error() {
     if (reply_is<goblin_sbe::ErrorReply>()) {
@@ -1035,8 +1298,22 @@ class SbeRingClient {
     return v;
   }
 
-  void read_frame(ms timeout) {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
+  [[nodiscard]] bool extract_buffered_frame() {
+    if (cqbuf_.size() < kSbeLenPrefix) {
+      return false;
+    }
+    std::uint32_t length = 0;
+    std::memcpy(&length, cqbuf_.data(), kSbeLenPrefix);
+    const std::size_t frame = kSbeLenPrefix + static_cast<std::size_t>(length);
+    if (cqbuf_.size() < frame) {
+      return false;
+    }
+    last_frame_.assign(cqbuf_.data() + kSbeLenPrefix, length);
+    cqbuf_.erase(0, frame);
+    return true;
+  }
+
+  void read_frame_until(std::chrono::steady_clock::time_point deadline) {
     // Amortize the deadline clock read: a syscall/VDSO every spin dominates the
     // empty-CQ wait (the p99 path). Check every 64 pauses; 5 s timeouts stay exact
     // enough (64 * ~30 ns pause << 1 ms of slack).
@@ -1069,19 +1346,26 @@ class SbeRingClient {
         cqbuf_.append(*rec);
         cq_.pop();
       }
-      if (cqbuf_.size() >= kSbeLenPrefix) {
-        std::uint32_t len = 0;
-        std::memcpy(&len, cqbuf_.data(), kSbeLenPrefix);
-        if (cqbuf_.size() >= kSbeLenPrefix + len) {
-          last_frame_.assign(cqbuf_.data() + kSbeLenPrefix, len);
-          cqbuf_.erase(0, kSbeLenPrefix + len);
-          return;
-        }
+      if (extract_buffered_frame()) {
+        return;
       }
       if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline)
         throw std::runtime_error("SbeRingClient: timed out waiting for a reply");
       // Adaptive spin-then-park on the CQ tail (macOS); pure relax elsewhere.
       cq_.wait_for_record();
+    }
+  }
+
+  void read_frame(ms timeout, bool accept_pubsub = false) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+      read_frame_until(deadline);
+      if (accept_pubsub || !reply_is<goblin_sbe::PubSubPush>()) {
+        return;
+      }
+      auto push = decode_pubsub();
+      apply_subscription_ack(push);
+      pending_pubsub_.push_back(std::move(push));
     }
   }
 
@@ -1091,6 +1375,9 @@ class SbeRingClient {
   std::vector<char> sendbuf_;  // growable request buffer
   std::string cqbuf_;          // CQ byte accumulator
   std::string last_frame_;     // the last reply's SBE message (prefix stripped)
+  std::deque<PubSubMessage> pending_pubsub_;
+  std::size_t literal_subscriptions_{0};
+  std::size_t pattern_subscriptions_{0};
 };
 
 }  // namespace goblin::core

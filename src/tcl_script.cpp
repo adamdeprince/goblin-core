@@ -203,7 +203,9 @@ int TclEngine::redis_command(Jim_Interp* interp, int argc, Jim_Obj* const* argv)
     }
 
     call_reply_.clear();
-    handle_command_into(store_, call_args_, call_reply_, CommandExecutionOptions{});
+    handle_command_into(
+        store_, call_args_, call_reply_,
+        CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
 
     if (!call_reply_.empty() && call_reply_.front() == '-') {
       std::string_view msg = call_reply_;
@@ -253,7 +255,8 @@ int TclEngine::redis_command(Jim_Interp* interp, int argc, Jim_Obj* const* argv)
   return JIM_ERR;
 }
 
-TclEngine::TclEngine(Store& store) : store_(store) {}
+TclEngine::TclEngine(Store& store, NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 TclEngine::~TclEngine() {
   if (interp_ != nullptr) {

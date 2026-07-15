@@ -462,6 +462,9 @@ which share the server flags):
 - Combined HSET speed, RSS, value-growth, and representation sweep:
   `build/goblin_core_hset_benchmark --engine ... --redis-benchmark <path>`; the
   checked-in result is [HSET-BENCHMARK.md](HSET-BENCHMARK.md).
+- Pub/Sub delivery latency, fanout, literal routing, pattern scans, and
+  subscription RSS: `bash benchmarks/pubsub_benchmark.sh`; the checked-in result
+  is [PUBSUB-BENCHMARK.md](PUBSUB-BENCHMARK.md).
 - PING latency, concurrency, and write-path tail: `benchmarks/lat_tail.py
   --engine ... --probe ./write_tail_latency --redis-benchmark <path>` (build the
   probe with `c++ -O2 -std=c++20 -o write_tail_latency

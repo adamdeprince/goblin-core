@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -26,7 +28,8 @@ class Store;
 // the server owns it. Scripts never nest (UPYTHON.* are rejected from redis.call).
 class UPythonEngine {
  public:
-  explicit UPythonEngine(Store& store);
+  explicit UPythonEngine(Store& store,
+                         NestedCommandDispatch nested_dispatch = {});
   ~UPythonEngine();
 
   UPythonEngine(const UPythonEngine&) = delete;
@@ -57,6 +60,7 @@ class UPythonEngine {
            std::string& out);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   bool vm_ready_ = false;
   void* gc_heap_ = nullptr;
   void* redis_module_ = nullptr;  // mp_obj_t, kept alive by the loaded-modules root

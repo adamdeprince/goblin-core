@@ -207,6 +207,38 @@ struct ScoreBound {
   return "ERR value is not an integer or out of range";
 }
 
+[[nodiscard]] resp::Version response_version(
+    const CommandExecutionOptions& options) noexcept {
+  return options.resp_version != nullptr ? *options.resp_version
+                                         : resp::Version::resp2;
+}
+
+void append_hello_response(std::string& out, resp::Version version,
+                           std::uint64_t connection_id) {
+  constexpr std::size_t kFieldCount = 7;
+  if (version == resp::Version::resp3) {
+    resp::append_map_header(out, kFieldCount);
+  } else {
+    resp::append_array_header(out, kFieldCount * 2);
+  }
+
+  const auto append_string = [&out](std::string_view key,
+                                    std::string_view value) {
+    resp::append_bulk_string(out, key);
+    resp::append_bulk_string(out, value);
+  };
+  append_string("server", "goblin-core");
+  append_string("version", GOBLIN_CORE_VERSION);
+  resp::append_bulk_string(out, "proto");
+  resp::append_integer(out, static_cast<unsigned>(version));
+  resp::append_bulk_string(out, "id");
+  resp::append_integer(out, static_cast<long long>(connection_id));
+  append_string("mode", "standalone");
+  append_string("role", "master");
+  resp::append_bulk_string(out, "modules");
+  resp::append_array_header(out, 0);
+}
+
 [[nodiscard]] bool parse_range_indexes(Command& command) {
   const auto start = parse_i64(command.args[1]);
   const auto stop = parse_i64(command.args[2]);
@@ -258,10 +290,24 @@ struct ScoreBound {
   return fields;
 }
 
-[[nodiscard]] std::string memory_stats_response(const ZSetMemoryStats& stats) {
+[[nodiscard]] std::string fields_response(
+    const std::vector<std::string>& fields, resp::Version version) {
+  std::string out;
+  if (version == resp::Version::resp3) {
+    resp::append_map_header(out, fields.size() / 2);
+  } else {
+    resp::append_array_header(out, fields.size());
+  }
+  for (const auto& field : fields) {
+    resp::append_bulk_string(out, field);
+  }
+  return out;
+}
+
+[[nodiscard]] std::string memory_stats_response(const ZSetMemoryStats& stats,
+                                                resp::Version version) {
   const auto fields = memory_stats_fields(stats);
-  const std::vector<std::string_view> views(fields.begin(), fields.end());
-  return resp::array(views);
+  return fields_response(fields, version);
 }
 
 [[nodiscard]] std::vector<std::string> hash_memory_stats_fields(const HashMemoryStats& stats) {
@@ -301,10 +347,10 @@ struct ScoreBound {
   return fields;
 }
 
-[[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats) {
+[[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats,
+                                                     resp::Version version) {
   const auto fields = hash_memory_stats_fields(stats);
-  const std::vector<std::string_view> views(fields.begin(), fields.end());
-  return resp::array(views);
+  return fields_response(fields, version);
 }
 
 [[nodiscard]] std::vector<std::string> list_memory_stats_fields(
@@ -330,10 +376,9 @@ struct ScoreBound {
 }
 
 [[nodiscard]] std::string list_memory_stats_response(
-    const ListMemoryStats& stats) {
+    const ListMemoryStats& stats, resp::Version version) {
   const auto fields = list_memory_stats_fields(stats);
-  const std::vector<std::string_view> views(fields.begin(), fields.end());
-  return resp::array(views);
+  return fields_response(fields, version);
 }
 
 constexpr std::string_view kWrongType =
@@ -666,6 +711,26 @@ struct WithscoresTextChunkAppender {
   }
 };
 
+struct Resp3WithscoresAppender {
+  std::string& out;
+
+  void operator()(std::string_view member, double score) const {
+    resp::append_array_header(out, 2);
+    resp::append_bulk_string(out, member);
+    resp::append_double(out, score);
+  }
+};
+
+struct Resp3WithscoresTextAppender {
+  std::string& out;
+
+  void operator()(std::string_view member, std::string_view score) const {
+    resp::append_array_header(out, 2);
+    resp::append_bulk_string(out, member);
+    resp::append_double(out, score);
+  }
+};
+
 void append_range_response(Store& store,
                            const Command& command,
                            bool reverse,
@@ -687,20 +752,47 @@ void append_range_response(Store& store,
   const auto key = command.args[0];
   const auto reserve_limit = options.output_reserve_limit;
   const auto with_scores = command.with_scores;
+  const auto version = response_version(options);
 
   // Reserve and write the array header in the counted callback so bounds are
   // computed once per range (the prior zrange_size + for_each split doubled
   // find_zset/range_bounds work and regressed WITHSCORES).
-  auto append_header = [&out, with_scores, reserve_limit](std::size_t entry_count) {
-    const auto bulk_count = with_scores ? entry_count * 2 : entry_count;
+  auto append_header = [&out, with_scores, reserve_limit,
+                        version](std::size_t entry_count) {
+    const auto element_count = with_scores && version == resp::Version::resp2
+                                   ? entry_count * 2
+                                   : entry_count;
     resp::reserve_append_capacity(
         out,
         16 + entry_count * (with_scores ? 48 : 32),
         reserve_limit);
-    resp::append_array_header(out, bulk_count);
+    resp::append_array_header(out, element_count);
   };
 
   if (with_scores) {
+    if (version == resp::Version::resp3) {
+      if (store.score_string_cache_enabled()) {
+        Resp3WithscoresTextAppender appender{out};
+        if (reverse) {
+          store.zrevrange_score_text_values_for_each_counted(
+              key, start, stop, append_header, appender);
+        } else {
+          store.zrange_score_text_values_for_each_counted(
+              key, start, stop, append_header, appender);
+        }
+      } else {
+        Resp3WithscoresAppender appender{out};
+        if (reverse) {
+          store.zrevrange_values_for_each_counted(
+              key, start, stop, append_header, appender);
+        } else {
+          store.zrange_values_for_each_counted(
+              key, start, stop, append_header, appender);
+        }
+      }
+      return;
+    }
+
     if (store.score_string_cache_enabled()) {
       WithscoresTextChunkAppender appender{out};
       if (reverse) {
@@ -771,6 +863,42 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("ping"));
       }
       command.type = CommandType::ping;
+      return {.command = std::move(command)};
+    case CommandType::hello:
+      if (command.args.size() > 1) {
+        return parse_error(wrong_arity("hello"));
+      }
+      command.type = CommandType::hello;
+      return {.command = std::move(command)};
+    case CommandType::subscribe:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("subscribe"));
+      }
+      command.type = CommandType::subscribe;
+      return {.command = std::move(command)};
+    case CommandType::unsubscribe:
+      command.type = CommandType::unsubscribe;
+      return {.command = std::move(command)};
+    case CommandType::psubscribe:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("psubscribe"));
+      }
+      command.type = CommandType::psubscribe;
+      return {.command = std::move(command)};
+    case CommandType::punsubscribe:
+      command.type = CommandType::punsubscribe;
+      return {.command = std::move(command)};
+    case CommandType::publish:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("publish"));
+      }
+      command.type = CommandType::publish;
+      return {.command = std::move(command)};
+    case CommandType::pubsub:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("pubsub"));
+      }
+      command.type = CommandType::pubsub;
       return {.command = std::move(command)};
     case CommandType::echo:
       if (command.args.size() != 1) {
@@ -1366,6 +1494,7 @@ void execute_command_into(Store& store,
                           CommandExecutionOptions options) {
   const auto type =
       resolve_list_command(command.type, store.list_implementation());
+  const auto version = response_version(options);
   // Lazy expiration: a key whose TTL has already passed is deleted on first
   // access, before the type gate or the command sees it. Only the first-key
   // argument is handled here (multi-key readers purge their extra keys); gated on
@@ -1397,6 +1526,39 @@ void execute_command_into(Store& store,
         resp::append_simple_string(out, "PONG");
       } else {
         resp::append_bulk_string(out, command.args.front());
+      }
+      return;
+    case CommandType::hello: {
+      auto selected = version;
+      if (!command.args.empty()) {
+        const auto requested = parse_i64(command.args.front());
+        if (!requested || (*requested != 2 && *requested != 3)) {
+          resp::append_error(out, "NOPROTO unsupported protocol version");
+          return;
+        }
+        selected = *requested == 3 ? resp::Version::resp3
+                                   : resp::Version::resp2;
+      }
+      if (options.resp_version != nullptr) {
+        *options.resp_version = selected;
+      }
+      append_hello_response(out, selected, options.connection_id);
+      return;
+    }
+    case CommandType::subscribe:
+    case CommandType::unsubscribe:
+    case CommandType::psubscribe:
+    case CommandType::punsubscribe:
+    case CommandType::pubsub:
+      resp::append_error(out, "ERR Pub/Sub requires a live client connection");
+      return;
+    case CommandType::publish:
+      if (options.nested_dispatch.publish == nullptr) {
+        resp::append_error(out, "ERR Pub/Sub requires a live client connection");
+      } else {
+        resp::append_integer(
+            out, options.nested_dispatch.publish(options.nested_dispatch.context,
+                                                 command.args[0], command.args[1]));
       }
       return;
     case CommandType::echo:
@@ -1576,7 +1738,7 @@ void execute_command_into(Store& store,
     case CommandType::zrank: {
       const auto rank = store.zrank(command.args[0], command.args[1]);
       if (!rank) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       } else {
         resp::append_integer(out, static_cast<long long>(*rank));
       }
@@ -1590,7 +1752,7 @@ void execute_command_into(Store& store,
     case CommandType::zrevrank: {
       const auto rank = store.zrevrank(command.args[0], command.args[1]);
       if (!rank) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       } else {
         resp::append_integer(out, static_cast<long long>(*rank));
       }
@@ -1619,7 +1781,9 @@ void execute_command_into(Store& store,
     case CommandType::zscore: {
       const auto score = store.zscore(command.args[0], command.args[1]);
       if (!score) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
+      } else if (version == resp::Version::resp3) {
+        resp::append_double(out, *score);
       } else {
         resp::append_bulk_finite_double(out, *score);
       }
@@ -1666,7 +1830,7 @@ void execute_command_into(Store& store,
     case CommandType::hget: {
       const auto value = store.hget(command.args[0], command.args[1]);
       if (!value) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       } else {
         resp::append_bulk_string(out, *value);
       }
@@ -1678,7 +1842,7 @@ void execute_command_into(Store& store,
       for (std::size_t i = 1; i < command.args.size(); ++i) {
         const auto value = store.hget(command.args[0], command.args[i]);
         if (!value) {
-          resp::append_null_bulk_string(out);
+          resp::append_null(out, version);
         } else {
           resp::append_bulk_string(out, *value);
         }
@@ -1695,7 +1859,12 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::hgetall: {
-      resp::append_array_header(out, store.hlen(command.args[0]) * 2);
+      const auto count = store.hlen(command.args[0]);
+      if (version == resp::Version::resp3) {
+        resp::append_map_header(out, count);
+      } else {
+        resp::append_array_header(out, count * 2);
+      }
       store.hash_for_each(command.args[0],
                           [&out](std::string_view field,
                                  EncodedStringView value) {
@@ -1812,7 +1981,7 @@ void execute_command_into(Store& store,
         if (value) {
           resp::append_bulk_string(out, *value);
         } else {
-          resp::append_null_bulk_string(out);
+          resp::append_null(out, version);
         }
         return;
       }
@@ -1826,7 +1995,7 @@ void execute_command_into(Store& store,
         return;
       }
       if (!store.exists(command.args[0])) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
         return;
       }
       const auto values = front
@@ -1860,7 +2029,7 @@ void execute_command_into(Store& store,
       if (value) {
         resp::append_bulk_string(out, *value);
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }
@@ -2035,19 +2204,19 @@ void execute_command_into(Store& store,
         if (old_value) {
           resp::append_bulk_string(out, *old_value);
         } else {
-          resp::append_null_bulk_string(out);
+          resp::append_null(out, version);
         }
       } else if (condition_met) {
         resp::append_simple_string(out, "OK");
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }
     case CommandType::get: {
       const auto value = store.get(command.args[0]);
       if (!value) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       } else {
         resp::append_bulk_string(out, *value);
       }
@@ -2063,7 +2232,7 @@ void execute_command_into(Store& store,
       if (previous) {
         resp::append_bulk_string(out, *previous);
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }
@@ -2081,7 +2250,7 @@ void execute_command_into(Store& store,
       if (previous) {
         resp::append_bulk_string(out, *previous);
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }
@@ -2136,7 +2305,11 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR value is not a valid float");
         return;
       }
-      resp::append_bulk_string(out, *result);
+      if (version == resp::Version::resp3) {
+        resp::append_double(out, *result);
+      } else {
+        resp::append_bulk_string(out, *result);
+      }
       return;
     }
     case CommandType::getrange: {
@@ -2192,7 +2365,7 @@ void execute_command_into(Store& store,
         }
         const auto value = store.get(key);  // nil for a missing or non-string key
         if (!value) {
-          resp::append_null_bulk_string(out);
+          resp::append_null(out, version);
         } else {
           resp::append_bulk_string(out, *value);
         }
@@ -2330,15 +2503,15 @@ void execute_command_into(Store& store,
 
     case CommandType::goblin_memory: {
       if (const auto zstats = store.zset_memory_stats(command.args[0]); zstats) {
-        out.append(memory_stats_response(*zstats));
+        out.append(memory_stats_response(*zstats, version));
       } else if (const auto hstats = store.hash_memory_stats(command.args[0]);
                  hstats) {
-        out.append(hash_memory_stats_response(*hstats));
+        out.append(hash_memory_stats_response(*hstats, version));
       } else if (const auto lstats = store.list_memory_stats(command.args[0]);
                  lstats) {
-        out.append(list_memory_stats_response(*lstats));
+        out.append(list_memory_stats_response(*lstats, version));
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }
@@ -2355,7 +2528,7 @@ void execute_command_into(Store& store,
       }
       const auto reclaimed = store.optimize(command.args[0], density);
       if (!reclaimed) {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       } else {
         resp::append_integer(out, static_cast<long long>(*reclaimed));
       }
@@ -2669,7 +2842,7 @@ void execute_command_into(Store& store,
       } else if (outcome.result) {
         resp::append_bulk_string(out, *outcome.result);
       } else {
-        resp::append_null_bulk_string(out);
+        resp::append_null(out, version);
       }
       return;
     }

@@ -22,6 +22,7 @@
 #include <vector>
 
 using goblin::core::RespValue;
+using goblin::core::PubSubKind;
 using goblin::core::SbeRingClient;
 using goblin::core::SbeListImplementation;
 
@@ -55,6 +56,42 @@ int main(int argc, char** argv) {
   assert(c->ping());
   assert(c->echo("hi") == "hi");
   assert(c->info().find("used_memory") != std::string::npos);
+
+  // Pub/Sub stays typed on SBE. A self-publish places the asynchronous push before
+  // the PUBLISH IntReply on the CQ; publish() must queue that push and still decode
+  // its own reply correctly.
+  {
+    const auto acks = c->subscribe(V{"sbe-events", "sbe-events"});
+    assert(acks.size() == 2);
+    assert(acks[0].kind == PubSubKind::subscribe);
+    assert(acks[0].channel == "sbe-events" && acks[0].subscription_count == 1);
+    assert(acks[1].subscription_count == 1);  // duplicate is acknowledged, not added
+
+    const auto pattern_acks = c->psubscribe(V{"sbe-*"});
+    assert(pattern_acks.size() == 1);
+    assert(pattern_acks[0].kind == PubSubKind::pattern_subscribe);
+    assert(pattern_acks[0].pattern == "sbe-*" &&
+           pattern_acks[0].subscription_count == 2);
+
+    const auto counts = c->pubsub_numsub(V{"sbe-events", "missing"});
+    assert(counts.size() == 2);
+    assert(counts[0].first == "sbe-events" && counts[0].second == 1);
+    assert(counts[1].first == "missing" && counts[1].second == 0);
+    assert(c->pubsub_numpat() == 1);
+
+    assert(c->publish("sbe-events", "payload") == 2);
+    const auto direct = c->read_pubsub();
+    const auto pattern = c->read_pubsub();
+    assert(direct.kind == PubSubKind::message && direct.channel == "sbe-events" &&
+           direct.payload == "payload");
+    assert(pattern.kind == PubSubKind::pattern_message && pattern.pattern == "sbe-*" &&
+           pattern.channel == "sbe-events" && pattern.payload == "payload");
+
+    const auto unpattern = c->punsubscribe();
+    assert(unpattern.size() == 1 && unpattern[0].subscription_count == 1);
+    const auto undirect = c->unsubscribe();
+    assert(undirect.size() == 1 && undirect[0].subscription_count == 0);
+  }
 
   // strings
   (void)c->set("k", "v");

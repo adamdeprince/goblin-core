@@ -7,6 +7,9 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/resp_version.hpp"
+#include "goblin/core/nested_command_dispatch.hpp"
+
 namespace goblin::core {
 
 class Store;
@@ -19,6 +22,13 @@ class QuickJsEngine;
 
 enum class CommandType {
   ping,
+  hello,
+  subscribe,
+  unsubscribe,
+  psubscribe,
+  punsubscribe,
+  publish,
+  pubsub,
   eval,
   evalsha,
   script,
@@ -164,6 +174,11 @@ struct CommandParseResult {
 
 struct CommandExecutionOptions {
   std::size_t output_reserve_limit{0};
+  // RESP protocol state belongs to the connection. HELLO updates this value in
+  // place, so later commands in the same pipeline use the newly selected wire.
+  // A null pointer means RESP2 and is used by direct command/unit-test callers.
+  resp::Version* resp_version{nullptr};
+  std::uint64_t connection_id{0};
   // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
   // that do not enable scripting; those see the "not available" error instead.
@@ -179,6 +194,9 @@ struct CommandExecutionOptions {
   UPythonEngine* upython_engine{nullptr};
   // The QuickJS counterpart, for QUICKJS.EVAL / QUICKJS.EVALSHA / QUICKJS.SCRIPT.
   QuickJsEngine* quickjs_engine{nullptr};
+  // Services retained when a script re-enters command dispatch. Interpreter
+  // pointers are deliberately omitted there, so scripts still cannot nest.
+  NestedCommandDispatch nested_dispatch{};
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -27,7 +29,7 @@ class Store;
 // (error/status/integer/array/nil). KEYS and ARGV are exposed as Tcl lists.
 class TclEngine {
  public:
-  explicit TclEngine(Store& store);
+  explicit TclEngine(Store& store, NestedCommandDispatch nested_dispatch = {});
   ~TclEngine();
 
   TclEngine(const TclEngine&) = delete;
@@ -56,6 +58,7 @@ class TclEngine {
            std::string& out);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   Jim_Interp* interp_ = nullptr;
   // 40-hex SHA1 of the source -> interned (ref-counted) Jim script object, whose
   // compiled internal rep is reused across evals.

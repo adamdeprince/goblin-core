@@ -37,8 +37,8 @@ namespace {
 
 using goblin::core::ring::RingClient;
 
-// Pretty-print one complete RESP2 reply, redis-cli style. Returns the number of
-// bytes consumed so arrays can print their elements in sequence.
+// Pretty-print one complete RESP2/RESP3 reply, redis-cli style. Returns the number
+// of bytes consumed so aggregate replies can print their elements in sequence.
 std::size_t print_reply(std::string_view s, std::size_t pos, const std::string& indent) {
   const std::size_t eol = s.find("\r\n", pos);
   if (eol == std::string_view::npos) {
@@ -62,16 +62,37 @@ std::size_t print_reply(std::string_view s, std::size_t pos, const std::string& 
     case ':':
       std::cout << "(integer) " << line << '\n';
       return after;
-    case '$': {
+    case ',':
+      std::cout << "(double) " << line << '\n';
+      return after;
+    case '(':
+      std::cout << "(big number) " << line << '\n';
+      return after;
+    case '#':
+      std::cout << (line == "t" ? "(true)" : "(false)") << '\n';
+      return after;
+    case '_':
+      std::cout << "(nil)\n";
+      return after;
+    case '$':
+    case '!':
+    case '=': {
       const long long len = to_ll(line);
       if (len < 0) {
         std::cout << "(nil)\n";
         return after;
       }
+      if (s[pos] == '!') {
+        std::cout << "(error) ";
+      } else if (s[pos] == '=') {
+        std::cout << "(verbatim) ";
+      }
       std::cout << '"' << s.substr(after, static_cast<std::size_t>(len)) << "\"\n";
       return after + static_cast<std::size_t>(len) + 2;
     }
-    case '*': {
+    case '*':
+    case '~':
+    case '>': {
       const long long n = to_ll(line);
       if (n < 0) {
         std::cout << "(nil)\n";
@@ -87,6 +108,19 @@ std::size_t print_reply(std::string_view s, std::size_t pos, const std::string& 
         cur = print_reply(s, cur, indent + "   ");
       }
       return cur;
+    }
+    case '%':
+    case '|': {
+      const long long n = to_ll(line);
+      std::cout << (s[pos] == '%' ? "(map)\n" : "(attributes)\n");
+      std::size_t cur = after;
+      for (long long i = 0; i < n; ++i) {
+        std::cout << indent << (i + 1) << ") key: ";
+        cur = print_reply(s, cur, indent + "   ");
+        std::cout << indent << "   value: ";
+        cur = print_reply(s, cur, indent + "   ");
+      }
+      return s[pos] == '|' ? print_reply(s, cur, indent) : cur;
     }
     default:
       std::cout << line << '\n';

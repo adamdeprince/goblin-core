@@ -302,11 +302,14 @@ std::string_view UPythonEngine::call_dispatch() {
     call_reply_ = "-This Redis command is not allowed from script\r\n";
     return call_reply_;
   }
-  handle_command_into(store_, call_args_, call_reply_, CommandExecutionOptions{});
+  handle_command_into(
+      store_, call_args_, call_reply_,
+      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
   return call_reply_;
 }
 
-UPythonEngine::UPythonEngine(Store& store) : store_(store) {}
+UPythonEngine::UPythonEngine(Store& store, NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 UPythonEngine::~UPythonEngine() {
   if (vm_ready_) {

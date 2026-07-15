@@ -6,7 +6,7 @@ Goblin speaks two wire protocols on the same server, chosen per connection by th
 | first 8 bytes | protocol |
 |---|---|
 | `GOBLINS!` | the **SBE binary wire** described here |
-| anything else | **RESP** (Redis serialization), unchanged |
+| anything else | **RESP** (RESP2 initially; `HELLO 3` selects RESP3) |
 
 The magic is a **one-time connection handshake**: it is written once as the very first
 bytes on the socket/ring and consumed, and it does **not** prefix each command. After
@@ -91,25 +91,48 @@ type — they pick one of these:
 | 6 | `BulkReply` | one bulk string *(reserved; lands with `GET`)* |
 | 7 | `ArrayReply` | group of bulk strings (e.g. `ZRANGE`) |
 | 8 | `ScoredArrayReply` | group of `(native double score, member)` (`ZRANGE WITHSCORES`) |
+| 9 | `NullableArrayReply` | group of present/null bulk values (`HMGET`, `MGET`) |
+| 10 | `RespValueReply` | flattened arbitrary script result |
+| 11 | `MapReply` | string key/value pairs (`GOBLIN.MEMORY`) |
+| 12 | `PubSubPush` | asynchronous delivery or subscription acknowledgement |
+| 13 | `PubSubNumSubReply` | channel/subscriber-count pairs |
 
-Ids 9–15 are reserved for future reply types. SBE groups cap at 65535 elements
+Ids 14–15 are reserved for future reply types. SBE groups cap at 65535 elements
 (`numInGroup` is uint16); a larger array reply returns `ErrorReply` rather than
 truncating silently (huge ranges must paginate).
 
 ### Request messages (client → server), ids 16+
 
-One per command, appended densely (ids 16–84). **The entire command surface is on the
+One per command, appended densely (ids 16–101). **The entire command surface is on the
 wire** — strings, keyspace/TTL, hash, zset, the eleven `GOBLIN.*` natives, admin
-(`OPTIMIZE`, `INFO`, `MEMORY`, `SAVE`, `LOAD`), and scripting — so a foreign client
-never has to fall back to RESP. `EVAL`/`EVALSHA`/`SCRIPT` are three messages (`Eval`
+(`OPTIMIZE`, `INFO`, `MEMORY`, `SAVE`, `LOAD`), lists, Pub/Sub, and scripting — so a
+foreign client never has to fall back to RESP. `EVAL`/`EVALSHA`/`SCRIPT` are three messages (`Eval`
 79, `EvalSha` 80, `Script` 81) carrying a `language` byte (0 Lua … 5 QuickJS) that
 selects the engine; a script's arbitrary, possibly nested RESP result comes back as
 the flattened `RespValueReply` (id 10). `GOBLIN.MEMORY` (82) replies a `MapReply` (id
-11) of stat pairs. `ZREVRANGE` is `ZRange` with `rev=1`.
+11) of stat pairs. List commands occupy ids 85–95. Pub/Sub occupies ids 96–101.
+`ZREVRANGE` is `ZRange` with `rev=1`.
 
-The reply set is eleven: the eight core replies plus `NullableArrayReply` (id 9, for
-`HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script results),
-and `MapReply` (id 11, key/value pairs).
+The reply set is thirteen: the eight core replies plus `NullableArrayReply` (id 9,
+for `HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script
+results), `MapReply` (id 11, key/value pairs), and the two Pub/Sub replies.
+
+### Pub/Sub messages
+
+`Subscribe` (96), `Unsubscribe` (97), `PSubscribe` (98), and `PUnsubscribe` (99)
+carry groups of channel names or patterns. `Publish` (100) carries a channel and
+payload. `PubSub` (101) carries an operation byte (`0` channels, `1` numsub, `2`
+numpat) plus its arguments.
+
+`PubSubPush` is asynchronous. Its `kind` is `0` for a literal message, `1` for a
+pattern message, `2`/`3` for literal/pattern subscribe acknowledgement, and
+`4`/`5` for literal/pattern unsubscribe acknowledgement. The typed client queues
+pushes that arrive while it waits for a synchronous reply, including the
+self-publish ordering where deliveries precede the `Publish` `IntReply`.
+
+The server keeps a page-backed unsolicited-output FIFO per SBE connection, just
+as it does for RESP. See the [Pub/Sub command reference](commands/pubsub.md) for
+the byte limit and slow-consumer disconnect policy.
 
 ## Backward-compatible extension
 

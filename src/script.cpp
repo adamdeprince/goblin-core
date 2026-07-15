@@ -291,7 +291,8 @@ int l_redis_setresp(lua_State* L) {
   if (resp != 2 && resp != 3) {
     return luaL_error(L, "RESP version must be 2 or 3.");
   }
-  // The server speaks RESP2 on the wire; accepting 3 is a documented no-op.
+  // Script-side redis.call conversion remains RESP2; client wire negotiation is
+  // connection state owned by the server and does not enter the script VM.
   return 0;
 }
 
@@ -378,7 +379,9 @@ int ScriptEngine::redis_call_impl(lua_State* L, bool raise_on_error) {
   // options, so a nested EVAL is impossible. The reply lands in an engine-owned
   // buffer, then we translate it to a Lua value.
   call_reply_.clear();
-  handle_command_into(store_, call_args_, call_reply_, CommandExecutionOptions{});
+  handle_command_into(
+      store_, call_args_, call_reply_,
+      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
 
   bool is_error = false;
   const char* p = call_reply_.data();
@@ -405,7 +408,8 @@ int ScriptEngine::eval_runner(lua_State* L) {
   return 0;
 }
 
-ScriptEngine::ScriptEngine(Store& store) : store_(store) {}
+ScriptEngine::ScriptEngine(Store& store, NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 ScriptEngine::~ScriptEngine() {
   if (L_ != nullptr) {

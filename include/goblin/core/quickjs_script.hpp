@@ -1,5 +1,7 @@
 #pragma once
 
+#include "goblin/core/nested_command_dispatch.hpp"
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -29,7 +31,8 @@ class Store;
 // and ARGV are 0-based arrays. The runtime is created lazily on first use.
 class QuickJsEngine {
  public:
-  explicit QuickJsEngine(Store& store);
+  explicit QuickJsEngine(Store& store,
+                         NestedCommandDispatch nested_dispatch = {});
   ~QuickJsEngine();
 
   QuickJsEngine(const QuickJsEngine&) = delete;
@@ -65,6 +68,7 @@ class QuickJsEngine {
   bool compile_ok(std::string_view body, std::string& out);
 
   Store& store_;
+  NestedCommandDispatch nested_dispatch_;
   JSRuntime* runtime_ = nullptr;
   JSContext* context_ = nullptr;
   // 40-hex SHA1 of the source -> precompiled bytecode blob. Caching the compiled

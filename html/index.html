@@ -466,7 +466,7 @@
         <a href="#proof">Benchmarks</a>
         <a href="LATENCY-SHOOTOUT.html">Ring latency</a>
         <a href="#writing">Blogs</a>
-        <a href="README.html">Docs</a>
+        <a href="docs/index.html">Docs</a>
         <a class="nav-cta" href="https://github.com/adamdeprince/goblin-core">View on GitHub</a>
       </div>
     </div>
@@ -478,10 +478,10 @@
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
-        <p class="hero-copy">A compact server for sorted sets, hashes, strings, and lists. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <p class="hero-copy">A compact server for sorted sets, hashes, strings, lists, and Pub/Sub. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
         <p class="release-note">
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
-          <span><strong>Coming July 20, 2026:</strong> Pub/Sub.</span>
+          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
           <span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span>
         </p>
         <div class="hero-actions">
@@ -600,7 +600,7 @@
           </table>
         </div>
         <p class="method">Best of three, <code>redis-benchmark -P 16 -c 1</code>, dedicated AMD 5995WX host. Each engine uses its shipped allocator; Dragonfly limited to one proactor. <a href="BENCHMARKS.html">Full methodology and reproduction commands.</a></p>
-        <p class="method"><strong>Benchmark reports:</strong> <a href="HSET-BENCHMARK.html">HSET speed and memory</a> · <a href="LIST-BENCHMARK.html">LIST speed and memory</a></p>
+        <p class="method"><strong>Benchmark reports:</strong> <a href="HSET-BENCHMARK.html">HSET speed and memory</a> · <a href="LIST-BENCHMARK.html">LIST speed and memory</a> · <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a></p>
       </div>
     </section>
 
@@ -631,12 +631,12 @@
         <div>
           <p class="section-label">Direction, stated plainly</p>
           <h2>Redis semantics, without the old overhead.</h2>
-          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation effectively matches the fastest Redis build on pipelined population and accounts for 17.16 bytes per item. Pub/Sub remains targeted for July 20, 2026.</p>
+          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation effectively matches the fastest Redis build on pipelined population and accounts for 17.16 bytes per item. <a href="docs/commands/pubsub.html">Pub/Sub over RESP2, RESP3, and SBE</a> shipped July 15, five days ahead of schedule.</p>
           <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
           <p class="section-intro">Keys and encoded values use compact 16-bit lengths. Raw values hold up to 65,534 bytes; optional LZ4 admits larger compressible values while the encoded form fits. Everything larger belongs in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, strings, and lists</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, strings, and lists</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
           <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No built-in replication</li><li>No cluster mode</li><li>Kafka for durable replay</li><li>Save/load for fast restarts</li></ul></div>
         </div>
       </div>
@@ -660,7 +660,7 @@
 <span class="prompt">$</span> ./build-release/goblin-core --port 6379</pre>
           </div>
           <div class="quick-links">
-            <a href="README.html">Documentation →</a>
+            <a href="docs/index.html">Documentation →</a>
             <a href="PERFORMANCE_BRIEF.html">Architecture →</a>
             <a href="RELEASE-HISTORY.html">Release history →</a>
             <a href="https://github.com/adamdeprince/goblin-core/releases">Source releases →</a>

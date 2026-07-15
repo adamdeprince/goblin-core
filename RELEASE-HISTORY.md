@@ -8,6 +8,36 @@ For the current command surface, build instructions, and compatibility limits,
 see the [project documentation](README.md). For changes after the latest tag,
 see the [repository history](https://github.com/adamdeprince/goblin-core/commits/main/).
 
+## v0.7.0 — July 15, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.7.0)
+
+The Pub/Sub and RESP3 release, delivered five days ahead of the July 20 target.
+
+- Added Redis-compatible `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`,
+  `PUNSUBSCRIBE`, `PUBLISH`, `PUBSUB CHANNELS`, `PUBSUB NUMSUB`, and
+  `PUBSUB NUMPAT` commands.
+- Added direct binary-safe literal-channel lookup and Redis-compatible glob
+  routing for pattern subscriptions, with atomic disconnect cleanup.
+- Added per-connection RESP2, RESP3, and SBE modes. `HELLO 2|3` negotiates the
+  RESP wire while preserving the existing `GOBLINS!` SBE handshake.
+- Added native RESP3 maps, doubles, nulls, scored pairs, and Pub/Sub push frames,
+  including RESP3's ability to run ordinary commands while subscribed.
+- Added typed SBE Pub/Sub request, acknowledgement, introspection, and delivery
+  templates plus header-only client support over sockets and shared-memory rings.
+- Added a bounded anonymous-`mmap` unsolicited-output FIFO per client. Queues are
+  page-rounded, prefaulted, explicitly locked, and disconnect slow consumers
+  instead of growing the heap or silently dropping messages.
+- Added `--unsolicited-output-buffer-bytes` and process-wide
+  `mlockall(MCL_CURRENT | MCL_FUTURE)`, with explicit locks retained for arenas,
+  HugeTLB mappings, rings, and Pub/Sub FIFOs.
+- Allowed `PUBLISH` through all six embedded scripting engines while rejecting
+  subscription and connection-state commands from scripts.
+- Added native C++ socket and SBE/ring Pub/Sub tests and a cross-engine benchmark
+  covering end-to-end delivery, fanout, literal routing, pattern scans, and RSS.
+  The checked-in [benchmark report](PUBSUB-BENCHMARK.md) uses 4 KiB rings and
+  includes Redis 7.2.4, Redis 8.8, Valkey 9.1, Dragonfly, and mini-redis-go.
+
 ## v0.6.0 — July 13, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.6.0)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -669,19 +670,24 @@ def render_markdown(markdown: str, hero_href: str | None = None) -> str:
 
 
 def render_nav(nav_pages: Sequence[Page], current: Page, prefix: str) -> str:
-    by_source_name = {page.source.name: page for page in nav_pages}
+    by_source = {
+        page.source.relative_to(ROOT).as_posix(): page
+        for page in nav_pages
+        if page.source.is_relative_to(ROOT)
+    }
     primary = (
-        ("README.md", "Docs"),
+        ("docs/index.md", "Docs"),
         ("BENCHMARKS.md", "Benchmarks"),
         ("PERFORMANCE_BRIEF.md", "Architecture"),
         ("LATENCY-SHOOTOUT.md", "Ring latency"),
     )
     links = []
-    for source_name, label in primary:
-        page = by_source_name.get(source_name)
+    for source_path, label in primary:
+        page = by_source.get(source_path)
         if page is None:
             continue
-        href = html.escape(prefix + page.output.name, quote=True)
+        href_path = Path(os.path.relpath(page.output, start=current.output.parent)).as_posix()
+        href = html.escape(href_path, quote=True)
         current_attr = ' aria-current="page"' if page == current else ""
         links.append(f'<a href="{href}"{current_attr}>{label}</a>')
     links.append(f'<a class="nav-cta" href="{REPO_URL}">GitHub</a>')
@@ -742,13 +748,6 @@ def write_pages(sources: Sequence[Path], output_dir: Path) -> None:
         Page(source=source, output=output_path(source, output_dir), title=title_for(source))
         for source in sources
     ]
-    # Nav lists only the top-level pages: a flat nav of every nested doc (dozens of command
-    # pages) would be unusable. README first, then alphabetical by title.
-    root_readme = output_dir / "README.html"
-    nav_pages = sorted(
-        (page for page in pages if page.output.parent == output_dir),
-        key=lambda page: (page.output != root_readme, page.title.lower()),
-    )
     expected = {page.output for page in pages}
     expected.add(output_dir / "styles.css")
 
@@ -760,7 +759,7 @@ def write_pages(sources: Sequence[Path], output_dir: Path) -> None:
 
     for page in pages:
         page.output.parent.mkdir(parents=True, exist_ok=True)
-        page.output.write_text(render_page(page, nav_pages, output_dir))
+        page.output.write_text(render_page(page, pages, output_dir))
     (output_dir / "styles.css").write_text(STYLE)
 
     brand_source = ROOT / "html" / BRAND_IMAGE

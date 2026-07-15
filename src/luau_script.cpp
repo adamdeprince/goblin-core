@@ -296,7 +296,9 @@ int LuauEngine::redis_call_impl(lua_State* L, bool raise_on_error) {
 
   // No engines in the options: a script cannot nest EVAL / LUAU.EVAL.
   call_reply_.clear();
-  handle_command_into(store_, call_args_, call_reply_, CommandExecutionOptions{});
+  handle_command_into(
+      store_, call_args_, call_reply_,
+      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
 
   bool is_error = false;
   const char* p = call_reply_.data();
@@ -309,7 +311,8 @@ int LuauEngine::redis_call_impl(lua_State* L, bool raise_on_error) {
   return 1;
 }
 
-LuauEngine::LuauEngine(Store& store) : store_(store) {}
+LuauEngine::LuauEngine(Store& store, NestedCommandDispatch nested_dispatch)
+    : store_(store), nested_dispatch_(nested_dispatch) {}
 
 LuauEngine::~LuauEngine() {
   if (L_ != nullptr) {

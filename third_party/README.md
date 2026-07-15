@@ -1,10 +1,9 @@
 # Vendored third-party code
 
-These are the runtime and helper libraries embedded to implement Lua scripting
-(`EVAL` / `EVALSHA` / `SCRIPT`). Each was taken **verbatim from its own public
-upstream** — none is Redis (or Valkey/Dragonfly) source. They are built into the
-separate `goblin_lua` static library so they compile as plain C, isolated from
-`goblin_core`'s strict warning flags.
+These are runtime and helper libraries embedded by Goblin Core. Each was taken
+**verbatim from its own public upstream**; none is Redis (or Valkey/Dragonfly)
+source. The scripting C sources are built into separate static libraries so they
+remain isolated from `goblin_core`'s strict warning flags.
 
 | Directory        | Library      | Version | License      | Upstream |
 |------------------|--------------|---------|--------------|----------|
@@ -13,6 +12,7 @@ separate `goblin_lua` static library so they compile as plain C, isolated from
 | `lua-cmsgpack/`  | lua-cmsgpack | master  | BSD-2-Clause | https://github.com/antirez/lua-cmsgpack |
 | `lua-struct/`    | Lua `struct` | —       | MIT          | https://www.inf.puc-rio.br/~roberto/struct/ |
 | `lua-bitop/`     | LuaBitOp     | 1.0.2   | MIT          | https://bitop.luajit.org/ |
+| `unordered_dense/` | unordered_dense | 4.8.1 | MIT | https://github.com/martinus/unordered_dense |
 
 Lua 5.1 was chosen deliberately: it is the language dialect Redis scripts target
 (so existing scripts port unchanged), it is pure ANSI C that builds on every ISA

@@ -10,17 +10,26 @@
 #ifdef GOBLIN_HAS_SBE
 #include "goblin/core/sbe_dispatch.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#include "goblin_sbe/MessageHeader.h"
+#include "goblin_sbe/PSubscribe.h"
+#include "goblin_sbe/PUnsubscribe.h"
+#include "goblin_sbe/PubSub.h"
+#include "goblin_sbe/Publish.h"
+#include "goblin_sbe/Subscribe.h"
+#include "goblin_sbe/Unsubscribe.h"
 #endif
 #include "goblin/core/store.hpp"
 #include "goblin/core/tcl_script.hpp"
 #include "goblin/core/upython_script.hpp"
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
+#include "pubsub.hpp"
 
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <poll.h>
 #include <string>
@@ -40,19 +49,58 @@ namespace {
 
 constexpr std::size_t kOutputCompactThreshold = 64 * 1024;
 
-// A ring or socket endpoint speaks RESP or the SBE binary wire, decided by the first
-// 8 bytes ("GOBLINS!" -> SBE, else RESP; see goblin_protocol.hpp). `undecided` until
-// enough bytes arrive.
-enum class RingProto { undecided, resp, sbe };
+struct ReplyBoundary {
+  std::uint64_t sequence{0};
+  std::size_t end_offset{0};
+};
 
-struct Client {
-  int fd{-1};
-  RingProto proto{RingProto::undecided};
+struct EndpointSession : detail::PubSubSession {
+  EndpointSession(std::size_t unsolicited_output_bytes,
+                  std::uint64_t assigned_connection_id)
+      : PubSubSession(unsolicited_output_bytes),
+        connection_id(assigned_connection_id) {}
+
+  resp::Version resp_version{resp::Version::resp2};
+  std::uint64_t connection_id{0};
   RespParser parser;
   std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
   std::string output;
   std::vector<std::string_view> fields;
   std::size_t output_offset{0};
+  std::vector<ReplyBoundary> replies;
+  std::size_t reply_index{0};
+
+  void record_reply(std::size_t prior_size) {
+    if (output.size() != prior_size) {
+      replies.push_back(ReplyBoundary{.sequence = next_output_sequence++,
+                                      .end_offset = output.size()});
+    }
+  }
+
+  void reset_connection(std::uint64_t assigned_connection_id) {
+    wire_mode = detail::WireMode::undecided;
+    resp_version = resp::Version::resp2;
+    connection_id = assigned_connection_id;
+    parser.clear();
+    inbuf.clear();
+    output.clear();
+    output_offset = 0;
+    replies.clear();
+    reply_index = 0;
+    unsolicited.clear();
+    clear_unsolicited_front_cache();
+    next_output_sequence = 1;
+    close_requested = false;
+  }
+};
+
+struct Client : EndpointSession {
+  Client(int client_fd, std::size_t unsolicited_output_bytes,
+         std::uint64_t assigned_connection_id)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+        fd(client_fd) {}
+
+  int fd{-1};
   bool read_backpressured{false};
   bool close_after_write{false};
 };
@@ -60,18 +108,21 @@ struct Client {
 // Server-side state for one shared-memory ring: the mapping plus a RESP parser
 // and reply buffer, mirroring a network Client but reading from the SQ and writing
 // to the CQ instead of a socket.
-struct RingEndpoint {
+struct RingEndpoint : EndpointSession {
+  RingEndpoint(ring::Mapping&& ring_mapping,
+               std::size_t unsolicited_output_bytes,
+               std::uint64_t assigned_connection_id)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+        mapping(std::move(ring_mapping)),
+        sq(mapping.sq_consumer()),
+        cq(mapping.cq_producer()) {}
+
   ring::Mapping mapping;
   // Long-lived views: Producer's cached_head_ only pays off if the object
   // survives across replies (recreating cq_producer() every record re-seeds it).
   // Rebind both after drain_for_reconnect so local cursors match the new indices.
   ring::Consumer sq;
   ring::Producer cq;
-  RingProto proto{RingProto::undecided};
-  RespParser parser;
-  std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
-  std::string output;
-  std::vector<std::string_view> fields;
   // Local mirror of mapping.acked_epoch(); avoids a second shared-memory load on
   // every empty poll of the reconnect check.
   std::uint64_t acked_epoch{0};
@@ -81,6 +132,11 @@ struct RingEndpoint {
     cq = mapping.cq_producer();
   }
 };
+
+[[nodiscard]] std::uint64_t next_connection_id() noexcept {
+  static std::uint64_t next = 1;
+  return next++;
+}
 
 void close_fd(int fd) noexcept {
   if (fd >= 0) {
@@ -92,12 +148,46 @@ void close_fd(int fd) noexcept {
   return errno == EAGAIN || errno == EWOULDBLOCK;
 }
 
-[[nodiscard]] bool has_pending_output(const Client& client) noexcept {
-  return client.output_offset < client.output.size();
+[[nodiscard]] bool has_pending_regular_output(
+    const EndpointSession& session) noexcept {
+  return session.reply_index < session.replies.size();
 }
 
-[[nodiscard]] std::size_t pending_output_bytes(const Client& client) noexcept {
-  return client.output.size() - client.output_offset;
+[[nodiscard]] bool has_pending_output(const EndpointSession& session) noexcept {
+  return has_pending_regular_output(session) || !session.unsolicited.empty();
+}
+
+// Peek the unsolicited head, caching the mmap view across partial writes.
+[[nodiscard]] bool peek_unsolicited(EndpointSession& session,
+                                    detail::UnsolicitedOutputQueue::Front& out) noexcept {
+  if (session.has_unsolicited_front) {
+    out = session.unsolicited_front;
+    return true;
+  }
+  auto front = session.unsolicited.front();
+  if (!front) {
+    return false;
+  }
+  session.unsolicited_front = *front;
+  session.has_unsolicited_front = true;
+  out = session.unsolicited_front;
+  return true;
+}
+
+void consume_unsolicited_front(EndpointSession& session) noexcept {
+  const std::size_t payload_len = session.unsolicited_front.bytes.size();
+  session.unsolicited.pop_front(payload_len);
+  session.clear_unsolicited_front_cache();
+}
+
+[[nodiscard]] std::size_t pending_output_bytes(
+    const EndpointSession& session) noexcept {
+  const std::size_t regular = session.output.size() - session.output_offset;
+  const std::size_t unsolicited =
+      session.unsolicited.payload_bytes() >= session.unsolicited_front_offset
+          ? session.unsolicited.payload_bytes() - session.unsolicited_front_offset
+          : 0;
+  return regular + unsolicited;
 }
 
 void update_read_backpressure(Client& client, const ServerConfig& config) {
@@ -119,22 +209,34 @@ void update_read_backpressure(Client& client, const ServerConfig& config) {
   }
 }
 
-void compact_output_if_needed(Client& client) {
-  if (client.output_offset == 0) {
+void compact_output_if_needed(EndpointSession& session) {
+  if (session.output_offset == 0) {
     return;
   }
 
-  if (client.output_offset >= client.output.size()) {
-    client.output.clear();
-    client.output_offset = 0;
+  if (session.output_offset >= session.output.size()) {
+    session.output.clear();
+    session.output_offset = 0;
+    session.replies.clear();
+    session.reply_index = 0;
     return;
   }
 
-  const auto remaining = client.output.size() - client.output_offset;
-  if (client.output_offset >= kOutputCompactThreshold &&
-      client.output_offset >= remaining) {
-    client.output.erase(0, client.output_offset);
-    client.output_offset = 0;
+  const auto remaining = session.output.size() - session.output_offset;
+  if (session.output_offset >= kOutputCompactThreshold &&
+      session.output_offset >= remaining) {
+    const auto removed = session.output_offset;
+    session.output.erase(0, removed);
+    for (std::size_t i = session.reply_index; i < session.replies.size(); ++i) {
+      session.replies[i].end_offset -= removed;
+    }
+    if (session.reply_index != 0) {
+      session.replies.erase(session.replies.begin(),
+                            session.replies.begin() +
+                                static_cast<std::ptrdiff_t>(session.reply_index));
+      session.reply_index = 0;
+    }
+    session.output_offset = 0;
   }
 }
 
@@ -254,7 +356,7 @@ void set_tcp_nodelay(int fd) {
 }
 
 void accept_clients(int listener,
-                    std::vector<Client>& clients,
+                    std::vector<std::unique_ptr<Client>>& clients,
                     const ServerConfig& config) {
   for (;;) {
     sockaddr_storage address{};
@@ -283,16 +385,199 @@ void accept_clients(int listener,
       set_tcp_nodelay(client_fd);  // no-op / warning on AF_UNIX
     }
 
-    Client client{.fd = client_fd};
-    if (config.initial_output_buffer_bytes > 0) {
-      client.output.reserve(config.initial_output_buffer_bytes);
+    try {
+      auto client = std::make_unique<Client>(
+          client_fd, config.unsolicited_output_buffer_bytes, next_connection_id());
+      if (config.initial_output_buffer_bytes > 0) {
+        client->output.reserve(config.initial_output_buffer_bytes);
+      }
+      clients.push_back(std::move(client));
+    } catch (const std::bad_alloc&) {
+      std::cerr << "goblin-core: unable to map client output buffer\n";
+      close_fd(client_fd);
     }
-    clients.push_back(std::move(client));
   }
 }
 
+[[nodiscard]] bool is_pubsub_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::subscribe:
+    case CommandType::unsubscribe:
+    case CommandType::psubscribe:
+    case CommandType::punsubscribe:
+    case CommandType::publish:
+    case CommandType::pubsub:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool allowed_while_resp2_subscribed(CommandType type) noexcept {
+  return type == CommandType::subscribe || type == CommandType::unsubscribe ||
+         type == CommandType::psubscribe || type == CommandType::punsubscribe ||
+         type == CommandType::ping;
+}
+
+void dispatch_resp_command(EndpointSession& session, Store& store,
+                           detail::PubSubRegistry& pubsub,
+                           std::span<const std::string_view> fields,
+                           const CommandExecutionOptions& exec_options) {
+  const std::size_t prior_size = session.output.size();
+  auto parsed = parse_command(fields);
+  if (!parsed.ok()) {
+    resp::append_error(session.output, parsed.error);
+    session.record_reply(prior_size);
+    return;
+  }
+
+  const auto& command = *parsed.command;
+  if (session.wire_mode == detail::WireMode::resp2 &&
+      session.subscription_count() != 0 &&
+      !allowed_while_resp2_subscribed(command.type)) {
+    resp::append_error(
+        session.output,
+        "ERR Can't execute this command while subscribed to a channel");
+  } else if (session.wire_mode == detail::WireMode::resp2 &&
+             session.subscription_count() != 0 &&
+             command.type == CommandType::ping) {
+    resp::append_array_header(session.output, 2);
+    resp::append_bulk_string(session.output, "pong");
+    resp::append_bulk_string(session.output,
+                             command.args.empty() ? std::string_view{}
+                                                  : command.args.front());
+  } else if (is_pubsub_command(command.type)) {
+    pubsub.execute(session, command, session.output);
+  } else {
+    execute_command_into(store, command, session.output, exec_options);
+  }
+
+  if (session.wire_mode != detail::WireMode::sbe) {
+    session.wire_mode = session.resp_version == resp::Version::resp3
+                            ? detail::WireMode::resp3
+                            : detail::WireMode::resp2;
+  }
+  session.record_reply(prior_size);
+}
+
+#ifdef GOBLIN_HAS_SBE
+[[nodiscard]] std::size_t dispatch_sbe_command(
+    EndpointSession& session, Store& store, detail::PubSubRegistry& pubsub,
+    std::string_view bytes, const CommandExecutionOptions& exec_options) {
+  if (bytes.size() < kSbeLenPrefix) {
+    return 0;
+  }
+  std::uint32_t message_length = 0;
+  std::memcpy(&message_length, bytes.data(), kSbeLenPrefix);
+  const std::size_t frame_bytes = kSbeLenPrefix + message_length;
+  if (bytes.size() < frame_bytes) {
+    return 0;
+  }
+  if (message_length < goblin_sbe::MessageHeader::encodedLength()) {
+    return frame_bytes;
+  }
+
+  char* buffer = const_cast<char*>(bytes.data()) + kSbeLenPrefix;
+  try {
+    goblin_sbe::MessageHeader header(buffer, message_length);
+    const auto template_id = header.templateId();
+    Command command;
+
+    if (template_id == goblin_sbe::Subscribe::sbeTemplateId()) {
+      goblin_sbe::Subscribe message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      auto& group = message.channels();
+      session.fields.clear();
+      session.fields.reserve(static_cast<std::size_t>(group.count()));
+      while (group.hasNext()) {
+        session.fields.push_back(group.next().getChannelAsStringView());
+      }
+      command.type = CommandType::subscribe;
+      command.name = "SUBSCRIBE";
+    } else if (template_id == goblin_sbe::Unsubscribe::sbeTemplateId()) {
+      goblin_sbe::Unsubscribe message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      auto& group = message.channels();
+      session.fields.clear();
+      session.fields.reserve(static_cast<std::size_t>(group.count()));
+      while (group.hasNext()) {
+        session.fields.push_back(group.next().getChannelAsStringView());
+      }
+      command.type = CommandType::unsubscribe;
+      command.name = "UNSUBSCRIBE";
+    } else if (template_id == goblin_sbe::PSubscribe::sbeTemplateId()) {
+      goblin_sbe::PSubscribe message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      auto& group = message.patterns();
+      session.fields.clear();
+      session.fields.reserve(static_cast<std::size_t>(group.count()));
+      while (group.hasNext()) {
+        session.fields.push_back(group.next().getPatternAsStringView());
+      }
+      command.type = CommandType::psubscribe;
+      command.name = "PSUBSCRIBE";
+    } else if (template_id == goblin_sbe::PUnsubscribe::sbeTemplateId()) {
+      goblin_sbe::PUnsubscribe message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      auto& group = message.patterns();
+      session.fields.clear();
+      session.fields.reserve(static_cast<std::size_t>(group.count()));
+      while (group.hasNext()) {
+        session.fields.push_back(group.next().getPatternAsStringView());
+      }
+      command.type = CommandType::punsubscribe;
+      command.name = "PUNSUBSCRIBE";
+    } else if (template_id == goblin_sbe::Publish::sbeTemplateId()) {
+      goblin_sbe::Publish message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      session.fields.clear();
+      session.fields.push_back(message.getChannelAsStringView());
+      session.fields.push_back(message.getPayloadAsStringView());
+      command.type = CommandType::publish;
+      command.name = "PUBLISH";
+    } else if (template_id == goblin_sbe::PubSub::sbeTemplateId()) {
+      goblin_sbe::PubSub message;
+      message.wrapForDecode(buffer, goblin_sbe::MessageHeader::encodedLength(),
+                            header.blockLength(), header.version(), message_length);
+      const auto operation = message.operation();
+      session.fields.clear();
+      if (operation == 0) {
+        session.fields.push_back("CHANNELS");
+      } else if (operation == 1) {
+        session.fields.push_back("NUMSUB");
+      } else if (operation == 2) {
+        session.fields.push_back("NUMPAT");
+      } else {
+        session.fields.push_back("UNKNOWN");
+      }
+      auto& group = message.args();
+      session.fields.reserve(1 + static_cast<std::size_t>(group.count()));
+      while (group.hasNext()) {
+        session.fields.push_back(group.next().getArgAsStringView());
+      }
+      command.type = CommandType::pubsub;
+      command.name = "PUBSUB";
+    } else {
+      return sbe_dispatch_one(store, bytes, session.output, exec_options);
+    }
+
+    command.args = session.fields;
+    pubsub.execute(session, command, session.output);
+  } catch (const std::exception&) {
+    // Consume malformed frames and re-synchronize at the next length prefix.
+  }
+  return frame_bytes;
+}
+#endif
+
 [[nodiscard]] bool process_buffered_commands(Client& client,
                                              Store& store,
+                                             detail::PubSubRegistry& pubsub,
                                              ScriptEngine& script_engine,
                                              LuauEngine& luau_engine,
                                              WrenEngine& wren_engine,
@@ -305,6 +590,8 @@ void accept_clients(int listener,
 
   const CommandExecutionOptions exec_options{
       .output_reserve_limit = config.max_output_buffer_bytes,
+      .resp_version = &client.resp_version,
+      .connection_id = client.connection_id,
       .script_engine = &script_engine,
       .luau_engine = &luau_engine,
       .wren_engine = &wren_engine,
@@ -315,35 +602,38 @@ void accept_clients(int listener,
   // Decide the protocol from the first 8 bytes ("GOBLINS!" -> SBE, else RESP),
   // mirroring the ring. Decide RESP the moment the prefix diverges so a short inline
   // command is never stalled waiting for a full magic.
-  if (client.proto == RingProto::undecided) {
+  if (client.wire_mode == detail::WireMode::undecided) {
 #ifdef GOBLIN_HAS_SBE
     switch (match_goblin_magic(client.inbuf)) {
       case MagicMatch::need_more:
         return true;  // wait for the next read before deciding
       case MagicMatch::yes:
-        client.proto = RingProto::sbe;
+        client.wire_mode = detail::WireMode::sbe;
         client.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
         break;
       case MagicMatch::no:
-        client.proto = RingProto::resp;
+        client.wire_mode = detail::WireMode::resp2;
         break;
     }
 #else
-    client.proto = RingProto::resp;
+    client.wire_mode = detail::WireMode::resp2;
 #endif
   }
 
 #ifdef GOBLIN_HAS_SBE
-  if (client.proto == RingProto::sbe) {
+  if (client.wire_mode == detail::WireMode::sbe) {
     // Frame and dispatch every complete SBE message; a partial trailing message stays
     // buffered for the next read.
     std::size_t off = 0;
     while (!client.read_backpressured) {
-      const std::size_t consumed = sbe_dispatch_one(
-          store, std::string_view(client.inbuf).substr(off), client.output, exec_options);
+      const std::size_t prior_size = client.output.size();
+      const std::size_t consumed = dispatch_sbe_command(
+          client, store, pubsub, std::string_view(client.inbuf).substr(off),
+          exec_options);
       if (consumed == 0) {
         break;
       }
+      client.record_reply(prior_size);
       off += consumed;
       compact_output_if_needed(client);
       update_read_backpressure(client, config);
@@ -362,14 +652,16 @@ void accept_clients(int listener,
     if (!client.parser.pop_into(client.fields)) {
       break;
     }
-    handle_command_into(store, client.fields, client.output, exec_options);
+    dispatch_resp_command(client, store, pubsub, client.fields, exec_options);
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
 
   if (client.parser.has_error()) {
     if (!client.close_after_write) {
+      const std::size_t prior_size = client.output.size();
       resp::append_error(client.output, client.parser.error());
+      client.record_reply(prior_size);
     }
     client.close_after_write = true;
     update_read_backpressure(client, config);
@@ -384,7 +676,7 @@ void accept_clients(int listener,
 // loop cannot spin.
 [[nodiscard]] bool has_buffered_work(const Client& client) {
 #ifdef GOBLIN_HAS_SBE
-  if (client.proto == RingProto::sbe) {
+  if (client.wire_mode == detail::WireMode::sbe) {
     if (client.inbuf.size() < kSbeLenPrefix) {
       return false;
     }
@@ -397,6 +689,7 @@ void accept_clients(int listener,
 }
 
 [[nodiscard]] bool read_client(Client& client, Store& store,
+                               detail::PubSubRegistry& pubsub,
                                ScriptEngine& script_engine,
                                LuauEngine& luau_engine,
                                WrenEngine& wren_engine,
@@ -417,7 +710,7 @@ void accept_clients(int listener,
     if (received > 0) {
       client.inbuf.append(buffer.data(), static_cast<std::size_t>(received));
 
-      if (!process_buffered_commands(client, store, script_engine, luau_engine,
+      if (!process_buffered_commands(client, store, pubsub, script_engine, luau_engine,
                                      wren_engine, tcl_engine, upython_engine,
                                      quickjs_engine, config)) {
         return false;
@@ -441,15 +734,42 @@ void accept_clients(int listener,
 }
 
 [[nodiscard]] bool write_client(Client& client, const ServerConfig& config) {
+  if (client.close_requested) {
+    return false;
+  }
   while (has_pending_output(client)) {
-    const auto pending = pending_output_bytes(client);
-    const auto sent = ::send(
-        client.fd,
-        client.output.data() + client.output_offset,
-        pending,
-        0);
+    detail::UnsolicitedOutputQueue::Front push{};
+    const bool has_push = peek_unsolicited(client, push);
+    const bool regular_pending = has_pending_regular_output(client);
+    const bool write_push = has_push &&
+                            (!regular_pending ||
+                             push.sequence <
+                                 client.replies[client.reply_index].sequence);
+
+    std::string_view bytes;
+    if (write_push) {
+      bytes = push.bytes.substr(client.unsolicited_front_offset);
+    } else {
+      const auto end = client.replies[client.reply_index].end_offset;
+      bytes = std::string_view(client.output).substr(client.output_offset,
+                                                     end - client.output_offset);
+    }
+
+    const auto sent = ::send(client.fd, bytes.data(), bytes.size(), 0);
     if (sent > 0) {
-      client.output_offset += static_cast<std::size_t>(sent);
+      const auto written = static_cast<std::size_t>(sent);
+      if (write_push) {
+        client.unsolicited_front_offset += written;
+        if (client.unsolicited_front_offset == push.bytes.size()) {
+          consume_unsolicited_front(client);
+        }
+      } else {
+        client.output_offset += written;
+        if (client.output_offset ==
+            client.replies[client.reply_index].end_offset) {
+          ++client.reply_index;
+        }
+      }
       update_read_backpressure(client, config);
       continue;
     }
@@ -478,7 +798,9 @@ void accept_clients(int listener,
 // network pass and cpu_relax(). Returns false if a ring could not be created.
 template <class NetFn>
 [[nodiscard]] bool run_rings(const ServerConfig& config, Store& store,
-                             std::atomic_bool& running, ScriptEngine& script_engine,
+                             std::atomic_bool& running,
+                             detail::PubSubRegistry& pubsub,
+                             ScriptEngine& script_engine,
                              LuauEngine& luau_engine, WrenEngine& wren_engine,
                              TclEngine& tcl_engine, UPythonEngine& upython_engine,
                              QuickJsEngine& quickjs_engine,
@@ -487,7 +809,7 @@ template <class NetFn>
   // on Linux (pinning is done by the bench via taskset).
   ring::set_busy_poll_thread_realtime();
 
-  std::vector<RingEndpoint> rings;
+  std::vector<std::unique_ptr<RingEndpoint>> rings;
   rings.reserve(config.rings.size());
   // NUMA: with --cpu, strictly bind allocations to the pinned CPU's node while the
   // rings are created, so each ring's prefault lands there and it is node-local by
@@ -532,8 +854,14 @@ template <class NetFn>
     std::cout << "goblin-core: ring " << rc.path << " ready ("
               << mapping->sq_capacity() << " bytes/direction"
               << (mapping->is_hugetlb() ? ", hugetlb" : "") << ")\n";
-    rings.push_back(RingEndpoint{.mapping = std::move(*mapping)});
-    rings.back().rebind_ring_views();
+    try {
+      rings.push_back(std::make_unique<RingEndpoint>(
+          std::move(*mapping), config.unsolicited_output_buffer_bytes,
+          next_connection_id()));
+    } catch (const std::bad_alloc&) {
+      std::cerr << "goblin-core: unable to map ring client output buffer\n";
+      return false;
+    }
   }
   if (ring_node >= 0) {
     // Rings placed; restore the runtime allocation policy. Prefer the pinned node for
@@ -548,17 +876,49 @@ template <class NetFn>
             << " ring(s) ahead of the network (100% CPU by design)\n"
             << std::flush;
 
-  const CommandExecutionOptions exec_options{
-      .output_reserve_limit = config.max_output_buffer_bytes,
-      .script_engine = &script_engine,
-      .luau_engine = &luau_engine,
-      .wren_engine = &wren_engine,
-      .tcl_engine = &tcl_engine,
-      .upython_engine = &upython_engine,
-      .quickjs_engine = &quickjs_engine};
-
   // Drain one SQ record from `ep`, run whatever commands it completes, and push
   // the replies onto the CQ. Returns false when the ring's SQ was empty.
+  const auto flush_ring_output = [&](RingEndpoint& ep) -> bool {
+    bool progressed = false;
+    while (has_pending_output(ep)) {
+      detail::UnsolicitedOutputQueue::Front push{};
+      const bool has_push = peek_unsolicited(ep, push);
+      const bool regular_pending = has_pending_regular_output(ep);
+      const bool write_push = has_push &&
+                              (!regular_pending ||
+                               push.sequence < ep.replies[ep.reply_index].sequence);
+
+      std::string_view bytes;
+      if (write_push) {
+        bytes = push.bytes.substr(ep.unsolicited_front_offset);
+      } else {
+        const auto end = ep.replies[ep.reply_index].end_offset;
+        bytes = std::string_view(ep.output).substr(ep.output_offset,
+                                                   end - ep.output_offset);
+      }
+      if (bytes.size() > ep.cq.max_record_payload()) {
+        bytes = bytes.substr(0, ep.cq.max_record_payload());
+      }
+      if (!ep.cq.try_push(bytes)) {
+        break;
+      }
+      progressed = true;
+      if (write_push) {
+        ep.unsolicited_front_offset += bytes.size();
+        if (ep.unsolicited_front_offset == push.bytes.size()) {
+          consume_unsolicited_front(ep);
+        }
+      } else {
+        ep.output_offset += bytes.size();
+        if (ep.output_offset == ep.replies[ep.reply_index].end_offset) {
+          ++ep.reply_index;
+        }
+      }
+      compact_output_if_needed(ep);
+    }
+    return progressed;
+  };
+
   const auto process_ring = [&](RingEndpoint& ep) -> bool {
     // Reconnect handshake: a newly-opened client bumps the ring epoch and spins until
     // we ack. When it moves, discard whatever a dead predecessor abandoned in the ring
@@ -566,15 +926,29 @@ template <class NetFn>
     // the client may proceed -- recovering a messily-crashed connection with no restart.
     if (const std::uint64_t epoch = ep.mapping.requested_epoch();
         epoch != ep.acked_epoch) {
+      pubsub.remove(ep);
       ep.mapping.drain_for_reconnect();
-      ep.proto = RingProto::undecided;
-      ep.inbuf.clear();
-      ep.output.clear();
-      ep.parser.clear();
+      ep.reset_connection(next_connection_id());
       ep.mapping.ack_epoch(epoch);
       ep.acked_epoch = epoch;
       ep.rebind_ring_views();  // local head/tail caches track the drained indices
     }
+
+    const bool output_progress = flush_ring_output(ep);
+    if (ep.close_requested || has_pending_output(ep)) {
+      return output_progress;
+    }
+
+    const CommandExecutionOptions exec_options{
+        .output_reserve_limit = config.max_output_buffer_bytes,
+        .resp_version = &ep.resp_version,
+        .connection_id = ep.connection_id,
+        .script_engine = &script_engine,
+        .luau_engine = &luau_engine,
+        .wren_engine = &wren_engine,
+        .tcl_engine = &tcl_engine,
+        .upython_engine = &upython_engine,
+        .quickjs_engine = &quickjs_engine};
 
     const auto record = ep.sq.peek();
     if (!record) {
@@ -584,7 +958,7 @@ template <class NetFn>
     // Decide the protocol from the first 8 bytes: "GOBLINS!" -> the SBE binary wire,
     // else RESP. Decide RESP the moment the prefix diverges so a short inline RESP
     // command is never stalled waiting for a full magic that will not arrive.
-    if (ep.proto == RingProto::undecided) {
+    if (ep.wire_mode == detail::WireMode::undecided) {
       ep.inbuf.append(*record);
       ep.sq.pop();
 #ifdef GOBLIN_HAS_SBE
@@ -592,15 +966,15 @@ template <class NetFn>
         case MagicMatch::need_more:
           return true;  // matches so far but incomplete -> wait for the next record
         case MagicMatch::yes:
-          ep.proto = RingProto::sbe;
+          ep.wire_mode = detail::WireMode::sbe;
           ep.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
           break;
         case MagicMatch::no:
-          ep.proto = RingProto::resp;
+          ep.wire_mode = detail::WireMode::resp2;
           break;
       }
 #else
-      ep.proto = RingProto::resp;
+      ep.wire_mode = detail::WireMode::resp2;
 #endif
       // Magic may have been alone in the record; fall through to drain whatever
       // remains in inbuf (or nothing).
@@ -609,14 +983,17 @@ template <class NetFn>
       // Hot path (protocol already decided, no carry-over): dispatch SBE frames
       // straight out of the ring record -- no inbuf memcpy. Partial trailing
       // bytes fall back into inbuf for the next record.
-      if (ep.proto == RingProto::sbe && ep.inbuf.empty()) {
+      if (ep.wire_mode == detail::WireMode::sbe && ep.inbuf.empty()) {
         std::size_t off = 0;
         for (;;) {
-          const std::size_t consumed = sbe_dispatch_one(
-              store, std::string_view(*record).substr(off), ep.output, exec_options);
+          const std::size_t prior_size = ep.output.size();
+          const std::size_t consumed = dispatch_sbe_command(
+              ep, store, pubsub, std::string_view(*record).substr(off),
+              exec_options);
           if (consumed == 0) {
             break;
           }
+          ep.record_reply(prior_size);
           off += consumed;
         }
         if (off == record->size()) {
@@ -638,17 +1015,20 @@ template <class NetFn>
     }
 
 #ifdef GOBLIN_HAS_SBE
-    if (ep.proto == RingProto::sbe) {
+    if (ep.wire_mode == detail::WireMode::sbe) {
       // Frame and dispatch every complete SBE message still in the accumulator
       // (carry-over from a prior partial frame, or bytes left after magic strip).
       if (!ep.inbuf.empty()) {
         std::size_t off = 0;
         for (;;) {
-          const std::size_t consumed = sbe_dispatch_one(
-              store, std::string_view(ep.inbuf).substr(off), ep.output, exec_options);
+          const std::size_t prior_size = ep.output.size();
+          const std::size_t consumed = dispatch_sbe_command(
+              ep, store, pubsub, std::string_view(ep.inbuf).substr(off),
+              exec_options);
           if (consumed == 0) {
             break;
           }
+          ep.record_reply(prior_size);
           off += consumed;
         }
         if (off > 0) {
@@ -657,29 +1037,22 @@ template <class NetFn>
       }
     } else
 #endif
-    if (ep.proto == RingProto::resp) {
+    if (ep.wire_mode == detail::WireMode::resp2 ||
+        ep.wire_mode == detail::WireMode::resp3) {
       ep.parser.append(ep.inbuf);
       ep.inbuf.clear();
       while (ep.parser.pop_into(ep.fields)) {
-        handle_command_into(store, ep.fields, ep.output, exec_options);
+        dispatch_resp_command(ep, store, pubsub, ep.fields, exec_options);
       }
       if (ep.parser.has_error()) {
+        const std::size_t prior_size = ep.output.size();
         resp::append_error(ep.output, ep.parser.error());
+        ep.record_reply(prior_size);
         ep.parser.clear();  // resync the byte stream after a protocol error
       }
     }
 
-    if (!ep.output.empty()) {
-      // Abort the push if shutting down, or if a new client is requesting a reconnect
-      // -- otherwise a dead client that stopped reading (a full CQ) would wedge us here
-      // forever, and no newcomer could ever be serviced. The reply is dropped (it was
-      // for the departed client) and the next iteration drains and re-arms the ring.
-      ep.cq.send(ep.output, [&] {
-        return !running.load(std::memory_order_relaxed) ||
-               ep.mapping.requested_epoch() != ep.acked_epoch;
-      });
-      ep.output.clear();
-    }
+    (void)flush_ring_output(ep);
     return true;
   };
 
@@ -698,8 +1071,8 @@ template <class NetFn>
   unsigned idle_spins = 0;
   while (running.load(std::memory_order_relaxed)) {
     bool progressed = false;
-    for (RingEndpoint& ep : rings) {
-      if (process_ring(ep)) {
+    for (auto& endpoint : rings) {
+      if (process_ring(*endpoint)) {
         progressed = true;
         break;  // restart from the highest-priority ring
       }
@@ -713,6 +1086,9 @@ template <class NetFn>
     }
     ring::cpu_relax();
   }
+  for (auto& endpoint : rings) {
+    pubsub.remove(*endpoint);
+  }
   return true;
 }
 
@@ -720,6 +1096,17 @@ template <class NetFn>
 
 Server::Server(ServerConfig config, Store& store)
     : config_(std::move(config)), store_(store) {
+  const std::size_t page = static_cast<std::size_t>(ring::page_size());
+  if (config_.unsolicited_output_buffer_bytes == 0) {
+    config_.unsolicited_output_buffer_bytes = page;
+  } else if (config_.unsolicited_output_buffer_bytes <=
+             std::numeric_limits<std::size_t>::max() - (page - 1)) {
+    config_.unsolicited_output_buffer_bytes =
+        ((config_.unsolicited_output_buffer_bytes + page - 1) / page) * page;
+  } else {
+    config_.unsolicited_output_buffer_bytes =
+        std::numeric_limits<std::size_t>::max() & ~(page - 1);
+  }
   if (config_.max_output_buffer_bytes == 0) {
     config_.resume_output_buffer_bytes = 0;
   } else if (config_.resume_output_buffer_bytes >= config_.max_output_buffer_bytes) {
@@ -744,18 +1131,27 @@ int Server::run() {
   }
   const int listener_fd = *listener;
 
-  std::vector<Client> clients;
+  detail::PubSubRegistry pubsub;
+  std::vector<std::unique_ptr<Client>> clients;
   running_ = true;
+
+  const NestedCommandDispatch nested_dispatch{
+      .context = &pubsub,
+      .publish = [](void* context, std::string_view channel,
+                    std::string_view payload) {
+        return static_cast<detail::PubSubRegistry*>(context)->publish(channel,
+                                                                      payload);
+      }};
 
   // One engine per interpreter for the process. Each holds its own script cache
   // and, lazily, its own VM -- no VM is created until the first script of that
   // kind runs, so a server that never scripts pays nothing here.
-  ScriptEngine script_engine(store_);
-  LuauEngine luau_engine(store_);
-  WrenEngine wren_engine(store_);
-  TclEngine tcl_engine(store_);
-  UPythonEngine upython_engine(store_);
-  QuickJsEngine quickjs_engine(store_);
+  ScriptEngine script_engine(store_, nested_dispatch);
+  LuauEngine luau_engine(store_, nested_dispatch);
+  WrenEngine wren_engine(store_, nested_dispatch);
+  TclEngine tcl_engine(store_, nested_dispatch);
+  UPythonEngine upython_engine(store_, nested_dispatch);
+  QuickJsEngine quickjs_engine(store_, nested_dispatch);
 
   std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
             << '\n';
@@ -792,7 +1188,8 @@ int Server::run() {
     std::vector<pollfd> pollfds;
     pollfds.reserve(clients.size() + 1);
     pollfds.push_back(pollfd{.fd = listener_fd, .events = POLLIN, .revents = 0});
-    for (auto& client : clients) {
+    for (auto& client_ptr : clients) {
+      auto& client = *client_ptr;
       update_read_backpressure(client, config_);
       short events = 0;
       if (!client.read_backpressured) {
@@ -816,40 +1213,41 @@ int Server::run() {
 
     std::vector<unsigned char> close_client(clients.size(), 0);
     for (std::size_t i = 0; i < clients.size(); ++i) {
-      bool keep = true;
+      bool keep = !clients[i]->close_requested;
+      auto& client = *clients[i];
       const auto revents = pollfds[i + 1].revents;
 
-      if (keep && (revents & POLLOUT) != 0 && has_pending_output(clients[i])) {
-        keep = write_client(clients[i], config_);
+      if (keep && (revents & POLLOUT) != 0 && has_pending_output(client)) {
+        keep = write_client(client, config_);
       }
 
-      if (keep && !clients[i].read_backpressured) {
-        keep = process_buffered_commands(clients[i], store_, script_engine,
+      if (keep && !client.read_backpressured) {
+        keep = process_buffered_commands(client, store_, pubsub, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
                                          upython_engine, quickjs_engine, config_);
       }
 
-      if (keep && (revents & POLLIN) != 0 && !clients[i].read_backpressured) {
-        keep = read_client(clients[i], store_, script_engine, luau_engine,
+      if (keep && (revents & POLLIN) != 0 && !client.read_backpressured) {
+        keep = read_client(client, store_, pubsub, script_engine, luau_engine,
                            wren_engine, tcl_engine, upython_engine, quickjs_engine, config_);
       }
 
-      if (keep && has_pending_output(clients[i])) {
-        keep = write_client(clients[i], config_);
+      if (keep && has_pending_output(client)) {
+        keep = write_client(client, config_);
       }
 
-      while (keep && !clients[i].read_backpressured &&
-             has_buffered_work(clients[i])) {
-        keep = process_buffered_commands(clients[i], store_, script_engine,
+      while (keep && !client.read_backpressured &&
+             has_buffered_work(client)) {
+        keep = process_buffered_commands(client, store_, pubsub, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
                                          upython_engine, quickjs_engine, config_);
-        if (keep && has_pending_output(clients[i])) {
-          keep = write_client(clients[i], config_);
+        if (keep && has_pending_output(client)) {
+          keep = write_client(client, config_);
         }
       }
 
       if (keep && (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 &&
-          !has_pending_output(clients[i])) {
+          !has_pending_output(client)) {
         keep = false;
       }
 
@@ -861,7 +1259,8 @@ int Server::run() {
     for (std::size_t i = clients.size(); i > 0; --i) {
       const auto index = i - 1;
       if (close_client[index] != 0) {
-        close_fd(clients[index].fd);
+        pubsub.remove(*clients[index]);
+        close_fd(clients[index]->fd);
         clients.erase(clients.begin() + static_cast<long>(index));
       }
     }
@@ -877,7 +1276,7 @@ int Server::run() {
     while (running_) {
       network_iteration(1000);
     }
-  } else if (!run_rings(config_, store_, running_, script_engine, luau_engine,
+  } else if (!run_rings(config_, store_, running_, pubsub, script_engine, luau_engine,
                         wren_engine, tcl_engine, upython_engine, quickjs_engine,
                         network_iteration)) {
     close_fd(listener_fd);
@@ -885,7 +1284,8 @@ int Server::run() {
   }
 
   for (const auto& client : clients) {
-    close_fd(client.fd);
+    pubsub.remove(*client);
+    close_fd(client->fd);
   }
   close_fd(listener_fd);
 

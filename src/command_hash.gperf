@@ -17,6 +17,13 @@
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 %%
 PING, goblin::core::CommandType::ping
+HELLO, goblin::core::CommandType::hello
+SUBSCRIBE, goblin::core::CommandType::subscribe
+UNSUBSCRIBE, goblin::core::CommandType::unsubscribe
+PSUBSCRIBE, goblin::core::CommandType::psubscribe
+PUNSUBSCRIBE, goblin::core::CommandType::punsubscribe
+PUBLISH, goblin::core::CommandType::publish
+PUBSUB, goblin::core::CommandType::pubsub
 ECHO, goblin::core::CommandType::echo
 INFO, goblin::core::CommandType::info
 EVAL, goblin::core::CommandType::eval
