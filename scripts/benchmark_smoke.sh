@@ -31,13 +31,12 @@ LATENCY_WARMUP="${BENCHMARK_LATENCY_WARMUP:-10}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 BUILD_HTML="${BUILD_HTML:-1}"
 
-run_args=()
+run_args=("$PYTHON" "$ROOT/benchmarks/run_benchmarks.py")
 if [[ "$SKIP_BUILD" == "1" || "$SKIP_BUILD" == "true" ]]; then
   run_args+=(--skip-build)
 fi
 
-"$PYTHON" "$ROOT/benchmarks/run_benchmarks.py" \
-  "${run_args[@]}" \
+"${run_args[@]}" \
   --redis-server "$REDIS_SERVER" \
   --name "$NAME" \
   --output-dir "$OUT_DIR" \

@@ -272,12 +272,33 @@ class HashStorage {
 
   // Replace an existing field's value (the field bytes are never moved). Fits in
   // place when the new value is no longer than the old one; otherwise only the
-  // value is re-appended and the old value bytes are orphaned.
+  // value is re-appended and the old value bytes are orphaned. Same-content
+  // updates are a pure no-op (no write, no dead bytes).
   void set_value(std::uint32_t field_id, std::string_view value) {
     assert(field_id < field_offsets_.size());
-    const EncodedString encoded(value, string_encoding_);
     const size_type old_value_len = value_lengths_[field_id];
     const auto old_value_offset = value_offset(field_id);
+    const auto old_encoded =
+        old_value_len == 0
+            ? std::string_view{}
+            : std::string_view(chunk_ptr(old_value_offset), old_value_len);
+
+    // Fast same-content path for the common raw / verbatim store form before
+    // running the full encoder. Benchmark values are mostly non-numeric.
+    if (string_encoding_.encoding_enabled()) {
+      if (old_value_len == value.size() + 1 && !old_encoded.empty() &&
+          static_cast<std::uint8_t>(old_encoded.front()) == kStringRaw &&
+          old_encoded.substr(1) == value) {
+        return;
+      }
+    } else if (old_encoded == value) {
+      return;
+    }
+
+    const EncodedString encoded(value, string_encoding_);
+    if (encoded.equals_encoded(old_encoded)) {
+      return;
+    }
     if (encoded.size() == old_value_len) {
       // Same-width HSET: overwrite only; no dead-byte accounting.
       encoded.write_to(chunk_ptr(old_value_offset));
@@ -298,6 +319,20 @@ class HashStorage {
     relocation_block[field_id & kRelocationBlockMask] = new_off;
     value_lengths_[field_id] = static_cast<std::uint16_t>(encoded.size());
     queue_donor_id(field_id);
+  }
+
+  // Bring value bytes into cache as soon as the field id is known (HGET hit).
+  void prefetch_value(std::uint32_t field_id) const noexcept {
+    assert(field_id < field_offsets_.size());
+    const auto value_len = value_lengths_[field_id];
+    if (value_len == 0) {
+      return;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(chunk_ptr(value_offset(field_id)), 0, 3);
+#else
+    (void)field_id;
+#endif
   }
 
   // The field bytes (also what the swiss index compares against).

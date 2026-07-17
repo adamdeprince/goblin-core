@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Goblin Core is a compact Redis-like server for sorted sets, hashes, strings, and lists, with roughly half the sorted-set memory footprint of Redis 7.2.4 and a 220 ns shared-memory fast path.">
+  <meta name="description" content="Goblin Core is a compact Redis-like server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub, with a triple-digit-nanosecond shared-memory fast path.">
   <meta name="theme-color" content="#11130f">
   <meta property="og:title" content="Goblin Core — Redis semantics without Redis overhead">
   <meta property="og:description" content="Spend less on leaderboard infrastructure. Or build latency-sensitive systems with 220 ns request/reply round trips.">
@@ -223,6 +223,28 @@
     .button.secondary { background: rgba(255,255,255,.72); }
     .button.secondary:hover { background: var(--white); color: var(--cyan); }
     .button svg { width: 18px; height: 18px; stroke-width: 2; }
+    .goblin-feed {
+      display: grid;
+      min-height: 46px;
+      grid-template-columns: 34px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 5px 11px 5px 6px;
+      border: 1px solid var(--ink);
+      background: var(--white);
+      text-decoration: none;
+    }
+    .goblin-feed:hover { border-color: var(--acid-dark); background: #eff8d8; }
+    .goblin-feed img {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+    .goblin-feed strong, .goblin-feed small { display: block; }
+    .goblin-feed strong { font-size: .78rem; line-height: 1.2; }
+    .goblin-feed small { margin-top: 2px; color: var(--muted); font: .62rem/1.2 var(--mono); }
+    .goblin-feed-arrow { color: var(--orange); font-size: 1rem; }
     .hero-note {
       display: flex;
       flex-wrap: wrap;
@@ -336,6 +358,42 @@
     td.winner { color: var(--acid-dark); font-weight: 900; }
     tr:last-child td { border-bottom: 0; }
     .method { margin: 18px 0 0; color: var(--muted); font: .73rem/1.55 var(--mono); }
+    .benchmark-deck {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 54px;
+      border-block: 1px solid var(--ink);
+      background: var(--ink);
+    }
+    .benchmark-report {
+      grid-column: span 2;
+      min-width: 0;
+      min-height: 292px;
+      padding: 28px 25px 26px;
+      display: flex;
+      flex-direction: column;
+      background: var(--paper);
+    }
+    .benchmark-report:nth-last-child(2),
+    .benchmark-report:last-child { grid-column: span 3; }
+    .report-index {
+      color: var(--muted);
+      font: 740 .68rem/1.35 var(--mono);
+      text-transform: uppercase;
+    }
+    .benchmark-report h3 { margin: 34px 0 10px; font-size: 1.22rem; }
+    .report-metric {
+      display: block;
+      color: var(--acid-dark);
+      font: 860 2rem/1 var(--mono);
+    }
+    .benchmark-report:nth-child(3n+2) .report-metric { color: var(--cyan); }
+    .benchmark-report:nth-child(3n) .report-metric { color: var(--orange); }
+    .report-copy { margin: 15px 0 24px; color: var(--muted); font-size: .86rem; }
+    .report-links { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: auto; }
+    .report-links a { color: var(--cyan); font-size: .78rem; font-weight: 800; text-underline-offset: 4px; }
+    .report-links a:last-child { color: var(--muted); font-family: var(--mono); font-size: .7rem; }
 
     .writing { padding: 108px 0; background: var(--white); border-top: 1px solid var(--line); }
     .writing-grid {
@@ -350,6 +408,8 @@
     .post h3 { margin: 34px 0 15px; font: 810 clamp(1.45rem, 2.5vw, 2.25rem)/1.08 var(--sans); }
     .post p { margin: 0; color: var(--muted); font-family: var(--serif); }
     .post a { display: inline-block; margin-top: 27px; color: var(--cyan); font-weight: 800; text-underline-offset: 4px; }
+    .post-wide { grid-column: 1 / -1; padding: 36px 0 40px; border-top: 1px solid var(--ink); border-left: 0; }
+    .post-wide h3, .post-wide p { max-width: 820px; }
 
     .scope { padding: 104px 0; background: #e9e8e1; border-block: 1px solid var(--line); }
     .scope-grid { display: grid; grid-template-columns: .9fr 1.1fr; gap: 90px; }
@@ -402,6 +462,11 @@
       .engine-step h3 { margin-top: 30px; }
       .scope { padding: 85px 0; }
       .scope-grid { gap: 48px; }
+      .benchmark-deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .benchmark-report,
+      .benchmark-report:nth-last-child(2),
+      .benchmark-report:last-child { grid-column: span 1; }
+      .benchmark-report:last-child { grid-column: span 2; }
     }
 
     @media (max-width: 650px) {
@@ -439,6 +504,9 @@
       .shootout-stat, .shootout-stat + .shootout-stat { padding: 22px 0; border-left: 0; }
       .shootout-stat + .shootout-stat { border-top: 1px solid #45483f; }
       .engine-step { padding: 24px; }
+      .benchmark-deck { grid-template-columns: 1fr; }
+      .benchmark-report,
+      .benchmark-report:last-child { grid-column: span 1; min-height: 0; padding: 27px 0; }
       .quick-links { grid-template-columns: 1fr; }
       .quick-links a, .quick-links a:nth-last-child(-n+2) { border-right: 0; border-bottom: 1px solid var(--ink); }
       .quick-links a:last-child { border-bottom: 0; }
@@ -449,6 +517,7 @@
     @media (max-width: 420px) {
       .hero-actions { width: 100%; }
       .hero-actions .button { width: 100%; }
+      .hero-actions .goblin-feed { width: 100%; }
       .hero-chicken { right: -105px; }
     }
   </style>
@@ -478,7 +547,7 @@
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
-        <p class="hero-copy">A compact server for sorted sets, hashes, strings, lists, and Pub/Sub. <strong>Spend less to run the leaderboard you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
         <p class="release-note">
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
@@ -490,19 +559,24 @@
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
           <a class="button secondary" href="#proof">Read the numbers</a>
+          <a class="goblin-feed" href="https://buymeacoffee.com/goblinreactor" target="_blank" rel="noopener noreferrer">
+            <img src="goblin.png" alt="">
+            <span><strong>Feed the goblins</strong><small>Chickens eat software bugs.</small></span>
+            <span class="goblin-feed-arrow" aria-hidden="true">→</span>
+          </a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP + SBE</span><span>TCP + UDS + rings</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + SBE</span><span>TCP + UDS + Ringbuffer + RDMA</span>
         </div>
       </div>
     </section>
 
     <section class="proof-strip" aria-label="Measured highlights">
       <div class="proof-grid">
-        <div class="proof"><b>51 B</b><span>RSS/member at 4M vs 103.2 B on Redis 7.2.4</span></div>
-        <div class="proof"><b>14.3B</b><span>real Lichess rating updates replayed</span></div>
+        <div class="proof"><b>28.65 B</b><span>SET RSS/member vs 44.90 B for the leanest incumbent</span></div>
+        <div class="proof"><b>48.67 B</b><span>HSET RSS/field vs 60.88 B on Redis 8.8</span></div>
         <div class="proof"><b>220 ns</b><span>single-element SBE ring round trip</span></div>
-        <div class="proof"><b>392K</b><span>ZADD operations/sec on one core</span></div>
+        <div class="proof"><b>3.39M</b><span>pipelined SBE ring ZADD/sec on one serving core</span></div>
       </div>
     </section>
 
@@ -561,7 +635,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">RESP and SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring.</p>
+        <p class="section-intro">RESP and SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. The same sequence-word design extends between hosts through <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a>.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -585,22 +659,48 @@
 
     <section class="benchmarks" id="proof">
       <div class="section-inner">
-        <p class="section-label">Parity benchmark / one serving core</p>
-        <h2 class="section-title">Memory is the headline. Throughput comes with it.</h2>
-        <div class="benchmark-wrap">
-          <table>
-            <thead><tr><th>Operation</th><th>Goblin</th><th>Redis 7.2</th><th>Redis 8.8</th><th>Valkey 9.1</th><th>Dragonfly</th></tr></thead>
-            <tbody>
-              <tr><td>ZADD</td><td class="winner">392K</td><td>235K</td><td>232K</td><td>235K</td><td>251K</td></tr>
-              <tr><td>ZSCORE</td><td class="winner">581K</td><td>480K</td><td>470K</td><td>485K</td><td>406K</td></tr>
-              <tr><td>ZRANK</td><td class="winner">476K</td><td>332K</td><td>340K</td><td>353K</td><td>320K</td></tr>
-              <tr><td>ZRANGE (16)</td><td class="winner">433K</td><td>360K</td><td>365K</td><td>339K</td><td>257K</td></tr>
-              <tr><td>RSS bytes/member (4M)</td><td class="winner">51.0</td><td>103.2</td><td>78.2</td><td>84.3</td><td>54.6</td></tr>
-            </tbody>
-          </table>
+        <p class="section-label">Fresh suite / July 16 / one serving core</p>
+        <h2 class="section-title">Five structures. One honest ledger.</h2>
+        <p class="section-intro">Current-tree runs cover the cost to build each structure, the resident memory it keeps, and the operations applications actually repeat. Every report names its transport, pipeline depth, buffer size, unsupported commands, and measurement source.</p>
+        <div class="benchmark-deck">
+          <article class="benchmark-report">
+            <span class="report-index">01 / Sorted sets</span>
+            <h3>Ranked state without the usual RAM bill.</h3>
+            <strong class="report-metric">52.32 B/member</strong>
+            <p class="report-copy">One million members after packing. RESP/TCP ZADD reaches 1.06M/s; the equally pipelined 2 MiB SBE ring reaches 3.39M/s.</p>
+            <div class="report-links"><a href="BENCHMARKS.html">Open ZSET report →</a><a href="artifacts/zset.json">Raw JSON</a></div>
+          </article>
+          <article class="benchmark-report">
+            <span class="report-index">02 / Hashes</span>
+            <h3>Efficient by default, bounded-tail when selected.</h3>
+            <strong class="report-metric">48.67 B/field</strong>
+            <p class="report-copy">The efficient million-field hash uses 20.1% less RSS than Redis 8.8. RT builds at 2.54M fields/s and holds mixed p99.9 to 16.14 µs.</p>
+            <div class="report-links"><a href="HSET-BENCHMARK.html">Open HSET report →</a><a href="artifacts/hset.json">Raw JSON</a></div>
+          </article>
+          <article class="benchmark-report">
+            <span class="report-index">03 / Lists</span>
+            <h3>Segmented for space. PMA for the middle.</h3>
+            <strong class="report-metric">1.99× LINDEX</strong>
+            <p class="report-copy">The default segmented list is 1.99× the fastest incumbent at the middle of 100k items. Its RSS delta is 25.35 B/item versus 21.42 B for the leanest incumbent.</p>
+            <div class="report-links"><a href="LIST-BENCHMARK.html">Open LIST report →</a><a href="artifacts/list.json">Raw JSON</a></div>
+          </article>
+          <article class="benchmark-report">
+            <span class="report-index">04 / Sets</span>
+            <h3>Membership that stays cache-sized.</h3>
+            <strong class="report-metric">28.65 B/member</strong>
+            <p class="report-copy">One million members use 36.2% less RSS than the leanest incumbent. RESP/TCP SISMEMBER reaches 2.44M/s; the 2 MiB SBE ring reaches 6.73M/s.</p>
+            <div class="report-links"><a href="SET-BENCHMARK.html">Open SET report →</a><a href="artifacts/set.json">Raw JSON</a></div>
+          </article>
+          <article class="benchmark-report">
+            <span class="report-index">05 / Sparse arrays</span>
+            <h3>Memory-first Classic. Bounded-tail RT.</h3>
+            <strong class="report-metric">36.11 µs P99.99</strong>
+            <p class="report-copy">Across 500k individual RESP/TCP appends, resident-locked RT beats Redis 8.8's 54.48 µs tail. Dense RT builds at 7.09M values/s and 29.71 B/value; Classic keeps sparse arrays lean.</p>
+            <div class="report-links"><a href="ARRAY-BENCHMARK.html">Open ARRAY report →</a><a href="artifacts/array.json">Raw JSON</a></div>
+          </article>
         </div>
-        <p class="method">Best of three, <code>redis-benchmark -P 16 -c 1</code>, dedicated AMD 5995WX host. Each engine uses its shipped allocator; Dragonfly limited to one proactor. <a href="BENCHMARKS.html">Full methodology and reproduction commands.</a></p>
-        <p class="method"><strong>Benchmark reports:</strong> <a href="HSET-BENCHMARK.html">HSET speed and memory</a> · <a href="LIST-BENCHMARK.html">LIST speed and memory</a> · <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a></p>
+        <p class="method"><strong>Comparison discipline:</strong> HSET is RESP2/UDS throughout. LIST, SET, and ZSET compare Goblin RESP/TCP with RESP/TCP incumbents, then show Goblin's equally pipelined SBE ring separately. ARRAY is RESP/TCP with native AR* commands throughout; unsupported engines receive an <code>X</code>, never a hash fallback. Runs are medians on the same dedicated AMD 5995WX host, with one serving core per engine and process RSS read from Linux rather than trusted server counters.</p>
+        <p class="method"><strong>More transport evidence:</strong> <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a></p>
       </div>
     </section>
 
@@ -622,6 +722,12 @@
             <p>How SBE, busy polling, and a cache-line handoff bring synchronous Redis-shaped operations into triple-digit nanoseconds.</p>
             <a href="blogs/ring-latency.html">Read the ring latency story →</a>
           </article>
+          <article class="post post-wide">
+            <span class="post-meta">InfiniBand / RESP</span>
+            <h3>Redis commands between 16-year-old machines in 2.7 microseconds</h3>
+            <p>Another physical server over an $80 InfiniBand card is only 553 nanoseconds slower than talking to a CPU two NUMA hops away.</p>
+            <a href="blogs/resp-over-infiniband.html">Read the RDMA story →</a>
+          </article>
         </div>
       </div>
     </section>
@@ -631,12 +737,12 @@
         <div>
           <p class="section-label">Direction, stated plainly</p>
           <h2>Redis semantics, without the old overhead.</h2>
-          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation effectively matches the fastest Redis build on pipelined population and accounts for 17.16 bytes per item. <a href="docs/commands/pubsub.html">Pub/Sub over RESP2, RESP3, and SBE</a> shipped July 15, five days ahead of schedule.</p>
+          <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation reaches 1.99× the fastest incumbent at middle-list indexing and accounts for 17.16 bytes per item. <a href="docs/commands/pubsub.html">Pub/Sub over RESP2, RESP3, and SBE</a> shipped July 15, five days ahead of schedule.</p>
           <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
           <p class="section-intro">Keys and encoded values use compact 16-bit lengths. Raw values hold up to 65,534 bytes; optional LZ4 admits larger compressible values while the encoded form fits. Everything larger belongs in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Available now</h3><ul><li>Sorted sets, hashes, strings, and lists</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li>TTL keys and counters</li><li>Native atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Strings, sets, sorted sets, and hashes</li><li>Segmented and Adaptive-PMA lists</li><li>Classic and real-time sparse arrays</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li>TTL keys, counters, and atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
           <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No built-in replication</li><li>No cluster mode</li><li>Kafka for durable replay</li><li>Save/load for fast restarts</li></ul></div>
         </div>
       </div>

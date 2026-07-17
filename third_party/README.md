@@ -13,6 +13,8 @@ remain isolated from `goblin_core`'s strict warning flags.
 | `lua-struct/`    | Lua `struct` | —       | MIT          | https://www.inf.puc-rio.br/~roberto/struct/ |
 | `lua-bitop/`     | LuaBitOp     | 1.0.2   | MIT          | https://bitop.luajit.org/ |
 | `unordered_dense/` | unordered_dense | 4.8.1 | MIT | https://github.com/martinus/unordered_dense |
+| `xxhash/`          | xxHash (XXH3) | 0.8.3 | BSD-2-Clause | https://github.com/Cyan4973/xxHash |
+| `fast_float/`      | fast_float (header-only) | 8.0.2 | MIT OR Apache-2.0 | https://github.com/fastfloat/fast_float |
 
 Lua 5.1 was chosen deliberately: it is the language dialect Redis scripts target
 (so existing scripts port unchanged), it is pure ANSI C that builds on every ISA

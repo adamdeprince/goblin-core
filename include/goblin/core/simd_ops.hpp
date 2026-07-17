@@ -12,7 +12,7 @@
 #include <optional>
 #include <string_view>
 
-#if defined(__AVX512BW__) || defined(__AVX2__)
+#if defined(__AVX512F__) || defined(__AVX2__)
 #include <immintrin.h>
 #elif defined(__SSE2__)
 #include <emmintrin.h>
@@ -59,6 +59,86 @@ namespace goblin::core::simd {
   std::uint64_t mask = 0;
   for (std::size_t i = 0; i < 16; ++i) {
     mask |= static_cast<std::uint64_t>(group[i] == needle) << i;
+  }
+  return mask;
+#endif
+}
+
+// RT linear-hash bucket probe: bit i is set when hashes[i] == needle. The
+// Arena hash planes are 64-byte aligned; the one per-index inline group is not.
+// AVX-512 reads either form once and AVX2 twice.
+[[nodiscard]] inline std::uint64_t match_hash_group_16(
+    const std::uint32_t* hashes, std::uint32_t needle) noexcept {
+#if defined(__AVX512F__)
+  const __m512i values =
+      _mm512_loadu_si512(reinterpret_cast<const void*>(hashes));
+  return static_cast<std::uint64_t>(
+      _mm512_cmpeq_epi32_mask(values, _mm512_set1_epi32(needle)));
+#elif defined(__AVX2__)
+  const __m256i expected = _mm256_set1_epi32(static_cast<int>(needle));
+  const __m256i low =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(hashes));
+  const __m256i high =
+      _mm256_loadu_si256(reinterpret_cast<const __m256i*>(hashes + 8));
+  const auto low_mask = static_cast<unsigned>(_mm256_movemask_ps(
+      _mm256_castsi256_ps(_mm256_cmpeq_epi32(low, expected))));
+  const auto high_mask = static_cast<unsigned>(_mm256_movemask_ps(
+      _mm256_castsi256_ps(_mm256_cmpeq_epi32(high, expected))));
+  return static_cast<std::uint64_t>(low_mask | (high_mask << 8));
+#elif defined(__SSE2__)
+  const __m128i expected = _mm_set1_epi32(static_cast<int>(needle));
+  std::uint64_t mask = 0;
+  for (std::size_t group = 0; group < 4; ++group) {
+    const __m128i values = _mm_loadu_si128(
+        reinterpret_cast<const __m128i*>(hashes + group * 4));
+    const auto group_mask = static_cast<unsigned>(
+        _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(values, expected))));
+    mask |= static_cast<std::uint64_t>(group_mask) << (group * 4);
+  }
+  return mask;
+#elif defined(__loongarch_asx)
+  const __m256i expected = __lasx_xvreplgr2vr_w(needle);
+  std::uint64_t mask = 0;
+  for (std::size_t group = 0; group < 2; ++group) {
+    const __m256i values = __lasx_xvld(
+        const_cast<std::uint32_t*>(hashes + group * 8), 0);
+    const __m256i packed =
+        __lasx_xvmskltz_w(__lasx_xvseq_w(values, expected));
+    const auto group_mask =
+        (static_cast<unsigned>(__lasx_xvpickve2gr_wu(packed, 0)) & 0x0fU) |
+        ((static_cast<unsigned>(__lasx_xvpickve2gr_wu(packed, 4)) & 0x0fU)
+         << 4);
+    mask |= static_cast<std::uint64_t>(group_mask) << (group * 8);
+  }
+  return mask;
+#elif defined(__loongarch_sx)
+  const __m128i expected = __lsx_vreplgr2vr_w(needle);
+  std::uint64_t mask = 0;
+  for (std::size_t group = 0; group < 4; ++group) {
+    const __m128i values =
+        __lsx_vld(const_cast<std::uint32_t*>(hashes + group * 4), 0);
+    const __m128i packed = __lsx_vmskltz_w(__lsx_vseq_w(values, expected));
+    const auto group_mask =
+        static_cast<unsigned>(__lsx_vpickve2gr_wu(packed, 0)) & 0x0fU;
+    mask |= static_cast<std::uint64_t>(group_mask) << (group * 4);
+  }
+  return mask;
+#elif defined(__aarch64__)
+  static constexpr std::uint32_t kLaneBits[4] = {1, 2, 4, 8};
+  const uint32x4_t expected = vdupq_n_u32(needle);
+  const uint32x4_t lane_bits = vld1q_u32(kLaneBits);
+  std::uint64_t mask = 0;
+  for (std::size_t group = 0; group < 4; ++group) {
+    const uint32x4_t values = vld1q_u32(hashes + group * 4);
+    const uint32x4_t equal = vshrq_n_u32(vceqq_u32(values, expected), 31);
+    const auto group_mask = vaddvq_u32(vmulq_u32(equal, lane_bits));
+    mask |= static_cast<std::uint64_t>(group_mask) << (group * 4);
+  }
+  return mask;
+#else
+  std::uint64_t mask = 0;
+  for (std::size_t i = 0; i < 16; ++i) {
+    mask |= static_cast<std::uint64_t>(hashes[i] == needle) << i;
   }
   return mask;
 #endif

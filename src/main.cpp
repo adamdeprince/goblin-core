@@ -1,3 +1,5 @@
+#include "goblin/core/numa.hpp"
+#include "goblin/core/numa_topology.hpp"
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/server.hpp"
 #include "goblin/core/simd.hpp"
@@ -12,10 +14,12 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <sys/mman.h>
 
@@ -152,6 +156,17 @@ parse_list_implementation(std::string_view text) {
   return std::nullopt;
 }
 
+[[nodiscard]] std::optional<goblin::core::HashImplementation>
+parse_hash_implementation(std::string_view text) {
+  if (text == "efficient") {
+    return goblin::core::HashImplementation::Efficient;
+  }
+  if (text == "rt" || text == "real-time") {
+    return goblin::core::HashImplementation::Realtime;
+  }
+  return std::nullopt;
+}
+
 void lock_server_memory() noexcept {
   if (::mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
     return;
@@ -168,6 +183,157 @@ void lock_server_memory() noexcept {
   }
 }
 
+[[nodiscard]] bool configure_numa(
+    goblin::core::ServerConfig& config,
+    const std::optional<std::string>& selector) {
+#if defined(__linux__)
+  using goblin::core::numa::AutoNodeStatus;
+  using goblin::core::numa::EndpointPlacement;
+
+  const auto topology = goblin::core::numa::discover_topology();
+  std::vector<EndpointPlacement> placements;
+  const auto collect_address = [&](std::string_view address,
+                                   std::string source) -> bool {
+    std::string error;
+    auto resolved = goblin::core::numa::resolve_local_address(
+        address, source, topology, error);
+    if (!error.empty()) {
+      std::cerr << "goblin-core: NUMA discovery for " << source << ": "
+                << error << '\n'
+                << goblin::core::numa::format_topology(topology);
+      return false;
+    }
+    placements.insert(placements.end(),
+                      std::make_move_iterator(resolved.begin()),
+                      std::make_move_iterator(resolved.end()));
+    return true;
+  };
+
+  if (config.unix_socket_path.empty() &&
+      !collect_address(config.bind_address,
+                       "socket bind " + config.bind_address)) {
+    return false;
+  }
+  for (const auto& target : config.poll_targets) {
+    if (const auto* rdma = std::get_if<goblin::core::RdmaConfig>(&target)) {
+      if (!collect_address(rdma->bind_address,
+                           "RDMA bind " + rdma->bind_address + ':' +
+                               std::to_string(rdma->port))) {
+        return false;
+      }
+    } else if (const auto* exa =
+                   std::get_if<goblin::core::ExasockConfig>(&target)) {
+      if (!collect_address(exa->bind_address,
+                           "ExaSock bind " + exa->bind_address + ':' +
+                               std::to_string(exa->port))) {
+        return false;
+      }
+    }
+  }
+
+  std::optional<int> selected;
+  bool explicit_selection = false;
+  if (selector && *selector != "auto") {
+    std::string error;
+    selected = goblin::core::numa::resolve_target(*selector, topology, error);
+    if (!selected) {
+      std::cerr << "goblin-core: --numa " << *selector << ": " << error << '\n'
+                << goblin::core::numa::format_topology(topology);
+      return false;
+    }
+    explicit_selection = true;
+  }
+
+  if (config.cpu >= 0) {
+    const int cpu_node = goblin::core::numa::node_of_cpu(config.cpu);
+    if (cpu_node < 0) {
+      std::cerr << "goblin-core: --cpu " << config.cpu
+                << " does not belong to a discovered NUMA node\n"
+                << goblin::core::numa::format_topology(topology);
+      return false;
+    }
+    if (selected && *selected != cpu_node) {
+      std::cerr << "goblin-core: --cpu " << config.cpu << " is on NUMA node "
+                << cpu_node << ", but --numa selects node " << *selected << '\n'
+                << goblin::core::numa::format_topology(topology);
+      return false;
+    }
+    selected = cpu_node;
+    explicit_selection = true;
+  }
+
+  const auto automatic = goblin::core::numa::choose_auto_node(placements);
+  if (!explicit_selection &&
+      (automatic.status == AutoNodeStatus::Conflict ||
+       automatic.status == AutoNodeStatus::Ambiguous)) {
+    if (automatic.status == AutoNodeStatus::Conflict) {
+      std::cerr << "goblin-core: configured network and InfiniBand targets span "
+                   "different NUMA nodes; choose the slice explicitly\n";
+    } else {
+      std::cerr << "goblin-core: at least one configured network target has "
+                   "unknown NUMA locality; choose the slice explicitly\n";
+    }
+    for (const auto& placement : placements) {
+      std::cerr << "  " << placement.source << " via " << placement.device
+                << " -> NUMA node "
+                << (placement.node < 0 ? std::string("unknown")
+                                       : std::to_string(placement.node))
+                << '\n';
+    }
+    std::cerr << goblin::core::numa::format_topology(topology);
+    return false;
+  }
+  if (!selected && automatic.status == AutoNodeStatus::Resolved) {
+    selected = automatic.node;
+  }
+
+  config.numa_node = selected.value_or(-1);
+  if (config.numa_node >= 0) {
+    if (config.cpu >= 0) {
+      if (!goblin::core::numa::pin_to_cpu(config.cpu)) {
+        std::cerr << "goblin-core: --cpu " << config.cpu << ": failed to pin\n";
+        return false;
+      }
+    } else if (!goblin::core::numa::pin_to_node(config.numa_node)) {
+      std::cerr << "goblin-core: failed to restrict execution to NUMA node "
+                << config.numa_node << '\n';
+      return false;
+    }
+
+    std::cout << "goblin-core NUMA: node " << config.numa_node
+              << (explicit_selection ? " selected explicitly" :
+                                       " selected from transport hardware")
+              << (config.cpu >= 0 ? ", CPU " + std::to_string(config.cpu) : "")
+              << '\n';
+    for (const auto& placement : placements) {
+      if (explicit_selection && placement.node >= 0 &&
+          placement.node != config.numa_node) {
+        std::cerr << "goblin-core: warning: " << placement.source << " via "
+                  << placement.device << " is local to NUMA node "
+                  << placement.node << "; explicit placement uses node "
+                  << config.numa_node << '\n';
+      }
+    }
+  }
+
+  if (config.numa_arena) {
+    if (config.numa_node < 0 ||
+        !goblin::core::numa::prefer_node(config.numa_node)) {
+      std::cerr << "goblin-core: --numa-arena: could not set a NUMA preference"
+                   " (continuing without it)\n";
+    }
+  }
+  return true;
+#else
+  (void)config;
+  if (selector && *selector != "auto") {
+    std::cerr << "goblin-core: --numa is only supported on Linux\n";
+    return false;
+  }
+  return true;
+#endif
+}
+
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
@@ -180,9 +346,17 @@ void print_usage(std::string_view program) {
             << "       [--hash-compaction-knapsack|--no-hash-compaction-knapsack]\n"
             << "       [--hash-compaction-work-budget N]\n"
             << "       [--hash-listpack-max-entries N|blob]\n"
+            << "       [--hash-implementation efficient|rt]\n"
+            << "       [--rt-hash-index-bytes BYTES] (fixed prefaulted pool)\n"
+            << "       [--real-time]         (RT hashes and keyspace index)\n"
             << "       [--list-implementation pma|segmented]"
                " (default: segmented)\n"
             << "       [--list-chunk-bytes BYTES]\n"
+            << "       [--array-slice-slots N]   (power of two; leaf width ≤ 65536)\n"
+            << "       [--array-initial-depth N] (Classic: start depth; RT: hard depth)\n"
+            << "       [--array-chunk-bytes BYTES] (element arena; power of two)\n"
+            << "       [--rt-array-arena-growth FACTOR] (default: 2.0)\n"
+            << "       [--realtime-arrays]       (unqualified AR* → RT; default Classic)\n"
             << "       [--list-max-density FRACTION]\n"
             << "       [--list-resize-growth FACTOR]\n"
             << "       [--disable-encoding]\n"
@@ -193,11 +367,24 @@ void print_usage(std::string_view program) {
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
             << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
+            << "       [--exasock ADDRESS PORT]..."
+               " (priority TCP; -DGOBLIN_CORE_ENABLE_EXASOCK=ON;\n"
+            << "                               run under `exasock` for SmartNIC bypass)\n"
+            << "       [--rdma ADDRESS PORT SIZE]..."
+               " (e.g. --rdma 10.88.88.1 6380 1mb; repeatable;\n"
+            << "                               requires -DGOBLIN_CORE_ENABLE_RDMA=ON)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
             << "                               unsafe with fork-COW SAVE, so off by default)\n"
             << "       [--cpu N]              (Linux: pin to CPU N; ring must be NUMA-local)\n"
-            << "       [--numa-arena]         (Linux: also prefer that node for arenas)\n";
+            << "       [--numa TARGET]        (Linux: node, NIC, InfiniBand device, or auto)\n"
+            << "       [--numa-arena]         (Linux: also prefer that node for arenas)\n"
+            << "\n"
+            << "Polled-target order is literal CLI order and is the busy-poll priority\n"
+            << "before plain sockets. Example:\n"
+            << "  --ring /tmp/a 64kb --exasock 10.99.99.1 6379 --rdma 10.88.88.1 6380 1mb\n"
+            << "  --ring /tmp/b 1mb\n"
+            << "scans A, ExaSock, RDMA, B, then the sparse plain-socket pass.\n";
 }
 
 }  // namespace
@@ -206,6 +393,7 @@ int main(int argc, char** argv) {
   goblin::core::ServerConfig config;
   goblin::core::StoreOptions store_options;
   std::optional<std::string> load_path;
+  std::optional<std::string> numa_selector;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -260,8 +448,68 @@ int main(int argc, char** argv) {
         std::cerr << "goblin-core: invalid --ring size: " << size_text << '\n';
         return 2;
       }
-      config.rings.push_back(
+      config.poll_targets.emplace_back(
           goblin::core::RingConfig{.path = path, .bytes = *size});
+      continue;
+    }
+
+    if (arg == "--exasock") {
+#if defined(GOBLIN_HAS_EXASOCK)
+      // Two tokens: bind address and port. Repeatable; interleaved with --ring
+      // and --rdma so CLI order is busy-poll priority order.
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --exasock requires ADDRESS and PORT\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const auto port = parse_port(port_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --exasock port: " << port_text
+                  << '\n';
+        return 2;
+      }
+      config.poll_targets.emplace_back(goblin::core::ExasockConfig{
+          .bind_address = address, .port = *port});
+#else
+      std::cerr << "goblin-core: --exasock is unavailable in this build"
+                   " (configure with -DGOBLIN_CORE_ENABLE_EXASOCK=ON and an"
+                   " installed ExaSock SDK)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--rdma") {
+#if defined(GOBLIN_HAS_RDMA)
+      // Three tokens: the IPoIB/RoCE bind address, CM port, and registered-ring
+      // capacity. Repeatable and freely interleavable with --ring / --exasock;
+      // that literal option order is the strict busy-poll priority order.
+      if (i + 3 >= argc) {
+        std::cerr << "goblin-core: --rdma requires ADDRESS, PORT, and SIZE\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const std::string_view size_text = argv[++i];
+      const auto port = parse_port(port_text);
+      const auto size = goblin::core::ring::parse_size(size_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --rdma port: " << port_text << '\n';
+        return 2;
+      }
+      if (!size || *size == 0) {
+        std::cerr << "goblin-core: invalid --rdma size: " << size_text << '\n';
+        return 2;
+      }
+      config.poll_targets.emplace_back(goblin::core::RdmaConfig{
+          .bind_address = address, .port = *port, .bytes = *size});
+#else
+      std::cerr << "goblin-core: --rdma is unavailable in this build"
+                   " (requires Linux, libibverbs, and librdmacm;"
+                   " -DGOBLIN_CORE_ENABLE_RDMA=ON)\n";
+      return 2;
+#endif
       continue;
     }
 
@@ -300,6 +548,15 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.cpu = cpu;
+      continue;
+    }
+
+    if (arg == "--numa") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      numa_selector = argv[++i];
       continue;
     }
 
@@ -463,6 +720,45 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--hash-implementation") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto implementation = parse_hash_implementation(argv[++i]);
+      if (!implementation) {
+        std::cerr << "goblin-core: --hash-implementation must be efficient "
+                     "or rt\n";
+        return 2;
+      }
+      store_options.hash_implementation = *implementation;
+      continue;
+    }
+
+    if (arg == "--rt-hash-index-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const std::string_view text(argv[++i]);
+      const auto bytes = goblin::core::ring::parse_size(text);
+      if (!bytes || *bytes == 0 ||
+          *bytes > std::numeric_limits<std::size_t>::max()) {
+        std::cerr << "goblin-core: invalid RT hash index arena size\n";
+        return 2;
+      }
+      store_options.realtime_hash_index_bytes =
+          static_cast<std::size_t>(*bytes);
+      continue;
+    }
+
+    if (arg == "--real-time") {
+      store_options.real_time = true;
+      store_options.hash_implementation =
+          goblin::core::HashImplementation::Realtime;
+      continue;
+    }
+
     if (arg == "--list-chunk-bytes") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
@@ -521,6 +817,73 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.list_resize_growth = *growth;
+      continue;
+    }
+
+    if (arg == "--array-slice-slots") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto slots = parse_nonnegative_size(argv[++i]);
+      if (!slots || *slots < 2 || (*slots & (*slots - 1)) != 0) {
+        std::cerr
+            << "goblin-core: --array-slice-slots must be a power of two >= 2\n";
+        return 2;
+      }
+      store_options.array_slice_slots = *slots;
+      continue;
+    }
+
+    if (arg == "--array-initial-depth") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto depth = parse_nonnegative_size(argv[++i]);
+      if (!depth || *depth < 1 || *depth > 16) {
+        std::cerr
+            << "goblin-core: --array-initial-depth must be in [1, 16]\n";
+        return 2;
+      }
+      store_options.array_initial_depth = *depth;
+      continue;
+    }
+
+    if (arg == "--array-chunk-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_chunk_bytes(
+          argv[++i], goblin::core::ArrayStorage::kMinChunkBytes);
+      if (!bytes) {
+        std::cerr
+            << "goblin-core: --array-chunk-bytes must be a power of two >= "
+            << goblin::core::ArrayStorage::kMinChunkBytes << " bytes\n";
+        return 2;
+      }
+      store_options.array_chunk_bytes = *bytes;
+      continue;
+    }
+
+    if (arg == "--rt-array-arena-growth") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto growth = parse_growth(argv[++i]);
+      if (!growth) {
+        std::cerr << "goblin-core: --rt-array-arena-growth must be > 1\n";
+        return 2;
+      }
+      store_options.realtime_array_growth = *growth;
+      continue;
+    }
+
+    if (arg == "--realtime-arrays") {
+      store_options.array_implementation =
+          goblin::core::ArrayImplementation::Realtime;
       continue;
     }
 
@@ -653,24 +1016,11 @@ int main(int argc, char** argv) {
             << " lsx=" << caps.lsx
             << " lasx=" << caps.lasx << '\n';
 
-#if defined(__linux__)
-  // NUMA: pin to the requested CPU and (opt-in) steer arena memory to its node, before
-  // the store allocates so its arenas honor the policy. The ring's stricter, fatal-if-
-  // remote binding happens at ring-creation time in the server.
-  if (config.cpu >= 0) {
-    if (!goblin::core::numa::pin_to_cpu(config.cpu)) {
-      std::cerr << "goblin-core: --cpu " << config.cpu << ": failed to pin\n";
-      return 1;
-    }
-    if (config.numa_arena) {
-      const int node = goblin::core::numa::node_of_cpu(config.cpu);
-      if (node < 0 || !goblin::core::numa::prefer_node(node)) {
-        std::cerr << "goblin-core: --numa-arena: could not set a NUMA preference for "
-                     "CPU " << config.cpu << " (continuing without it)\n";
-      }
-    }
+  // Resolve transport locality before the Store allocates. Explicit --numa/--cpu
+  // wins; otherwise every configured hardware endpoint must agree on one slice.
+  if (!configure_numa(config, numa_selector)) {
+    return 1;
   }
-#endif
 
   // Keep the server heap and every future allocation resident. The call can be
   // restricted by RLIMIT_MEMLOCK in ordinary shells and containers, so failure

@@ -90,6 +90,27 @@ def main():
         assert r.hmget("h", ["f", "nope"]) == [b"5", None]
         assert r.hdel("h", "f") == 1
 
+        # sets
+        assert r.sadd("s", "a", "b", "c") == 3
+        assert r.sadd("s", "a") == 0
+        assert r.scard("s") == 3
+        assert r.sismember("s", "b") is True
+        assert r.smismember("s", ["a", "z"]) == [b"1", b"0"] or r.smismember(
+            "s", ["a", "z"]
+        ) == ["1", "0"]
+        assert r.smembers("s") == {b"a", b"b", b"c"} or r.smembers("s") == {
+            "a",
+            "b",
+            "c",
+        }
+        assert r.srem("s", "a") == 1
+        assert r.sadd("s2", "b", "c", "d") == 3
+        assert r.sinter("s", "s2")  # non-empty intersection
+        assert r.sunionstore("su", "s", "s2") >= 3
+        cur, batch = r.sscan("s2", 0, count=10)
+        assert cur == 0
+        assert len(batch) == 3
+
         # sorted sets
         assert r.zadd("z", {"a": 1, "b": 2, "c": 3}) == 3
         assert r.zcard("z") == 3

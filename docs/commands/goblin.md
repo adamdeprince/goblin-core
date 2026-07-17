@@ -19,7 +19,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.HCAD`](GOBLIN.HCAD.md) | Compare-and-delete a hash field: delete it only if it still holds the expected value. |
 | [`GOBLIN.HSETGT`](GOBLIN.HSETGT.md) | Set-if-greater on a hash field: the `ZADD GT` that hashes lack (watermarks). |
 | [`GOBLIN.CLAIM`](GOBLIN.CLAIM.md) | Idempotency guard: claim work once with an expiring lease, else return the prior result. |
-| `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, or list. |
+| `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, list, set, or array. |
 | `GOBLIN.OPTIMIZE` | Compact a zset, hash, or list in place. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
 | `GOBLIN.LOAD` | Load a snapshot (or a Redis `dump.rdb`) from disk. |
@@ -182,7 +182,8 @@ Lists also report `implementation` (`pma` or `segmented`). For PMA lists,
 count. `value_allocated_bytes` is arena capacity for PMA and requested leaf-blob
 bytes for segmented lists.
 
-Hashes also report `hash_heap_allocated_bytes` and
+Hashes also report their `implementation` (`efficient` or `rt`),
+`hash_heap_allocated_bytes`, and
 `keyspace_accounted_bytes`. A compact hash has no heap wrapper: its 16-byte handle
 lives directly in the keyspace object slot and its packed field/value blob shares
 the movable keyspace arena, so those blob bytes appear as

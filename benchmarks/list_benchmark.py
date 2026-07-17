@@ -204,7 +204,7 @@ def start_engine(spec: EngineSpec, args: argparse.Namespace) -> zbench.ServerPro
         if spec.is_sbe:
             ring_dir = Path(tempfile.mkdtemp(prefix="goblin-list-sbe-bench-"))
             ring_path = ring_dir / "requests.ring"
-            extra_args.extend(["--ring", str(ring_path), "1mb"])
+            extra_args.extend(["--ring", str(ring_path), args.ring_size])
         try:
             server = zbench.start_goblin(
                 spec.binary,
@@ -394,6 +394,8 @@ def benchmark_sbe_phase(
         action,
         "--key",
         key,
+        "--pipeline",
+        str(args.pipeline),
     ]
     for name, value in options.items():
         command.extend([f"--{name.replace('_', '-')}", str(value)])
@@ -482,7 +484,7 @@ def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
                     operation(
                         name,
                         description,
-                        "native C++ SBE over shared-memory ring; one outstanding request",
+                        f"native C++ SBE over shared-memory ring; pipeline depth {args.pipeline}",
                         logical_operations,
                         command_count,
                         seconds,
@@ -521,7 +523,7 @@ def run_engine(spec: EngineSpec, args: argparse.Namespace) -> EngineResult:
                                 name,
                                 description,
                                 f"native C++ SBE/ring median of {args.rounds}; "
-                                "one outstanding request",
+                                f"pipeline depth {args.pipeline}",
                                 args.requests,
                                 command_count,
                                 seconds,
@@ -902,7 +904,7 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
             " The leanest incumbent uses "
             f"`{best_incumbent_rss_per_item:.2f}` RSS-delta bytes/item. TCP "
             "compound rows use the Python RESP pipeline; ring rows use the native "
-            "C++ SBE client with one request outstanding. Fixed TCP rows use "
+            "C++ SBE client at the same pipeline depth. Fixed TCP rows use "
             "`redis-benchmark`.",
             "",
         ]
@@ -917,20 +919,19 @@ def report_lines(args: argparse.Namespace, results: Sequence[EngineResult]) -> l
         "",
         f"- `{args.members:,}` distinct `{args.value_bytes}`-byte values in one list.",
         f"- Population: multi-value `RPUSH` batches of `{args.load_batch}`. "
-        f"RESP/TCP uses pipeline depth `{args.pipeline}`; SBE/ring currently keeps "
-        "one request outstanding.",
+        f"RESP/TCP and SBE/ring both use pipeline depth `{args.pipeline}`.",
         "- Population measures command ingestion, not Goblin Core native "
         "snapshot restoration; native restore reconstructs each list in one bulk "
         "operation and uses the compatible raw-copy accelerator when present.",
         f"- Fixed-command rates: `{args.requests:,}` requests and one client. "
         f"RESP/TCP uses pipeline depth `{args.pipeline}` and the median of "
         f"`{args.rounds}` `redis-benchmark` runs. SBE/ring uses the median of "
-        f"`{args.rounds}` native C++ runs with one request outstanding.",
+        f"`{args.rounds}` native C++ runs at the same pipeline depth.",
         "- Compound rates keep the list length constant. TCP engines use the "
         "existing RESP pipeline client; the ring row uses the native typed SBE client.",
         "- Transport matrix: Goblin Core is measured as `goblin-resp-tcp` and "
         "`goblin-sbe-ring`; every incumbent is measured over RESP/TCP. No UDS row "
-        "is included.",
+        f"is included. The ring row uses a `{args.ring_size}` request and reply ring.",
         f"- Linux affinity: server core `{args.server_core}`, client/load-generator "
         f"core `{args.client_core}` (`-1` means unpinned). Ring client and server "
         "must not share a core.",
@@ -1098,6 +1099,7 @@ def write_outputs(args: argparse.Namespace, results: Sequence[EngineResult]) -> 
             "value_bytes": args.value_bytes,
             "load_batch": args.load_batch,
             "pipeline": args.pipeline,
+            "ring_size": args.ring_size,
             "requests": args.requests,
             "rounds": args.rounds,
             "range_size": args.range_size,
@@ -1165,6 +1167,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--value-bytes", type=int, default=16)
     parser.add_argument("--load-batch", type=int, default=128)
     parser.add_argument("--pipeline", type=int, default=256)
+    parser.add_argument(
+        "--ring-size",
+        default="2mb",
+        help="per-direction Goblin SBE ring size (default: 2mb on this x86 suite)",
+    )
     parser.add_argument("--requests", type=int, default=200_000)
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--range-size", type=int, default=16)

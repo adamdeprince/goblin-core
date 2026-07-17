@@ -72,6 +72,24 @@
 #include "goblin_sbe/LTrim.h"
 #include "goblin_sbe/RPop.h"
 #include "goblin_sbe/RPush.h"
+// Sets (batch 11)
+#include "goblin_sbe/SAdd.h"
+#include "goblin_sbe/SCard.h"
+#include "goblin_sbe/SDiff.h"
+#include "goblin_sbe/SDiffStore.h"
+#include "goblin_sbe/SInter.h"
+#include "goblin_sbe/SInterCard.h"
+#include "goblin_sbe/SInterStore.h"
+#include "goblin_sbe/SIsMember.h"
+#include "goblin_sbe/SMIsMember.h"
+#include "goblin_sbe/SMembers.h"
+#include "goblin_sbe/SMove.h"
+#include "goblin_sbe/SPop.h"
+#include "goblin_sbe/SRandMember.h"
+#include "goblin_sbe/SRem.h"
+#include "goblin_sbe/SScan.h"
+#include "goblin_sbe/SUnion.h"
+#include "goblin_sbe/SUnionStore.h"
 // Standard-command tail (batch 4)
 #include "goblin_sbe/Echo.h"
 #include "goblin_sbe/GetRange.h"
@@ -214,6 +232,23 @@ constexpr std::uint16_t kLSet = sbe::LSet::sbeTemplateId();
 constexpr std::uint16_t kLTrim = sbe::LTrim::sbeTemplateId();
 constexpr std::uint16_t kLRem = sbe::LRem::sbeTemplateId();
 constexpr std::uint16_t kLInsert = sbe::LInsert::sbeTemplateId();
+constexpr std::uint16_t kSAdd = sbe::SAdd::sbeTemplateId();
+constexpr std::uint16_t kSRem = sbe::SRem::sbeTemplateId();
+constexpr std::uint16_t kSCard = sbe::SCard::sbeTemplateId();
+constexpr std::uint16_t kSIsMember = sbe::SIsMember::sbeTemplateId();
+constexpr std::uint16_t kSMIsMember = sbe::SMIsMember::sbeTemplateId();
+constexpr std::uint16_t kSMembers = sbe::SMembers::sbeTemplateId();
+constexpr std::uint16_t kSPop = sbe::SPop::sbeTemplateId();
+constexpr std::uint16_t kSRandMember = sbe::SRandMember::sbeTemplateId();
+constexpr std::uint16_t kSMove = sbe::SMove::sbeTemplateId();
+constexpr std::uint16_t kSInter = sbe::SInter::sbeTemplateId();
+constexpr std::uint16_t kSUnion = sbe::SUnion::sbeTemplateId();
+constexpr std::uint16_t kSDiff = sbe::SDiff::sbeTemplateId();
+constexpr std::uint16_t kSInterStore = sbe::SInterStore::sbeTemplateId();
+constexpr std::uint16_t kSUnionStore = sbe::SUnionStore::sbeTemplateId();
+constexpr std::uint16_t kSDiffStore = sbe::SDiffStore::sbeTemplateId();
+constexpr std::uint16_t kSInterCard = sbe::SInterCard::sbeTemplateId();
+constexpr std::uint16_t kSScan = sbe::SScan::sbeTemplateId();
 
 // SBE numInGroup is uint16, so one group holds at most 65535 elements.
 constexpr std::size_t kMaxGroup = 65535;
@@ -347,8 +382,22 @@ void reply_bulk_or_nil(std::string& out, const std::optional<std::string>& v) {
   }
 }
 
-// SBE varData requires one contiguous logical payload.
+// SBE varData requires one contiguous logical payload. Prefer zero-copy into
+// putValue when the stored form is already a contiguous raw/verbatim slice;
+// otherwise decode once into a thread-local buffer (no second join+copy).
 void reply_bulk_value(std::string& out, const StringValueView& v) {
+  if (v.is_raw()) {
+    if (!v.encoding_enabled()) {
+      if (v.encoded_tail().empty()) {
+        reply_bulk(out, v.encoded_head());
+        return;
+      }
+    } else if (v.encoded_head().size() >= 1 && v.encoded_tail().empty()) {
+      reply_bulk(out, std::string_view(v.encoded_head().data() + 1,
+                                       v.encoded_head().size() - 1));
+      return;
+    }
+  }
   static thread_local std::string joined;
   joined.clear();
   joined.reserve(v.size());
@@ -618,7 +667,12 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
     case kLIndex: case kLRange: case kLSet: case kLTrim: case kLRem:
     case kLInsert:
       return KeyType::List;
-    case kGet: case kGetSet: case kGetDel: case kStrLen: case kAppend:
+    case kSAdd: case kSRem: case kSCard: case kSIsMember: case kSMIsMember:
+    case kSMembers: case kSPop: case kSRandMember: case kSMove: case kSScan:
+      // Multi-key algebra/*STORE/SINTERCARD check sources in the handler.
+      return KeyType::Set;
+    // kGet is omitted: its handler fuses Missing/WrongType/Ok in one probe.
+    case kGetSet: case kGetDel: case kStrLen: case kAppend:
     case kIncr: case kDecr: case kIncrBy: case kDecrBy: case kIncrByFloat:
     case kGetRange: case kSetRange:
     case kGoblinCad: case kGoblinCaExpire: case kGoblinCas:
@@ -641,7 +695,11 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
   switch (tid) {
     case kZAdd: case kZRem: case kHSet: case kHMGet: case kHDel:
     case kLPush: case kRPush:
-      return std::nullopt;  // key trails a group -> guarded inline in the handler
+    case kSAdd: case kSRem: case kSMIsMember:
+    case kSInter: case kSUnion: case kSDiff:
+    case kSInterStore: case kSUnionStore: case kSDiffStore:
+    case kSInterCard: case kSMove:
+      return std::nullopt;  // key trails a group / multi-key -> guarded inline
     default:
       break;
   }
@@ -651,6 +709,78 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
   std::memcpy(&len, buf + pos, sizeof(len));
   if (static_cast<std::uint64_t>(pos) + sizeof(len) + len > buflen) return std::nullopt;
   return std::string_view(buf + pos + sizeof(len), len);
+}
+
+// Redis-style glob for SSCAN MATCH (* ? [abc]).
+[[nodiscard]] bool set_glob_match_sbe(std::string_view pattern,
+                                      std::string_view value) noexcept {
+  std::size_t pi = 0;
+  std::size_t vi = 0;
+  std::size_t star_pi = std::string_view::npos;
+  std::size_t star_vi = 0;
+  while (vi < value.size()) {
+    if (pi < pattern.size() &&
+        (pattern[pi] == '?' || pattern[pi] == value[vi])) {
+      ++pi;
+      ++vi;
+      continue;
+    }
+    if (pi < pattern.size() && pattern[pi] == '*') {
+      star_pi = pi++;
+      star_vi = vi;
+      continue;
+    }
+    if (pi < pattern.size() && pattern[pi] == '[') {
+      const auto close = pattern.find(']', pi + 1);
+      if (close == std::string_view::npos) {
+        return false;
+      }
+      const auto body = pattern.substr(pi + 1, close - pi - 1);
+      bool negate = false;
+      std::size_t ci = 0;
+      if (!body.empty() && (body[0] == '^' || body[0] == '!')) {
+        negate = true;
+        ci = 1;
+      }
+      bool matched = false;
+      while (ci < body.size()) {
+        if (ci + 2 < body.size() && body[ci + 1] == '-') {
+          if (value[vi] >= body[ci] && value[vi] <= body[ci + 2]) {
+            matched = true;
+            break;
+          }
+          ci += 3;
+        } else {
+          if (body[ci] == value[vi]) {
+            matched = true;
+            break;
+          }
+          ++ci;
+        }
+      }
+      if (matched == negate) {
+        if (star_pi != std::string_view::npos) {
+          pi = star_pi + 1;
+          vi = ++star_vi;
+          continue;
+        }
+        return false;
+      }
+      pi = close + 1;
+      ++vi;
+      continue;
+    }
+    if (star_pi != std::string_view::npos) {
+      pi = star_pi + 1;
+      vi = ++star_vi;
+      continue;
+    }
+    return false;
+  }
+  while (pi < pattern.size() && pattern[pi] == '*') {
+    ++pi;
+  }
+  return pi == pattern.size();
 }
 
 // Reply WRONGTYPE and return true when `key` exists holding a type other than
@@ -800,11 +930,18 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kGet: {
       sbe::Get g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      const auto v = store.get(g.getKeyAsStringView());
-      if (v) {
-        reply_bulk_value(out, *v);
-      } else {
-        reply_nil(out);
+      // One keyspace probe (kGet omitted from sbe_requires_type).
+      const auto result = store.get_result(g.getKeyAsStringView());
+      switch (result.status) {
+        case StringLookup::Missing:
+          reply_nil(out);
+          break;
+        case StringLookup::WrongType:
+          reply_error(out, "WRONGTYPE", kWrongTypeMsg);
+          break;
+        case StringLookup::Ok:
+          reply_bulk_value(out, result.value);
+          break;
       }
       break;
     }
@@ -825,6 +962,14 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
 
       if (!store.value_fits(value)) {
         reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      // Common case: plain SET with no NX/XX/GET/KEEPTTL/expire.
+      if (flags == 0 && expire_mode == 0) {
+        store.set(key, value);
+        reply<sbe::StatusReply>(out, [](sbe::StatusReply& r) {
+          r.putStatus("OK", 2);
+        });
         break;
       }
       const auto now = store.now_ms();
@@ -1028,6 +1173,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
           case KeyType::Zset: name = "zset"; break;
           case KeyType::Hash: name = "hash"; break;
           case KeyType::List: name = "list"; break;
+          case KeyType::Set: name = "set"; break;
+          case KeyType::Array: name = "array"; break;
         }
       }
       reply_status(out, name);
@@ -1354,13 +1501,32 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       const std::string_view key = h.getKeyAsStringView();  // key trails the group
       if (wrong_type(store, KeyType::Hash, key, out)) break;
-      static thread_local std::vector<std::optional<std::string>> values;
+      // One keyspace probe; keep decoded strings only when the stored form is
+      // not a raw contiguous slice (reply_nullable_array accepts string_view).
+      static thread_local std::vector<std::optional<std::string>> owned;
+      static thread_local std::vector<std::optional<std::string_view>> values;
+      owned.clear();
       values.clear();
-      for (const auto& f : fields) {
-        const auto value = store.hget(key, f);
-        values.push_back(value ? std::optional<std::string>(value->to_string())
-                               : std::nullopt);
-      }
+      owned.reserve(fields.size());
+      values.reserve(fields.size());
+      store.hash_mget(key, fields, [&](std::optional<EncodedStringView> value) {
+        if (!value) {
+          values.push_back(std::nullopt);
+          return;
+        }
+        if (value->is_raw() && value->encoded_tail().empty() &&
+            value->encoded_head().size() >= (value->encoding_enabled() ? 1 : 0)) {
+          if (value->encoding_enabled()) {
+            values.push_back(std::string_view(value->encoded_head().data() + 1,
+                                              value->encoded_head().size() - 1));
+          } else {
+            values.push_back(value->encoded_head());
+          }
+          return;
+        }
+        owned.push_back(value->to_string());
+        values.push_back(std::string_view(*owned.back()));
+      });
       reply_nullable_array(out, values);
       break;
     }
@@ -1922,6 +2088,311 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         const std::string msg = std::string("snapshot load failed: ") + error.what();
         reply_error(out, "ERR", msg);
       }
+      break;
+    }
+
+    // ---- Sets ----------------------------------------------------------------
+    case kSAdd:
+    case kSRem: {
+      static thread_local std::vector<std::string_view> members;
+      members.clear();
+      std::string_view key;
+      bool too_big = false;
+      if (tid == kSAdd) {
+        sbe::SAdd m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        auto& g = m.members();
+        while (g.hasNext()) {
+          g.next();
+          const auto member = g.getMemberAsStringView();
+          too_big = too_big || !store.value_fits(member);
+          members.push_back(member);
+        }
+        key = m.getKeyAsStringView();
+      } else {
+        sbe::SRem m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        auto& g = m.members();
+        while (g.hasNext()) {
+          g.next();
+          members.push_back(g.getMemberAsStringView());
+        }
+        key = m.getKeyAsStringView();
+      }
+      if (wrong_type(store, KeyType::Set, key, out)) break;
+      if (members.empty()) {
+        reply_error(out, "ERR", "wrong number of arguments for set command");
+        break;
+      }
+      if (tid == kSAdd && too_big) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      reply_int(out, tid == kSAdd ? store.sadd(key, members)
+                                  : store.srem(key, members));
+      break;
+    }
+
+    case kSCard: {
+      sbe::SCard m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      reply_int(out, store.scard(m.getKeyAsStringView()));
+      break;
+    }
+
+    case kSIsMember: {
+      sbe::SIsMember m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      // Var-data accessors advance one shared SBE cursor. Read them in wire
+      // order rather than relying on function-argument evaluation order.
+      const auto key = m.getKeyAsStringView();
+      const auto member = m.getMemberAsStringView();
+      reply_int(out, store.sismember(key, member) ? 1 : 0);
+      break;
+    }
+
+    case kSMIsMember: {
+      sbe::SMIsMember m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> members;
+      members.clear();
+      auto& g = m.members();
+      while (g.hasNext()) {
+        g.next();
+        members.push_back(g.getMemberAsStringView());
+      }
+      const auto key = m.getKeyAsStringView();
+      if (wrong_type(store, KeyType::Set, key, out)) break;
+      static thread_local std::vector<std::string> flags;
+      flags.clear();
+      store.smismember(key, members, [&](bool present) {
+        flags.emplace_back(present ? "1" : "0");
+      });
+      reply_array(out, flags);
+      break;
+    }
+
+    case kSMembers: {
+      sbe::SMembers m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string> members;
+      members.clear();
+      store.smembers_for_each(
+          m.getKeyAsStringView(), [](std::size_t) {},
+          [&](EncodedStringView member) {
+            members.push_back(member.to_string());
+          });
+      reply_array(out, members);
+      break;
+    }
+
+    case kSPop: {
+      sbe::SPop m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto count = m.count();
+      const auto key = m.getKeyAsStringView();
+      if (count == -1) {
+        reply_bulk_or_nil(out, store.spop(key));
+        break;
+      }
+      if (count < 0) {
+        reply_error(out, "ERR", kErrNotInteger);
+        break;
+      }
+      reply_array(out, store.spop(key, static_cast<std::size_t>(count)));
+      break;
+    }
+
+    case kSRandMember: {
+      sbe::SRandMember m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto count = m.count();
+      const auto key = m.getKeyAsStringView();
+      if (count == -1) {
+        reply_bulk_or_nil(out, store.srandmember(key));
+        break;
+      }
+      if (count >= 0) {
+        reply_array(out, store.srandmember(key, static_cast<std::size_t>(count),
+                                           /*unique=*/true));
+      } else {
+        reply_array(out, store.srandmember(
+                             key, static_cast<std::size_t>(-count),
+                             /*unique=*/false));
+      }
+      break;
+    }
+
+    case kSMove: {
+      sbe::SMove m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto source = m.getSourceAsStringView();
+      const auto dest = m.getDestinationAsStringView();
+      const auto member = m.getMemberAsStringView();
+      if (wrong_type(store, KeyType::Set, source, out)) break;
+      if (wrong_type(store, KeyType::Set, dest, out)) break;
+      if (!store.value_fits(member)) {
+        reply_error(out, "ERR", kValueTooLargeMsg);
+        break;
+      }
+      reply_int(out, store.smove(source, dest, member));
+      break;
+    }
+
+    case kSInter:
+    case kSUnion:
+    case kSDiff: {
+      static thread_local std::vector<std::string_view> keys;
+      keys.clear();
+      auto collect = [&](auto& msg) {
+        auto& g = msg.keys();
+        while (g.hasNext()) {
+          g.next();
+          keys.push_back(g.getKeyAsStringView());
+        }
+      };
+      if (tid == kSInter) {
+        sbe::SInter m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      } else if (tid == kSUnion) {
+        sbe::SUnion m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      } else {
+        sbe::SDiff m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      }
+      if (keys.empty()) {
+        reply_error(out, "ERR", "wrong number of arguments for set command");
+        break;
+      }
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      bool bad = false;
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) (void)store.purge_if_expired(key, now);
+        if (wrong_type(store, KeyType::Set, key, out)) {
+          bad = true;
+          break;
+        }
+      }
+      if (bad) break;
+      const auto members =
+          tid == kSInter   ? store.sinter(keys)
+          : tid == kSUnion ? store.sunion(keys)
+                           : store.sdiff(keys);
+      reply_array(out, members);
+      break;
+    }
+
+    case kSInterStore:
+    case kSUnionStore:
+    case kSDiffStore: {
+      static thread_local std::vector<std::string_view> keys;
+      keys.clear();
+      std::string_view dest;
+      auto collect = [&](auto& msg) {
+        auto& g = msg.keys();
+        while (g.hasNext()) {
+          g.next();
+          keys.push_back(g.getKeyAsStringView());
+        }
+        dest = msg.getDestinationAsStringView();
+      };
+      if (tid == kSInterStore) {
+        sbe::SInterStore m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      } else if (tid == kSUnionStore) {
+        sbe::SUnionStore m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      } else {
+        sbe::SDiffStore m;
+        m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+        collect(m);
+      }
+      if (keys.empty()) {
+        reply_error(out, "ERR", "wrong number of arguments for set command");
+        break;
+      }
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      bool bad = false;
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) (void)store.purge_if_expired(key, now);
+        if (wrong_type(store, KeyType::Set, key, out)) {
+          bad = true;
+          break;
+        }
+      }
+      if (bad) break;
+      reply_int(out, tid == kSInterStore ? store.sinterstore(dest, keys)
+                     : tid == kSUnionStore
+                         ? store.sunionstore(dest, keys)
+                         : store.sdiffstore(dest, keys));
+      break;
+    }
+
+    case kSInterCard: {
+      sbe::SInterCard m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto limit = m.limit();
+      if (limit < 0) {
+        reply_error(out, "ERR", kErrNotInteger);
+        break;
+      }
+      static thread_local std::vector<std::string_view> keys;
+      keys.clear();
+      auto& g = m.keys();
+      while (g.hasNext()) {
+        g.next();
+        keys.push_back(g.getKeyAsStringView());
+      }
+      if (keys.empty()) {
+        reply_error(out, "ERR", "wrong number of arguments for 'sintercard' command");
+        break;
+      }
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      bool bad = false;
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) (void)store.purge_if_expired(key, now);
+        if (wrong_type(store, KeyType::Set, key, out)) {
+          bad = true;
+          break;
+        }
+      }
+      if (bad) break;
+      reply_int(out, store.sintercard(keys, static_cast<std::size_t>(limit)));
+      break;
+    }
+
+    case kSScan: {
+      sbe::SScan m;
+      m.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      const auto cursor = m.cursor();
+      const auto count = m.count();
+      if (count < 1) {
+        reply_error(out, "ERR", kErrNotInteger);
+        break;
+      }
+      const auto key = m.getKeyAsStringView();
+      const auto pattern = m.getMatchAsStringView();
+      static thread_local std::vector<std::string> items;
+      items.clear();
+      // Flat reply: [next_cursor, member...].
+      std::string next_cursor;
+      const auto next = store.sscan(
+          key, cursor, static_cast<std::size_t>(count),
+          [&](std::string_view member) {
+            if (pattern.empty()) return true;
+            // Reuse Redis-style glob (* ? []).
+            return set_glob_match_sbe(pattern, member);
+          },
+          [&](std::string member) { items.push_back(std::move(member)); });
+      next_cursor = std::to_string(next);
+      items.insert(items.begin(), next_cursor);
+      reply_array(out, items);
       break;
     }
 

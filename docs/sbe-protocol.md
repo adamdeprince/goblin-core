@@ -1,7 +1,8 @@
 # Goblin SBE wire protocol
 
 Goblin speaks two wire protocols on the same server, chosen per connection by the
-**first 8 bytes** an endpoint writes on a socket or a ring SQ:
+**first 8 bytes** an endpoint writes over TCP, a Unix-domain socket, a
+shared-memory ring, or a [polled RDMA ring](rdma-rings.md):
 
 | first 8 bytes | protocol |
 |---|---|
@@ -9,7 +10,7 @@ Goblin speaks two wire protocols on the same server, chosen per connection by th
 | anything else | **RESP** (RESP2 initially; `HELLO 3` selects RESP3) |
 
 The magic is a **one-time connection handshake**: it is written once as the very first
-bytes on the socket/ring and consumed, and it does **not** prefix each command. After
+bytes on the transport and consumed, and it does **not** prefix each command. After
 it, the whole connection is SBE — bare length-prefixed frames (below).
 
 **Why 8 bytes, not 4:** goblin has commands beginning `GOBLIN.` (`GOBLIN.MEMORY`,
@@ -23,6 +24,11 @@ The SBE wire is a side-by-side alternative to RESP, not a re-encoding of it. It 
 for latency- and size-sensitive clients (e.g. HFT over the shared-memory ring): scores
 and counts ride as **native `double` / `int64`** rather than ASCII, so neither side
 parses or re-stringifies numbers, and the server dispatches straight out of the buffer.
+
+The C++ typed client is compile-time-dispatched over its transport:
+`SbeRingClient` uses the co-located shared-memory ring and `SbeRdmaClient` uses
+the cross-host one-sided ring. They expose the same command API without a virtual
+call on the request path.
 
 ### Latency over the ring
 
@@ -66,6 +72,25 @@ size dynamic), so every message on the stream is prefixed with its total byte le
 This is the moral equivalent of the FIX Simple Open Framing Header, kept minimal (the
 endpoint is already known to be SBE from the magic). The 8-byte SBE header carries
 `blockLength`, `templateId`, `schemaId`, `version`.
+
+On the shared-memory path, `SbeRingClient` places that length prefix and the complete
+SBE message in one ring record. The server dispatches directly from the record; the
+client rejects a frame larger than the ring's contiguous-message capacity before
+publishing it. This is distinct from RESP's stream-oriented ring client, which may
+split a large byte stream across records.
+
+### Pipelining
+
+SBE replies are ordered on a connection, so pipelining does not add a request id to
+the wire. The typed client exposes `enqueue_sbe<Message>()` for the complete generated
+command surface, convenient `enqueue_h*()` writers for hashes, and typed ordered
+readers such as `read_pipeline_int()` and `read_pipeline_bulk_or_nil()`.
+
+If enqueue fills the SQ, the client drains complete CQ records into its local reply
+accumulator before retrying. The server can therefore continue producing replies even
+when the pipeline is deeper than either ring. A synchronous command is rejected while
+pipelined replies remain outstanding; asynchronous Pub/Sub pushes are separated and
+queued while ordinary replies continue to be read in order.
 
 ### Dispatch
 

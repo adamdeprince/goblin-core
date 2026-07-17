@@ -1,0 +1,1311 @@
+{
+  "generated_at": "2026-07-16T19:21:14.025712+00:00",
+  "host": {
+    "hostname": "naamah",
+    "platform": "Linux-7.0.0-22-generic-x86_64-with-glibc2.43",
+    "logical_cpus": 128
+  },
+  "config": {
+    "members": 100000,
+    "value_bytes": 16,
+    "load_batch": 128,
+    "pipeline": 256,
+    "ring_size": "2mb",
+    "requests": 200000,
+    "rounds": 3,
+    "range_size": 16,
+    "endpoint_pairs": 50000,
+    "middle_pairs": 250,
+    "counted_pop_pairs": 20000,
+    "pop_width": 8,
+    "settle_seconds": 0.5,
+    "server_core": 2,
+    "client_core": 3,
+    "standard_list_implementation": "segmented",
+    "goblin_max_density": null,
+    "redis_benchmark": "redis-benchmark",
+    "sbe_benchmark": "goblin_core_list_sbe_benchmark"
+  },
+  "results": [
+    {
+      "label": "goblin-resp-tcp",
+      "kind": "goblin",
+      "binary": "goblin-core",
+      "load_commands": 782,
+      "load_seconds": 0.06789326202124357,
+      "load_items_per_second": 1472900.211639711,
+      "memory_baseline": {
+        "rss_mib": 6.13671875,
+        "info_used_memory_mib": 0.0004119873046875,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 8.5546875,
+        "info_used_memory_mib": 1.7048320770263672,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "segmented",
+          "element_count": 100000,
+          "object_allocated_bytes": 104,
+          "value_live_bytes": 1706256,
+          "value_dead_bytes": 0,
+          "value_allocated_bytes": 1706256,
+          "order_capacity": 782,
+          "order_front_slack": 0,
+          "order_back_slack": 0,
+          "order_allocated_bytes": 9388,
+          "total_allocated_bytes": 1715748
+        }
+      },
+      "memory_after_operations": {
+        "rss_mib": 8.6875,
+        "info_used_memory_mib": 1.7667560577392578,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "segmented",
+          "element_count": 100000,
+          "object_allocated_bytes": 104,
+          "value_live_bytes": 1706256,
+          "value_dead_bytes": 0,
+          "value_allocated_bytes": 1706256,
+          "order_capacity": 782,
+          "order_front_slack": 0,
+          "order_back_slack": 0,
+          "order_allocated_bytes": 15648,
+          "total_allocated_bytes": 1722008
+        }
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.055946293795807775,
+          "logical_operations_per_second": 3574857.0,
+          "resp_commands_per_second": 3574857.0
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.07093190873687827,
+          "logical_operations_per_second": 2819605.4999999995,
+          "resp_commands_per_second": 2819605.4999999995
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08791560453626936,
+          "logical_operations_per_second": 2274909.0,
+          "resp_commands_per_second": 2274909.0
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.10390025990650016,
+          "logical_operations_per_second": 1924923.0,
+          "resp_commands_per_second": 1924923.0
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.11988490449743723,
+          "logical_operations_per_second": 1668266.75,
+          "resp_commands_per_second": 1668266.75
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.0819213589770398,
+          "logical_operations_per_second": 2441365.75,
+          "resp_commands_per_second": 2441365.75
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.2577525523946501,
+          "logical_operations_per_second": 775937.9999999999,
+          "resp_commands_per_second": 775937.9999999999
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.10390025990650016,
+          "logical_operations_per_second": 1924923.0,
+          "resp_commands_per_second": 1924923.0
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.23235223535448313,
+          "logical_operations_per_second": 1075.9526355259416,
+          "resp_commands_per_second": 2151.905271051883
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.5133571112528443,
+          "logical_operations_per_second": 97398.08586263734,
+          "resp_commands_per_second": 194796.17172527467
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2392148389481008,
+          "logical_operations_per_second": 209017.13380267276,
+          "resp_commands_per_second": 418034.2676053455
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.47098523285239935,
+          "logical_operations_per_second": 42464.17637953362,
+          "resp_commands_per_second": 84928.35275906725
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.27318515023216605,
+          "logical_operations_per_second": 183026.05378626022,
+          "resp_commands_per_second": 366052.10757252044
+        }
+      ]
+    },
+    {
+      "label": "goblin-sbe-ring",
+      "kind": "goblin-sbe",
+      "binary": "goblin-core",
+      "load_commands": 782,
+      "load_seconds": 0.004251731,
+      "load_items_per_second": 23519832.275372077,
+      "memory_baseline": {
+        "rss_mib": 14.1484375,
+        "info_used_memory_mib": 0.0004119873046875,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 16.6328125,
+        "info_used_memory_mib": 1.7048320770263672,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "segmented",
+          "element_count": 100000,
+          "object_allocated_bytes": 104,
+          "value_live_bytes": 1706256,
+          "value_dead_bytes": 0,
+          "value_allocated_bytes": 1706256,
+          "order_capacity": 782,
+          "order_front_slack": 0,
+          "order_back_slack": 0,
+          "order_allocated_bytes": 9388,
+          "total_allocated_bytes": 1715748
+        }
+      },
+      "memory_after_operations": {
+        "rss_mib": 16.67578125,
+        "info_used_memory_mib": 1.7667560577392578,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "segmented",
+          "element_count": 100000,
+          "object_allocated_bytes": 104,
+          "value_live_bytes": 1706256,
+          "value_dead_bytes": 0,
+          "value_allocated_bytes": 1706256,
+          "order_capacity": 782,
+          "order_front_slack": 0,
+          "order_back_slack": 0,
+          "order_allocated_bytes": 15648,
+          "total_allocated_bytes": 1722008
+        }
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.017548528,
+          "logical_operations_per_second": 11396967.312585989,
+          "resp_commands_per_second": 11396967.312585989
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.031048959,
+          "logical_operations_per_second": 6441439.791910576,
+          "resp_commands_per_second": 6441439.791910576
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.046990574,
+          "logical_operations_per_second": 4256172.737962298,
+          "resp_commands_per_second": 4256172.737962298
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.062928311,
+          "logical_operations_per_second": 3178219.7364235627,
+          "resp_commands_per_second": 3178219.7364235627
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.07893061,
+          "logical_operations_per_second": 2533871.2066206,
+          "resp_commands_per_second": 2533871.2066206
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.042176188,
+          "logical_operations_per_second": 4742012.246341466,
+          "resp_commands_per_second": 4742012.246341466
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.153432175,
+          "logical_operations_per_second": 1303507.5596106227,
+          "resp_commands_per_second": 1303507.5596106227
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "native C++ SBE/ring median of 3; pipeline depth 256",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.056253773,
+          "logical_operations_per_second": 3555317.0806871923,
+          "resp_commands_per_second": 3555317.0806871923
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "native C++ SBE over shared-memory ring; pipeline depth 256",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.231215713,
+          "logical_operations_per_second": 1081.241394697081,
+          "resp_commands_per_second": 2162.482789394162
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "native C++ SBE over shared-memory ring; pipeline depth 256",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.297524384,
+          "logical_operations_per_second": 168053.45272137428,
+          "resp_commands_per_second": 336106.90544274857
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "native C++ SBE over shared-memory ring; pipeline depth 256",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.021923441,
+          "logical_operations_per_second": 2280663.879360909,
+          "resp_commands_per_second": 4561327.758721818
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "native C++ SBE over shared-memory ring; pipeline depth 256",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.133267234,
+          "logical_operations_per_second": 150074.39863275018,
+          "resp_commands_per_second": 300148.79726550035
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "native C++ SBE over shared-memory ring; pipeline depth 256",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.05769403,
+          "logical_operations_per_second": 866640.7945501467,
+          "resp_commands_per_second": 1733281.5891002933
+        }
+      ]
+    },
+    {
+      "label": "goblin-pma-resp-tcp",
+      "kind": "goblin-pma",
+      "binary": "goblin-core",
+      "load_commands": 782,
+      "load_seconds": 0.1255484689027071,
+      "load_items_per_second": 796505.1336268728,
+      "memory_baseline": {
+        "rss_mib": 6.13671875,
+        "info_used_memory_mib": 0.0004119873046875,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 8.79296875,
+        "info_used_memory_mib": 2.136577606201172,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "pma",
+          "element_count": 100000,
+          "object_allocated_bytes": 304,
+          "value_live_bytes": 1600000,
+          "value_dead_bytes": 0,
+          "value_allocated_bytes": 1601552,
+          "order_capacity": 103093,
+          "order_front_slack": 0,
+          "order_back_slack": 1548,
+          "order_allocated_bytes": 637894,
+          "total_allocated_bytes": 2239750
+        }
+      },
+      "memory_after_operations": {
+        "rss_mib": 12.078125,
+        "info_used_memory_mib": 2.5407447814941406,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": {
+          "implementation": "pma",
+          "element_count": 100000,
+          "object_allocated_bytes": 304,
+          "value_live_bytes": 1600000,
+          "value_dead_bytes": 173200,
+          "value_allocated_bytes": 1904656,
+          "order_capacity": 122599,
+          "order_front_slack": 8671,
+          "order_back_slack": 2981,
+          "order_allocated_bytes": 758590,
+          "total_allocated_bytes": 2663550
+        }
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.0619405366202905,
+          "logical_operations_per_second": 3228903.25,
+          "resp_commands_per_second": 3228903.25
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.079923273657289,
+          "logical_operations_per_second": 2502400.0,
+          "resp_commands_per_second": 2502400.0
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08391943189062193,
+          "logical_operations_per_second": 2383238.25,
+          "resp_commands_per_second": 2383238.25
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.0819213589770398,
+          "logical_operations_per_second": 2441365.75,
+          "resp_commands_per_second": 2441365.75
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08591752669215912,
+          "logical_operations_per_second": 2327813.75,
+          "resp_commands_per_second": 2327813.75
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08292038979216834,
+          "logical_operations_per_second": 2411952.0,
+          "resp_commands_per_second": 2411952.0
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.26974106381910373,
+          "logical_operations_per_second": 741451.81,
+          "resp_commands_per_second": 741451.81
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.11688778670199795,
+          "logical_operations_per_second": 1711042.75,
+          "resp_commands_per_second": 1711042.75
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.418458036147058,
+          "logical_operations_per_second": 597.4314707918356,
+          "resp_commands_per_second": 1194.8629415836713
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.23248465592041612,
+          "logical_operations_per_second": 215067.95707462062,
+          "resp_commands_per_second": 430135.91414924123
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.24629457481205463,
+          "logical_operations_per_second": 203008.93772489543,
+          "resp_commands_per_second": 406017.87544979085
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.35515860188752413,
+          "logical_operations_per_second": 56312.86950029677,
+          "resp_commands_per_second": 112625.73900059354
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2806981750763953,
+          "logical_operations_per_second": 178127.27135255482,
+          "resp_commands_per_second": 356254.54270510963
+        }
+      ]
+    },
+    {
+      "label": "redis-7.2.4",
+      "kind": "redis",
+      "binary": "redis-server",
+      "load_commands": 782,
+      "load_seconds": 0.06696752924472094,
+      "load_items_per_second": 1493261.0046664223,
+      "memory_baseline": {
+        "rss_mib": 6.90625,
+        "info_used_memory_mib": 0.90985107421875,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 8.94921875,
+        "info_used_memory_mib": 2.92669677734375,
+        "key_memory_usage_bytes": 2033312,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "memory_after_operations": {
+        "rss_mib": 9.09765625,
+        "info_used_memory_mib": 3.12939453125,
+        "key_memory_usage_bytes": 1773062,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.07193094485432096,
+          "logical_operations_per_second": 2780444.5,
+          "resp_commands_per_second": 2780444.5
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.0899136851101364,
+          "logical_operations_per_second": 2224355.5,
+          "resp_commands_per_second": 2224355.5
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.16983695652173914,
+          "logical_operations_per_second": 1177600.0,
+          "resp_commands_per_second": 1177600.0
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.2068014686874865,
+          "logical_operations_per_second": 967111.12,
+          "resp_commands_per_second": 967111.12
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.13387148599732368,
+          "logical_operations_per_second": 1493970.12,
+          "resp_commands_per_second": 1493970.12
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08891464449757835,
+          "logical_operations_per_second": 2249348.25,
+          "resp_commands_per_second": 2249348.25
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.4305866448083662,
+          "logical_operations_per_second": 464482.59,
+          "resp_commands_per_second": 464482.59
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.2087995566433734,
+          "logical_operations_per_second": 957856.44,
+          "resp_commands_per_second": 957856.44
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.4049808671697974,
+          "logical_operations_per_second": 617.3131134493369,
+          "resp_commands_per_second": 1234.6262268986738
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2364025143906474,
+          "logical_operations_per_second": 211503.67257675034,
+          "resp_commands_per_second": 423007.3451535007
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.23258319310843945,
+          "logical_operations_per_second": 214976.8404662328,
+          "resp_commands_per_second": 429953.6809324656
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.3176595591939986,
+          "logical_operations_per_second": 62960.48527784349,
+          "resp_commands_per_second": 125920.97055568697
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.23523581586778164,
+          "logical_operations_per_second": 212552.66684433533,
+          "resp_commands_per_second": 425105.33368867065
+        }
+      ]
+    },
+    {
+      "label": "redis-8.8",
+      "kind": "redis",
+      "binary": "redis-server",
+      "load_commands": 782,
+      "load_seconds": 0.06798213999718428,
+      "load_items_per_second": 1470974.5825027258,
+      "memory_baseline": {
+        "rss_mib": 8.0234375,
+        "info_used_memory_mib": 0.7621307373046875,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 10.12890625,
+        "info_used_memory_mib": 2.7793426513671875,
+        "key_memory_usage_bytes": 1836850,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "memory_after_operations": {
+        "rss_mib": 10.26171875,
+        "info_used_memory_mib": 2.98553466796875,
+        "key_memory_usage_bytes": 1836850,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.08891464449757835,
+          "logical_operations_per_second": 2249348.25,
+          "resp_commands_per_second": 2249348.25
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.1019021695863549,
+          "logical_operations_per_second": 1962666.75,
+          "resp_commands_per_second": 1962666.75
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.17882833463430947,
+          "logical_operations_per_second": 1118391.0,
+          "resp_commands_per_second": 1118391.0
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.31070172154697334,
+          "logical_operations_per_second": 643704.19,
+          "resp_commands_per_second": 643704.19
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.16284367394055432,
+          "logical_operations_per_second": 1228171.75,
+          "resp_commands_per_second": 1228171.75
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.10290121644775925,
+          "logical_operations_per_second": 1943611.6199999999,
+          "resp_commands_per_second": 1943611.6199999999
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.5025176132423441,
+          "logical_operations_per_second": 397996.0,
+          "resp_commands_per_second": 397996.0
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.3296835278801326,
+          "logical_operations_per_second": 606642.38,
+          "resp_commands_per_second": 606642.38
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.2992152567021549,
+          "logical_operations_per_second": 835.5188928379251,
+          "resp_commands_per_second": 1671.0377856758503
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.250128953717649,
+          "logical_operations_per_second": 199896.89021144307,
+          "resp_commands_per_second": 399793.78042288614
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.24667629739269614,
+          "logical_operations_per_second": 202694.78879197923,
+          "resp_commands_per_second": 405389.57758395845
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.3212538962252438,
+          "logical_operations_per_second": 62256.0542766996,
+          "resp_commands_per_second": 124512.1085533992
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2491755597293377,
+          "logical_operations_per_second": 200661.7344586747,
+          "resp_commands_per_second": 401323.4689173494
+        }
+      ]
+    },
+    {
+      "label": "valkey-9.1",
+      "kind": "redis",
+      "binary": "valkey-server",
+      "load_commands": 782,
+      "load_seconds": 0.06921669701114297,
+      "load_items_per_second": 1444738.1097064097,
+      "memory_baseline": {
+        "rss_mib": 7.73828125,
+        "info_used_memory_mib": 0.948333740234375,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 9.94140625,
+        "info_used_memory_mib": 2.9848098754882812,
+        "key_memory_usage_bytes": 2033288,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "memory_after_operations": {
+        "rss_mib": 10.1875,
+        "info_used_memory_mib": 3.1640243530273438,
+        "key_memory_usage_bytes": 1773038,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.09690697172981368,
+          "logical_operations_per_second": 2063835.0,
+          "resp_commands_per_second": 2063835.0
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.11688778670199795,
+          "logical_operations_per_second": 1711042.75,
+          "resp_commands_per_second": 1711042.75
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.1768302427459261,
+          "logical_operations_per_second": 1131028.25,
+          "resp_commands_per_second": 1131028.25
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.23377557203772042,
+          "logical_operations_per_second": 855521.38,
+          "resp_commands_per_second": 855521.38
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.1638427172829687,
+          "logical_operations_per_second": 1220682.88,
+          "resp_commands_per_second": 1220682.88
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.11688778670199795,
+          "logical_operations_per_second": 1711042.75,
+          "resp_commands_per_second": 1711042.75
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.45256554201263227,
+          "logical_operations_per_second": 441924.94,
+          "resp_commands_per_second": 441924.94
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.24576406585778995,
+          "logical_operations_per_second": 813788.62,
+          "resp_commands_per_second": 813788.62
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.3770187832415104,
+          "logical_operations_per_second": 663.096936048025,
+          "resp_commands_per_second": 1326.19387209605
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2501173121854663,
+          "logical_operations_per_second": 199906.19426984782,
+          "resp_commands_per_second": 399812.38853969565
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.24725921032950282,
+          "logical_operations_per_second": 202216.9363615169,
+          "resp_commands_per_second": 404433.8727230338
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.3209822508506477,
+          "logical_operations_per_second": 62308.74120608605,
+          "resp_commands_per_second": 124617.4824121721
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.24925566092133522,
+          "logical_operations_per_second": 200597.24948746475,
+          "resp_commands_per_second": 401194.4989749295
+        }
+      ]
+    },
+    {
+      "label": "dragonfly",
+      "kind": "dragonfly",
+      "binary": "dragonfly",
+      "load_commands": 782,
+      "load_seconds": 0.0949096861295402,
+      "load_items_per_second": 1053633.2389036892,
+      "memory_baseline": {
+        "rss_mib": 22.2421875,
+        "info_used_memory_mib": 0.26959991455078125,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 24.69921875,
+        "info_used_memory_mib": 2.0009689331054688,
+        "key_memory_usage_bytes": 1813704,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "memory_after_operations": {
+        "rss_mib": 25.1953125,
+        "info_used_memory_mib": 2.0019454956054688,
+        "key_memory_usage_bytes": 1814728,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.13387148599732368,
+          "logical_operations_per_second": 1493970.12,
+          "resp_commands_per_second": 1493970.12
+        },
+        {
+          "name": "lindex_head",
+          "description": "LINDEX 0",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.16084558195226356,
+          "logical_operations_per_second": 1243428.62,
+          "resp_commands_per_second": 1243428.62
+        },
+        {
+          "name": "lindex_quarter",
+          "description": "LINDEX 25000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.19281489745742225,
+          "logical_operations_per_second": 1037264.25,
+          "resp_commands_per_second": 1037264.25
+        },
+        {
+          "name": "lindex_middle",
+          "description": "LINDEX 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.23077846190770707,
+          "logical_operations_per_second": 866632.0,
+          "resp_commands_per_second": 866632.0
+        },
+        {
+          "name": "lindex_three_quarters",
+          "description": "LINDEX 75000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.23577365629970296,
+          "logical_operations_per_second": 848271.19,
+          "resp_commands_per_second": 848271.19
+        },
+        {
+          "name": "lindex_tail",
+          "description": "LINDEX -1",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.16284367394055432,
+          "logical_operations_per_second": 1228171.75,
+          "resp_commands_per_second": 1228171.75
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.6583679387981164,
+          "logical_operations_per_second": 303781.5,
+          "resp_commands_per_second": 303781.5
+        },
+        {
+          "name": "lset_middle",
+          "description": "LSET 50000",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 0.2547554272109036,
+          "logical_operations_per_second": 785066.69,
+          "resp_commands_per_second": 785066.69
+        },
+        {
+          "name": "middle_insert_remove",
+          "description": "LINSERT before middle pivot + LREM inserted value",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 250,
+          "resp_commands": 500,
+          "seconds": 0.2962101558223367,
+          "logical_operations_per_second": 843.9953697939615,
+          "resp_commands_per_second": 1687.990739587923
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2729853820055723,
+          "logical_operations_per_second": 183159.99059238774,
+          "resp_commands_per_second": 366319.9811847755
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2709203320555389,
+          "logical_operations_per_second": 184556.1003880283,
+          "resp_commands_per_second": 369112.2007760566
+        },
+        {
+          "name": "counted_head_pop",
+          "description": "LPUSH 8 values + LPOP count=8",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 20000,
+          "resp_commands": 40000,
+          "seconds": 0.35284857731312513,
+          "logical_operations_per_second": 56681.53787751165,
+          "resp_commands_per_second": 113363.0757550233
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 0.2871671738103032,
+          "logical_operations_per_second": 174114.6083536309,
+          "resp_commands_per_second": 348229.2167072618
+        }
+      ]
+    },
+    {
+      "label": "mini-redis-go-55178df",
+      "kind": "mini-redis-go",
+      "binary": "mini-redis",
+      "load_commands": 782,
+      "load_seconds": 0.10621396917849779,
+      "load_items_per_second": 941495.7446128869,
+      "memory_baseline": {
+        "rss_mib": 11.27734375,
+        "info_used_memory_mib": null,
+        "key_memory_usage_bytes": null,
+        "list_length": 0,
+        "goblin_memory": null
+      },
+      "memory_after_load": {
+        "rss_mib": 25.28125,
+        "info_used_memory_mib": null,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "memory_after_operations": {
+        "rss_mib": 23.1953125,
+        "info_used_memory_mib": null,
+        "key_memory_usage_bytes": null,
+        "list_length": 100000,
+        "goblin_memory": null
+      },
+      "operations": [
+        {
+          "name": "llen",
+          "description": "LLEN control",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 2.250839140967242,
+          "logical_operations_per_second": 88855.75,
+          "resp_commands_per_second": 88855.75
+        },
+        {
+          "name": "lrange_middle",
+          "description": "LRANGE 49992 50007",
+          "harness": "redis-benchmark median of 3",
+          "logical_operations": 200000,
+          "resp_commands": 200000,
+          "seconds": 2.8482660326046707,
+          "logical_operations_per_second": 70218.16,
+          "resp_commands_per_second": 70218.16
+        },
+        {
+          "name": "head_stack",
+          "description": "LPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 92.01166746998206,
+          "logical_operations_per_second": 543.4093455192738,
+          "resp_commands_per_second": 1086.8186910385475
+        },
+        {
+          "name": "tail_stack",
+          "description": "RPUSH + RPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 1.2433297419920564,
+          "logical_operations_per_second": 40214.593370774084,
+          "resp_commands_per_second": 80429.18674154817
+        },
+        {
+          "name": "queue",
+          "description": "RPUSH + LPOP",
+          "harness": "existing Python RESP pipeline",
+          "logical_operations": 50000,
+          "resp_commands": 100000,
+          "seconds": 1.2242072043009102,
+          "logical_operations_per_second": 40842.75915411946,
+          "resp_commands_per_second": 81685.51830823893
+        }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 #include "goblin/core/resp_parser.hpp"
 
+#include "goblin/core/parse_int.hpp"
 #include "goblin/core/simd_ops.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cstddef>
 #include <limits>
 #include <string>
@@ -17,21 +17,7 @@ constexpr std::size_t kMaxArrayElements = 1024U * 1024U;
 constexpr std::size_t kMaxBulkBytes = 128U * 1024U * 1024U;
 constexpr std::size_t kMaxInlineBytes = 1024U * 1024U;
 
-[[nodiscard]] std::optional<long long> parse_i64(std::string_view text) {
-  if (text.empty()) {
-    return std::nullopt;
-  }
-
-  long long value = 0;
-  const auto* begin = text.data();
-  const auto* end = text.data() + text.size();
-  const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end) {
-    return std::nullopt;
-  }
-
-  return value;
-}
+using goblin::core::parse_i64;
 
 [[nodiscard]] std::optional<std::size_t> find_crlf(std::string_view buffer,
                                                    std::size_t offset) {

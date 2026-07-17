@@ -17,10 +17,27 @@
 #include "goblin/core/hash_listpack.hpp"
 #include "goblin/core/hash_storage.hpp"
 #include "goblin/core/keyspace_storage.hpp"
+#include "goblin/core/selectable_member_index.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/zset_member_index.hpp"
 
 namespace goblin::core {
+
+enum class HashImplementation : std::uint8_t {
+  Efficient,
+  Realtime,
+};
+
+[[nodiscard]] constexpr std::string_view hash_implementation_name(
+    HashImplementation implementation) noexcept {
+  switch (implementation) {
+    case HashImplementation::Efficient:
+      return "efficient";
+    case HashImplementation::Realtime:
+      return "rt";
+  }
+  return "unknown";
+}
 
 // A hash uses the growth knob for the full form, plus an optional count ceiling
 // for the compact form. By default the 64 KiB blob capacity decides promotion;
@@ -44,17 +61,33 @@ struct HashOptions {
   // compact form; a finite value lets miss- or rebuild-heavy workloads promote
   // earlier.
   std::size_t listpack_max_entries{kDefaultListpackMaxEntries};
+  // Shared fixed-record pool for RT field indexes. The pool is rounded to
+  // 2 MiB slabs, locked/prefaulted once, and never grows during serving.
+  std::size_t realtime_index_bytes{
+      LinearHashArena<ZSetMemberMeta>::kDefaultBytes};
 };
 
 struct HashContext {
+  using RealtimeIndexArena = LinearHashArena<ZSetMemberMeta>;
+
   KeyspaceStorage* storage{nullptr};
   HashOptions options{};
   void* compact_owner{nullptr};
   void (*maybe_compact)(void*){nullptr};
+  std::shared_ptr<RealtimeIndexArena> realtime_index_arena{};
+
+  [[nodiscard]] std::shared_ptr<RealtimeIndexArena> ensure_realtime_arena() {
+    if (!realtime_index_arena) {
+      realtime_index_arena =
+          std::make_shared<RealtimeIndexArena>(options.realtime_index_bytes);
+    }
+    return realtime_index_arena;
+  }
 };
-static_assert(alignof(HashContext) >= 4);
+static_assert(alignof(HashContext) >= 8);
 
 struct HashMemoryStats {
+  HashImplementation implementation{HashImplementation::Efficient};
   std::size_t field_count{0};
   std::size_t field_value_live_bytes{0};
   std::size_t field_value_dead_bytes{0};
@@ -88,18 +121,24 @@ class Hash {
  public:
   static constexpr double kDefaultFieldIndexDensity = 0.97;
 
-  explicit Hash(HashOptions options = {}) {
+  explicit Hash(HashOptions options = {},
+                HashImplementation implementation =
+                    HashImplementation::Efficient) {
     normalize_options(options);
     auto* context = new HashContext;
     context->storage = new KeyspaceStorage;
     context->options = options;
-    context_flags_ = reinterpret_cast<std::uintptr_t>(context) | kOwnContext;
+    context_flags_ = reinterpret_cast<std::uintptr_t>(context) | kOwnContext |
+                     implementation_flag(implementation);
     init_empty();
   }
 
-  explicit Hash(HashContext& context)
-      : context_flags_(reinterpret_cast<std::uintptr_t>(&context)) {
-    assert((context_flags_ & kFlagMask) == 0);
+  explicit Hash(HashContext& context,
+                HashImplementation implementation =
+                    HashImplementation::Efficient)
+      : context_flags_(reinterpret_cast<std::uintptr_t>(&context) |
+                       implementation_flag(implementation)) {
+    assert((reinterpret_cast<std::uintptr_t>(&context) & kFlagMask) == 0);
     normalize_options(context.options);
     init_empty();
   }
@@ -138,6 +177,11 @@ class Hash {
   [[nodiscard]] bool is_small() const noexcept {
     return (context_flags_ & kFullRepresentation) == 0;
   }
+  [[nodiscard]] HashImplementation implementation() const noexcept {
+    return (context_flags_ & kRealtimeImplementation) != 0
+               ? HashImplementation::Realtime
+               : HashImplementation::Efficient;
+  }
 
   void rebind(HashContext& new_context) {
     assert((reinterpret_cast<std::uintptr_t>(&new_context) & kFlagMask) == 0);
@@ -146,6 +190,24 @@ class Hash {
     }
     auto* old_context = &context();
     const bool old_owned = owns_context();
+    if (!is_small() && implementation() == HashImplementation::Realtime &&
+        old_context->realtime_index_arena !=
+            new_context.realtime_index_arena) {
+      auto& fs = full();
+      SelectableMemberIndex<HashStorage> fields(
+          fs.storage.get(), new_context.options.member_index_growth,
+          MemberIndexImplementation::Realtime,
+          new_context.ensure_realtime_arena());
+      fields.reserve_for_density(fs.storage->size(),
+                                 kDefaultFieldIndexDensity);
+      for (std::uint32_t id = 0;
+           id < static_cast<std::uint32_t>(fs.storage->size()); ++id) {
+        fields.insert_packed(fs.storage->view(id),
+                             ZSetMemberMeta{.member_id = id});
+      }
+      fs.fields = std::move(fields);
+      fs.bind_rt();
+    }
     if (is_small() && rep_ != kEmptyCompact) {
       const auto bytes = compact_blob_view();
       const auto location = new_context.storage->append_object_blob(bytes);
@@ -153,7 +215,8 @@ class Hash {
           static_cast<std::uint16_t>(bytes.size()));
       rep_ = pack_location(location);
     }
-    const auto representation = context_flags_ & kFullRepresentation;
+    const auto representation =
+        context_flags_ & (kFullRepresentation | kRealtimeImplementation);
     context_flags_ = reinterpret_cast<std::uintptr_t>(&new_context) |
                      representation;
     if (old_owned) {
@@ -170,7 +233,9 @@ class Hash {
   }
 
   // Pre-size the full form for an upcoming bulk insert. No-op while listpack
-  // (promotion happens on the set that crosses the threshold).
+  // (promotion happens on the set that crosses the threshold). RT indexes only
+  // bulk-reserve when empty (linear-hash addressing); non-empty RT growth stays
+  // incremental. Efficient Swiss indexes grow geometrically for any size.
   void reserve_additional(std::size_t additional) {
     if (additional == 0 || is_small()) {
       return;
@@ -229,15 +294,19 @@ class Hash {
       }
       ensure_full();
     }
+    // Bulk-aware reserve: empty RT indexes pre-grow primaries; efficient Swiss
+    // indexes grow geometrically.
     reserve_additional(fields.size());
     long long added = 0;
     long long updates = 0;
     for (const auto& [field, value] : fields) {
+      // Each structural RT insert advances one bounded physical maintenance
+      // step. Existing-field updates do not advance maintenance.
       const auto inserted = set_full(field, value);
       added += inserted;
       updates += 1 - inserted;
     }
-    // Only value updates orphan arena bytes.
+    // Only value updates that orphaned arena bytes need a compact step.
     if (updates != 0) {
       maybe_compact();
     }
@@ -264,14 +333,23 @@ class Hash {
       // After promote the field is still absent; fall through to full set_nx.
     }
     auto& fs = full();
-    if (fs.fields.find(field) != nullptr) {
-      return 0;
-    }
-    const auto field_id = fs.storage->push_back(field, value);
-    fs.fields.insert_absent(fs.storage->view(field_id),
-                            ZSetMemberMeta{.member_id = field_id});
+    // Encode only after absence is known (D): make_meta runs solely on insert.
+    const bool inserted =
+        fs.rt != nullptr
+            ? fs.rt->find_or_emplace(
+                  field, [](ZSetMemberMeta&) {},
+                  [&]() {
+                    const auto field_id = fs.storage->push_back(field, value);
+                    return ZSetMemberMeta{.member_id = field_id};
+                  })
+            : fs.fields.find_or_emplace(
+                  field, [](ZSetMemberMeta&) {},
+                  [&]() {
+                    const auto field_id = fs.storage->push_back(field, value);
+                    return ZSetMemberMeta{.member_id = field_id};
+                  });
     // Insert-only: no dead bytes, so skip auto-compaction.
-    return 1;
+    return inserted ? 1 : 0;
   }
 
   [[nodiscard]] std::optional<EncodedStringView> get(
@@ -281,11 +359,21 @@ class Hash {
         return lp.get(field, options().string_encoding);
       });
     }
-    const auto* meta = full().fields.find(field);
+    const auto& fs = full();
+    // RT-direct: monomorphic LinearHashIndex probe (no Selectable branch).
+    const ZSetMemberMeta* meta = nullptr;
+    if (fs.rt != nullptr) {
+      meta = fs.rt->find(field);
+    } else {
+      meta = fs.fields.find(field);
+    }
     if (meta == nullptr) {
       return std::nullopt;
     }
-    return full().storage->value(meta->member_id);
+    // Field bytes were prefetched during the index compare; pull value bytes
+    // into L1 before decoding (contiguous after insert; relocated after grow).
+    fs.storage->prefetch_value(meta->member_id);
+    return fs.storage->value(meta->member_id);
   }
 
   [[nodiscard]] bool contains(std::string_view field) const {
@@ -294,7 +382,11 @@ class Hash {
         return lp.contains(field, options().string_encoding);
       });
     }
-    return full().fields.find(field) != nullptr;
+    const auto& fs = full();
+    if (fs.rt != nullptr) {
+      return fs.rt->find(field) != nullptr;
+    }
+    return fs.fields.find(field) != nullptr;
   }
 
   // HDEL one field. Returns true if it was present and removed.
@@ -368,9 +460,16 @@ class Hash {
     }
     auto& fs = full();
     fs.storage->compact();
+    if (implementation() == HashImplementation::Realtime) {
+      // The packed storage keeps field ids stable, so the linear index remains
+      // valid. Its density follows the split cursor and has no table-wide
+      // packing operation to perform.
+      return;
+    }
     const auto n = static_cast<std::uint32_t>(fs.storage->size());
-    MemberIndex<HashStorage> new_index(fs.storage.get(),
-                                       options().member_index_growth);
+    SelectableMemberIndex<HashStorage> new_index(
+        fs.storage.get(), options().member_index_growth,
+        member_index_implementation(), realtime_arena());
     new_index.reserve_for_density(n, field_index_density);
     for (std::uint32_t id = 0; id < n; ++id) {
       new_index.insert_packed(fs.storage->view(id),
@@ -378,11 +477,13 @@ class Hash {
     }
     fs.fields = std::move(new_index);
     fs.fields.set_members(fs.storage.get());
+    fs.bind_rt();
     maybe_demote_to_small();
   }
 
   [[nodiscard]] HashMemoryStats memory_stats() const noexcept {
     HashMemoryStats stats;
+    stats.implementation = implementation();
     stats.field_count = size();
     if (is_small()) {
       const auto bytes = compact_blob_bytes();
@@ -431,13 +532,15 @@ class Hash {
   // Snapshot. Canonical layer is always (field, value) pairs -- the portable
   // "unpacked table". Accelerator (swiss dump) only for the full form.
   void save(snapshot::Writer& writer, bool with_accelerator) const {
+    writer.u8(implementation() == HashImplementation::Realtime ? 1 : 0);
     writer.f64(options().member_index_growth);
     writer.u64(static_cast<std::uint64_t>(size()));
     for_each([&writer](std::string_view field, EncodedStringView value) {
       writer.str(field);
       writer.str(value.to_string());
     });
-    const bool write_accel = with_accelerator && !is_small();
+    const bool write_accel = with_accelerator && !is_small() &&
+                             full().fields.supports_accelerator();
     writer.u8(write_accel ? 1 : 0);
     if (write_accel) {
       full().fields.write_accelerator(writer);
@@ -445,9 +548,20 @@ class Hash {
   }
 
   [[nodiscard]] static Hash load(snapshot::Reader& reader, bool use_accelerator,
-                                 HashOptions options = {}) {
+                                 HashOptions options = {},
+                                 HashImplementation implementation =
+                                     HashImplementation::Efficient,
+                                 bool read_saved_implementation = true) {
+    if (read_saved_implementation) {
+      const auto saved = reader.u8();
+      if (saved > 1) {
+        throw snapshot::snapshot_error("invalid hash implementation");
+      }
+      implementation = saved == 1 ? HashImplementation::Realtime
+                                  : HashImplementation::Efficient;
+    }
     options.member_index_growth = reader.f64();
-    Hash hash(options);
+    Hash hash(options, implementation);
     const auto field_count = static_cast<std::uint32_t>(reader.u64());
 
     // Stream pairs: prefer listpack when small; set() promotes if a blob limit
@@ -489,15 +603,23 @@ class Hash {
   }
 
  private:
+  using RealtimeFieldIndex = LinearHashIndex<HashStorage, ZSetMemberMeta>;
+
   struct FullState {
     std::unique_ptr<HashStorage> storage;
-    MemberIndex<HashStorage> fields;
+    SelectableMemberIndex<HashStorage> fields;
+    // Non-owning cache of fields.realtime() for monomorphic RT hot paths (C).
+    // Null when the hash uses the efficient Swiss index.
+    RealtimeFieldIndex* rt{nullptr};
+
+    void bind_rt() noexcept { rt = fields.realtime(); }
   };
 
   static constexpr std::uintptr_t kFullRepresentation = 1;
   static constexpr std::uintptr_t kOwnContext = 2;
+  static constexpr std::uintptr_t kRealtimeImplementation = 4;
   static constexpr std::uintptr_t kFlagMask =
-      kFullRepresentation | kOwnContext;
+      kFullRepresentation | kOwnContext | kRealtimeImplementation;
   static constexpr std::uintptr_t kEmptyCompact =
       std::numeric_limits<std::uintptr_t>::max();
 
@@ -505,6 +627,27 @@ class Hash {
     if (options.compaction_work_budget == 0) {
       options.compaction_work_budget = 1;
     }
+  }
+
+  [[nodiscard]] static constexpr std::uintptr_t implementation_flag(
+      HashImplementation implementation) noexcept {
+    return implementation == HashImplementation::Realtime
+               ? kRealtimeImplementation
+               : 0;
+  }
+
+  [[nodiscard]] MemberIndexImplementation member_index_implementation()
+      const noexcept {
+    return implementation() == HashImplementation::Realtime
+               ? MemberIndexImplementation::Realtime
+               : MemberIndexImplementation::Efficient;
+  }
+
+  [[nodiscard]] std::shared_ptr<LinearHashArena<ZSetMemberMeta>>
+  realtime_arena() {
+    return implementation() == HashImplementation::Realtime
+               ? context().ensure_realtime_arena()
+               : nullptr;
   }
 
   [[nodiscard]] HashContext& context() noexcept {
@@ -688,15 +831,18 @@ class Hash {
     assert(context_flags_ != 0);
     rep_ = kEmptyCompact;
     context_flags_ &= ~kFullRepresentation;
-    if (options().listpack_max_entries == 0) {
+    if (options().listpack_max_entries == 0 ||
+        implementation() == HashImplementation::Realtime) {
       auto storage = std::make_unique<HashStorage>(options().chunk_bytes,
                                                    options().member_index_growth,
                                                    options().compaction_knapsack,
                                                    options().string_encoding);
-      MemberIndex<HashStorage> fields(storage.get(),
-                                      options().member_index_growth);
+      SelectableMemberIndex<HashStorage> fields(
+          storage.get(), options().member_index_growth,
+          member_index_implementation(), realtime_arena());
       auto* state =
-          new FullState{std::move(storage), std::move(fields)};
+          new FullState{std::move(storage), std::move(fields), nullptr};
+      state->bind_rt();
       rep_ = reinterpret_cast<std::uintptr_t>(state);
       context_flags_ |= kFullRepresentation;
     }
@@ -710,7 +856,9 @@ class Hash {
                                                  options().member_index_growth,
                                                  options().compaction_knapsack,
                                                  options().string_encoding);
-    MemberIndex<HashStorage> fields(storage.get(), options().member_index_growth);
+    SelectableMemberIndex<HashStorage> fields(
+        storage.get(), options().member_index_growth,
+        member_index_implementation(), realtime_arena());
     const auto n = size();
     storage->reserve(n);
     fields.reserve_for_density(n, kDefaultFieldIndexDensity);
@@ -723,7 +871,9 @@ class Hash {
         },
         options().string_encoding);
     });
-    auto* state = new FullState{std::move(storage), std::move(fields)};
+    auto* state =
+        new FullState{std::move(storage), std::move(fields), nullptr};
+    state->bind_rt();
     if (rep_ != kEmptyCompact) {
       context().storage->mark_object_blob_dead(
           static_cast<std::uint16_t>(compact_blob_bytes()));
@@ -737,7 +887,8 @@ class Hash {
     if (is_small()) {
       return;
     }
-    if (options().listpack_max_entries == 0) {
+    if (options().listpack_max_entries == 0 ||
+        implementation() == HashImplementation::Realtime) {
       return;
     }
     const auto n = full().storage->size();
@@ -772,31 +923,45 @@ class Hash {
     delete old_state;
   }
 
-  int set_full(std::string_view field, std::string_view value) {
+  int set_full(std::string_view field, std::string_view value,
+               bool maintain = true) {
     auto& fs = full();
-    const bool inserted = fs.fields.find_or_emplace(
-        field,
-        [&](ZSetMemberMeta& meta) {
-          fs.storage->set_value(meta.member_id, value);
-        },
-        [&]() {
-          const auto field_id = fs.storage->push_back(field, value);
-          return ZSetMemberMeta{.member_id = field_id};
-        });
+    // Encode runs only inside the insert/update callbacks (D): updates encode
+    // in set_value; pure inserts encode in push_back after the slot is reserved.
+    const auto on_existing = [&](ZSetMemberMeta& meta) {
+      fs.storage->set_value(meta.member_id, value);
+    };
+    const auto make_meta = [&]() {
+      const auto field_id = fs.storage->push_back(field, value);
+      return ZSetMemberMeta{.member_id = field_id};
+    };
+    const bool inserted =
+        fs.rt != nullptr
+            ? fs.rt->find_or_emplace(field, on_existing, make_meta, maintain)
+            : fs.fields.find_or_emplace(field, on_existing, make_meta, maintain);
     return inserted ? 1 : 0;
   }
 
   bool erase_full(std::string_view field) {
     auto& fs = full();
-    const auto slot = fs.fields.find_slot(field);
+    std::optional<std::size_t> slot;
+    if (fs.rt != nullptr) {
+      slot = fs.rt->find_slot(field);
+    } else {
+      slot = fs.fields.find_slot(field);
+    }
     if (!slot) {
       return false;
     }
-    const auto field_id = fs.fields.member_id_at(*slot);
+    const auto field_id =
+        fs.rt != nullptr ? fs.rt->member_id_at(*slot)
+                         : fs.fields.member_id_at(*slot);
     const auto last_id = static_cast<std::uint32_t>(fs.storage->size() - 1);
     fs.storage->prepare_copy_ref(field_id, last_id);
     fs.storage->orphan(field_id);
-    const bool erased = fs.fields.erase_at_index(*slot);
+    const bool erased =
+        fs.rt != nullptr ? fs.rt->erase_at_index(*slot)
+                         : fs.fields.erase_at_index(*slot);
     assert(erased);
     (void)erased;
     move_last_field_into_slot(field_id);
@@ -811,12 +976,18 @@ class Hash {
       return;
     }
     fs.storage->copy_ref(removed_field_id, last_id);
-    const bool moved = fs.fields.move_member_id(last_id, removed_field_id);
+    const bool moved =
+        fs.rt != nullptr
+            ? fs.rt->move_member_id(last_id, removed_field_id)
+            : fs.fields.move_member_id(last_id, removed_field_id);
     assert(moved);
     (void)moved;
     fs.storage->pop_back();
   }
 
+  // Bounded arena compaction only — never a full compact on the hot HSET path
+  // (N). Same-content / same-width updates that leave dead_bytes_ unchanged skip
+  // the thresholds below.
   void maybe_compact() {
     if (is_small()) {
       return;

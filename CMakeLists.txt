@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.7.0
+  VERSION 0.8.0
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -15,6 +15,12 @@ set_property(CACHE GOBLIN_CORE_ARCH PROPERTY STRINGS
 option(GOBLIN_CORE_BUILD_TESTS "Build Goblin Core tests" ON)
 option(GOBLIN_CORE_BUILD_BENCHMARKS "Build Goblin Core benchmark executables" ON)
 option(GOBLIN_CORE_BUILD_HTML_DOCS "Build HTML documentation from Markdown" ON)
+option(GOBLIN_CORE_ENABLE_RDMA
+  "Enable InfiniBand/RDMA polled-ring transport (Linux libibverbs + librdmacm; not vendored)"
+  ON)
+option(GOBLIN_CORE_ENABLE_EXASOCK
+  "Enable Cisco ExaSock / Nexus SmartNIC sockets support (requires installed ExaSock SDK; not vendored)"
+  OFF)
 option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   "Enable Redis-backed differential tests for Goblin Core's Redis-compatible subset"
   OFF)
@@ -31,6 +37,10 @@ list(FILTER GOBLIN_CORE_MARKDOWN_DOC_PATHS EXCLUDE REGEX
 
 set(GOBLIN_CORE_HTML_DOCS
   ${CMAKE_CURRENT_SOURCE_DIR}/html/BENCHMARKS.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/HSET-BENCHMARK.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/LIST-BENCHMARK.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/SET-BENCHMARK.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/ARRAY-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LATENCY-SHOOTOUT.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/MICROBENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LISTS.html
@@ -222,10 +232,55 @@ target_link_libraries(goblin_qjs PUBLIC m Threads::Threads)
 find_path(LZ4_INCLUDE_DIR NAMES lz4.h REQUIRED)
 find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 
+set(GOBLIN_RDMA_SOURCES)
+set(GOBLIN_HAS_RDMA_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_RDMA)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_path(IBVERBS_INCLUDE_DIR NAMES infiniband/verbs.h)
+    find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
+    find_library(IBVERBS_LIBRARY NAMES ibverbs)
+    find_library(RDMACM_LIBRARY NAMES rdmacm)
+    if(IBVERBS_INCLUDE_DIR AND RDMACM_INCLUDE_DIR AND
+       IBVERBS_LIBRARY AND RDMACM_LIBRARY)
+      set(GOBLIN_HAS_RDMA_BUILD ON)
+      list(APPEND GOBLIN_RDMA_SOURCES src/rdma_ring.cpp)
+    else()
+      message(STATUS
+        "goblin-core: GOBLIN_CORE_ENABLE_RDMA=ON but libibverbs/librdmacm not found; RDMA disabled")
+    endif()
+  else()
+    message(STATUS
+      "goblin-core: GOBLIN_CORE_ENABLE_RDMA=ON is Linux-only; RDMA disabled on this host")
+  endif()
+endif()
+
+set(GOBLIN_HAS_EXASOCK_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_EXASOCK)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR
+      "goblin-core: GOBLIN_CORE_ENABLE_EXASOCK=ON requires Linux with the ExaSock SDK installed")
+  endif()
+  find_path(EXASOCK_INCLUDE_DIR
+    NAMES exasock/extensions.h exasock/socket.h
+    PATHS /usr/local/include /usr/include)
+  find_library(EXASOCK_EXT_LIBRARY
+    NAMES exasock_ext
+    PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu)
+  if(NOT EXASOCK_INCLUDE_DIR OR NOT EXASOCK_EXT_LIBRARY)
+    message(FATAL_ERROR
+      "goblin-core: GOBLIN_CORE_ENABLE_EXASOCK=ON but the ExaSock SDK was not found.\n"
+      "  Install Cisco/Exablaze ExaSock (headers exasock/*.h and libexasock_ext).\n"
+      "  Do not vendor ExaSock into this tree; point CMAKE_PREFIX_PATH if needed.\n"
+      "  Or configure without -DGOBLIN_CORE_ENABLE_EXASOCK=ON.")
+  endif()
+  set(GOBLIN_HAS_EXASOCK_BUILD ON)
+endif()
+
 add_library(goblin_core
   src/command.cpp
   src/pubsub.cpp
   src/luau_script.cpp
+  src/numa_topology.cpp
   src/rdb.cpp
   src/resp_parser.cpp
   src/resp_writer.cpp
@@ -237,7 +292,8 @@ add_library(goblin_core
   src/tcl_script.cpp
   src/upython_script.cpp
   src/wren_script.cpp
-  src/quickjs_script.cpp)
+  src/quickjs_script.cpp
+  ${GOBLIN_RDMA_SOURCES})
 
 target_compile_features(goblin_core PUBLIC cxx_std_23)
 target_compile_definitions(goblin_core PRIVATE
@@ -251,6 +307,10 @@ target_include_directories(goblin_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    # XXH3 is used from the public linear-hash header (RT field/key indexes).
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxhash>
+    # fast_float is used from public parse_int.hpp (RESP + encoding integers).
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/fast_float/include>
   PRIVATE
     ${LZ4_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unordered_dense/include)
@@ -259,6 +319,25 @@ target_include_directories(goblin_core
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
 target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs ${LZ4_LIBRARY})
+
+if(GOBLIN_HAS_RDMA_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_RDMA=1)
+  target_include_directories(goblin_core PRIVATE
+    ${IBVERBS_INCLUDE_DIR}
+    ${RDMACM_INCLUDE_DIR})
+  target_link_libraries(goblin_core PRIVATE
+    ${IBVERBS_LIBRARY}
+    ${RDMACM_LIBRARY})
+  message(STATUS "goblin-core: InfiniBand/RDMA polled-ring transport enabled (GOBLIN_HAS_RDMA)")
+endif()
+
+if(GOBLIN_HAS_EXASOCK_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_EXASOCK=1)
+  target_include_directories(goblin_core PUBLIC ${EXASOCK_INCLUDE_DIR})
+  target_link_libraries(goblin_core PUBLIC ${EXASOCK_EXT_LIBRARY})
+  message(STATUS
+    "goblin-core: ExaSock support enabled (GOBLIN_HAS_EXASOCK); run under the exasock wrapper for acceleration")
+endif()
 
 # The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
 # vendored runtime's headers off the shared target include path and hand each
@@ -376,6 +455,61 @@ set_target_properties(goblin_core_ring_cli PROPERTIES
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 
+if(GOBLIN_HAS_RDMA_BUILD)
+  add_executable(goblin_core_rdma_cli src/rdma_cli.cpp)
+  target_link_libraries(goblin_core_rdma_cli PRIVATE goblin_core)
+  set_target_properties(goblin_core_rdma_cli PROPERTIES
+    OUTPUT_NAME redis-cli-rdma
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+
+  if(GOBLIN_CORE_BUILD_TESTS AND TARGET goblin_sbe_headers)
+    add_executable(goblin_core_rdma_roundtrip_test
+      tests/rdma_roundtrip_test.cpp)
+    target_link_libraries(goblin_core_rdma_roundtrip_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_rdma_roundtrip_test PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+  endif()
+
+  if(GOBLIN_CORE_BUILD_BENCHMARKS AND TARGET goblin_sbe_headers)
+    add_executable(goblin_core_rdma_latency_benchmark
+      benchmarks/rdma_latency_benchmark.cpp)
+    target_link_libraries(goblin_core_rdma_latency_benchmark PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_rdma_latency_benchmark PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_rdma_latency_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
+endif()
+
+if(GOBLIN_HAS_EXASOCK_BUILD)
+  add_executable(goblin_core_exasock_cli src/exasock_cli.cpp)
+  target_link_libraries(goblin_core_exasock_cli PRIVATE goblin_core)
+  set_target_properties(goblin_core_exasock_cli PROPERTIES
+    OUTPUT_NAME redis-cli-exasock
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+
+  if(GOBLIN_CORE_BUILD_TESTS AND TARGET goblin_sbe_headers)
+    add_executable(goblin_core_exasock_roundtrip_test
+      tests/exasock_roundtrip_test.cpp)
+    target_link_libraries(goblin_core_exasock_roundtrip_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_exasock_roundtrip_test PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+  endif()
+endif()
+
 if(GOBLIN_CORE_BUILD_BENCHMARKS)
   add_executable(goblin_core_microbench benchmarks/microbench.cpp)
   target_link_libraries(goblin_core_microbench PRIVATE goblin_core)
@@ -384,13 +518,22 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
 
+  # Local shared-memory ring latency (same ops as RDMA latency probe).
+  if(TARGET goblin_sbe_headers)
+    add_executable(goblin_core_ring_latency_benchmark
+      benchmarks/ring_latency_benchmark.cpp)
+    target_link_libraries(goblin_core_ring_latency_benchmark PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_ring_latency_benchmark PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_ring_latency_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
+
   if(UNIX)
     add_executable(goblin_core_hset_benchmark benchmarks/hset_benchmark.cpp)
-    if(TARGET goblin_sbe_headers)
-      target_link_libraries(goblin_core_hset_benchmark PRIVATE goblin_sbe_headers)
-      target_include_directories(goblin_core_hset_benchmark PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    endif()
     set_target_properties(goblin_core_hset_benchmark PROPERTIES
       CXX_STANDARD 23
       CXX_STANDARD_REQUIRED ON
@@ -399,6 +542,19 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
       -Wall -Wextra -Wpedantic)
 
     if(TARGET goblin_sbe_headers)
+      add_executable(goblin_core_collection_benchmark_worker
+        benchmarks/collection_benchmark_worker.cpp)
+      target_link_libraries(goblin_core_collection_benchmark_worker PRIVATE
+        goblin_sbe_headers)
+      target_include_directories(goblin_core_collection_benchmark_worker PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+      set_target_properties(goblin_core_collection_benchmark_worker PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_collection_benchmark_worker PRIVATE
+        -Wall -Wextra -Wpedantic)
+
       add_executable(goblin_core_pubsub_benchmark
         benchmarks/pubsub_benchmark.cpp)
       target_link_libraries(goblin_core_pubsub_benchmark PRIVATE
@@ -431,6 +587,13 @@ endif()
 if(GOBLIN_CORE_BUILD_TESTS)
   include(CTest)
 
+  add_executable(goblin_core_numa_topology_test
+    tests/numa_topology_test.cpp)
+  target_link_libraries(goblin_core_numa_topology_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_numa_topology_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_numa_topology COMMAND goblin_core_numa_topology_test)
+
   add_executable(goblin_core_tests tests/goblin_core_tests.cpp)
   target_link_libraries(goblin_core_tests PRIVATE goblin_core)
   set_target_properties(goblin_core_tests PROPERTIES
@@ -439,6 +602,12 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  add_executable(goblin_core_array_test tests/array_test.cpp)
+  target_link_libraries(goblin_core_array_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_array_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_array COMMAND goblin_core_array_test)
 
   add_executable(goblin_core_pubsub_test tests/pubsub_test.cpp)
   target_link_libraries(goblin_core_pubsub_test PRIVATE goblin_core)
@@ -722,6 +891,18 @@ install(
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+if(GOBLIN_HAS_RDMA_BUILD)
+  install(
+    TARGETS goblin_core_rdma_cli
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+if(GOBLIN_HAS_EXASOCK_BUILD)
+  install(
+    TARGETS goblin_core_exasock_cli
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(
   DIRECTORY include/

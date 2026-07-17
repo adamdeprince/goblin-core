@@ -1,0 +1,621 @@
+{
+  "generated_at": "2026-07-16 19:23:35 UTC",
+  "rss_source": "ps for mini-redis-go; /proc VmRSS + HugetlbPages otherwise",
+  "server_core": 2,
+  "client_core": 3,
+  "suite": "zset",
+  "members": 1000000,
+  "value_bytes": 16,
+  "batch": 128,
+  "pipeline": 256,
+  "requests": 200000,
+  "rounds": 3,
+  "ring_size_bytes": 2097152,
+  "engines": [
+    {
+      "label": "goblin-resp-tcp",
+      "transport": "resp",
+      "optimized": true,
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.922071227,
+        "checksum": 1132821,
+        "operations_per_second": 8473.315044673875
+      },
+      "memory": {
+        "rss_bytes": 58736640,
+        "rss_delta_bytes": 52322304,
+        "used_memory_bytes": 37340957,
+        "key_bytes": 51338848,
+        "goblin_memory": {
+          "member_count": "1000000",
+          "rank_cache_mode": "off",
+          "score_width": "f64",
+          "member_storage_bytes": "16000000",
+          "member_storage_allocated_bytes": "30064512",
+          "member_ref_capacity": "1000000",
+          "score_string_cache_bytes": "0",
+          "score_string_cache_ref_capacity": "0",
+          "score_string_cache_allocated_bytes": "0",
+          "member_index_capacity": "1030928",
+          "member_index_member_slot_capacity": "0",
+          "member_index_tombstones": "0",
+          "member_index_allocated_bytes": "5154656",
+          "score_entry_count": "1000000",
+          "score_block_count": "1780",
+          "score_block_capacity_sum": "1000360",
+          "rank_location_cache_allocated_bytes": "0",
+          "score_index_allocated_bytes": "16119680",
+          "total_allocated_bytes": "51338848"
+        }
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.11768301,
+          "checksum": 8148254,
+          "operations_per_second": 1699480.66420123,
+          "round_rates": [
+            1573513.5870774,
+            1704187.115314375,
+            1699480.66420123
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.186036494,
+          "checksum": 100001603527,
+          "operations_per_second": 1075057.8862231192,
+          "round_rates": [
+            1075057.8862231192,
+            1074577.557637909,
+            1079781.8175582932
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.270290186,
+          "checksum": 163000000,
+          "operations_per_second": 739945.4747498676,
+          "round_rates": [
+            734441.487782946,
+            753690.9517761961,
+            739945.4747498676
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.067454352,
+          "checksum": 200003400000,
+          "operations_per_second": 2964968.0720378133,
+          "round_rates": [
+            2982917.354322333,
+            2959307.582395594,
+            2964968.0720378133
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.187803479,
+          "checksum": 3400000,
+          "operations_per_second": 1064942.9982071845,
+          "round_rates": [
+            735779.5888068544,
+            1064942.9982071845,
+            1109107.366933471
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.202022533,
+          "checksum": 3600000,
+          "operations_per_second": 494994.2885826503,
+          "round_rates": [
+            386130.55199069105,
+            494994.2885826503,
+            497921.95756464096
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "goblin-sbe-ring",
+      "transport": "sbe",
+      "optimized": true,
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.702715554,
+        "checksum": 1132821,
+        "operations_per_second": 11118.296664314335
+      },
+      "memory": {
+        "rss_bytes": 67338240,
+        "rss_delta_bytes": 52506624,
+        "used_memory_bytes": 37340957,
+        "key_bytes": 51338848,
+        "goblin_memory": {
+          "member_count": "1000000",
+          "rank_cache_mode": "off",
+          "score_width": "f64",
+          "member_storage_bytes": "16000000",
+          "member_storage_allocated_bytes": "30064512",
+          "member_ref_capacity": "1000000",
+          "score_string_cache_bytes": "0",
+          "score_string_cache_ref_capacity": "0",
+          "score_string_cache_allocated_bytes": "0",
+          "member_index_capacity": "1030928",
+          "member_index_member_slot_capacity": "0",
+          "member_index_tombstones": "0",
+          "member_index_allocated_bytes": "5154656",
+          "score_entry_count": "1000000",
+          "score_block_count": "1780",
+          "score_block_capacity_sum": "1000360",
+          "rank_location_cache_allocated_bytes": "0",
+          "score_index_allocated_bytes": "16119680",
+          "total_allocated_bytes": "51338848"
+        }
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.053032023,
+          "checksum": 19400000,
+          "operations_per_second": 3771306.2539590467,
+          "round_rates": [
+            3033171.583392306,
+            3771306.2539590467,
+            3809742.2347452682
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.124049189,
+          "checksum": 100001603527,
+          "operations_per_second": 1612263.664214685,
+          "round_rates": [
+            1589758.8497980258,
+            1612263.664214685,
+            1627579.7953546268
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.071382518,
+          "checksum": 12600000,
+          "operations_per_second": 2801806.4591108984,
+          "round_rates": [
+            2795283.864151217,
+            2841671.0543251773,
+            2801806.4591108984
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.02220468,
+          "checksum": 200003400000,
+          "operations_per_second": 9007110.212801985,
+          "round_rates": [
+            9007110.212801985,
+            8910532.77100149,
+            9021736.159145592
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.059039745,
+          "checksum": 3400000,
+          "operations_per_second": 3387548.506518787,
+          "round_rates": [
+            1347495.3477386246,
+            3387548.506518787,
+            3709559.7245978345
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.131620321,
+          "checksum": 3600000,
+          "operations_per_second": 759761.1010232986,
+          "round_rates": [
+            519855.0419565647,
+            759761.1010232986,
+            768573.9045871603
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "redis-7.2.4",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 1.080723106,
+        "checksum": 1132821,
+        "operations_per_second": 7229.418855415866
+      },
+      "memory": {
+        "rss_bytes": 117059584,
+        "rss_delta_bytes": 109764608,
+        "used_memory_bytes": 103174040,
+        "key_bytes": 99589408,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.121804721,
+          "checksum": 8148254,
+          "operations_per_second": 1641972.4815099735,
+          "round_rates": [
+            1546025.8863482357,
+            1649035.4136374057,
+            1641972.4815099735
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.247319976,
+          "checksum": 100001603527,
+          "operations_per_second": 808669.0094131337,
+          "round_rates": [
+            778580.9969703972,
+            808669.0094131337,
+            808781.3565189057
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.347675567,
+          "checksum": 163000000,
+          "operations_per_second": 575248.9360289157,
+          "round_rates": [
+            586576.7707263537,
+            574588.2106571271,
+            575248.9360289157
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.083173527,
+          "checksum": 200003400000,
+          "operations_per_second": 2404611.26531282,
+          "round_rates": [
+            2386903.01541635,
+            2413352.878756518,
+            2404611.26531282
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.211332586,
+          "checksum": 3400000,
+          "operations_per_second": 946375.5863944239,
+          "round_rates": [
+            586325.6934157361,
+            946375.5863944239,
+            954324.7118652727
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.235830918,
+          "checksum": 3600000,
+          "operations_per_second": 424032.61136438436,
+          "round_rates": [
+            418087.43927530793,
+            427456.1332333576,
+            424032.61136438436
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "redis-8.8",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 1.104838253,
+        "checksum": 1132821,
+        "operations_per_second": 7071.623360962683
+      },
+      "memory": {
+        "rss_bytes": 91058176,
+        "rss_delta_bytes": 82677760,
+        "used_memory_bytes": 78210200,
+        "key_bytes": 95725832,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.149454299,
+          "checksum": 8148254,
+          "operations_per_second": 1338201.7201124472,
+          "round_rates": [
+            1266678.8994070245,
+            1338201.7201124472,
+            1339635.101885211
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.261318754,
+          "checksum": 100001603527,
+          "operations_per_second": 765348.8199319977,
+          "round_rates": [
+            732648.0434152285,
+            765348.8199319977,
+            770789.4745290363
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.357293483,
+          "checksum": 163000000,
+          "operations_per_second": 559763.9182240556,
+          "round_rates": [
+            557008.2500914907,
+            560308.0950433589,
+            559763.9182240556
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.100299435,
+          "checksum": 200003400000,
+          "operations_per_second": 1994029.1787286736,
+          "round_rates": [
+            1993634.6833104328,
+            1994029.1787286736,
+            1999879.0273176376
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.217427924,
+          "checksum": 3400000,
+          "operations_per_second": 919845.0517330975,
+          "round_rates": [
+            845386.5625797424,
+            919845.0517330975,
+            925027.8865844399
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.268814653,
+          "checksum": 3600000,
+          "operations_per_second": 372003.5306259886,
+          "round_rates": [
+            359138.74506579275,
+            372240.96670562145,
+            372003.5306259886
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "valkey-9.1",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 1.098485046,
+        "checksum": 1132821,
+        "operations_per_second": 7112.522859050373
+      },
+      "memory": {
+        "rss_bytes": 92602368,
+        "rss_delta_bytes": 84557824,
+        "used_memory_bytes": 81820616,
+        "key_bytes": 78265360,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.137820748,
+          "checksum": 8148254,
+          "operations_per_second": 1451160.3144107156,
+          "round_rates": [
+            1324672.1148399587,
+            1451160.3144107156,
+            1456542.7294943654
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.250975045,
+          "checksum": 100001603527,
+          "operations_per_second": 796891.9778458452,
+          "round_rates": [
+            757456.8368523717,
+            796891.9778458452,
+            799184.50573687
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.39653939,
+          "checksum": 163000000,
+          "operations_per_second": 504363.5135465357,
+          "round_rates": [
+            501016.3191185768,
+            508965.148799753,
+            504363.5135465357
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.107232648,
+          "checksum": 200003400000,
+          "operations_per_second": 1865103.6203078749,
+          "round_rates": [
+            1865103.6203078749,
+            1861776.4823578387,
+            1869698.469988348
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.222228731,
+          "checksum": 3400000,
+          "operations_per_second": 899973.6402220647,
+          "round_rates": [
+            864782.2571240654,
+            899973.6402220647,
+            922704.5422364037
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.258940472,
+          "checksum": 3600000,
+          "operations_per_second": 386189.1469789242,
+          "round_rates": [
+            378220.0329838126,
+            388159.6344070352,
+            386189.1469789242
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "dragonfly",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.804476925,
+        "checksum": 1132821,
+        "operations_per_second": 9711.900686275121
+      },
+      "memory": {
+        "rss_bytes": 78397440,
+        "rss_delta_bytes": 55259136,
+        "used_memory_bytes": 54582072,
+        "key_bytes": 54299376,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "score-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.186650497,
+          "checksum": 8148254,
+          "operations_per_second": 1071521.390055554,
+          "round_rates": [
+            1010392.4317726953,
+            1071521.390055554,
+            1074949.4011911051
+          ]
+        },
+        "rank": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.301526292,
+          "checksum": 100001603527,
+          "operations_per_second": 663292.0753723196,
+          "round_rates": [
+            654459.1171087999,
+            663501.75885359,
+            663292.0753723196
+          ]
+        },
+        "range-16": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.52661674,
+          "checksum": 163000000,
+          "operations_per_second": 379782.8378945948,
+          "round_rates": [
+            363796.52472565003,
+            379782.8378945948,
+            379999.86893804517
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.137371237,
+          "checksum": 200003400000,
+          "operations_per_second": 1455908.8523021743,
+          "round_rates": [
+            1448777.046005321,
+            1455908.8523021743,
+            1458028.4033993378
+          ]
+        },
+        "update": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.442413254,
+          "checksum": 3400000,
+          "operations_per_second": 452066.0224162272,
+          "round_rates": [
+            446827.7232321647,
+            452066.0224162272,
+            452156.1105958202
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.310068541,
+          "checksum": 3600000,
+          "operations_per_second": 322509.3383465819,
+          "round_rates": [
+            321980.5813768956,
+            323915.4442832008,
+            322509.3383465819
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "mini-redis-go-55178df",
+      "transport": "resp",
+      "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ZADD'"
+    }
+  ]
+}

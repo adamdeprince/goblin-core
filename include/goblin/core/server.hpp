@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace goblin::core {
@@ -17,6 +18,31 @@ struct RingConfig {
   std::string path;
   std::uint64_t bytes{0};
 };
+
+// One InfiniBand/RDMA listener from `--rdma <address> <port> <bytes>`. Each
+// accepted peer gets a registered inbound ring of approximately `bytes`; the
+// reverse direction is provided by the peer's registered ring.
+struct RdmaConfig {
+  std::string bind_address;
+  std::uint16_t port{0};
+  std::uint64_t bytes{0};
+};
+
+// One ExaSock-priority TCP listener from `--exasock <address> <port>`. Serviced
+// in the same strict busy-poll order as rings and RDMA (before the sparse plain
+// socket pass). Under the `exasock` LD_PRELOAD wrapper and an ExaNIC bind
+// address, accepted sockets are kernel-bypassed; without the wrapper this is
+// still a high-priority TCP target.
+struct ExasockConfig {
+  std::string bind_address;
+  std::uint16_t port{0};
+};
+
+// Polled targets retain their literal command-line order. A mixed sequence such
+// as `--ring A --exasock B --rdma C --ring D` is therefore scanned A, B, C, D,
+// followed by the sparse plain-socket pass.
+using PollTargetConfig =
+    std::variant<RingConfig, RdmaConfig, ExasockConfig>;
 
 struct ServerConfig {
   std::string bind_address{"127.0.0.1"};
@@ -34,10 +60,11 @@ struct ServerConfig {
   // Per-connection socket read buffer (the chunk each recv() fills). Configurable so
   // an operator can trade memory for fewer syscalls on large-message workloads.
   std::size_t client_read_buffer_bytes{16U * 1024U};
-  // Shared-memory rings, highest priority first. When non-empty the server
-  // busy-polls these before touching the network (and spins at 100% CPU by
-  // design); when empty it runs the ordinary low-CPU poll() loop.
-  std::vector<RingConfig> rings{};
+  // Shared-memory rings, ExaSock TCP listeners, and RDMA targets, highest priority
+  // first (literal CLI order). When non-empty the server busy-polls these before
+  // the sparse plain-socket pass (and spins at 100% CPU by design); when empty it
+  // runs the ordinary low-CPU poll() loop.
+  std::vector<PollTargetConfig> poll_targets{};
   // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.
@@ -46,9 +73,12 @@ struct ServerConfig {
   // node -- strictly, so a ring that cannot be made node-local is a fatal startup
   // error (a remote ring wrecks the latency it exists for). -1 disables it.
   int cpu{-1};
-  // Additionally steer the arenas' allocations to the pinned CPU's node (soft,
-  // best-effort). Only meaningful with `cpu` set; off by default because pinning all
-  // of a large server's memory to one node can starve clients co-located on it.
+  // Resolved slice for CPU affinity, shared rings, and server-side registered RDMA
+  // rings. It may come from --numa, --cpu, or unanimous endpoint auto-discovery.
+  int numa_node{-1};
+  // Additionally steer arena allocations to the selected slice (soft, best-effort).
+  // Off by default because pinning all of a large server's memory to one node can
+  // starve clients co-located on it.
   bool numa_arena{false};
 };
 

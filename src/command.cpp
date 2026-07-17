@@ -1,6 +1,8 @@
 #include "goblin/core/command.hpp"
 
+#include "goblin/core/exasock.hpp"
 #include "goblin/core/luau_script.hpp"
+#include "goblin/core/parse_int.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/script.hpp"
 #include "goblin/core/store.hpp"
@@ -88,6 +90,36 @@ namespace {
   s += "list_implementation:" +
        std::string(list_implementation_name(store.list_implementation())) +
        "\r\n";
+  s += "hash_implementation:" +
+       std::string(hash_implementation_name(store.hash_implementation())) +
+       "\r\n";
+  s += "array_implementation:" +
+       std::string(array_implementation_name(store.array_implementation())) +
+       "\r\n";
+  s += "keyspace_index:" +
+       std::string(store.real_time() ? "linear" : "swiss") + "\r\n";
+#if defined(GOBLIN_HAS_RDMA)
+  s += "rdma_support:1\r\n";
+#else
+  s += "rdma_support:0\r\n";
+#endif
+#if defined(GOBLIN_HAS_EXASOCK)
+  s += "exasock_support:1\r\n";
+  {
+    // Runtime: true only under the `exasock` LD_PRELOAD wrapper.
+    const bool loaded = goblin::core::exasock::loaded();
+    s += "exasock_loaded:";
+    s += loaded ? "1\r\n" : "0\r\n";
+    if (loaded) {
+      s += "exasock_version:";
+      s += goblin::core::exasock::version_text();
+      s += "\r\n";
+    }
+  }
+#else
+  s += "exasock_support:0\r\n";
+  s += "exasock_loaded:0\r\n";
+#endif
   s += "# Memory\r\n";
   s += "used_memory:" + std::to_string(used) + "\r\n";
   s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
@@ -95,6 +127,10 @@ namespace {
   s += "mem_reclaimable_bytes:" + std::to_string(dead) + "\r\n";
   s += "hash_heap_allocated_bytes:" +
        std::to_string(mem.hash_heap_allocated_bytes) + "\r\n";
+  s += "realtime_hash_index_pool_bytes:" +
+       std::to_string(mem.realtime_hash_index_pool_bytes) + "\r\n";
+  s += "realtime_keyspace_index_pool_bytes:" +
+       std::to_string(mem.realtime_keyspace_index_pool_bytes) + "\r\n";
   s += "blob_pool_requested_bytes:" +
        std::to_string(mem.blob_pool_requested_bytes) + "\r\n";
   s += "blob_pool_capacity_bytes:" +
@@ -134,21 +170,24 @@ namespace {
   return true;
 }
 
-[[nodiscard]] std::optional<long long> parse_i64(std::string_view text) {
-  if (text.empty()) {
-    return std::nullopt;
-  }
-
-  long long value = 0;
-  const auto* begin = text.data();
-  const auto* end = text.data() + text.size();
-  const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end) {
-    return std::nullopt;
-  }
-
-  return value;
+[[nodiscard]] bool starts_with_ci(std::string_view value,
+                                  std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         equals_ci(value.substr(0, prefix.size()), prefix);
 }
+
+[[nodiscard]] std::optional<HashImplementation> qualified_hash_implementation(
+    std::string_view command_name) {
+  if (starts_with_ci(command_name, "GOBLIN.RT.")) {
+    return HashImplementation::Realtime;
+  }
+  if (starts_with_ci(command_name, "GOBLIN.EFFICENT.")) {
+    return HashImplementation::Efficient;
+  }
+  return std::nullopt;
+}
+
+using goblin::core::parse_i64;
 
 [[nodiscard]] std::optional<double> parse_score(std::string_view text) {
   if (text.empty()) {
@@ -316,6 +355,8 @@ void append_hello_response(std::string& out, resp::Version version,
     fields.emplace_back(name);
     fields.push_back(std::to_string(value));
   };
+  fields.emplace_back("implementation");
+  fields.emplace_back(hash_implementation_name(stats.implementation));
   add("field_count", stats.field_count);
   add("field_value_live_bytes", stats.field_value_live_bytes);
   add("field_value_dead_bytes", stats.field_value_dead_bytes);
@@ -345,6 +386,29 @@ void append_hello_response(std::string& out, resp::Version version,
   add("total_allocated_bytes", stats.total_allocated_bytes);
 
   return fields;
+}
+
+[[nodiscard]] std::vector<std::string> set_memory_stats_fields(
+    const SetMemoryStats& stats) {
+  std::vector<std::string> fields;
+  auto add = [&fields](std::string_view name, std::size_t value) {
+    fields.emplace_back(name);
+    fields.push_back(std::to_string(value));
+  };
+  add("member_count", stats.member_count);
+  add("member_live_bytes", stats.member_live_bytes);
+  add("member_dead_bytes", stats.member_dead_bytes);
+  add("member_allocated_bytes", stats.member_allocated_bytes);
+  add("member_index_capacity", stats.member_index_capacity);
+  add("member_index_tombstones", stats.member_index_tombstones);
+  add("member_index_allocated_bytes", stats.member_index_allocated_bytes);
+  add("total_allocated_bytes", stats.total_allocated_bytes);
+  return fields;
+}
+
+[[nodiscard]] std::string set_memory_stats_response(const SetMemoryStats& stats,
+                                                    resp::Version version) {
+  return fields_response(set_memory_stats_fields(stats), version);
 }
 
 [[nodiscard]] std::string hash_memory_stats_response(const HashMemoryStats& stats,
@@ -379,6 +443,39 @@ void append_hello_response(std::string& out, resp::Version version,
     const ListMemoryStats& stats, resp::Version version) {
   const auto fields = list_memory_stats_fields(stats);
   return fields_response(fields, version);
+}
+
+[[nodiscard]] std::vector<std::string> array_memory_stats_fields(
+    const ArrayMemoryStats& stats) {
+  std::vector<std::string> fields;
+  auto add = [&fields](std::string_view name, std::size_t value) {
+    fields.emplace_back(name);
+    fields.push_back(std::to_string(value));
+  };
+  fields.emplace_back("implementation");
+  fields.emplace_back(array_implementation_name(stats.implementation));
+  add("element_count", stats.element_count);
+  add("logical_length", stats.logical_length);
+  add("slice_count", stats.slice_count);
+  add("sparse_slices", stats.sparse_slices);
+  add("dense_slices", stats.dense_slices);
+  add("directory_depth", stats.directory_depth);
+  add("directory_nodes", stats.directory_nodes);
+  add("value_live_bytes", stats.value_live_bytes);
+  add("value_dead_bytes", stats.value_dead_bytes);
+  add("value_allocated_bytes", stats.value_allocated_bytes);
+  add("leaf_table_bytes", stats.leaf_table_bytes);
+  add("realtime_reserved", stats.realtime_reserved ? 1 : 0);
+  add("reserved_max_index", stats.reserved_max_index);
+  add("reserved_value_capacity", stats.reserved_value_capacity);
+  add("reserved_value_bytes", stats.reserved_value_bytes);
+  add("total_allocated_bytes", stats.total_allocated_bytes);
+  return fields;
+}
+
+[[nodiscard]] std::string array_memory_stats_response(
+    const ArrayMemoryStats& stats, resp::Version version) {
+  return fields_response(array_memory_stats_fields(stats), version);
 }
 
 constexpr std::string_view kWrongType =
@@ -429,6 +526,123 @@ constexpr std::string_view kValueTooLarge =
     default:
       return false;
   }
+}
+
+[[nodiscard]] bool is_set_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::sadd:
+    case CommandType::srem:
+    case CommandType::scard:
+    case CommandType::sismember:
+    case CommandType::smismember:
+    case CommandType::smembers:
+    case CommandType::spop:
+    case CommandType::srandmember:
+    case CommandType::smove:
+    case CommandType::sinter:
+    case CommandType::sunion:
+    case CommandType::sdiff:
+    case CommandType::sscan:
+      // *STORE first-arg is a destination that may clobber any type; SINTERCARD
+      // first-arg is numkeys. Both are type-checked in their handlers.
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool is_array_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::arreserve:
+    case CommandType::arset:
+    case CommandType::arget:
+    case CommandType::armset:
+    case CommandType::armget:
+    case CommandType::arlen:
+    case CommandType::arcount:
+    case CommandType::ardel:
+    case CommandType::arinsert:
+    case CommandType::arnext:
+    case CommandType::arseek:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Redis-style glob for SSCAN MATCH (* ? [abc]).
+[[nodiscard]] bool set_glob_match(std::string_view pattern,
+                                  std::string_view value) noexcept {
+  std::size_t pi = 0;
+  std::size_t vi = 0;
+  std::size_t star_pi = std::string_view::npos;
+  std::size_t star_vi = 0;
+  while (vi < value.size()) {
+    if (pi < pattern.size() &&
+        (pattern[pi] == '?' || pattern[pi] == value[vi])) {
+      ++pi;
+      ++vi;
+      continue;
+    }
+    if (pi < pattern.size() && pattern[pi] == '*') {
+      star_pi = pi++;
+      star_vi = vi;
+      continue;
+    }
+    if (pi < pattern.size() && pattern[pi] == '[') {
+      const auto close = pattern.find(']', pi + 1);
+      if (close == std::string_view::npos) {
+        return false;
+      }
+      const auto class_body = pattern.substr(pi + 1, close - pi - 1);
+      bool negate = false;
+      std::size_t ci = 0;
+      if (!class_body.empty() &&
+          (class_body[0] == '^' || class_body[0] == '!')) {
+        negate = true;
+        ci = 1;
+      }
+      bool matched = false;
+      while (ci < class_body.size()) {
+        if (ci + 2 < class_body.size() && class_body[ci + 1] == '-') {
+          const auto lo = class_body[ci];
+          const auto hi = class_body[ci + 2];
+          if (value[vi] >= lo && value[vi] <= hi) {
+            matched = true;
+            break;
+          }
+          ci += 3;
+        } else {
+          if (class_body[ci] == value[vi]) {
+            matched = true;
+            break;
+          }
+          ++ci;
+        }
+      }
+      if (matched == negate) {
+        if (star_pi != std::string_view::npos) {
+          pi = star_pi + 1;
+          vi = ++star_vi;
+          continue;
+        }
+        return false;
+      }
+      pi = close + 1;
+      ++vi;
+      continue;
+    }
+    if (star_pi != std::string_view::npos) {
+      pi = star_pi + 1;
+      vi = ++star_vi;
+      continue;
+    }
+    return false;
+  }
+  while (pi < pattern.size() && pattern[pi] == '*') {
+    ++pi;
+  }
+  return pi == pattern.size();
 }
 
 [[nodiscard]] bool is_list_command(CommandType type) noexcept {
@@ -554,7 +768,8 @@ constexpr std::string_view kValueTooLarge =
 // non-string key is WRONGTYPE.
 [[nodiscard]] bool is_typed_string_command(CommandType type) noexcept {
   switch (type) {
-    case CommandType::get:
+    // GET is omitted: its store path returns Missing/WrongType/Ok in one probe
+    // (see CommandType::get), so the central type gate would be a second find.
     case CommandType::getset:
     case CommandType::getdel:
     case CommandType::strlen:
@@ -588,6 +803,12 @@ constexpr std::string_view kValueTooLarge =
   if (is_hash_command(type)) {
     return KeyType::Hash;
   }
+  if (is_set_command(type)) {
+    return KeyType::Set;
+  }
+  if (is_array_command(type)) {
+    return KeyType::Array;
+  }
   if (is_list_command(type)) {
     return KeyType::List;
   }
@@ -603,6 +824,7 @@ constexpr std::string_view kValueTooLarge =
     return true;  // zset / hash / typed-string commands
   }
   switch (type) {
+    case CommandType::get:  // fused type check; still purges on access
     case CommandType::set:
     case CommandType::setnx:
     case CommandType::mset:
@@ -621,6 +843,10 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::pexpiretime:
     case CommandType::goblin_memory:
     case CommandType::goblin_optimize:
+    // Set *STORE: destination is first; sources are purged in the handlers.
+    case CommandType::sinterstore:
+    case CommandType::sunionstore:
+    case CommandType::sdiffstore:
       return true;
     default:
       return false;
@@ -658,14 +884,7 @@ void append_incr(std::string& out, Store& store, std::string_view key,
 }
 
 [[nodiscard]] std::optional<long long> parse_ll(std::string_view text) {
-  long long value = 0;
-  const auto* begin = text.data();
-  const auto* end = text.data() + text.size();
-  const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end) {
-    return std::nullopt;
-  }
-  return value;
+  return parse_i64(text);
 }
 
 struct WithscoresChunkAppender {
@@ -849,6 +1068,28 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       upper[k] = ascii_upper_char(command.name[k]);
     }
     entry = CommandDispatch::lookup(upper.data(), command.name.size());
+    // Capture qualified hash implementation once at parse (L). Avoids
+    // re-scanning the name on every execute_command_into for H*.
+    if (command.name.size() >= 10 && upper[0] == 'G' && upper[1] == 'O' &&
+        upper[2] == 'B' && upper[3] == 'L' && upper[4] == 'I' &&
+        upper[5] == 'N' && upper[6] == '.') {
+      if (command.name.size() >= 10 && upper[7] == 'R' && upper[8] == 'T' &&
+          upper[9] == '.') {
+        command.hash_implementation_tag = 2;  // Realtime
+      } else if (command.name.size() >= 16 && upper[7] == 'E' &&
+                 upper[8] == 'F' && upper[9] == 'F' && upper[10] == 'I' &&
+                 upper[11] == 'C' && upper[12] == 'E' && upper[13] == 'N' &&
+                 upper[14] == 'T' && upper[15] == '.') {
+        // GOBLIN.EFFICENT.* — hash non-RT family (historical spelling).
+        command.hash_implementation_tag = 1;  // Efficient (hashes)
+      } else if (command.name.size() >= 15 && upper[7] == 'C' &&
+                 upper[8] == 'L' && upper[9] == 'A' && upper[10] == 'S' &&
+                 upper[11] == 'S' && upper[12] == 'I' && upper[13] == 'C' &&
+                 upper[14] == '.') {
+        // GOBLIN.CLASSIC.* — array Redis-8.8-style family (not hashes).
+        command.hash_implementation_tag = 1;  // Classic (arrays) / non-RT tag
+      }
+    }
   }
   if (entry == nullptr) {
     command.type = CommandType::unknown;
@@ -1166,6 +1407,169 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::hincrby;
       return {.command = std::move(command)};
+    case CommandType::sadd:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sadd"));
+      }
+      command.type = CommandType::sadd;
+      return {.command = std::move(command)};
+    case CommandType::srem:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("srem"));
+      }
+      command.type = CommandType::srem;
+      return {.command = std::move(command)};
+    case CommandType::scard:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("scard"));
+      }
+      command.type = CommandType::scard;
+      return {.command = std::move(command)};
+    case CommandType::sismember:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("sismember"));
+      }
+      command.type = CommandType::sismember;
+      return {.command = std::move(command)};
+    case CommandType::smismember:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("smismember"));
+      }
+      command.type = CommandType::smismember;
+      return {.command = std::move(command)};
+    case CommandType::smembers:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("smembers"));
+      }
+      command.type = CommandType::smembers;
+      return {.command = std::move(command)};
+    case CommandType::spop:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity("spop"));
+      }
+      command.type = CommandType::spop;
+      return {.command = std::move(command)};
+    case CommandType::srandmember:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity("srandmember"));
+      }
+      command.type = CommandType::srandmember;
+      return {.command = std::move(command)};
+    case CommandType::smove:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("smove"));
+      }
+      command.type = CommandType::smove;
+      return {.command = std::move(command)};
+    case CommandType::sinter:
+      if (command.args.size() < 1) {
+        return parse_error(wrong_arity("sinter"));
+      }
+      command.type = CommandType::sinter;
+      return {.command = std::move(command)};
+    case CommandType::sunion:
+      if (command.args.size() < 1) {
+        return parse_error(wrong_arity("sunion"));
+      }
+      command.type = CommandType::sunion;
+      return {.command = std::move(command)};
+    case CommandType::sdiff:
+      if (command.args.size() < 1) {
+        return parse_error(wrong_arity("sdiff"));
+      }
+      command.type = CommandType::sdiff;
+      return {.command = std::move(command)};
+    case CommandType::sinterstore:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sinterstore"));
+      }
+      command.type = CommandType::sinterstore;
+      return {.command = std::move(command)};
+    case CommandType::sunionstore:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sunionstore"));
+      }
+      command.type = CommandType::sunionstore;
+      return {.command = std::move(command)};
+    case CommandType::sdiffstore:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sdiffstore"));
+      }
+      command.type = CommandType::sdiffstore;
+      return {.command = std::move(command)};
+    case CommandType::sintercard:
+      // SINTERCARD numkeys key [key ...] [LIMIT limit]
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sintercard"));
+      }
+      command.type = CommandType::sintercard;
+      return {.command = std::move(command)};
+    case CommandType::sscan:
+      // SSCAN key cursor [MATCH pattern] [COUNT count]
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("sscan"));
+      }
+      command.type = CommandType::sscan;
+      return {.command = std::move(command)};
+    case CommandType::arreserve:
+      // GOBLIN.RT.ARRESERVE key max-index value-slots encoded-bytes
+      if (command.args.size() != 4) {
+        return parse_error(wrong_arity("goblin.rt.arreserve"));
+      }
+      command.type = CommandType::arreserve;
+      return {.command = std::move(command)};
+    case CommandType::arset:
+      // ARSET key index value [value ...]
+      if (command.args.size() < 3) {
+        return parse_error(wrong_arity("arset"));
+      }
+      command.type = CommandType::arset;
+      return {.command = std::move(command)};
+    case CommandType::arget:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("arget"));
+      }
+      command.type = CommandType::arget;
+      return {.command = std::move(command)};
+    case CommandType::armset:
+      // ARMSET key index value [index value ...]
+      if (command.args.size() < 3 || (command.args.size() % 2) == 0) {
+        return parse_error(wrong_arity("armset"));
+      }
+      command.type = CommandType::armset;
+      return {.command = std::move(command)};
+    case CommandType::armget:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("armget"));
+      }
+      command.type = CommandType::armget;
+      return {.command = std::move(command)};
+    case CommandType::arlen:
+    case CommandType::arcount:
+    case CommandType::arnext:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = entry->type;
+      return {.command = std::move(command)};
+    case CommandType::ardel:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("ardel"));
+      }
+      command.type = CommandType::ardel;
+      return {.command = std::move(command)};
+    case CommandType::arinsert:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("arinsert"));
+      }
+      command.type = CommandType::arinsert;
+      return {.command = std::move(command)};
+    case CommandType::arseek:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity("arseek"));
+      }
+      command.type = CommandType::arseek;
+      return {.command = std::move(command)};
     case CommandType::lpush:
     case CommandType::rpush:
     case CommandType::lpushx:
@@ -1477,14 +1881,18 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
 // duplicating build_info_string (which stays an internal helper here).
 std::string render_server_info(const Store& store) { return build_info_string(store); }
 
-// GOBLIN.MEMORY's flat [name, value, ...] fields for a zset or hash key (nullopt if
-// the key is neither), so the SBE dispatch can shape them into a map reply and the
-// RESP path into an array -- one field list, two encodings.
+// GOBLIN.MEMORY's flat [name, value, ...] fields for a zset/hash/list/set key
+// (nullopt if the key is none of those), so the SBE dispatch can shape them into
+// a map reply and the RESP path into an array -- one field list, two encodings.
 std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
                                                              std::string_view key) {
   if (const auto z = store.zset_memory_stats(key)) return memory_stats_fields(*z);
   if (const auto h = store.hash_memory_stats(key)) return hash_memory_stats_fields(*h);
   if (const auto l = store.list_memory_stats(key)) return list_memory_stats_fields(*l);
+  if (const auto s = store.set_memory_stats(key)) return set_memory_stats_fields(*s);
+  if (const auto a = store.array_memory_stats(key)) {
+    return array_memory_stats_fields(*a);
+  }
   return std::nullopt;
 }
 
@@ -1495,6 +1903,20 @@ void execute_command_into(Store& store,
   const auto type =
       resolve_list_command(command.type, store.list_implementation());
   const auto version = response_version(options);
+  // Prefer the parse-time tag (L); fall back to name scan for hand-built Commands.
+  // GOBLIN.RT.* / GOBLIN.EFFICENT.* select hash implementation (not CLASSIC).
+  const std::optional<HashImplementation> hash_implementation =
+      command.hash_implementation_tag == 2
+          ? std::optional{HashImplementation::Realtime}
+      : starts_with_ci(command.name, "GOBLIN.EFFICENT.")
+          ? std::optional{HashImplementation::Efficient}
+          : qualified_hash_implementation(command.name);
+  // GOBLIN.RT.AR* → RT, GOBLIN.CLASSIC.AR* → Classic (Redis 8.8-style arrays).
+  const ArrayImplementation array_implementation =
+      command.hash_implementation_tag == 2 ? ArrayImplementation::Realtime
+      : starts_with_ci(command.name, "GOBLIN.CLASSIC.")
+          ? ArrayImplementation::Classic
+          : store.array_implementation();
   // Lazy expiration: a key whose TTL has already passed is deleted on first
   // access, before the type gate or the command sees it. Only the first-key
   // argument is handled here (multi-key readers purge their extra keys); gated on
@@ -1802,7 +2224,8 @@ void execute_command_into(Store& store,
       // Common case: HSET k f v -- skip the multi-field vector.
       if (command.args.size() == 3) {
         resp::append_integer(
-            out, store.hset(key, command.args[1], command.args[2]));
+            out, store.hset(key, command.args[1], command.args[2],
+                            hash_implementation));
         return;
       }
       // Multi-field: one keyspace lookup, reserve, then set each pair.
@@ -1813,7 +2236,8 @@ void execute_command_into(Store& store,
       for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
         pairs.emplace_back(command.args[i], command.args[i + 1]);
       }
-      resp::append_integer(out, store.hset_many(key, pairs));
+      resp::append_integer(out,
+                           store.hset_many(key, pairs, hash_implementation));
       return;
     }
 
@@ -1824,7 +2248,8 @@ void execute_command_into(Store& store,
         return;
       }
       resp::append_integer(
-          out, store.hsetnx(command.args[0], command.args[1], command.args[2]));
+          out, store.hsetnx(command.args[0], command.args[1], command.args[2],
+                            hash_implementation));
       return;
 
     case CommandType::hget: {
@@ -1839,14 +2264,16 @@ void execute_command_into(Store& store,
 
     case CommandType::hmget: {
       resp::append_array_header(out, command.args.size() - 1);
-      for (std::size_t i = 1; i < command.args.size(); ++i) {
-        const auto value = store.hget(command.args[0], command.args[i]);
-        if (!value) {
-          resp::append_null(out, version);
-        } else {
-          resp::append_bulk_string(out, *value);
-        }
-      }
+      const auto fields = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      store.hash_mget(command.args[0], fields,
+                      [&](std::optional<EncodedStringView> value) {
+                        if (!value) {
+                          resp::append_null(out, version);
+                        } else {
+                          resp::append_bulk_string(out, *value);
+                        }
+                      });
       return;
     }
 
@@ -1859,36 +2286,39 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::hgetall: {
-      const auto count = store.hlen(command.args[0]);
-      if (version == resp::Version::resp3) {
-        resp::append_map_header(out, count);
-      } else {
-        resp::append_array_header(out, count * 2);
-      }
-      store.hash_for_each(command.args[0],
-                          [&out](std::string_view field,
-                                 EncodedStringView value) {
-                            resp::append_bulk_string(out, field);
-                            resp::append_bulk_string(out, value);
-                          });
+      store.hash_for_each_sized(
+          command.args[0],
+          [&](std::size_t count) {
+            if (version == resp::Version::resp3) {
+              resp::append_map_header(out, count);
+            } else {
+              resp::append_array_header(out, count * 2);
+            }
+          },
+          [&out](std::string_view field, EncodedStringView value) {
+            resp::append_bulk_string(out, field);
+            resp::append_bulk_string(out, value);
+          });
       return;
     }
 
     case CommandType::hkeys: {
-      resp::append_array_header(out, store.hlen(command.args[0]));
-      store.hash_for_each(command.args[0],
-                          [&out](std::string_view field, EncodedStringView) {
-                            resp::append_bulk_string(out, field);
-                          });
+      store.hash_for_each_sized(
+          command.args[0],
+          [&](std::size_t count) { resp::append_array_header(out, count); },
+          [&out](std::string_view field, EncodedStringView) {
+            resp::append_bulk_string(out, field);
+          });
       return;
     }
 
     case CommandType::hvals: {
-      resp::append_array_header(out, store.hlen(command.args[0]));
-      store.hash_for_each(command.args[0],
-                          [&out](std::string_view, EncodedStringView value) {
-                            resp::append_bulk_string(out, value);
-                          });
+      store.hash_for_each_sized(
+          command.args[0],
+          [&](std::size_t count) { resp::append_array_header(out, count); },
+          [&out](std::string_view, EncodedStringView value) {
+            resp::append_bulk_string(out, value);
+          });
       return;
     }
 
@@ -1913,12 +2343,508 @@ void execute_command_into(Store& store,
         resp::append_error(out, "ERR value is not an integer or out of range");
         return;
       }
-      const auto result = store.hincrby(command.args[0], command.args[1], *delta);
+      const auto result = store.hincrby(command.args[0], command.args[1], *delta,
+                                        hash_implementation);
       if (!result) {
         resp::append_error(
             out, "ERR hash value is not an integer or out of range");
       } else {
         resp::append_integer(out, *result);
+      }
+      return;
+    }
+
+    case CommandType::sadd: {
+      for (std::size_t index = 1; index < command.args.size(); ++index) {
+        if (!store.value_fits(command.args[index])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
+      const auto members = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      resp::append_integer(out, store.sadd(command.args[0], members));
+      return;
+    }
+
+    case CommandType::srem: {
+      const auto members = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      resp::append_integer(out, store.srem(command.args[0], members));
+      return;
+    }
+
+    case CommandType::scard:
+      resp::append_integer(out, store.scard(command.args[0]));
+      return;
+
+    case CommandType::sismember:
+      resp::append_integer(
+          out, store.sismember(command.args[0], command.args[1]) ? 1 : 0);
+      return;
+
+    case CommandType::smismember: {
+      const auto members = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      resp::append_array_header(out, members.size());
+      store.smismember(command.args[0], members, [&](bool present) {
+        resp::append_integer(out, present ? 1 : 0);
+      });
+      return;
+    }
+
+    case CommandType::smembers: {
+      store.smembers_for_each(
+          command.args[0],
+          [&](std::size_t count) { resp::append_array_header(out, count); },
+          [&out](EncodedStringView member) {
+            resp::append_bulk_string(out, member);
+          });
+      return;
+    }
+
+    case CommandType::spop: {
+      if (command.args.size() == 1) {
+        const auto member = store.spop(command.args[0]);
+        if (!member) {
+          resp::append_null(out, version);
+        } else {
+          resp::append_bulk_string(out, *member);
+        }
+        return;
+      }
+      const auto count = parse_ll(command.args[1]);
+      if (!count || *count < 0) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto members =
+          store.spop(command.args[0], static_cast<std::size_t>(*count));
+      resp::append_array_header(out, members.size());
+      for (const auto& member : members) {
+        resp::append_bulk_string(out, member);
+      }
+      return;
+    }
+
+    case CommandType::srandmember: {
+      if (command.args.size() == 1) {
+        const auto member = store.srandmember(command.args[0]);
+        if (!member) {
+          resp::append_null(out, version);
+        } else {
+          resp::append_bulk_string(out, *member);
+        }
+        return;
+      }
+      const auto count = parse_ll(command.args[1]);
+      if (!count) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*count >= 0) {
+        const auto members = store.srandmember(
+            command.args[0], static_cast<std::size_t>(*count), /*unique=*/true);
+        resp::append_array_header(out, members.size());
+        for (const auto& member : members) {
+          resp::append_bulk_string(out, member);
+        }
+      } else {
+        const auto n = static_cast<std::size_t>(-*count);
+        const auto members =
+            store.srandmember(command.args[0], n, /*unique=*/false);
+        resp::append_array_header(out, members.size());
+        for (const auto& member : members) {
+          resp::append_bulk_string(out, member);
+        }
+      }
+      return;
+    }
+
+    case CommandType::smove: {
+      // Destination must also be a set-or-missing (source already gated).
+      if (!store.ttl_empty()) {
+        (void)store.purge_if_expired(command.args[1], store.now_ms());
+      }
+      if (const auto actual = store.key_type(command.args[1]);
+          actual.has_value() && *actual != KeyType::Set) {
+        resp::append_error(out, kWrongType);
+        return;
+      }
+      if (!store.value_fits(command.args[2])) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      resp::append_integer(
+          out, store.smove(command.args[0], command.args[1], command.args[2]));
+      return;
+    }
+
+    case CommandType::sinter:
+    case CommandType::sunion:
+    case CommandType::sdiff: {
+      const auto keys = std::span<const std::string_view>(command.args);
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (!store.ttl_empty()) {
+          (void)store.purge_if_expired(keys[i], now);
+        }
+        if (const auto actual = store.key_type(keys[i]);
+            actual.has_value() && *actual != KeyType::Set) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+      }
+      const auto members =
+          type == CommandType::sinter   ? store.sinter(keys)
+          : type == CommandType::sunion ? store.sunion(keys)
+                                       : store.sdiff(keys);
+      resp::append_array_header(out, members.size());
+      for (const auto& member : members) {
+        resp::append_bulk_string(out, member);
+      }
+      return;
+    }
+
+    case CommandType::sinterstore:
+    case CommandType::sunionstore:
+    case CommandType::sdiffstore: {
+      const auto destination = command.args[0];
+      const auto keys = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) {
+          (void)store.purge_if_expired(key, now);
+        }
+        if (const auto actual = store.key_type(key);
+            actual.has_value() && *actual != KeyType::Set) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+      }
+      const auto stored =
+          type == CommandType::sinterstore   ? store.sinterstore(destination, keys)
+          : type == CommandType::sunionstore ? store.sunionstore(destination, keys)
+                                            : store.sdiffstore(destination, keys);
+      resp::append_integer(out, stored);
+      return;
+    }
+
+    case CommandType::sintercard: {
+      // SINTERCARD numkeys key [key ...] [LIMIT limit]
+      const auto numkeys = parse_ll(command.args[0]);
+      if (!numkeys || *numkeys < 1) {
+        resp::append_error(out, "ERR numkeys should be greater than 0");
+        return;
+      }
+      const auto nkeys = static_cast<std::size_t>(*numkeys);
+      if (command.args.size() < 1 + nkeys) {
+        resp::append_error(out, wrong_arity("sintercard"));
+        return;
+      }
+      std::size_t limit = 0;
+      std::size_t pos = 1 + nkeys;
+      if (pos < command.args.size()) {
+        if (pos + 1 >= command.args.size() ||
+            !equals_ci(command.args[pos], "LIMIT")) {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+        const auto lim = parse_ll(command.args[pos + 1]);
+        if (!lim || *lim < 0) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        limit = static_cast<std::size_t>(*lim);
+        pos += 2;
+      }
+      if (pos != command.args.size()) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      const auto keys =
+          std::span<const std::string_view>(command.args.data() + 1, nkeys);
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) {
+          (void)store.purge_if_expired(key, now);
+        }
+        if (const auto actual = store.key_type(key);
+            actual.has_value() && *actual != KeyType::Set) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+      }
+      resp::append_integer(out, store.sintercard(keys, limit));
+      return;
+    }
+
+    case CommandType::sscan: {
+      // SSCAN key cursor [MATCH pattern] [COUNT count]
+      const auto cursor = parse_ll(command.args[1]);
+      if (!cursor || *cursor < 0) {
+        resp::append_error(out, "ERR invalid cursor");
+        return;
+      }
+      std::string_view pattern;
+      std::size_t count = 10;
+      for (std::size_t i = 2; i < command.args.size();) {
+        if (equals_ci(command.args[i], "MATCH")) {
+          if (i + 1 >= command.args.size()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          pattern = command.args[i + 1];
+          i += 2;
+        } else if (equals_ci(command.args[i], "COUNT")) {
+          if (i + 1 >= command.args.size()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          const auto c = parse_ll(command.args[i + 1]);
+          if (!c || *c < 1) {
+            resp::append_error(out, integer_range_error());
+            return;
+          }
+          count = static_cast<std::size_t>(*c);
+          i += 2;
+        } else {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+      }
+      std::vector<std::string> members;
+      const auto next = store.sscan(
+          command.args[0], static_cast<std::uint64_t>(*cursor), count,
+          [&](std::string_view member) {
+            return pattern.empty() || set_glob_match(pattern, member);
+          },
+          [&](std::string member) { members.push_back(std::move(member)); });
+      // Reply: [next_cursor, [members...]]
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(next));
+      resp::append_array_header(out, members.size());
+      for (const auto& member : members) {
+        resp::append_bulk_string(out, member);
+      }
+      return;
+    }
+
+    case CommandType::arreserve: {
+      const auto max_index = parse_ll(command.args[1]);
+      const auto value_capacity = parse_ll(command.args[2]);
+      const auto value_bytes = parse_ll(command.args[3]);
+      if (!max_index || *max_index < 0 || !value_capacity ||
+          *value_capacity <= 0 ||
+          static_cast<unsigned long long>(*value_capacity) >=
+              static_cast<unsigned long long>(ArrayStorage::kEmptyId) ||
+          !value_bytes || *value_bytes <= 0 ||
+          static_cast<unsigned long long>(*value_bytes) >
+              std::numeric_limits<std::uint32_t>::max()) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const bool created = store.find_array(command.args[0]) == nullptr;
+      try {
+        auto& array = store.get_or_create_array(
+            command.args[0], ArrayImplementation::Realtime);
+        array.reserve_realtime(
+            static_cast<std::uint64_t>(*max_index),
+            static_cast<std::size_t>(*value_capacity),
+            static_cast<std::size_t>(*value_bytes));
+        resp::append_integer(out, 1);
+      } catch (const std::length_error& ex) {
+        if (created) {
+          if (auto* array = store.find_array(command.args[0]); array != nullptr) {
+            store.erase_if_empty(command.args[0], *array);
+          }
+        }
+        resp::append_error(out, ex.what());
+      }
+      return;
+    }
+
+    case CommandType::arset: {
+      const auto index = parse_ll(command.args[1]);
+      if (!index || *index < 0) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      for (std::size_t i = 2; i < command.args.size(); ++i) {
+        if (!store.value_fits(command.args[i])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
+      try {
+        auto& array =
+            store.get_or_create_array(command.args[0], array_implementation);
+        std::size_t written = 0;
+        for (std::size_t i = 2; i < command.args.size(); ++i) {
+          (void)array.set(static_cast<std::uint64_t>(*index) + written,
+                          command.args[i]);
+          ++written;
+        }
+        resp::append_integer(out, static_cast<long long>(written));
+      } catch (const std::length_error& ex) {
+        resp::append_error(out, ex.what());
+      }
+      return;
+    }
+
+    case CommandType::arget: {
+      const auto index = parse_ll(command.args[1]);
+      if (!index || *index < 0) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto* array = store.find_array(command.args[0]);
+      if (array == nullptr) {
+        resp::append_null(out, version);
+        return;
+      }
+      const auto value = array->get(static_cast<std::uint64_t>(*index));
+      if (!value) {
+        resp::append_null(out, version);
+      } else {
+        resp::append_bulk_string(out, *value);
+      }
+      return;
+    }
+
+    case CommandType::armset: {
+      try {
+        auto& array =
+            store.get_or_create_array(command.args[0], array_implementation);
+        long long applied = 0;
+        for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
+          const auto index = parse_ll(command.args[i]);
+          if (!index || *index < 0) {
+            resp::append_error(out, integer_range_error());
+            return;
+          }
+          if (!store.value_fits(command.args[i + 1])) {
+            resp::append_error(out, kValueTooLarge);
+            return;
+          }
+          (void)array.set(static_cast<std::uint64_t>(*index),
+                          command.args[i + 1]);
+          ++applied;
+        }
+        resp::append_integer(out, applied);
+      } catch (const std::length_error& ex) {
+        resp::append_error(out, ex.what());
+      }
+      return;
+    }
+
+    case CommandType::armget: {
+      const auto* array = store.find_array(command.args[0]);
+      resp::append_array_header(out, command.args.size() - 1);
+      for (std::size_t i = 1; i < command.args.size(); ++i) {
+        const auto index = parse_ll(command.args[i]);
+        if (!index || *index < 0) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        if (array == nullptr) {
+          resp::append_null(out, version);
+          continue;
+        }
+        const auto value = array->get(static_cast<std::uint64_t>(*index));
+        if (!value) {
+          resp::append_null(out, version);
+        } else {
+          resp::append_bulk_string(out, *value);
+        }
+      }
+      return;
+    }
+
+    case CommandType::arlen: {
+      const auto* array = store.find_array(command.args[0]);
+      resp::append_integer(
+          out, array == nullptr ? 0
+                                : static_cast<long long>(array->length()));
+      return;
+    }
+
+    case CommandType::arcount: {
+      const auto* array = store.find_array(command.args[0]);
+      resp::append_integer(
+          out, array == nullptr ? 0
+                                : static_cast<long long>(array->count()));
+      return;
+    }
+
+    case CommandType::ardel: {
+      auto* array = store.find_array(command.args[0]);
+      if (array == nullptr) {
+        resp::append_integer(out, 0);
+        return;
+      }
+      long long removed = 0;
+      for (std::size_t i = 1; i < command.args.size(); ++i) {
+        const auto index = parse_ll(command.args[i]);
+        if (!index || *index < 0) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        removed +=
+            array->del(static_cast<std::uint64_t>(*index)) ? 1 : 0;
+      }
+      store.erase_if_empty(command.args[0], *array);
+      resp::append_integer(out, removed);
+      return;
+    }
+
+    case CommandType::arinsert: {
+      for (std::size_t i = 1; i < command.args.size(); ++i) {
+        if (!store.value_fits(command.args[i])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+      }
+      try {
+        auto& array =
+            store.get_or_create_array(command.args[0], array_implementation);
+        long long first = -1;
+        for (std::size_t i = 1; i < command.args.size(); ++i) {
+          const auto index = array.insert(command.args[i]);
+          if (first < 0) {
+            first = static_cast<long long>(index);
+          }
+        }
+        resp::append_integer(out, first < 0 ? 0 : first);
+      } catch (const std::length_error& ex) {
+        resp::append_error(out, ex.what());
+      }
+      return;
+    }
+
+    case CommandType::arnext: {
+      const auto* array = store.find_array(command.args[0]);
+      resp::append_integer(
+          out, array == nullptr
+                   ? 0
+                   : static_cast<long long>(array->next_insert()));
+      return;
+    }
+
+    case CommandType::arseek: {
+      const auto index = parse_ll(command.args[1]);
+      if (!index || *index < 0) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      try {
+        auto& array =
+            store.get_or_create_array(command.args[0], array_implementation);
+        (void)array.seek(static_cast<std::uint64_t>(*index));
+        resp::append_integer(out, 1);
+      } catch (const std::length_error& ex) {
+        resp::append_error(out, ex.what());
       }
       return;
     }
@@ -2122,6 +3048,12 @@ void execute_command_into(Store& store,
         resp::append_error(out, kValueTooLarge);
         return;
       }
+      // Common case: SET k v -- no options. Skip exists()/now_ms()/option loop.
+      if (command.args.size() == 2) {
+        store.set(key, value);
+        resp::append_simple_string(out, "OK");
+        return;
+      }
       bool nx = false;
       bool xx = false;
       bool keepttl = false;
@@ -2214,11 +3146,18 @@ void execute_command_into(Store& store,
       return;
     }
     case CommandType::get: {
-      const auto value = store.get(command.args[0]);
-      if (!value) {
-        resp::append_null(out, version);
-      } else {
-        resp::append_bulk_string(out, *value);
+      // One keyspace probe (type gate skipped for GET; see is_typed_string_command).
+      const auto result = store.get_result(command.args[0]);
+      switch (result.status) {
+        case StringLookup::Missing:
+          resp::append_null(out, version);
+          break;
+        case StringLookup::WrongType:
+          resp::append_error(out, kWrongType);
+          break;
+        case StringLookup::Ok:
+          resp::append_bulk_string(out, result.value);
+          break;
       }
       return;
     }
@@ -2410,6 +3349,12 @@ void execute_command_into(Store& store,
           case KeyType::List:
             name = "list";
             break;
+          case KeyType::Set:
+            name = "set";
+            break;
+          case KeyType::Array:
+            name = "array";
+            break;
         }
       }
       resp::append_simple_string(out, name);
@@ -2510,6 +3455,12 @@ void execute_command_into(Store& store,
       } else if (const auto lstats = store.list_memory_stats(command.args[0]);
                  lstats) {
         out.append(list_memory_stats_response(*lstats, version));
+      } else if (const auto sstats = store.set_memory_stats(command.args[0]);
+                 sstats) {
+        out.append(set_memory_stats_response(*sstats, version));
+      } else if (const auto astats = store.array_memory_stats(command.args[0]);
+                 astats) {
+        out.append(array_memory_stats_response(*astats, version));
       } else {
         resp::append_null(out, version);
       }

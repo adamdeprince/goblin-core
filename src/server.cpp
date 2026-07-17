@@ -6,6 +6,10 @@
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/ring_buffer.hpp"
+#ifdef GOBLIN_HAS_RDMA
+#include "goblin/core/rdma_ring.hpp"
+#endif
+#include "goblin/core/exasock.hpp"
 #include "goblin/core/script.hpp"
 #ifdef GOBLIN_HAS_SBE
 #include "goblin/core/sbe_dispatch.hpp"
@@ -131,6 +135,48 @@ struct RingEndpoint : EndpointSession {
     sq = mapping.sq_consumer();
     cq = mapping.cq_producer();
   }
+};
+
+#ifdef GOBLIN_HAS_RDMA
+struct RdmaEndpoint : EndpointSession {
+  RdmaEndpoint(std::unique_ptr<rdma::Connection> rdma_connection,
+               std::size_t unsolicited_output_bytes,
+               std::uint64_t assigned_connection_id)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+        connection(std::move(rdma_connection)) {}
+
+  std::unique_ptr<rdma::Connection> connection;
+  bool disconnect_started{false};
+};
+
+// The listener is declared before the endpoints so destruction runs in the
+// reverse order: every QP/CM id is torn down before its shared event channel.
+struct RdmaRuntimeTarget {
+  std::unique_ptr<rdma::ServerListener> listener;
+  std::vector<std::unique_ptr<RdmaEndpoint>> endpoints;
+  std::size_t next_endpoint{0};
+  bool listener_error_reported{false};
+};
+#endif
+
+#ifdef GOBLIN_HAS_EXASOCK
+// Priority TCP listener for `--exasock`. Clients are ordinary non-blocking
+// sockets; under the exasock wrapper + ExaNIC bind they are accelerated.
+struct ExasockRuntimeTarget {
+  int listener_fd{-1};
+  std::vector<std::unique_ptr<Client>> clients;
+  std::size_t next_client{0};
+};
+#endif
+
+struct PolledRuntimeTarget {
+  std::unique_ptr<RingEndpoint> ring_endpoint;
+#ifdef GOBLIN_HAS_RDMA
+  std::unique_ptr<RdmaRuntimeTarget> rdma_target;
+#endif
+#ifdef GOBLIN_HAS_EXASOCK
+  std::unique_ptr<ExasockRuntimeTarget> exasock_target;
+#endif
 };
 
 [[nodiscard]] std::uint64_t next_connection_id() noexcept {
@@ -750,7 +796,16 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     if (write_push) {
       bytes = push.bytes.substr(client.unsolicited_front_offset);
     } else {
-      const auto end = client.replies[client.reply_index].end_offset;
+      // A pipeline can leave hundreds of adjacent replies in output. Preserve
+      // their sequence relative to Pub/Sub pushes, but send every regular reply
+      // before the next push as one byte range instead of one syscall per reply.
+      auto last_reply = client.reply_index;
+      while (last_reply + 1 < client.replies.size() &&
+             (!has_push ||
+              client.replies[last_reply + 1].sequence < push.sequence)) {
+        ++last_reply;
+      }
+      const auto end = client.replies[last_reply].end_offset;
       bytes = std::string_view(client.output).substr(client.output_offset,
                                                      end - client.output_offset);
     }
@@ -765,8 +820,9 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
         }
       } else {
         client.output_offset += written;
-        if (client.output_offset ==
-            client.replies[client.reply_index].end_offset) {
+        while (client.reply_index < client.replies.size() &&
+               client.output_offset >=
+                   client.replies[client.reply_index].end_offset) {
           ++client.reply_index;
         }
       }
@@ -791,77 +847,175 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   return !client.close_after_write;
 }
 
-// Ring mode. Create every configured ring (the server is the reader/creator),
-// then busy-poll them in priority order: process one SQ record from the
-// highest-priority non-empty ring and restart the scan, so a busy ring starves
-// the ones below it. Only when every ring is empty do we run one non-blocking
-// network pass and cpu_relax(). Returns false if a ring could not be created.
+#ifdef GOBLIN_HAS_EXASOCK
+// Create a non-blocking TCP listener for a priority ExaSock poll target.
+[[nodiscard]] std::optional<int> create_tcp_listener(std::string_view address,
+                                                     std::uint16_t port,
+                                                     int backlog) {
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    std::cerr << "goblin-core: socket failed: " << std::strerror(errno) << '\n';
+    return std::nullopt;
+  }
+  int reuse = 1;
+  if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0) {
+    std::cerr << "goblin-core: setsockopt(SO_REUSEADDR) failed: "
+              << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  set_no_sigpipe(fd);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  const std::string address_storage(address);
+  if (::inet_pton(AF_INET, address_storage.c_str(), &addr.sin_addr) != 1) {
+    std::cerr << "goblin-core: invalid IPv4 bind address: " << address << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  if (::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    std::cerr << "goblin-core: bind " << address << ':' << port
+              << " failed: " << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  if (::listen(fd, backlog) != 0) {
+    std::cerr << "goblin-core: listen failed: " << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  if (!set_nonblocking(fd)) {
+    std::cerr << "goblin-core: failed to set listener nonblocking: "
+              << std::strerror(errno) << '\n';
+    close_fd(fd);
+    return std::nullopt;
+  }
+  return fd;
+}
+#endif
+
+// Polled mode. Create shared-memory rings, ExaSock TCP listeners, and RDMA
+// listeners in their literal command-line order, then process one fragment from
+// the highest-priority non-empty target and restart the scan. Only when every
+// target is empty do we run one non-blocking plain-socket pass and cpu_relax().
 template <class NetFn>
-[[nodiscard]] bool run_rings(const ServerConfig& config, Store& store,
-                             std::atomic_bool& running,
-                             detail::PubSubRegistry& pubsub,
-                             ScriptEngine& script_engine,
-                             LuauEngine& luau_engine, WrenEngine& wren_engine,
-                             TclEngine& tcl_engine, UPythonEngine& upython_engine,
-                             QuickJsEngine& quickjs_engine,
-                             NetFn&& network_iteration) {
+[[nodiscard]] bool run_polled_targets(
+    const ServerConfig& config, Store& store, std::atomic_bool& running,
+    detail::PubSubRegistry& pubsub, ScriptEngine& script_engine,
+    LuauEngine& luau_engine, WrenEngine& wren_engine, TclEngine& tcl_engine,
+    UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
+    NetFn&& network_iteration) {
   // macOS: same QoS as the client so both busy-pollers stay on P-cores. No-op
   // on Linux (pinning is done by the bench via taskset).
   ring::set_busy_poll_thread_realtime();
 
-  std::vector<std::unique_ptr<RingEndpoint>> rings;
-  rings.reserve(config.rings.size());
-  // NUMA: with --cpu, strictly bind allocations to the pinned CPU's node while the
-  // rings are created, so each ring's prefault lands there and it is node-local by
-  // construction (verified per ring below). node_of_cpu() is -1 off Linux, so this is
-  // a no-op there.
-  const int ring_node = config.cpu >= 0 ? numa::node_of_cpu(config.cpu) : -1;
+  std::vector<PolledRuntimeTarget> targets;
+  targets.reserve(config.poll_targets.size());
+  // Strictly bind allocations to the selected slice while polled targets are
+  // created. main resolved this from --numa, --cpu, or unanimous hardware locality.
+  const int ring_node = config.numa_node;
   if (ring_node >= 0) {
     (void)numa::bind_process_to_node(ring_node);
   }
-  for (const auto& rc : config.rings) {
-    std::optional<ring::Mapping> mapping;
+  for (const auto& configured_target : config.poll_targets) {
+    if (const auto* rc = std::get_if<RingConfig>(&configured_target)) {
+      std::optional<ring::Mapping> mapping;
 #if defined(__linux__)
-    if (config.ring_hugetlb) {
-      // Huge-page backing: create_hugetlb rounds the size up to the huge page,
-      // places the file on a hugetlbfs mount, and symlinks rc.path to it.
-      mapping = ring::Mapping::create_hugetlb(rc.path.c_str(), rc.bytes);
+      if (config.ring_hugetlb) {
+        // Huge-page backing: create_hugetlb rounds the size up to the huge page,
+        // places the file on a hugetlbfs mount, and symlinks rc.path to it.
+        mapping = ring::Mapping::create_hugetlb(rc->path.c_str(), rc->bytes);
+        if (!mapping) {
+          std::cerr << "goblin-core: failed to create hugetlb ring " << rc->path
+                    << " (no hugetlbfs mount, or no huge pages reserved -- see "
+                       "/proc/meminfo HugePages_Free)\n";
+          return false;
+        }
+      }
+#endif
       if (!mapping) {
-        std::cerr << "goblin-core: failed to create hugetlb ring " << rc.path
-                  << " (no hugetlbfs mount, or no huge pages reserved -- see "
-                     "/proc/meminfo HugePages_Free)\n";
+        const std::uint64_t cap = ring::capacity_for(rc->bytes);
+        mapping = ring::Mapping::create(rc->path.c_str(), cap, cap);
+      }
+      if (!mapping) {
+        std::cerr << "goblin-core: failed to create ring " << rc->path << ": "
+                  << std::strerror(errno) << '\n';
         return false;
       }
+      if (ring_node >= 0 && !mapping->numa_all_local(ring_node)) {
+        std::cerr << "goblin-core: ring " << rc->path
+                  << " could not be placed on NUMA node " << ring_node
+                  << "; refusing to run a remote ring -- reserve memory"
+                     " (or huge pages) on that node\n";
+        return false;
+      }
+      std::cout << "goblin-core: ring " << rc->path << " ready ("
+                << mapping->sq_capacity() << " bytes/direction"
+                << (mapping->is_hugetlb() ? ", hugetlb" : "") << ")\n";
+      try {
+        PolledRuntimeTarget target;
+        target.ring_endpoint = std::make_unique<RingEndpoint>(
+            std::move(*mapping), config.unsolicited_output_buffer_bytes,
+            next_connection_id());
+        targets.push_back(std::move(target));
+      } catch (const std::bad_alloc&) {
+        std::cerr << "goblin-core: unable to map ring client output buffer\n";
+        return false;
+      }
+      continue;
     }
+
+    if (const auto* ec = std::get_if<ExasockConfig>(&configured_target)) {
+#ifdef GOBLIN_HAS_EXASOCK
+      auto listener_fd =
+          create_tcp_listener(ec->bind_address, ec->port, config.backlog);
+      if (!listener_fd) {
+        return false;
+      }
+      std::cout << "goblin-core: exasock " << ec->bind_address << ':'
+                << ec->port << " ready (priority TCP";
+      if (exasock::loaded()) {
+        std::cout << ", ExaSock " << exasock::version_text() << " loaded";
+      } else {
+        std::cout << "; run under `exasock` for SmartNIC bypass";
+      }
+      std::cout << ")\n";
+      PolledRuntimeTarget target;
+      target.exasock_target = std::make_unique<ExasockRuntimeTarget>();
+      target.exasock_target->listener_fd = *listener_fd;
+      targets.push_back(std::move(target));
+#else
+      (void)ec;
+      std::cerr << "goblin-core: this build cannot create an ExaSock poll "
+                   "target (-DGOBLIN_CORE_ENABLE_EXASOCK=ON required)\n";
+      return false;
 #endif
-    if (!mapping) {
-      const std::uint64_t cap = ring::capacity_for(rc.bytes);
-      mapping = ring::Mapping::create(rc.path.c_str(), cap, cap);
+      continue;
     }
-    if (!mapping) {
-      std::cerr << "goblin-core: failed to create ring " << rc.path << ": "
-                << std::strerror(errno) << '\n';
+
+    const auto& rc = std::get<RdmaConfig>(configured_target);
+#ifdef GOBLIN_HAS_RDMA
+    std::string error;
+    auto listener = rdma::ServerListener::create(
+        rc.bind_address, rc.port, rc.bytes, config.backlog, config.numa_node,
+        error);
+    if (!listener) {
+      std::cerr << "goblin-core: failed to create RDMA listener "
+                << rc.bind_address << ':' << rc.port << ": " << error << '\n';
       return false;
     }
-    if (ring_node >= 0 && !mapping->numa_all_local(ring_node)) {
-      std::cerr << "goblin-core: ring " << rc.path
-                << " could not be placed on NUMA node " << ring_node << " (CPU "
-                << config.cpu
-                << "); refusing to run a remote ring -- reserve memory"
-                   " (or huge pages) on that node\n";
-      return false;
-    }
-    std::cout << "goblin-core: ring " << rc.path << " ready ("
-              << mapping->sq_capacity() << " bytes/direction"
-              << (mapping->is_hugetlb() ? ", hugetlb" : "") << ")\n";
-    try {
-      rings.push_back(std::make_unique<RingEndpoint>(
-          std::move(*mapping), config.unsolicited_output_buffer_bytes,
-          next_connection_id()));
-    } catch (const std::bad_alloc&) {
-      std::cerr << "goblin-core: unable to map ring client output buffer\n";
-      return false;
-    }
+    std::cout << "goblin-core: RDMA " << rc.bind_address << ':' << rc.port
+              << " ready (" << rc.bytes << " slot bytes/peer/direction)\n";
+    PolledRuntimeTarget target;
+    target.rdma_target = std::make_unique<RdmaRuntimeTarget>();
+    target.rdma_target->listener = std::move(listener);
+    targets.push_back(std::move(target));
+#else
+    (void)rc;
+    std::cerr << "goblin-core: this build cannot create an RDMA poll target\n";
+    return false;
+#endif
   }
   if (ring_node >= 0) {
     // Rings placed; restore the runtime allocation policy. Prefer the pinned node for
@@ -872,13 +1026,15 @@ template <class NetFn>
       numa::reset_policy();
     }
   }
-  std::cout << "goblin-core: ring mode -- busy-polling " << rings.size()
-            << " ring(s) ahead of the network (100% CPU by design)\n"
+  std::cout << "goblin-core: polled mode -- busy-polling " << targets.size()
+            << " ordered target(s) ahead of sockets (100% CPU by design)\n"
             << std::flush;
 
   // Drain one SQ record from `ep`, run whatever commands it completes, and push
   // the replies onto the CQ. Returns false when the ring's SQ was empty.
-  const auto flush_ring_output = [&](RingEndpoint& ep) -> bool {
+  const auto flush_polled_output = [&]<class Producer>(
+                                       EndpointSession& ep,
+                                       Producer& producer) -> bool {
     bool progressed = false;
     while (has_pending_output(ep)) {
       detail::UnsolicitedOutputQueue::Front push{};
@@ -896,10 +1052,10 @@ template <class NetFn>
         bytes = std::string_view(ep.output).substr(ep.output_offset,
                                                    end - ep.output_offset);
       }
-      if (bytes.size() > ep.cq.max_record_payload()) {
-        bytes = bytes.substr(0, ep.cq.max_record_payload());
+      if (bytes.size() > producer.max_record_payload()) {
+        bytes = bytes.substr(0, producer.max_record_payload());
       }
-      if (!ep.cq.try_push(bytes)) {
+      if (!producer.try_push(bytes)) {
         break;
       }
       progressed = true;
@@ -919,22 +1075,11 @@ template <class NetFn>
     return progressed;
   };
 
-  const auto process_ring = [&](RingEndpoint& ep) -> bool {
-    // Reconnect handshake: a newly-opened client bumps the ring epoch and spins until
-    // we ack. When it moves, discard whatever a dead predecessor abandoned in the ring
-    // (an unconsumed request, an unread reply), re-arm protocol detection, and ack so
-    // the client may proceed -- recovering a messily-crashed connection with no restart.
-    if (const std::uint64_t epoch = ep.mapping.requested_epoch();
-        epoch != ep.acked_epoch) {
-      pubsub.remove(ep);
-      ep.mapping.drain_for_reconnect();
-      ep.reset_connection(next_connection_id());
-      ep.mapping.ack_epoch(epoch);
-      ep.acked_epoch = epoch;
-      ep.rebind_ring_views();  // local head/tail caches track the drained indices
-    }
-
-    const bool output_progress = flush_ring_output(ep);
+  const auto process_polled_endpoint = [&]<class Consumer, class Producer>(
+                                           EndpointSession& ep,
+                                           Consumer& consumer,
+                                           Producer& producer) -> bool {
+    const bool output_progress = flush_polled_output(ep, producer);
     if (ep.close_requested || has_pending_output(ep)) {
       return output_progress;
     }
@@ -950,7 +1095,7 @@ template <class NetFn>
         .upython_engine = &upython_engine,
         .quickjs_engine = &quickjs_engine};
 
-    const auto record = ep.sq.peek();
+    const auto record = consumer.peek();
     if (!record) {
       return false;
     }
@@ -960,7 +1105,7 @@ template <class NetFn>
     // command is never stalled waiting for a full magic that will not arrive.
     if (ep.wire_mode == detail::WireMode::undecided) {
       ep.inbuf.append(*record);
-      ep.sq.pop();
+      consumer.pop();
 #ifdef GOBLIN_HAS_SBE
       switch (match_goblin_magic(ep.inbuf)) {
         case MagicMatch::need_more:
@@ -997,20 +1142,20 @@ template <class NetFn>
           off += consumed;
         }
         if (off == record->size()) {
-          ep.sq.pop();
+          consumer.pop();
         } else if (off > 0) {
           ep.inbuf.assign(record->data() + off, record->size() - off);
-          ep.sq.pop();
+          consumer.pop();
         } else {
           // Incomplete first frame: buffer the whole record.
           ep.inbuf.assign(record->data(), record->size());
-          ep.sq.pop();
+          consumer.pop();
         }
       } else
 #endif
       {
         ep.inbuf.append(*record);
-        ep.sq.pop();
+        consumer.pop();
       }
     }
 
@@ -1052,17 +1197,212 @@ template <class NetFn>
       }
     }
 
-    (void)flush_ring_output(ep);
+    (void)flush_polled_output(ep, producer);
     return true;
   };
+
+  const auto process_ring = [&](RingEndpoint& ep) -> bool {
+    // A fresh shared-memory client asks the server to discard anything its dead
+    // predecessor abandoned before it starts using the SPSC ring.
+    if (const std::uint64_t epoch = ep.mapping.requested_epoch();
+        epoch != ep.acked_epoch) {
+      pubsub.remove(ep);
+      ep.mapping.drain_for_reconnect();
+      ep.reset_connection(next_connection_id());
+      ep.mapping.ack_epoch(epoch);
+      ep.acked_epoch = epoch;
+      ep.rebind_ring_views();
+    }
+    return process_polled_endpoint(ep, ep.sq, ep.cq);
+  };
+
+#ifdef GOBLIN_HAS_RDMA
+  const auto process_rdma_target = [&](RdmaRuntimeTarget& target) -> bool {
+    bool progressed = false;
+    auto event = target.listener->poll();
+    progressed = event.progressed;
+    if (!target.listener->error().empty() && !target.listener_error_reported) {
+      std::cerr << "goblin-core: RDMA listener error: "
+                << target.listener->error() << '\n';
+      target.listener_error_reported = true;
+      running = false;
+      return true;
+    }
+    if (event.connection) {
+      try {
+        target.endpoints.push_back(std::make_unique<RdmaEndpoint>(
+            std::move(event.connection), config.unsolicited_output_buffer_bytes,
+            next_connection_id()));
+      } catch (const std::bad_alloc&) {
+        std::cerr << "goblin-core: unable to allocate RDMA endpoint state\n";
+        running = false;
+      }
+      progressed = true;
+    }
+
+    for (std::size_t i = target.endpoints.size(); i > 0; --i) {
+      const std::size_t index = i - 1;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->failed() &&
+          !endpoint.connection->disconnected()) {
+        continue;
+      }
+      if (endpoint.connection->failed() && !endpoint.connection->error().empty()) {
+        std::cerr << "goblin-core: RDMA peer closed after error: "
+                  << endpoint.connection->error() << '\n';
+      }
+      pubsub.remove(endpoint);
+      target.endpoints.erase(target.endpoints.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+      if (target.next_endpoint > index) {
+        --target.next_endpoint;
+      }
+      progressed = true;
+    }
+    if (target.endpoints.empty()) {
+      target.next_endpoint = 0;
+      return progressed;
+    }
+    target.next_endpoint %= target.endpoints.size();
+
+    const std::size_t count = target.endpoints.size();
+    for (std::size_t offset = 0; offset < count; ++offset) {
+      const std::size_t index = (target.next_endpoint + offset) % count;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->established()) {
+        continue;
+      }
+      if (endpoint.close_requested && !has_pending_output(endpoint)) {
+        if (!endpoint.disconnect_started) {
+          endpoint.connection->disconnect();
+          endpoint.disconnect_started = true;
+          target.next_endpoint = (index + 1) % count;
+          return true;
+        }
+        continue;
+      }
+      if (process_polled_endpoint(endpoint, *endpoint.connection,
+                                  *endpoint.connection)) {
+        target.next_endpoint = (index + 1) % count;
+        return true;
+      }
+    }
+    return progressed;
+  };
+#endif
+
+#ifdef GOBLIN_HAS_EXASOCK
+  // One unit of work on a priority ExaSock TCP target: drain accepts, then
+  // service one client that has readable/writable progress (round-robin).
+  const auto process_exasock_target = [&](ExasockRuntimeTarget& target) -> bool {
+    bool progressed = false;
+    const auto before_accept = target.clients.size();
+    accept_clients(target.listener_fd, target.clients, config);
+    if (target.clients.size() > before_accept) {
+      progressed = true;
+    }
+
+    // Close finished clients.
+    for (std::size_t i = target.clients.size(); i > 0; --i) {
+      const std::size_t index = i - 1;
+      auto& client = *target.clients[index];
+      if (client.close_requested && !has_pending_output(client)) {
+        pubsub.remove(client);
+        close_fd(client.fd);
+        target.clients.erase(target.clients.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+        if (target.next_client > index) {
+          --target.next_client;
+        }
+        progressed = true;
+      }
+    }
+    if (target.clients.empty()) {
+      target.next_client = 0;
+      return progressed;
+    }
+    target.next_client %= target.clients.size();
+
+    const std::size_t count = target.clients.size();
+    for (std::size_t offset = 0; offset < count; ++offset) {
+      const std::size_t index = (target.next_client + offset) % count;
+      auto& client = *target.clients[index];
+      update_read_backpressure(client, config);
+
+      bool keep = !client.close_requested;
+      bool did_work = false;
+
+      if (keep && has_pending_output(client)) {
+        const bool before_pending = has_pending_output(client);
+        keep = write_client(client, config);
+        if (before_pending) {
+          did_work = true;
+        }
+      }
+
+      if (keep && !client.read_backpressured && has_buffered_work(client)) {
+        keep = process_buffered_commands(client, store, pubsub, script_engine,
+                                         luau_engine, wren_engine, tcl_engine,
+                                         upython_engine, quickjs_engine, config);
+        did_work = true;
+      }
+
+      // Non-blocking readiness probe (timeout 0) so we only enter read_client
+      // when the socket has data -- matches the ring/RDMA "one fragment" unit.
+      pollfd pfd{.fd = client.fd, .events = 0, .revents = 0};
+      if (keep && !client.read_backpressured) {
+        pfd.events |= POLLIN;
+      }
+      if (keep && has_pending_output(client)) {
+        pfd.events |= POLLOUT;
+      }
+      if (pfd.events != 0) {
+        (void)::poll(&pfd, 1, 0);
+      }
+
+      if (keep && (pfd.revents & POLLIN) != 0 && !client.read_backpressured) {
+        keep = read_client(client, store, pubsub, script_engine, luau_engine,
+                           wren_engine, tcl_engine, upython_engine,
+                           quickjs_engine, config);
+        did_work = true;
+      }
+      if (keep && (pfd.revents & POLLOUT) != 0 && has_pending_output(client)) {
+        keep = write_client(client, config);
+        did_work = true;
+      }
+
+      if (!keep || client.close_requested) {
+        pubsub.remove(client);
+        close_fd(client.fd);
+        target.clients.erase(target.clients.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+        if (target.next_client > index) {
+          --target.next_client;
+        } else if (!target.clients.empty()) {
+          target.next_client %= target.clients.size();
+        } else {
+          target.next_client = 0;
+        }
+        return true;
+      }
+
+      if (did_work) {
+        target.next_client =
+            target.clients.empty() ? 0 : (index + 1) % target.clients.size();
+        return true;
+      }
+    }
+    return progressed;
+  };
+#endif
 
   // macOS has no core pinning; raise this busy-poll thread's priority so the scheduler
   // stops parking it mid-spin (a no-op elsewhere -- Linux uses taskset/isolcpus).
   ring::set_busy_poll_thread_realtime();
 
-  // Idle spins between ring requests: running network_iteration (poll + active
-  // expire) every empty loop is a p99 footgun for pure-ring clients. Service the
-  // network every 64th idle pass; rings still starve it by design when busy.
+  // Idle spins between polled requests: running network_iteration (poll + active
+  // expire) every empty loop is a p99 footgun. Service sockets every 64th idle
+  // pass; a busy higher-priority target still starves everything below by design.
   //
   // Pure spin (no park): a multi-ring server cannot block on one SQ without
   // missing the others. On Apple Silicon cpu_relax() is a compiler barrier (not
@@ -1071,23 +1411,57 @@ template <class NetFn>
   unsigned idle_spins = 0;
   while (running.load(std::memory_order_relaxed)) {
     bool progressed = false;
-    for (auto& endpoint : rings) {
-      if (process_ring(*endpoint)) {
+    for (auto& target : targets) {
+      bool target_progress = false;
+      if (target.ring_endpoint) {
+        target_progress = process_ring(*target.ring_endpoint);
+      }
+#ifdef GOBLIN_HAS_EXASOCK
+      else if (target.exasock_target) {
+        target_progress = process_exasock_target(*target.exasock_target);
+      }
+#endif
+#ifdef GOBLIN_HAS_RDMA
+      else if (target.rdma_target) {
+        target_progress = process_rdma_target(*target.rdma_target);
+      }
+#endif
+      if (target_progress) {
         progressed = true;
-        break;  // restart from the highest-priority ring
+        break;  // restart from the highest-priority configured target
       }
     }
     if (progressed) {
       idle_spins = 0;
-      continue;  // a busy high-priority ring starves the lower ones -- by design
+      continue;
     }
     if ((++idle_spins & 63u) == 0) {
       network_iteration(0);  // sparse network pass while rings are quiet
     }
     ring::cpu_relax();
   }
-  for (auto& endpoint : rings) {
-    pubsub.remove(*endpoint);
+  for (auto& target : targets) {
+    if (target.ring_endpoint) {
+      pubsub.remove(*target.ring_endpoint);
+    }
+#ifdef GOBLIN_HAS_EXASOCK
+    if (target.exasock_target) {
+      for (auto& client : target.exasock_target->clients) {
+        pubsub.remove(*client);
+        close_fd(client->fd);
+        client->fd = -1;
+      }
+      close_fd(target.exasock_target->listener_fd);
+      target.exasock_target->listener_fd = -1;
+    }
+#endif
+#ifdef GOBLIN_HAS_RDMA
+    if (target.rdma_target) {
+      for (auto& endpoint : target.rdma_target->endpoints) {
+        pubsub.remove(*endpoint);
+      }
+    }
+#endif
   }
   return true;
 }
@@ -1163,8 +1537,8 @@ int Server::run() {
 
   // One pass over the network: reap a finished background save, do a bounded
   // active-expiration sweep, then poll() (blocking up to max_timeout_ms) and
-  // service ready clients and new connections. In ring mode this is invoked only
-  // when every ring is empty, always with a timeout of 0 (never blocking).
+  // service ready clients and new connections. In polled mode this is invoked only
+  // when every ring/RDMA target is empty, always with timeout 0 (never blocking).
   const auto network_iteration = [&](int max_timeout_ms) {
     if (auto outcome = store_.reap_background_save()) {
       if (outcome->ok) {
@@ -1270,15 +1644,16 @@ int Server::run() {
     }
   };
 
-  if (config_.rings.empty()) {
-    // No rings: the ordinary event-driven server. poll() blocks, so an idle
+  if (config_.poll_targets.empty()) {
+    // No polled targets: the ordinary event-driven server. poll() blocks, so an idle
     // server costs no CPU.
     while (running_) {
       network_iteration(1000);
     }
-  } else if (!run_rings(config_, store_, running_, pubsub, script_engine, luau_engine,
-                        wren_engine, tcl_engine, upython_engine, quickjs_engine,
-                        network_iteration)) {
+  } else if (!run_polled_targets(config_, store_, running_, pubsub, script_engine,
+                                 luau_engine, wren_engine, tcl_engine,
+                                 upython_engine, quickjs_engine,
+                                 network_iteration)) {
     close_fd(listener_fd);
     return 1;
   }

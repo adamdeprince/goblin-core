@@ -8,6 +8,38 @@ For the current command surface, build instructions, and compatibility limits,
 see the [project documentation](README.md). For changes after the latest tag,
 see the [repository history](https://github.com/adamdeprince/goblin-core/commits/main/).
 
+## v0.8.0 — July 16, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.8.0)
+
+The collections, real-time, and fabric release.
+
+- Added Redis-compatible sets, including membership, cardinality, scan, move,
+  random selection, and union/intersection/difference command families, with
+  typed SBE support and compact arena-backed storage.
+- Added index-addressable arrays with memory-oriented Classic and fixed-capacity
+  real-time implementations. Qualified `GOBLIN.CLASSIC.AR*` and
+  `GOBLIN.RT.AR*` commands can coexist, while `GOBLIN.RT.ARRESERVE` prefaults a
+  declared serving budget and fails closed on exhaustion.
+- Added real-time hashes and an optional real-time top-level keyspace using
+  incremental linear hashing over 16-slot Swiss buckets. Growth and contraction
+  advance by bounded physical-bucket steps instead of rebuilding a whole table.
+- Added receiver-polled, one-sided InfiniBand RDMA rings carrying either RESP or
+  SBE between hosts. The transport includes cached credits, explicit NUMA
+  placement, C++ and Python clients, validation tools, and latency benchmarks.
+- Added optional Cisco ExaSock acceleration for Nexus SmartNIC / ExaNIC
+  hardware without vendoring its SDK. Ring, ExaSock, RDMA, and socket targets
+  retain command-line order as their busy-poll priority.
+- Added NUMA topology discovery by node, network interface, or InfiniBand device;
+  conflicting CPU and transport locality now requires an explicit selection.
+- Added typed SBE request pipelining with in-order reply readers and bounded
+  streaming across rings smaller than the pipeline.
+- Added XXH3-based field and key hashing plus fast_float integer parsing, with
+  their licenses and notices included in the source release.
+- Added native C++ collection benchmarks and published current SET, ARRAY, HSET,
+  LIST, and sorted-set speed, tail-latency, and RSS artifacts from one benchmark
+  methodology. The website now links the reports and the RESP-over-RDMA story.
+
 ## v0.7.0 — July 15, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.7.0)

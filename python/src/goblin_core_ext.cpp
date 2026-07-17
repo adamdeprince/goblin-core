@@ -20,6 +20,12 @@
 #include <nanobind/stl/string.h>
 
 #include "goblin/core/sbe_ring_client.hpp"
+#if defined(GOBLIN_HAS_RDMA)
+#include "goblin/core/rdma_ring.hpp"
+#endif
+#if defined(GOBLIN_HAS_EXASOCK)
+#include "goblin/core/exasock_transport.hpp"
+#endif
 
 #include <cctype>
 #include <charconv>
@@ -37,6 +43,12 @@ namespace nb = nanobind;
 using goblin::core::Language;
 using goblin::core::RespValue;
 using goblin::core::SbeRingClient;
+#if defined(GOBLIN_HAS_RDMA)
+using goblin::core::SbeRdmaClient;
+#endif
+#if defined(GOBLIN_HAS_EXASOCK)
+using goblin::core::SbeExasockClient;
+#endif
 using goblin::core::SetOptions;
 using goblin::core::SetReply;
 
@@ -160,17 +172,10 @@ auto off_gil(F&& f) -> decltype(f()) {
   return std::nullopt;
 }
 
-class Client {
+// Shared SBE dispatch for ring and optional ExaSock TCP clients.
+template <class SbeClientT>
+class BasicPyClient {
  public:
-  Client(const std::string& path, long connect_timeout_ms, std::size_t buffer_size) {
-    auto opened = SbeRingClient::open(path.c_str(), ms(connect_timeout_ms), buffer_size);
-    if (!opened) {
-      throw RingError("cannot open ring '" + path +
-                      "' (is goblin-core running with --ring " + path + " ...?)");
-    }
-    client_.emplace(std::move(*opened));
-  }
-
   [[nodiscard]] std::size_t buffer_size() const {
     return client_ ? client_->buffer_size() : 0;
   }
@@ -192,7 +197,7 @@ class Client {
     } catch (const ResponseError&) {
       throw;  // already the right Python type
     } catch (const std::runtime_error& e) {
-      // SbeRingClient throws "SbeRingClient: ..." for transport failures and
+      // BasicSbeClient throws "SbeRingClient: ..." for transport failures and
       // "<code> <message>" for an ErrorReply.
       const std::string msg = e.what();
       if (msg.rfind("SbeRingClient:", 0) == 0) throw RingError(msg);
@@ -202,7 +207,7 @@ class Client {
 
  private:
   nb::object dispatch(const std::string& cmd, const std::vector<std::string_view>& a, ms t) {
-    SbeRingClient& c = *client_;
+    SbeClientT& c = *client_;
     using V = std::vector<std::string_view>;
     // Bounds-safe indexed access (a malformed execute_command must not read past the end).
     auto at = [&](std::size_t i) -> std::string_view {
@@ -307,6 +312,105 @@ class Client {
     if (cmd == "HSTRLEN") return ob(off_gil([&] { return c.hstrlen(at(1), at(2), t); }));
     if (cmd == "HINCRBY") return ob(off_gil([&] { return c.hincrby(at(1), at(2), to_ll(at(3)), t); }));
 
+    // ---- sets ----------------------------------------------------------------
+    if (cmd == "SADD") {
+      V m(a.begin() + 2, a.end());
+      return ob(off_gil([&] { return c.sadd(at(1), m, t); }));
+    }
+    if (cmd == "SREM") {
+      V m(a.begin() + 2, a.end());
+      return ob(off_gil([&] { return c.srem(at(1), m, t); }));
+    }
+    if (cmd == "SCARD") return ob(off_gil([&] { return c.scard(at(1), t); }));
+    if (cmd == "SISMEMBER")
+      return ob(off_gil([&] { return c.sismember(at(1), at(2), t); }));
+    if (cmd == "SMISMEMBER") {
+      V m(a.begin() + 2, a.end());
+      return ob_list(off_gil([&] { return c.smismember(at(1), m, t); }));
+    }
+    if (cmd == "SMEMBERS")
+      return ob_list(off_gil([&] { return c.smembers(at(1), t); }));
+    if (cmd == "SPOP") {
+      if (a.size() == 2)
+        return ob(off_gil([&] { return c.spop(at(1), t); }));
+      return ob_list(off_gil(
+          [&] { return c.spop(at(1), static_cast<std::size_t>(to_ll(at(2))), t); }));
+    }
+    if (cmd == "SRANDMEMBER") {
+      if (a.size() == 2)
+        return ob(off_gil([&] { return c.srandmember(at(1), t); }));
+      return ob_list(
+          off_gil([&] { return c.srandmember(at(1), to_ll(at(2)), t); }));
+    }
+    if (cmd == "SMOVE")
+      return ob(off_gil([&] { return c.smove(at(1), at(2), at(3), t); }));
+    if (cmd == "SINTER") {
+      V k(a.begin() + 1, a.end());
+      return ob_list(off_gil([&] { return c.sinter(k, t); }));
+    }
+    if (cmd == "SUNION") {
+      V k(a.begin() + 1, a.end());
+      return ob_list(off_gil([&] { return c.sunion(k, t); }));
+    }
+    if (cmd == "SDIFF") {
+      V k(a.begin() + 1, a.end());
+      return ob_list(off_gil([&] { return c.sdiff(k, t); }));
+    }
+    if (cmd == "SINTERSTORE") {
+      V k(a.begin() + 2, a.end());
+      return ob(off_gil([&] { return c.sinterstore(at(1), k, t); }));
+    }
+    if (cmd == "SUNIONSTORE") {
+      V k(a.begin() + 2, a.end());
+      return ob(off_gil([&] { return c.sunionstore(at(1), k, t); }));
+    }
+    if (cmd == "SDIFFSTORE") {
+      V k(a.begin() + 2, a.end());
+      return ob(off_gil([&] { return c.sdiffstore(at(1), k, t); }));
+    }
+    if (cmd == "SINTERCARD") {
+      // SINTERCARD numkeys key [key ...] [LIMIT limit]
+      const auto nkeys = static_cast<std::size_t>(to_ll(at(1)));
+      if (a.size() < 2 + nkeys)
+        throw ResponseError("ERR wrong number of arguments for 'sintercard'");
+      V k(a.begin() + 2, a.begin() + 2 + static_cast<std::ptrdiff_t>(nkeys));
+      std::size_t limit = 0;
+      if (a.size() > 2 + nkeys) {
+        if (a.size() != 4 + nkeys || upper(a[2 + nkeys]) != "LIMIT")
+          throw ResponseError("ERR syntax error");
+        limit = static_cast<std::size_t>(to_ll(a[3 + nkeys]));
+      }
+      return ob(off_gil([&] { return c.sintercard(k, limit, t); }));
+    }
+    if (cmd == "SSCAN") {
+      std::uint64_t cursor = static_cast<std::uint64_t>(to_ll(at(2)));
+      std::size_t count = 10;
+      std::string_view match;
+      for (std::size_t i = 3; i < a.size();) {
+        const auto tok = upper(a[i]);
+        if (tok == "MATCH" && i + 1 < a.size()) {
+          match = a[i + 1];
+          i += 2;
+        } else if (tok == "COUNT" && i + 1 < a.size()) {
+          count = static_cast<std::size_t>(to_ll(a[i + 1]));
+          i += 2;
+        } else {
+          throw ResponseError("ERR syntax error");
+        }
+      }
+      auto flat = off_gil(
+          [&] { return c.sscan(at(1), cursor, count, match, t); });
+      // Redis shape: [cursor, [members...]]
+      if (flat.empty()) {
+        return nb::make_tuple(py_bytes("0"), nb::list());
+      }
+      auto members = nb::list();
+      for (std::size_t i = 1; i < flat.size(); ++i) {
+        members.append(py_bytes(flat[i]));
+      }
+      return nb::make_tuple(py_bytes(flat[0]), members);
+    }
+
     // ---- sorted sets ---------------------------------------------------------
     if (cmd == "ZADD") {
       std::size_t i = 2;
@@ -369,13 +473,77 @@ class Client {
     throw ResponseError("ERR unknown command '" + cmd + "'");
   }
 
-  std::optional<SbeRingClient> client_;
+ protected:
+  std::optional<SbeClientT> client_;
 };
+
+class Client : public BasicPyClient<SbeRingClient> {
+ public:
+  Client(const std::string& path, long connect_timeout_ms, std::size_t buffer_size) {
+    auto opened =
+        SbeRingClient::open(path.c_str(), ms(connect_timeout_ms), buffer_size);
+    if (!opened) {
+      throw RingError("cannot open ring '" + path +
+                      "' (is goblin-core running with --ring " + path + " ...?)");
+    }
+    client_.emplace(std::move(*opened));
+  }
+};
+
+#if defined(GOBLIN_HAS_RDMA)
+class RdmaClient : public BasicPyClient<SbeRdmaClient> {
+ public:
+  RdmaClient(const std::string& host, int port, std::uint64_t ring_bytes,
+             long connect_timeout_ms, std::size_t buffer_size) {
+    if (port <= 0 || port > 65535) {
+      throw RingError("RdmaClient: port out of range");
+    }
+    if (ring_bytes == 0) {
+      throw RingError("RdmaClient: ring_bytes must be positive");
+    }
+    std::string error;
+    auto opened = SbeRdmaClient::open(
+        std::string_view(host), static_cast<std::uint16_t>(port), ring_bytes,
+        ms(connect_timeout_ms), buffer_size, &error);
+    if (!opened) {
+      throw RingError("cannot open RDMA to " + host + ":" + std::to_string(port) +
+                      (error.empty() ? "" : (" (" + error + ")")));
+    }
+    client_.emplace(std::move(*opened));
+  }
+};
+#endif
+
+#if defined(GOBLIN_HAS_EXASOCK)
+class ExasockClient : public BasicPyClient<SbeExasockClient> {
+ public:
+  ExasockClient(const std::string& host, int port, long connect_timeout_ms,
+                std::size_t buffer_size, bool require_loaded, int ate_id) {
+    if (port <= 0 || port > 65535) {
+      throw RingError("ExasockClient: port out of range");
+    }
+    goblin::core::exasock::ConnectOptions options;
+    options.require_loaded = require_loaded;
+    options.ate_id = ate_id;
+    std::string error;
+    auto opened = SbeExasockClient::open(
+        std::string_view(host), static_cast<std::uint16_t>(port),
+        ms(connect_timeout_ms), buffer_size, options, &error);
+    if (!opened) {
+      throw RingError("cannot open ExaSock TCP to " + host + ":" +
+                      std::to_string(port) +
+                      (error.empty() ? "" : (" (" + error + ")")));
+    }
+    client_.emplace(std::move(*opened));
+  }
+};
+#endif
 
 }  // namespace
 
 NB_MODULE(_goblin_core, m) {
-  m.doc() = "Shared-memory ring-buffer SBE client for goblin-core (C++ core).";
+  m.doc() =
+      "SBE client for goblin-core over shared-memory ring, RDMA, or ExaSock TCP.";
 
   nb::exception<ResponseError>(m, "ResponseError");
   nb::exception<RingError>(m, "RingError");
@@ -388,4 +556,36 @@ NB_MODULE(_goblin_core, m) {
       .def("execute_command", &Client::execute_command, nb::arg("args"),
            nb::arg("timeout_ms") = 5000,
            "Send one already-encoded command (list[bytes]) over SBE and return the reply.");
+
+#if defined(GOBLIN_HAS_RDMA)
+  m.attr("HAS_RDMA") = true;
+  nb::class_<RdmaClient>(m, "RdmaClient")
+      .def(nb::init<const std::string&, int, std::uint64_t, long, std::size_t>(),
+           nb::arg("host"), nb::arg("port"), nb::arg("ring_bytes"),
+           nb::arg("connect_timeout_ms") = 5000,
+           nb::arg("buffer_size") = 64 * 1024)
+      .def("buffer_size", &RdmaClient::buffer_size)
+      .def("execute_command", &RdmaClient::execute_command, nb::arg("args"),
+           nb::arg("timeout_ms") = 5000,
+           "Send one already-encoded command over SBE/RDMA.");
+#else
+  m.attr("HAS_RDMA") = false;
+#endif
+
+#if defined(GOBLIN_HAS_EXASOCK)
+  m.attr("HAS_EXASOCK") = true;
+  nb::class_<ExasockClient>(m, "ExasockClient")
+      .def(nb::init<const std::string&, int, long, std::size_t, bool, int>(),
+           nb::arg("host"), nb::arg("port"),
+           nb::arg("connect_timeout_ms") = 2000,
+           nb::arg("buffer_size") = 64 * 1024,
+           nb::arg("require_loaded") = false, nb::arg("ate_id") = -1)
+      .def("buffer_size", &ExasockClient::buffer_size)
+      .def("execute_command", &ExasockClient::execute_command, nb::arg("args"),
+           nb::arg("timeout_ms") = 5000,
+           "Send one already-encoded command over SBE/TCP (ExaSock-accelerated when "
+           "run under the exasock wrapper).");
+#else
+  m.attr("HAS_EXASOCK") = false;
+#endif
 }

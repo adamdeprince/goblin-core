@@ -86,6 +86,31 @@ inline constexpr unsigned long kMaxNodes = 64;  // one machine-word node mask
   return ::sched_setaffinity(0, sizeof(set), &set) == 0;
 }
 
+// Restrict the current thread (and threads it later spawns) to every CPU in one
+// NUMA node. --cpu remains the exact-core control; this is the slice-level form.
+[[nodiscard]] inline bool pin_to_node(int node) noexcept {
+  char path[128];
+  std::snprintf(path, sizeof(path),
+                "/sys/devices/system/node/node%d/cpulist", node);
+  std::FILE* f = std::fopen(path, "re");
+  if (f == nullptr) return false;
+  char line[8192];
+  const bool got = std::fgets(line, sizeof(line), f) != nullptr;
+  std::fclose(f);
+  if (!got) return false;
+
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  bool any = false;
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (cpu_in_list(line, cpu)) {
+      CPU_SET(cpu, &set);
+      any = true;
+    }
+  }
+  return any && ::sched_setaffinity(0, sizeof(set), &set) == 0;
+}
+
 // STRICT-bind [addr, len) to `node` (mbind MPOL_BIND): pages faulted in after this
 // call come only from `node`. Call BEFORE first-touch. No MPOL_MF_STRICT flag -- the
 // region is not yet populated, and STRICT would reject already-present pages. Used for
@@ -153,6 +178,7 @@ inline void reset_policy() noexcept {
 
 [[nodiscard]] inline int node_of_cpu(int) noexcept { return -1; }
 [[nodiscard]] inline bool pin_to_cpu(int) noexcept { return false; }
+[[nodiscard]] inline bool pin_to_node(int) noexcept { return false; }
 [[nodiscard]] inline bool bind_range(void*, std::size_t, int) noexcept { return false; }
 [[nodiscard]] inline bool prefer_node(int) noexcept { return false; }
 [[nodiscard]] inline bool bind_process_to_node(int) noexcept { return false; }

@@ -3,16 +3,24 @@
 // A C++ SBE client for the shared-memory ring, covering the full command surface.
 // It includes the generated SBE codecs (header-only -- no link dependency) and speaks
 // the length-prefixed SBE framing (see sbe_frame.hpp): it sends the GOBLINS! magic
-// once on open, then for each call builds a typed request, sends it, and decodes the
-// typed reply. An ErrorReply becomes a thrown std::runtime_error ("<code> <message>").
+// once on open, then builds typed requests and decodes typed replies. Calls may be
+// synchronous or explicitly enqueued and read back in order. An ErrorReply becomes
+// a thrown std::runtime_error ("<code> <message>").
 //
 // Every request builds into a growable send buffer (logical values may be larger
-// when server-side LZ4 is enabled), and replies are decoded straight out of the
-// last received frame.
+// when server-side LZ4 is enabled). Shared-memory requests are published as one
+// complete ring record for in-place server decode; oversized messages are rejected.
+// Replies are decoded straight out of the last received frame.
 
 #include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#if defined(GOBLIN_HAS_RDMA)
+#include "goblin/core/rdma_ring.hpp"
+#endif
+#if defined(GOBLIN_HAS_EXASOCK)
+#include "goblin/core/exasock_transport.hpp"
+#endif
 
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/Ping.h"
@@ -85,6 +93,24 @@
 #include "goblin_sbe/LTrim.h"
 #include "goblin_sbe/RPop.h"
 #include "goblin_sbe/RPush.h"
+// Sets
+#include "goblin_sbe/SAdd.h"
+#include "goblin_sbe/SCard.h"
+#include "goblin_sbe/SDiff.h"
+#include "goblin_sbe/SDiffStore.h"
+#include "goblin_sbe/SInter.h"
+#include "goblin_sbe/SInterCard.h"
+#include "goblin_sbe/SInterStore.h"
+#include "goblin_sbe/SIsMember.h"
+#include "goblin_sbe/SMIsMember.h"
+#include "goblin_sbe/SMembers.h"
+#include "goblin_sbe/SMove.h"
+#include "goblin_sbe/SPop.h"
+#include "goblin_sbe/SRandMember.h"
+#include "goblin_sbe/SRem.h"
+#include "goblin_sbe/SScan.h"
+#include "goblin_sbe/SUnion.h"
+#include "goblin_sbe/SUnionStore.h"
 // Zset
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
@@ -128,6 +154,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <span>
@@ -188,7 +215,72 @@ struct PubSubMessage {
   std::string payload;
 };
 
-class SbeRingClient {
+// Adapts the existing shared-memory mapping to the same compile-time transport
+// surface as the one-sided RDMA connection. The SBE client below consequently
+// has no virtual dispatch and keeps one implementation of every typed command.
+class RingSbeTransport {
+ public:
+  using ms = std::chrono::milliseconds;
+
+  [[nodiscard]] static std::optional<RingSbeTransport> open(
+      const char* path, ms wait = ms(2000),
+      std::size_t buffer_size = 16 * 1024) {
+    const auto deadline = std::chrono::steady_clock::now() + wait;
+    for (;;) {
+      if (auto mapping = ring::Mapping::open(path)) {
+        const std::uint64_t epoch = mapping->request_reconnect();
+        while (!mapping->reconnect_acked(epoch)) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            return std::nullopt;
+          }
+          ring::cpu_relax();
+        }
+        return RingSbeTransport(std::move(*mapping), buffer_size);
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        return std::nullopt;
+      }
+      ring::cpu_relax();
+    }
+  }
+
+  template <class StopFn>
+  bool send(std::string_view bytes, StopFn&& stop) {
+    return producer_.send_record(bytes, std::forward<StopFn>(stop));
+  }
+  [[nodiscard]] std::optional<std::string_view> peek() noexcept {
+    return consumer_.peek();
+  }
+  void pop() noexcept { consumer_.pop(); }
+  void wait_for_record() noexcept { consumer_.wait_for_record(); }
+  [[nodiscard]] std::size_t send_capacity() const noexcept {
+    return mapping_.sq_capacity();
+  }
+  [[nodiscard]] std::size_t receive_capacity() const noexcept {
+    return mapping_.cq_capacity();
+  }
+  [[nodiscard]] std::size_t max_message_bytes() const noexcept {
+    return producer_.max_record_payload();
+  }
+  [[nodiscard]] std::size_t buffer_size_hint() const noexcept {
+    return buffer_size_;
+  }
+
+ private:
+  RingSbeTransport(ring::Mapping&& mapping, std::size_t buffer_size) noexcept
+      : mapping_(std::move(mapping)),
+        producer_(mapping_.sq_producer()),
+        consumer_(mapping_.cq_consumer()),
+        buffer_size_(buffer_size) {}
+
+  ring::Mapping mapping_;
+  ring::Producer producer_;
+  ring::Consumer consumer_;
+  std::size_t buffer_size_{0};
+};
+
+template <class Transport>
+class BasicSbeClient {
  public:
   using Scored = std::pair<double, std::string_view>;
   using ms = std::chrono::milliseconds;
@@ -198,32 +290,116 @@ class SbeRingClient {
   // always fits), and per request if a value would not otherwise fit.
   static constexpr std::size_t kDefaultBufferBytes = 16 * 1024;
 
-  [[nodiscard]] static std::optional<SbeRingClient> open(
-      const char* path, ms wait = ms(2000), std::size_t buffer_size = kDefaultBufferBytes) {
-    const auto deadline = std::chrono::steady_clock::now() + wait;
-    for (;;) {
-      if (auto m = ring::Mapping::open(path)) {
-        // Reconnect handshake: claim a fresh epoch and wait for the server to drain the
-        // ring (discarding whatever a dead predecessor left in flight) and ack it, so we
-        // always start from a clean SQ/CQ no matter how the previous client exited.
-        const std::uint64_t epoch = m->request_reconnect();
-        while (!m->reconnect_acked(epoch)) {
-          if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
-          ring::cpu_relax();
-        }
-        SbeRingClient c(std::move(*m), buffer_size);
-        c.sq_.send(std::string_view(kGoblinMagicBytes, sizeof(kGoblinMagicBytes)),
-                   [] { return false; });
-        return c;
-      }
-      if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
-      ring::cpu_relax();
+  template <class... Args>
+  [[nodiscard]] static std::optional<BasicSbeClient> open(Args&&... args) {
+    auto transport = Transport::open(std::forward<Args>(args)...);
+    if (!transport) {
+      return std::nullopt;
     }
+    BasicSbeClient client(std::move(*transport));
+    if (!client.transport_.send(
+            std::string_view(kGoblinMagicBytes, sizeof(kGoblinMagicBytes)),
+            [] { return false; })) {
+      return std::nullopt;
+    }
+    return client;
   }
 
   // Size the buffers hold after construction (max of the configured size and the
   // ring capacity).
   [[nodiscard]] std::size_t buffer_size() const noexcept { return sendbuf_.size(); }
+  [[nodiscard]] std::size_t max_message_bytes() const noexcept {
+    return transport_.max_message_bytes();
+  }
+
+  // Pipeline requests are written as complete SBE messages and replies are read
+  // in submission order. SBE needs no correlation id because one connection is
+  // single-threaded and the server emits one ordinary reply per request, in order.
+  // `payload_bytes` is the variable-data budget used to size the request buffer;
+  // `encode` fills the generated SBE flyweight.
+  template <class Message, class Encode>
+  void enqueue_sbe(std::size_t payload_bytes, Encode&& encode,
+                   ms timeout = kDefaultTimeout) {
+    auto message = build<Message>(payload_bytes);
+    std::forward<Encode>(encode)(message);
+    enqueue_built(message, timeout);
+  }
+
+  [[nodiscard]] std::size_t outstanding_pipeline_replies() const noexcept {
+    return outstanding_pipeline_replies_;
+  }
+
+  // The returned view is the SBE message without its uint32 length prefix and is
+  // valid until the next read. Typed readers below consume the same next frame.
+  [[nodiscard]] std::string_view read_pipeline_frame(
+      ms timeout = kDefaultTimeout) {
+    if (outstanding_pipeline_replies_ == 0) {
+      throw std::logic_error(
+          "SbeRingClient: no pipelined reply is outstanding");
+    }
+    read_frame(timeout);
+    --outstanding_pipeline_replies_;
+    return last_frame_;
+  }
+
+  [[nodiscard]] long long read_pipeline_int(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_int();
+  }
+  [[nodiscard]] std::optional<long long> read_pipeline_int_or_nil(
+      ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_int_or_nil();
+  }
+  [[nodiscard]] std::optional<double> read_pipeline_double_or_nil(
+      ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_double_or_nil();
+  }
+  [[nodiscard]] std::string read_pipeline_bulk(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_bulk();
+  }
+  [[nodiscard]] std::optional<std::string> read_pipeline_bulk_or_nil(
+      ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_bulk_or_nil();
+  }
+  [[nodiscard]] std::string read_pipeline_status(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_status();
+  }
+  [[nodiscard]] std::vector<std::string> read_pipeline_array(
+      ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_array();
+  }
+  [[nodiscard]] std::optional<std::vector<std::string>>
+  read_pipeline_array_or_nil(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_array_or_nil();
+  }
+  [[nodiscard]] std::vector<std::optional<std::string>>
+  read_pipeline_nullable_array(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_nullable_array();
+  }
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  read_pipeline_scored_array(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_scored_array();
+  }
+  [[nodiscard]] std::optional<
+      std::vector<std::pair<std::string, std::string>>>
+  read_pipeline_map_or_nil(ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_map_or_nil();
+  }
+  [[nodiscard]] RespValue read_pipeline_resp_value(
+      ms timeout = kDefaultTimeout) {
+    (void)read_pipeline_frame(timeout);
+    return as_resp_value();
+  }
 
   // ---- connection ------------------------------------------------------------
   [[nodiscard]] bool ping(ms timeout = kDefaultTimeout) {
@@ -352,14 +528,15 @@ class SbeRingClient {
   }
 
   [[nodiscard]] std::optional<PubSubMessage> try_read_pubsub() {
+    require_no_pipeline();
     if (!pending_pubsub_.empty()) {
       auto message = std::move(pending_pubsub_.front());
       pending_pubsub_.pop_front();
       return message;
     }
-    while (auto record = cq_.peek()) {
-      cqbuf_.append(*record);
-      cq_.pop();
+    std::exception_ptr error;
+    if (!drain_ready_records(error)) {
+      std::rethrow_exception(error);
     }
     if (!extract_buffered_frame()) {
       return std::nullopt;
@@ -591,6 +768,126 @@ class SbeRingClient {
     return as_int();
   }
 
+  // Windowed pipeline: keep up to `depth` requests outstanding (K). RESP
+  // harnesses commonly use depth 256; SBE used to stay at depth 1. `enqueue(i)`
+  // must call one enqueue_* method; `read(i)` must consume one pipelined reply
+  // in the same order. Depth 1 reduces to classic request/response.
+  template <class EnqueueFn, class ReadFn>
+  void pipeline_for(std::size_t count, std::size_t depth, EnqueueFn&& enqueue,
+                    ReadFn&& read) {
+    if (depth == 0) {
+      throw std::invalid_argument("SbeRingClient: pipeline depth must be >= 1");
+    }
+    std::size_t issued = 0;
+    std::size_t completed = 0;
+    while (completed < count) {
+      while (issued < count &&
+             (issued - completed) < depth) {
+        std::forward<EnqueueFn>(enqueue)(issued);
+        ++issued;
+      }
+      std::forward<ReadFn>(read)(completed);
+      ++completed;
+    }
+  }
+
+  // Hash request writers for typed, in-order SBE pipelines. The reply
+  // reader must match the command shape (for example HSET -> read_pipeline_int,
+  // HGET -> read_pipeline_bulk_or_nil) and calls must remain in enqueue order.
+  void enqueue_hset(
+      std::string_view key,
+      std::span<const std::pair<std::string_view, std::string_view>> fv,
+      ms t = kDefaultTimeout) {
+    std::size_t need = key.size();
+    for (const auto& [field, value] : fv) {
+      need += field.size() + value.size();
+    }
+    auto message = build<goblin_sbe::HSet>(need);
+    auto& entries = message.entriesCount(u16(fv.size()));
+    for (const auto& [field, value] : fv) {
+      entries.next()
+          .putField(field.data(), u32(field.size()))
+          .putValue(value.data(), u32(value.size()));
+    }
+    message.putKey(key.data(), u32(key.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hsetnx(std::string_view key, std::string_view field,
+                      std::string_view value, ms t = kDefaultTimeout) {
+    auto message =
+        build<goblin_sbe::HSetNx>(key.size() + field.size() + value.size());
+    message.putKey(key.data(), u32(key.size()));
+    message.putField(field.data(), u32(field.size()));
+    message.putValue(value.data(), u32(value.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hget(std::string_view key, std::string_view field,
+                    ms t = kDefaultTimeout) {
+    auto message = key_field<goblin_sbe::HGet>(key, field);
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hmget(std::string_view key,
+                     std::span<const std::string_view> fields,
+                     ms t = kDefaultTimeout) {
+    auto message = field_group<goblin_sbe::HMGet>(key, fields);
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hdel(std::string_view key,
+                    std::span<const std::string_view> fields,
+                    ms t = kDefaultTimeout) {
+    auto message = field_group<goblin_sbe::HDel>(key, fields);
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hgetall(std::string_view key, ms t = kDefaultTimeout) {
+    auto message = build<goblin_sbe::HGetAll>(key.size());
+    message.putKey(key.data(), u32(key.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hkeys(std::string_view key, ms t = kDefaultTimeout) {
+    auto message = build<goblin_sbe::HKeys>(key.size());
+    message.putKey(key.data(), u32(key.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hvals(std::string_view key, ms t = kDefaultTimeout) {
+    auto message = build<goblin_sbe::HVals>(key.size());
+    message.putKey(key.data(), u32(key.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hlen(std::string_view key, ms t = kDefaultTimeout) {
+    auto message = build<goblin_sbe::HLen>(key.size());
+    message.putKey(key.data(), u32(key.size()));
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hexists(std::string_view key, std::string_view field,
+                       ms t = kDefaultTimeout) {
+    auto message = key_field<goblin_sbe::HExists>(key, field);
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hstrlen(std::string_view key, std::string_view field,
+                       ms t = kDefaultTimeout) {
+    auto message = key_field<goblin_sbe::HStrLen>(key, field);
+    enqueue_built(message, t);
+  }
+
+  void enqueue_hincrby(std::string_view key, std::string_view field,
+                       long long delta, ms t = kDefaultTimeout) {
+    auto message = build<goblin_sbe::HIncrBy>(key.size() + field.size());
+    message.delta(delta);
+    message.putKey(key.data(), u32(key.size()));
+    message.putField(field.data(), u32(field.size()));
+    enqueue_built(message, t);
+  }
+
   // ---- list ------------------------------------------------------------------
   [[nodiscard]] long long lpush(
       std::string_view key, std::span<const std::string_view> values,
@@ -680,6 +977,142 @@ class SbeRingClient {
     m.putValue(value.data(), u32(value.size()));
     finish(m, t);
     return as_int();
+  }
+
+  // ---- set -------------------------------------------------------------------
+  [[nodiscard]] long long sadd(std::string_view key,
+                               std::span<const std::string_view> members,
+                               ms t = kDefaultTimeout) {
+    return set_members_int<goblin_sbe::SAdd>(key, members, t);
+  }
+  [[nodiscard]] long long srem(std::string_view key,
+                               std::span<const std::string_view> members,
+                               ms t = kDefaultTimeout) {
+    return set_members_int<goblin_sbe::SRem>(key, members, t);
+  }
+  [[nodiscard]] long long scard(std::string_view key,
+                                ms t = kDefaultTimeout) {
+    return key_int<goblin_sbe::SCard>(key, t);
+  }
+  [[nodiscard]] long long sismember(std::string_view key,
+                                    std::string_view member,
+                                    ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SIsMember>(key.size() + member.size());
+    m.putKey(key.data(), u32(key.size()));
+    m.putMember(member.data(), u32(member.size()));
+    finish(m, t);
+    return as_int();
+  }
+  [[nodiscard]] std::vector<std::string> smismember(
+      std::string_view key, std::span<const std::string_view> members,
+      ms t = kDefaultTimeout) {
+    auto m = set_members_msg<goblin_sbe::SMIsMember>(key, members);
+    finish(m, t);
+    return as_array();
+  }
+  [[nodiscard]] std::vector<std::string> smembers(std::string_view key,
+                                                  ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SMembers>(key.size());
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_array();
+  }
+  [[nodiscard]] std::optional<std::string> spop(std::string_view key,
+                                                ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SPop>(key.size());
+    m.count(-1);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_bulk_or_nil();
+  }
+  [[nodiscard]] std::vector<std::string> spop(std::string_view key,
+                                              std::size_t count,
+                                              ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SPop>(key.size());
+    m.count(static_cast<std::int64_t>(count));
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_array();
+  }
+  [[nodiscard]] std::optional<std::string> srandmember(
+      std::string_view key, ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SRandMember>(key.size());
+    m.count(-1);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_bulk_or_nil();
+  }
+  [[nodiscard]] std::vector<std::string> srandmember(
+      std::string_view key, long long count, ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SRandMember>(key.size());
+    m.count(count);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_array();
+  }
+  [[nodiscard]] long long smove(std::string_view source,
+                                std::string_view destination,
+                                std::string_view member,
+                                ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SMove>(source.size() + destination.size() +
+                                      member.size());
+    m.putSource(source.data(), u32(source.size()));
+    m.putDestination(destination.data(), u32(destination.size()));
+    m.putMember(member.data(), u32(member.size()));
+    finish(m, t);
+    return as_int();
+  }
+  [[nodiscard]] std::vector<std::string> sinter(
+      std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
+    return set_keys_array<goblin_sbe::SInter>(keys, t);
+  }
+  [[nodiscard]] std::vector<std::string> sunion(
+      std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
+    return set_keys_array<goblin_sbe::SUnion>(keys, t);
+  }
+  [[nodiscard]] std::vector<std::string> sdiff(
+      std::span<const std::string_view> keys, ms t = kDefaultTimeout) {
+    return set_keys_array<goblin_sbe::SDiff>(keys, t);
+  }
+  [[nodiscard]] long long sinterstore(std::string_view destination,
+                                      std::span<const std::string_view> keys,
+                                      ms t = kDefaultTimeout) {
+    return set_store_int<goblin_sbe::SInterStore>(destination, keys, t);
+  }
+  [[nodiscard]] long long sunionstore(std::string_view destination,
+                                      std::span<const std::string_view> keys,
+                                      ms t = kDefaultTimeout) {
+    return set_store_int<goblin_sbe::SUnionStore>(destination, keys, t);
+  }
+  [[nodiscard]] long long sdiffstore(std::string_view destination,
+                                     std::span<const std::string_view> keys,
+                                     ms t = kDefaultTimeout) {
+    return set_store_int<goblin_sbe::SDiffStore>(destination, keys, t);
+  }
+  [[nodiscard]] long long sintercard(std::span<const std::string_view> keys,
+                                     std::size_t limit = 0,
+                                     ms t = kDefaultTimeout) {
+    std::size_t need = 0;
+    for (const auto key : keys) need += key.size();
+    auto m = build<goblin_sbe::SInterCard>(need);
+    m.limit(static_cast<std::int64_t>(limit));
+    auto& g = m.keysCount(u16(keys.size()));
+    for (const auto key : keys) {
+      g.next().putKey(key.data(), u32(key.size()));
+    }
+    finish(m, t);
+    return as_int();
+  }
+  // Flat reply: [next_cursor, member...].
+  [[nodiscard]] std::vector<std::string> sscan(
+      std::string_view key, std::uint64_t cursor, std::size_t count = 10,
+      std::string_view match = {}, ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::SScan>(key.size() + match.size());
+    m.cursor(cursor).count(static_cast<std::int64_t>(count));
+    m.putKey(key.data(), u32(key.size()));
+    m.putMatch(match.data(), u32(match.size()));
+    finish(m, t);
+    return as_array();
   }
 
   // ---- zset ------------------------------------------------------------------
@@ -871,12 +1304,11 @@ class SbeRingClient {
   }
 
  private:
-  explicit SbeRingClient(ring::Mapping&& m, std::size_t buffer_size)
-      : map_(std::move(m)), sq_(map_.sq_producer()), cq_(map_.cq_consumer()) {
-    // The configured size is a floor; grow silently to the ring's capacity so a full
-    // ring record always fits without a reallocation on the hot path.
-    sendbuf_.resize(std::max(buffer_size, static_cast<std::size_t>(map_.sq_capacity())));
-    cqbuf_.reserve(std::max(buffer_size, static_cast<std::size_t>(map_.cq_capacity())));
+  explicit BasicSbeClient(Transport&& transport)
+      : transport_(std::move(transport)) {
+    const std::size_t floor = transport_.buffer_size_hint();
+    sendbuf_.resize(std::max(floor, transport_.send_capacity()));
+    cqbuf_.reserve(std::max(floor, transport_.receive_capacity()));
   }
 
   static std::uint32_t u32(std::size_t n) { return static_cast<std::uint32_t>(n); }
@@ -938,6 +1370,47 @@ class SbeRingClient {
     for (const auto& f : fields) g.next().putField(f.data(), u32(f.size()));
     m.putKey(key.data(), u32(key.size()));
     return m;
+  }
+  template <class Msg>
+  Msg set_members_msg(std::string_view key,
+                      std::span<const std::string_view> members) {
+    std::size_t need = key.size();
+    for (const auto& mbr : members) need += mbr.size();
+    Msg m = build<Msg>(need);
+    auto& g = m.membersCount(u16(members.size()));
+    for (const auto& mbr : members) {
+      g.next().putMember(mbr.data(), u32(mbr.size()));
+    }
+    m.putKey(key.data(), u32(key.size()));
+    return m;
+  }
+  template <class Msg>
+  long long set_members_int(std::string_view key,
+                            std::span<const std::string_view> members, ms t) {
+    auto m = set_members_msg<Msg>(key, members);
+    finish(m, t);
+    return as_int();
+  }
+  template <class Msg>
+  std::vector<std::string> set_keys_array(std::span<const std::string_view> keys,
+                                          ms t) {
+    auto m = key_group<Msg>(keys);
+    finish(m, t);
+    return as_array();
+  }
+  template <class Msg>
+  long long set_store_int(std::string_view destination,
+                          std::span<const std::string_view> keys, ms t) {
+    std::size_t need = destination.size();
+    for (const auto key : keys) need += key.size();
+    auto m = build<Msg>(need);
+    auto& g = m.keysCount(u16(keys.size()));
+    for (const auto key : keys) {
+      g.next().putKey(key.data(), u32(key.size()));
+    }
+    m.putDestination(destination.data(), u32(destination.size()));
+    finish(m, t);
+    return as_int();
   }
   template <class Msg>
   Msg key_member(std::string_view key, std::string_view member) {
@@ -1042,13 +1515,95 @@ class SbeRingClient {
   static void put_code(goblin_sbe::Eval& m, std::string_view s) { m.putScript(s.data(), u32(s.size())); }
   static void put_code(goblin_sbe::EvalSha& m, std::string_view s) { m.putSha(s.data(), u32(s.size())); }
 
+  void require_no_pipeline() const {
+    if (outstanding_pipeline_replies_ != 0) {
+      throw std::logic_error(
+          "SbeRingClient: synchronous command would consume a pipelined reply");
+    }
+  }
+
+  void compact_cq_buffer_for_append() {
+    if (cqbuf_offset_ == 0) {
+      return;
+    }
+    if (cqbuf_offset_ == cqbuf_.size()) {
+      cqbuf_.clear();
+      cqbuf_offset_ = 0;
+      return;
+    }
+    if (cqbuf_offset_ >= cqbuf_.size() / 2) {
+      cqbuf_.erase(0, cqbuf_offset_);
+      cqbuf_offset_ = 0;
+    }
+  }
+
+  // Pull every currently published completion record into the client accumulator.
+  // This is called from the SQ-full callback so a deep pipeline cannot deadlock
+  // with the server blocked on a full CQ.
+  bool drain_ready_records(std::exception_ptr& error) noexcept {
+    try {
+      compact_cq_buffer_for_append();
+      while (auto record = transport_.peek()) {
+        cqbuf_.append(*record);
+        transport_.pop();
+      }
+      return true;
+    } catch (...) {
+      error = std::current_exception();
+      return false;
+    }
+  }
+
+  void send_message(std::string_view bytes, ms timeout) {
+    const std::size_t maximum = transport_.max_message_bytes();
+    if (bytes.size() > maximum) {
+      throw std::length_error(
+          "SbeRingClient: message (" + std::to_string(bytes.size()) +
+          " bytes) exceeds this ring's contiguous message capacity (" +
+          std::to_string(maximum) + " bytes)");
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::exception_ptr drain_error;
+    const bool sent = transport_.send(bytes, [&]() noexcept {
+      if (!drain_ready_records(drain_error)) {
+        return true;
+      }
+      return std::chrono::steady_clock::now() >= deadline;
+    });
+    if (drain_error) {
+      std::rethrow_exception(drain_error);
+    }
+    if (!sent) {
+      throw std::runtime_error(
+          "SbeRingClient: timed out or transport failed while enqueueing a message");
+    }
+  }
+
+  template <class Msg>
+  void send_built(Msg& message, ms timeout) {
+    const std::size_t message_length =
+        goblin_sbe::MessageHeader::encodedLength() + message.encodedLength();
+    if (message_length > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::length_error("SbeRingClient: SBE message exceeds uint32 framing");
+    }
+    const auto length = static_cast<std::uint32_t>(message_length);
+    std::memcpy(sendbuf_.data(), &length, kSbeLenPrefix);
+    send_message(std::string_view(sendbuf_.data(), kSbeLenPrefix + length),
+                 timeout);
+  }
+
+  template <class Msg>
+  void enqueue_built(Msg& message, ms timeout) {
+    send_built(message, timeout);
+    ++outstanding_pipeline_replies_;
+  }
+
   // Frame the just-built message and block for its reply.
   template <class Msg>
   void finish(Msg& msg, ms timeout) {
-    const std::uint32_t len =
-        static_cast<std::uint32_t>(goblin_sbe::MessageHeader::encodedLength() + msg.encodedLength());
-    std::memcpy(sendbuf_.data(), &len, kSbeLenPrefix);
-    sq_.send(std::string_view(sendbuf_.data(), kSbeLenPrefix + len), [] { return false; });
+    require_no_pipeline();
+    send_built(msg, timeout);
     read_frame(timeout);
   }
 
@@ -1067,11 +1622,8 @@ class SbeRingClient {
   template <class Msg>
   [[nodiscard]] std::vector<PubSubMessage> finish_pubsub(
       Msg& message, std::size_t acknowledgements, ms timeout) {
-    const std::uint32_t length = static_cast<std::uint32_t>(
-        goblin_sbe::MessageHeader::encodedLength() + message.encodedLength());
-    std::memcpy(sendbuf_.data(), &length, kSbeLenPrefix);
-    sq_.send(std::string_view(sendbuf_.data(), kSbeLenPrefix + length),
-             [] { return false; });
+    require_no_pipeline();
+    send_built(message, timeout);
 
     std::vector<PubSubMessage> result;
     result.reserve(acknowledgements);
@@ -1299,17 +1851,22 @@ class SbeRingClient {
   }
 
   [[nodiscard]] bool extract_buffered_frame() {
-    if (cqbuf_.size() < kSbeLenPrefix) {
+    const std::size_t available = cqbuf_.size() - cqbuf_offset_;
+    if (available < kSbeLenPrefix) {
       return false;
     }
     std::uint32_t length = 0;
-    std::memcpy(&length, cqbuf_.data(), kSbeLenPrefix);
+    std::memcpy(&length, cqbuf_.data() + cqbuf_offset_, kSbeLenPrefix);
     const std::size_t frame = kSbeLenPrefix + static_cast<std::size_t>(length);
-    if (cqbuf_.size() < frame) {
+    if (available < frame) {
       return false;
     }
-    last_frame_.assign(cqbuf_.data() + kSbeLenPrefix, length);
-    cqbuf_.erase(0, frame);
+    last_frame_.assign(cqbuf_.data() + cqbuf_offset_ + kSbeLenPrefix, length);
+    cqbuf_offset_ += frame;
+    if (cqbuf_offset_ == cqbuf_.size()) {
+      cqbuf_.clear();
+      cqbuf_offset_ = 0;
+    }
     return true;
   }
 
@@ -1319,7 +1876,10 @@ class SbeRingClient {
     // enough (64 * ~30 ns pause << 1 ms of slack).
     unsigned spins = 0;
     for (;;) {
-      if (const auto rec = cq_.peek()) {
+      if (extract_buffered_frame()) {
+        return;
+      }
+      if (const auto rec = transport_.peek()) {
         // Hot path: empty accumulator + one CQ record holds a whole frame.
         // Copy once into last_frame_ and skip the cqbuf_ append/erase round-trip
         // (two memcpys + string bookkeeping per reply).
@@ -1331,28 +1891,27 @@ class SbeRingClient {
             const std::size_t frame = kSbeLenPrefix + static_cast<std::size_t>(len);
             if (bytes.size() == frame) {
               last_frame_.assign(bytes.data() + kSbeLenPrefix, len);
-              cq_.pop();
+              transport_.pop();
               return;
             }
             if (bytes.size() > frame) {
               // Record holds a full frame plus pipelined leftover.
               last_frame_.assign(bytes.data() + kSbeLenPrefix, len);
               cqbuf_.assign(bytes.data() + frame, bytes.size() - frame);
-              cq_.pop();
+              cqbuf_offset_ = 0;
+              transport_.pop();
               return;
             }
           }
         }
+        compact_cq_buffer_for_append();
         cqbuf_.append(*rec);
-        cq_.pop();
-      }
-      if (extract_buffered_frame()) {
-        return;
+        transport_.pop();
       }
       if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline)
         throw std::runtime_error("SbeRingClient: timed out waiting for a reply");
       // Adaptive spin-then-park on the CQ tail (macOS); pure relax elsewhere.
-      cq_.wait_for_record();
+      transport_.wait_for_record();
     }
   }
 
@@ -1369,15 +1928,23 @@ class SbeRingClient {
     }
   }
 
-  ring::Mapping map_;
-  ring::Producer sq_;
-  ring::Consumer cq_;
+  Transport transport_;
   std::vector<char> sendbuf_;  // growable request buffer
   std::string cqbuf_;          // CQ byte accumulator
+  std::size_t cqbuf_offset_{0};
   std::string last_frame_;     // the last reply's SBE message (prefix stripped)
   std::deque<PubSubMessage> pending_pubsub_;
   std::size_t literal_subscriptions_{0};
   std::size_t pattern_subscriptions_{0};
+  std::size_t outstanding_pipeline_replies_{0};
 };
+
+using SbeRingClient = BasicSbeClient<RingSbeTransport>;
+#if defined(GOBLIN_HAS_RDMA)
+using SbeRdmaClient = BasicSbeClient<rdma::ClientTransport>;
+#endif
+#if defined(GOBLIN_HAS_EXASOCK)
+using SbeExasockClient = BasicSbeClient<exasock::ClientTransport>;
+#endif
 
 }  // namespace goblin::core

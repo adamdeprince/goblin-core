@@ -18,6 +18,8 @@ the full payload.
 | `redis_version` | `7.4.0` — the wire/behaviour compatibility level |
 | `redis_mode` | `standalone` |
 | `list_implementation` | concrete backend selected for standard list commands (`pma` or `segmented`; default `segmented`) |
+| `hash_implementation` | representation selected for hashes created by standard commands (`efficient` or `rt`) |
+| `keyspace_index` | top-level key index (`swiss`, or incremental `linear` under `--real-time`) |
 
 ## `# Memory`
 
@@ -28,6 +30,8 @@ the full payload.
 | `used_memory_peak` | currently mirrors `used_memory` — Goblin does not yet track a separate high-water mark |
 | `mem_reclaimable_bytes` | the **dead** subset of `used_memory`: bytes orphaned by deletes/overwrites that a compaction would free |
 | `hash_heap_allocated_bytes` | heap-resident state owned by promoted hashes; compact hash handles and blobs live in the keyspace slot/arena instead |
+| `realtime_hash_index_pool_bytes` | committed bytes in the fixed, prefaulted arena shared by all RT hash field indexes; `0` until that arena is initialized |
+| `realtime_keyspace_index_pool_bytes` | committed bytes in the separate fixed RT keyspace-index arena selected by `--real-time`; otherwise `0` |
 | `blob_pool_requested_bytes` | live compact zset/list blob bytes requested through the shared blob allocator |
 | `blob_pool_capacity_bytes` | bytes the blob allocator currently holds from its upstream allocator, including live direct blobs over 1 KiB; this amount is included once in `used_memory` |
 | `blob_pool_fragmentation_bytes` | retained pool capacity beyond live requested blob bytes; unlike arena dead bytes, `GOBLIN.OPTIMIZE` does not reclaim it |

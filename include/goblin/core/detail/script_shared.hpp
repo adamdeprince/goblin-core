@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "goblin/core/parse_int.hpp"
 #include "goblin/core/resp_writer.hpp"
 
 namespace goblin::core::script_shared {
@@ -201,9 +202,8 @@ inline void sha1_hex_into(std::string_view data, char* out40) {
 }
 
 [[nodiscard]] inline long long parse_signed(std::string_view text) {
-  long long value = 0;
-  std::from_chars(text.data(), text.data() + text.size(), value);
-  return value;
+  const auto value = goblin::core::parse_i64(text);
+  return value ? *value : 0;
 }
 
 // Advance past one CRLF-terminated line, returning its content (sans CRLF) in
@@ -225,14 +225,12 @@ inline void sha1_hex_into(std::string_view data, char* out40) {
     std::span<const std::string_view>* keys,
     std::span<const std::string_view>* argv,
     std::string& out) {
-  long long numkeys = 0;
-  const std::string_view numkeys_text = args[1];
-  const auto [ptr, ec] = std::from_chars(
-      numkeys_text.data(), numkeys_text.data() + numkeys_text.size(), numkeys);
-  if (ec != std::errc{} || ptr != numkeys_text.data() + numkeys_text.size()) {
+  const auto parsed_numkeys = goblin::core::parse_i64(args[1]);
+  if (!parsed_numkeys) {
     resp::append_error(out, "ERR value is not an integer or out of range");
     return false;
   }
+  const long long numkeys = *parsed_numkeys;
   if (numkeys < 0) {
     resp::append_error(out, "ERR Number of keys can't be negative");
     return false;

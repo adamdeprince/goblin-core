@@ -42,6 +42,7 @@ struct Config {
   std::int64_t stop = -1;
   int value_bytes = 16;
   int batch = 128;
+  int pipeline = 256;
   int width = 8;
   SbeListImplementation implementation = SbeListImplementation::selected;
 };
@@ -74,6 +75,7 @@ Config parse_args(int argc, char** argv) {
     else if (arg == "--stop") config.stop = std::stoll(next_arg(argc, argv, i));
     else if (arg == "--value-bytes") config.value_bytes = std::stoi(next_arg(argc, argv, i));
     else if (arg == "--batch") config.batch = std::stoi(next_arg(argc, argv, i));
+    else if (arg == "--pipeline") config.pipeline = std::stoi(next_arg(argc, argv, i));
     else if (arg == "--width") config.width = std::stoi(next_arg(argc, argv, i));
     else if (arg == "--implementation") {
       const auto value = next_arg(argc, argv, i);
@@ -89,7 +91,8 @@ Config parse_args(int argc, char** argv) {
     fail("--ring, --action, and --key are required");
   }
   if (config.members <= 0 || config.requests <= 0 || config.pairs <= 0 ||
-      config.value_bytes < 2 || config.batch <= 0 || config.width <= 0) {
+      config.value_bytes < 2 || config.batch <= 0 || config.pipeline <= 0 ||
+      config.width <= 0) {
     fail("counts and widths are out of range");
   }
   return config;
@@ -113,92 +116,203 @@ std::string item_value(std::int64_t item_id, int width,
   return result;
 }
 
-std::int64_t run_load(SbeRingClient& client, const Config& config) {
-  std::int64_t commands = 0;
-  for (std::int64_t begin = 0; begin < config.members; begin += config.batch) {
-    const auto count = std::min<std::int64_t>(config.batch, config.members - begin);
-    std::vector<std::string> values;
-    values.reserve(static_cast<std::size_t>(count));
-    for (std::int64_t offset = 0; offset < count; ++offset) {
-      values.push_back(item_value(begin + offset, config.value_bytes));
+template <class Message>
+void enqueue_push(SbeRingClient& client, const Config& config,
+                  std::span<const std::string_view> values) {
+  std::size_t need = config.key.size();
+  for (const auto value : values) need += value.size();
+  client.enqueue_sbe<Message>(need, [&](auto& message) {
+    message.implementation(static_cast<std::uint8_t>(config.implementation));
+    message.onlyIfExists(0);
+    auto& group = message.valuesCount(static_cast<std::uint16_t>(values.size()));
+    for (const auto value : values) {
+      group.next().putValue(value.data(), static_cast<std::uint32_t>(value.size()));
     }
-    std::vector<std::string_view> views(values.begin(), values.end());
-    (void)client.rpush(config.key, views, config.implementation);
-    ++commands;
-  }
+    message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+  });
+}
+
+template <class Message>
+void enqueue_pop(SbeRingClient& client, const Config& config, long long count) {
+  client.enqueue_sbe<Message>(config.key.size(), [&](auto& message) {
+    message.count(count);
+    message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+  });
+}
+
+std::int64_t run_load(SbeRingClient& client, const Config& config) {
+  const auto commands = (config.members + config.batch - 1) / config.batch;
+  client.pipeline_for(
+      static_cast<std::size_t>(commands), static_cast<std::size_t>(config.pipeline),
+      [&](std::size_t command_index) {
+        const auto begin = static_cast<std::int64_t>(command_index) * config.batch;
+        const auto count = std::min<std::int64_t>(config.batch, config.members - begin);
+        std::vector<std::string> values;
+        values.reserve(static_cast<std::size_t>(count));
+        for (std::int64_t offset = 0; offset < count; ++offset) {
+          values.push_back(item_value(begin + offset, config.value_bytes));
+        }
+        std::vector<std::string_view> views(values.begin(), values.end());
+        enqueue_push<goblin_sbe::RPush>(client, config, views);
+      },
+      [&](std::size_t) { (void)client.read_pipeline_int(); });
   return commands;
 }
 
 std::int64_t run_fixed(SbeRingClient& client, const Config& config) {
   const std::string replacement(static_cast<std::size_t>(config.value_bytes), 's');
-  for (std::int64_t request = 0; request < config.requests; ++request) {
-    if (config.operation == "LLEN") (void)client.llen(config.key);
-    else if (config.operation == "LINDEX") (void)client.lindex(config.key, config.index);
-    else if (config.operation == "LRANGE") {
-      (void)client.lrange(config.key, config.start, config.stop);
-    } else if (config.operation == "LSET") {
-      client.lset(config.key, config.index, replacement);
-    } else {
-      fail("unsupported fixed operation: " + config.operation);
-    }
-  }
+  client.pipeline_for(
+      static_cast<std::size_t>(config.requests),
+      static_cast<std::size_t>(config.pipeline),
+      [&](std::size_t) {
+        if (config.operation == "LLEN") {
+          client.enqueue_sbe<goblin_sbe::LLen>(config.key.size(), [&](auto& message) {
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+          });
+        } else if (config.operation == "LINDEX") {
+          client.enqueue_sbe<goblin_sbe::LIndex>(config.key.size(), [&](auto& message) {
+            message.index(config.index);
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+          });
+        } else if (config.operation == "LRANGE") {
+          client.enqueue_sbe<goblin_sbe::LRange>(config.key.size(), [&](auto& message) {
+            message.start(config.start).stop(config.stop);
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+          });
+        } else if (config.operation == "LSET") {
+          client.enqueue_sbe<goblin_sbe::LSet>(config.key.size() + replacement.size(),
+                                               [&](auto& message) {
+            message.index(config.index);
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+            message.putValue(replacement.data(),
+                             static_cast<std::uint32_t>(replacement.size()));
+          });
+        } else {
+          fail("unsupported fixed operation: " + config.operation);
+        }
+      },
+      [&](std::size_t) {
+        if (config.operation == "LLEN") (void)client.read_pipeline_int();
+        else if (config.operation == "LINDEX") {
+          (void)client.read_pipeline_bulk_or_nil();
+        } else if (config.operation == "LRANGE") {
+          (void)client.read_pipeline_array();
+        } else {
+          (void)client.read_pipeline_status();
+        }
+      });
   return config.requests;
 }
 
 std::int64_t run_middle(SbeRingClient& client, const Config& config) {
   const auto pivot = client.lindex(config.key, config.index);
   if (!pivot) fail("middle pivot is missing");
-  for (std::int64_t ordinal = 0; ordinal < config.pairs; ++ordinal) {
-    const auto value = item_value(ordinal, config.value_bytes, "m");
-    (void)client.linsert(config.key, true, *pivot, value);
-    if (client.lrem(config.key, 1, value) != 1) fail("middle LREM missed inserted value");
-  }
-  return config.pairs * 2;
-}
-
-void push_one(SbeRingClient& client, const Config& config, std::string_view value) {
-  const std::span<const std::string_view> values(&value, 1);
-  if (config.push == "LPUSH") (void)client.lpush(config.key, values);
-  else if (config.push == "RPUSH") (void)client.rpush(config.key, values);
-  else fail("unsupported push: " + config.push);
-}
-
-std::optional<std::string> pop_one(SbeRingClient& client, const Config& config) {
-  if (config.pop == "LPOP") return client.lpop(config.key);
-  if (config.pop == "RPOP") return client.rpop(config.key);
-  fail("unsupported pop: " + config.pop);
+  const auto commands = config.pairs * 2;
+  client.pipeline_for(
+      static_cast<std::size_t>(commands), static_cast<std::size_t>(config.pipeline),
+      [&](std::size_t command_index) {
+        const auto pair = static_cast<std::int64_t>(command_index / 2);
+        const auto value = item_value(pair, config.value_bytes, "m");
+        if (command_index % 2 == 0) {
+          client.enqueue_sbe<goblin_sbe::LInsert>(
+              config.key.size() + pivot->size() + value.size(), [&](auto& message) {
+            message.before(1);
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+            message.putPivot(pivot->data(), static_cast<std::uint32_t>(pivot->size()));
+            message.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+          });
+        } else {
+          client.enqueue_sbe<goblin_sbe::LRem>(config.key.size() + value.size(),
+                                               [&](auto& message) {
+            message.count(1);
+            message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+            message.putValue(value.data(), static_cast<std::uint32_t>(value.size()));
+          });
+        }
+      },
+      [&](std::size_t command_index) {
+        const auto reply = client.read_pipeline_int();
+        if (command_index % 2 != 0 && reply != 1) {
+          fail("middle LREM missed inserted value");
+        }
+      });
+  return commands;
 }
 
 std::int64_t run_endpoint(SbeRingClient& client, const Config& config) {
-  for (std::int64_t ordinal = 0; ordinal < config.pairs; ++ordinal) {
-    const auto value = item_value(ordinal, config.value_bytes, config.prefix);
-    push_one(client, config, value);
-    const auto popped = pop_one(client, config);
-    if (!popped) fail("endpoint pop returned nil");
-    if ((config.push == "LPUSH" && config.pop == "LPOP") ||
-        (config.push == "RPUSH" && config.pop == "RPOP")) {
-      if (*popped != value) fail("stack pop returned the wrong value");
-    }
-  }
-  return config.pairs * 2;
+  const auto commands = config.pairs * 2;
+  const bool stack = (config.push == "LPUSH" && config.pop == "LPOP") ||
+                     (config.push == "RPUSH" && config.pop == "RPOP");
+  client.pipeline_for(
+      static_cast<std::size_t>(commands), static_cast<std::size_t>(config.pipeline),
+      [&](std::size_t command_index) {
+        const auto pair = static_cast<std::int64_t>(command_index / 2);
+        const auto value = item_value(pair, config.value_bytes, config.prefix);
+        if (command_index % 2 == 0) {
+          const std::string_view view = value;
+          if (config.push == "LPUSH") {
+            enqueue_push<goblin_sbe::LPush>(client, config,
+                                            std::span<const std::string_view>(&view, 1));
+          } else if (config.push == "RPUSH") {
+            enqueue_push<goblin_sbe::RPush>(client, config,
+                                            std::span<const std::string_view>(&view, 1));
+          } else {
+            fail("unsupported push: " + config.push);
+          }
+        } else if (config.pop == "LPOP") {
+          enqueue_pop<goblin_sbe::LPop>(client, config, -1);
+        } else if (config.pop == "RPOP") {
+          enqueue_pop<goblin_sbe::RPop>(client, config, -1);
+        } else {
+          fail("unsupported pop: " + config.pop);
+        }
+      },
+      [&](std::size_t command_index) {
+        if (command_index % 2 == 0) {
+          (void)client.read_pipeline_int();
+        } else {
+          const auto popped = client.read_pipeline_bulk_or_nil();
+          if (!popped) fail("endpoint pop returned nil");
+          if (stack) {
+            const auto pair = static_cast<std::int64_t>(command_index / 2);
+            const auto expected = item_value(pair, config.value_bytes, config.prefix);
+            if (*popped != expected) fail("stack pop returned the wrong value");
+          }
+        }
+      });
+  return commands;
 }
 
 std::int64_t run_counted(SbeRingClient& client, const Config& config) {
-  for (std::int64_t ordinal = 0; ordinal < config.pairs; ++ordinal) {
-    std::vector<std::string> values;
-    values.reserve(static_cast<std::size_t>(config.width));
-    for (int offset = 0; offset < config.width; ++offset) {
-      values.push_back(item_value(ordinal * config.width + offset,
-                                  config.value_bytes, "b"));
-    }
-    std::vector<std::string_view> views(values.begin(), values.end());
-    (void)client.lpush(config.key, views);
-    const auto popped = client.lpop(config.key, static_cast<std::size_t>(config.width));
-    if (!popped || popped->size() != static_cast<std::size_t>(config.width)) {
-      fail("counted LPOP returned the wrong number of values");
-    }
-  }
-  return config.pairs * 2;
+  const auto commands = config.pairs * 2;
+  client.pipeline_for(
+      static_cast<std::size_t>(commands), static_cast<std::size_t>(config.pipeline),
+      [&](std::size_t command_index) {
+        const auto pair = static_cast<std::int64_t>(command_index / 2);
+        if (command_index % 2 == 0) {
+          std::vector<std::string> values;
+          values.reserve(static_cast<std::size_t>(config.width));
+          for (int offset = 0; offset < config.width; ++offset) {
+            values.push_back(item_value(pair * config.width + offset,
+                                        config.value_bytes, "b"));
+          }
+          std::vector<std::string_view> views(values.begin(), values.end());
+          enqueue_push<goblin_sbe::LPush>(client, config, views);
+        } else {
+          enqueue_pop<goblin_sbe::LPop>(client, config, config.width);
+        }
+      },
+      [&](std::size_t command_index) {
+        if (command_index % 2 == 0) {
+          (void)client.read_pipeline_int();
+        } else {
+          const auto popped = client.read_pipeline_array_or_nil();
+          if (!popped || popped->size() != static_cast<std::size_t>(config.width)) {
+            fail("counted LPOP returned the wrong number of values");
+          }
+        }
+      });
+  return commands;
 }
 
 int run(int argc, char** argv) {

@@ -33,6 +33,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -81,6 +82,14 @@ void test_fingerprint_simd_scan() {
   group[0] = needle;
   group[15] = needle;
   assert(goblin::core::simd::match_control_group_16(group, needle) == 0x8001U);
+
+  alignas(64) std::array<std::uint32_t, 16> hashes{};
+  constexpr std::uint32_t hash_needle = 0xA5C31F27U;
+  hashes[0] = hash_needle;
+  hashes[7] = hash_needle;
+  hashes[15] = hash_needle;
+  assert(goblin::core::simd::match_hash_group_16(hashes.data(), hash_needle) ==
+         0x8081U);
 }
 
 struct BadHasher {
@@ -182,6 +191,8 @@ void test_command_perfect_hash() {
   assert(type_of({"zscore", "k", "m"}) == CT::zscore);
   assert(type_of({"zRaNgE", "k", "0", "-1"}) == CT::zrange);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
+  assert(type_of({"goblin.rt.hset", "h", "f", "v"}) == CT::hset);
+  assert(type_of({"GoBlIn.EfFiCeNt.HgEt", "h", "f"}) == CT::hget);
   assert(type_of({"goblin.pma.lpush", "l", "v"}) == CT::pma_lpush);
   assert(type_of({"GoBlIn.PmA.LiNdEx", "l", "0"}) == CT::pma_lindex);
   assert(type_of({"goblin.memory", "k"}) == CT::goblin_memory);
@@ -344,6 +355,8 @@ void test_echo_info() {
   assert(info.starts_with("$"));
   assert(info.find("used_memory_rss:") != std::string::npos);
   assert(info.find("redis_version:") != std::string::npos);
+  assert(info.find("hash_implementation:efficient") != std::string::npos);
+  assert(info.find("keyspace_index:swiss") != std::string::npos);
   assert(execute_fields(store, {"INFO"}).find("used_memory_rss:") !=
          std::string::npos);
   // PING regression guard (shares the same arg-branch shape as ECHO).
@@ -4554,6 +4567,307 @@ void test_hash_snapshot_roundtrip() {
   assert(rebuilt.size() == 2);
   assert(rebuilt.get("a") == "1" && rebuilt.get("c") == "333");
   assert(!rebuilt.get("b").has_value());
+
+  // v2 canonical hash records had no implementation byte. Their reader uses
+  // the server's configured fallback while preserving the field/value stream.
+  std::string v2;
+  goblin::core::snapshot::Writer old(v2);
+  old.f64(goblin::core::ZSetMemberIndex::kDefaultGrowth);
+  old.u64(1);
+  old.str("legacy");
+  old.str("value");
+  old.u8(0);  // no accelerator
+  goblin::core::snapshot::Reader old_reader(v2);
+  auto old_loaded = goblin::core::Hash::load(
+      old_reader, /*use_accelerator=*/false, {},
+      goblin::core::HashImplementation::Realtime,
+      /*read_saved_implementation=*/false);
+  assert(old_loaded.implementation() ==
+         goblin::core::HashImplementation::Realtime);
+  assert(old_loaded.get("legacy") == "value");
+}
+
+void test_realtime_hash_incremental_splits() {
+  using goblin::core::Hash;
+  using goblin::core::HashImplementation;
+  using goblin::core::HashOptions;
+
+  Hash hash(HashOptions{}, HashImplementation::Realtime);
+  assert(hash.implementation() == HashImplementation::Realtime);
+  assert(!hash.is_small());
+
+  constexpr int count = 10000;
+  for (int i = 0; i < count; ++i) {
+    assert(hash.set("field-" + std::to_string(i),
+                    "value-" + std::to_string(i)) == 1);
+  }
+  assert(hash.size() == count);
+  for (int i = 0; i < count; ++i) {
+    assert(hash.get("field-" + std::to_string(i)) ==
+           "value-" + std::to_string(i));
+  }
+
+  for (int i = 0; i < count; i += 3) {
+    assert(hash.erase("field-" + std::to_string(i)));
+  }
+  for (int i = 0; i < count; ++i) {
+    const auto value = hash.get("field-" + std::to_string(i));
+    if (i % 3 == 0) {
+      assert(!value);
+    } else {
+      assert(value == "value-" + std::to_string(i));
+    }
+  }
+
+  // Explicit compaction rewrites field/value storage while the stable RT index
+  // remains in place and keeps the selected form.
+  hash.compact();
+  assert(hash.implementation() == HashImplementation::Realtime);
+  assert(!hash.is_small());
+  for (int i = 1; i < count; i += 3) {
+    assert(hash.get("field-" + std::to_string(i)) ==
+           "value-" + std::to_string(i));
+  }
+
+  std::string bytes;
+  goblin::core::snapshot::Writer writer(bytes);
+  hash.save(writer, /*with_accelerator=*/true);
+  goblin::core::snapshot::Reader reader(bytes);
+  auto loaded = Hash::load(reader, /*use_accelerator=*/true, HashOptions{},
+                           HashImplementation::Realtime);
+  assert(loaded.implementation() == HashImplementation::Realtime);
+  assert(loaded.size() == hash.size());
+  for (int i = 1; i < count; i += 3) {
+    assert(loaded.get("field-" + std::to_string(i)) ==
+           "value-" + std::to_string(i));
+  }
+
+  // Multi-field HSET must repay structural maintenance per insertion. A
+  // single maintenance step for the whole batch leaves a long overflow chain
+  // and a radically under-split index.
+  constexpr int batch_count = 4096;
+  Hash scalar(HashOptions{}, HashImplementation::Realtime);
+  Hash batched(HashOptions{}, HashImplementation::Realtime);
+  assert(scalar.set("seed", "value") == 1);
+  assert(batched.set("seed", "value") == 1);
+  std::vector<std::string> batch_fields;
+  std::vector<std::string> batch_values;
+  std::vector<std::pair<std::string_view, std::string_view>> batch;
+  batch_fields.reserve(batch_count);
+  batch_values.reserve(batch_count);
+  batch.reserve(batch_count);
+  for (int i = 0; i < batch_count; ++i) {
+    batch_fields.push_back("batch-field-" + std::to_string(i));
+    batch_values.push_back("batch-value-" + std::to_string(i));
+  }
+  for (int i = 0; i < batch_count; ++i) {
+    batch.emplace_back(batch_fields[i], batch_values[i]);
+    assert(scalar.set(batch_fields[i], batch_values[i]) == 1);
+  }
+  assert(batched.set_many(batch) == batch_count);
+  assert(batched.memory_stats().field_index_allocated_bytes ==
+         scalar.memory_stats().field_index_allocated_bytes);
+  for (int i : {0, batch_count / 2, batch_count - 1}) {
+    assert(batched.get(batch_fields[i]) == batch_values[i]);
+  }
+}
+
+void test_realtime_hash_shared_arena_and_incremental_merges() {
+  using goblin::core::Hash;
+  using goblin::core::HashImplementation;
+  using goblin::core::HashOptions;
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  // The fixed arena is shared by every RT hash in a Store. Tiny hashes keep
+  // their first bucket inline, so adding many of them must not recreate the
+  // old per-hash deque block/map footprint.
+  Store store(StoreOptions{.realtime_hash_index_bytes =
+                               std::size_t{2} << 20,
+                           .hash_implementation = HashImplementation::Realtime});
+  const auto empty_bytes = store.memory_report().used_memory;
+  constexpr int hash_count = 1000;
+  for (int hash_id = 0; hash_id < hash_count; ++hash_id) {
+    const auto key = "rt-small-" + std::to_string(hash_id);
+    for (int field = 0; field < 8; ++field) {
+      assert(store.hset(key, "f" + std::to_string(field), "v") == 1);
+    }
+    const auto stats = store.hash_memory_stats(key);
+    assert(stats && stats->field_index_allocated_bytes < 1024);
+  }
+  assert(store.memory_report().used_memory - empty_bytes <
+         std::size_t{4} << 20);
+
+  // Reverse linear-hash merges perform one fixed physical-group step per
+  // mutation. By the time a large hash has been drained to one bucket, its
+  // arena cells have already returned to the shared free list; the last HDEL
+  // does not inherit an O(peak bucket count) cleanup pause.
+  Hash hash(HashOptions{.realtime_index_bytes = std::size_t{2} << 20},
+            HashImplementation::Realtime);
+  constexpr int fields = 20000;
+  for (int field = 0; field < fields; ++field) {
+    assert(hash.set("field-" + std::to_string(field), "value") == 1);
+  }
+  const auto grown_index_bytes = hash.memory_stats().field_index_allocated_bytes;
+  for (int field = 0; field < fields - 8; ++field) {
+    assert(hash.erase("field-" + std::to_string(field)));
+  }
+  const auto shrunk_index_bytes =
+      hash.memory_stats().field_index_allocated_bytes;
+  assert(shrunk_index_bytes < grown_index_bytes / 4);
+  for (int field = fields - 8; field < fields; ++field) {
+    assert(hash.get("field-" + std::to_string(field)) == "value");
+  }
+}
+
+void test_realtime_hash_buddy_arena_coalescing() {
+  using Arena = goblin::core::LinearHashArena<goblin::core::ZSetMemberMeta>;
+  static_assert(Arena::kTieredPrimaryExtentBuckets ==
+                std::array<std::size_t, 6>{4, 8, 16, 32, 64, 128});
+  static_assert(Arena::kTieredPrimaryBuckets == 252);
+  static_assert(Arena::kTerminalPrimaryExtentBuckets == 64);
+
+  Arena arena(std::size_t{2} << 20);
+  const auto superblock = arena.allocate_uninitialized_primary_extent(256);
+  arena.initialize_primary_bucket(superblock, 1);
+  assert(arena.bucket(superblock).owner == 1);
+  assert(arena.bucket(superblock).size == 0);
+  if (goblin::core::page_bytes() == 16 * 1024) {
+    const auto address =
+        reinterpret_cast<std::uintptr_t>(&arena.hot_bucket(superblock));
+    assert((address & (16 * 1024 - 1)) == 0);
+  }
+  arena.release_primary_extent(superblock, 256);
+
+  std::vector<std::pair<std::uint32_t, std::size_t>> runs;
+  constexpr std::size_t extent_sizes[]{4, 8, 16, 32, 64, 128};
+  for (std::size_t round = 0; round < 8; ++round) {
+    for (const auto size : extent_sizes) {
+      runs.emplace_back(arena.allocate_uninitialized_primary_extent(size),
+                        size);
+    }
+    for (std::size_t bucket = 0; bucket < 31; ++bucket) {
+      runs.emplace_back(arena.allocate_bucket(0), 1);
+    }
+  }
+
+  // Release alternating runs first so coalescing has to tolerate holes at
+  // every buddy order instead of merely unwinding allocation order.
+  for (std::size_t parity = 0; parity < 2; ++parity) {
+    for (std::size_t index = parity; index < runs.size(); index += 2) {
+      const auto [base, size] = runs[index];
+      if (size == 1) {
+        arena.release(base);
+      } else {
+        arena.release_primary_extent(base, size);
+      }
+    }
+  }
+  assert(arena.live_cells() == 0);
+
+  std::vector<std::uint32_t> superblocks;
+  while (arena.can_allocate_primary_extent(256)) {
+    superblocks.push_back(arena.allocate_uninitialized_primary_extent(256));
+  }
+  assert(superblocks.size() == arena.capacity() / 256);
+  for (const auto base : superblocks) {
+    arena.release_primary_extent(base, 256);
+  }
+  assert(arena.live_cells() == 0);
+
+  // Crossing from the tiered prefix into terminal storage reserves exactly 64
+  // cells instead of consuming the complete 256-cell physical superblock.
+  using Index = goblin::core::LinearHashIndex<
+      goblin::core::HashStorage, goblin::core::ZSetMemberMeta>;
+  goblin::core::HashStorage storage;
+  auto index_arena = std::make_shared<Index::Arena>(std::size_t{2} << 20);
+  Index index(&storage, index_arena);
+  constexpr double density = 13.0 / 16.0;
+  index.reserve_for_density(253 * 13, density);
+  const auto tiered_cells = index.arena_cell_count();
+  assert(tiered_cells == Arena::kTieredPrimaryBuckets);
+  index.reserve_for_density(254 * 13, density);
+  assert(index.arena_cell_count() ==
+         tiered_cells + Arena::kTerminalPrimaryExtentBuckets);
+}
+
+void test_hash_implementation_aliases_and_realtime_keyspace() {
+  using goblin::core::HashImplementation;
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  Store store;
+  assert(execute_fields(store,
+                        {"GOBLIN.RT.HSET", "rt", "field", "value"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"goblin.rt.hget", "rt", "field"}) ==
+         "$5\r\nvalue\r\n");
+  const auto rt_stats = store.hash_memory_stats("rt");
+  assert(rt_stats && rt_stats->field_index_allocated_bytes != 0);
+  assert(rt_stats->implementation == HashImplementation::Realtime);
+
+  assert(execute_fields(
+             store,
+             {"GOBLIN.EFFICENT.HSET", "efficient", "field", "value"}) ==
+         ":1\r\n");
+  const auto efficient_stats = store.hash_memory_stats("efficient");
+  assert(efficient_stats && efficient_stats->field_index_allocated_bytes == 0);
+  assert(efficient_stats->implementation == HashImplementation::Efficient);
+
+  // A qualifier selects only new keys; it never hides an O(n) conversion.
+  assert(execute_fields(
+             store,
+             {"GOBLIN.EFFICENT.HSET", "rt", "second", "value"}) ==
+         ":1\r\n");
+  assert(store.hash_memory_stats("rt")->field_index_allocated_bytes != 0);
+  assert(execute_fields(store,
+                        {"GOBLIN.RT.HSET", "efficient", "second", "value"}) ==
+         ":1\r\n");
+  assert(store.hash_memory_stats("efficient")->field_index_allocated_bytes ==
+         0);
+
+  std::stringstream snapshot;
+  store.save(snapshot, /*with_accelerator=*/true);
+  Store restored;
+  (void)restored.load(snapshot);
+  assert(restored.hash_memory_stats("rt")->field_index_allocated_bytes != 0);
+  assert(restored.hash_memory_stats("efficient")
+             ->field_index_allocated_bytes == 0);
+
+  Store rt_store(StoreOptions{.hash_implementation =
+                                  HashImplementation::Realtime,
+                              .real_time = true});
+  assert(execute_fields(rt_store, {"HSET", "standard", "f", "v"}) ==
+         ":1\r\n");
+  assert(rt_store.hash_memory_stats("standard")
+             ->field_index_allocated_bytes != 0);
+  const auto rt_info = execute_fields(rt_store, {"INFO"});
+  assert(rt_info.find("hash_implementation:rt") != std::string::npos);
+  assert(rt_info.find("keyspace_index:linear") != std::string::npos);
+  assert(rt_info.find("realtime_hash_index_pool_bytes:") !=
+         std::string::npos);
+  assert(rt_info.find("realtime_keyspace_index_pool_bytes:") !=
+         std::string::npos);
+
+  constexpr int key_count = 5000;
+  for (int i = 0; i < key_count; ++i) {
+    rt_store.set("key-" + std::to_string(i), "value-" + std::to_string(i));
+  }
+  for (int i = 0; i < key_count; ++i) {
+    assert(rt_store.get("key-" + std::to_string(i)) ==
+           "value-" + std::to_string(i));
+  }
+  for (int i = 0; i < key_count; i += 4) {
+    assert(rt_store.del("key-" + std::to_string(i)));
+  }
+  for (int i = 0; i < key_count; ++i) {
+    const auto value = rt_store.get("key-" + std::to_string(i));
+    if (i % 4 == 0) {
+      assert(!value);
+    } else {
+      assert(value == "value-" + std::to_string(i));
+    }
+  }
 }
 
 // The arena chunk size is configurable per type; smaller chunks still store and
@@ -4605,6 +4919,321 @@ void test_zset_arena_auto_compacts_on_removal() {
   assert(z.memory_stats().total_allocated_bytes < before);
   assert(z.size() == 5000);
   assert(z.score(pad + std::to_string(19999)) == 19999.0);  // survivor intact
+}
+
+// Small sets stay in the member-only listpack; larger ones promote to Swiss.
+void test_set_listpack_mode() {
+  using goblin::core::Set;
+  using goblin::core::SetOptions;
+
+  SetOptions opts;
+  opts.listpack_max_entries = 4;
+  Set set(opts);
+  assert(set.is_small());
+  assert(set.add("a") == 1);
+  assert(set.add("b") == 1);
+  assert(set.add("a") == 0);
+  assert(set.is_small());
+  assert(set.size() == 2);
+  assert(set.contains("a") && set.contains("b"));
+  assert(set.erase("a"));
+  assert(set.is_small() && set.size() == 1);
+
+  // Crossing the ceiling promotes.
+  assert(set.add("c") == 1);
+  assert(set.add("d") == 1);
+  assert(set.add("e") == 1);  // 1+3 = 4, still at ceiling if max is 4
+  assert(set.size() == 4);
+  // Fifth member forces full form.
+  assert(set.add("f") == 1);
+  assert(!set.is_small());
+  assert(set.size() == 5);
+  assert(set.contains("b") && set.contains("f"));
+
+  // Shrink below the ceiling demotes after erase.
+  assert(set.erase("f"));
+  assert(set.erase("e"));
+  assert(set.size() == 3);
+  // Demotion is best-effort after erase; force via compact.
+  set.compact();
+  assert(set.is_small());
+  assert(set.contains("b") && set.contains("c") && set.contains("d"));
+
+  // Encoded integers work in listpack (NeverLz4 path).
+  Set nums(opts);
+  assert(nums.add("42") == 1);
+  assert(nums.is_small());
+  assert(nums.contains("42") && !nums.contains("043"));
+
+  // listpack_max_entries=0 always full.
+  SetOptions always_full;
+  always_full.listpack_max_entries = 0;
+  Set full(always_full);
+  assert(!full.is_small());
+  assert(full.add("x") == 1);
+  assert(!full.is_small());
+}
+
+// SPOP / SRANDMEMBER / SMOVE / algebra / SSCAN.
+void test_set_full_command_surface() {
+  goblin::core::Store store;
+  assert(execute_fields(store, {"SADD", "a", "1", "2", "3", "4"}) == ":4\r\n");
+
+  // SPOP one member removes it.
+  {
+    const auto popped = execute_fields(store, {"SPOP", "a"});
+    assert(popped.size() > 0 && popped[0] == '$');
+    assert(execute_fields(store, {"SCARD", "a"}) == ":3\r\n");
+  }
+  // SPOP count.
+  assert(execute_fields(store, {"SADD", "b", "x", "y", "z"}) == ":3\r\n");
+  {
+    const auto batch = execute_fields(store, {"SPOP", "b", "2"});
+    assert(batch.find("*2\r\n") == 0 || batch.find("*1\r\n") == 0 ||
+           batch.find("*3\r\n") == 0);
+    // At most 1 remains.
+    const auto card = execute_fields(store, {"SCARD", "b"});
+    assert(card == ":1\r\n" || card == ":0\r\n");
+  }
+  assert(execute_fields(store, {"SPOP", "missing"}) == "$-1\r\n");
+  assert(execute_fields(store, {"SPOP", "missing", "3"}) == "*0\r\n");
+
+  // SRANDMEMBER without removal.
+  assert(execute_fields(store, {"SADD", "r", "p", "q"}) == ":2\r\n");
+  {
+    const auto one = execute_fields(store, {"SRANDMEMBER", "r"});
+    assert(one == "$1\r\np\r\n" || one == "$1\r\nq\r\n");
+    assert(execute_fields(store, {"SCARD", "r"}) == ":2\r\n");
+  }
+  {
+    const auto many = execute_fields(store, {"SRANDMEMBER", "r", "10"});
+    // Unique sample capped at size => both members.
+    assert(many.find("$1\r\np\r\n") != std::string::npos);
+    assert(many.find("$1\r\nq\r\n") != std::string::npos);
+  }
+  {
+    const auto with_dups = execute_fields(store, {"SRANDMEMBER", "r", "-5"});
+    assert(with_dups.find("*5\r\n") == 0);
+  }
+
+  // SMOVE.
+  assert(execute_fields(store, {"SADD", "src", "m1", "m2"}) == ":2\r\n");
+  assert(execute_fields(store, {"SMOVE", "src", "dst", "m1"}) == ":1\r\n");
+  assert(execute_fields(store, {"SISMEMBER", "src", "m1"}) == ":0\r\n");
+  assert(execute_fields(store, {"SISMEMBER", "dst", "m1"}) == ":1\r\n");
+  assert(execute_fields(store, {"SMOVE", "src", "dst", "nope"}) == ":0\r\n");
+  assert(execute_fields(store, {"SMOVE", "src", "src", "m2"}) == ":1\r\n");
+  assert(execute_fields(store, {"SET", "notset", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SMOVE", "src", "notset", "m2"}).find(
+             "WRONGTYPE") != std::string::npos);
+
+  // Algebra.
+  assert(execute_fields(store, {"SADD", "s1", "a", "b", "c"}) == ":3\r\n");
+  assert(execute_fields(store, {"SADD", "s2", "b", "c", "d"}) == ":3\r\n");
+  assert(execute_fields(store, {"SADD", "s3", "c", "e"}) == ":2\r\n");
+  {
+    const auto inter = execute_fields(store, {"SINTER", "s1", "s2"});
+    assert(inter.find("$1\r\nb\r\n") != std::string::npos);
+    assert(inter.find("$1\r\nc\r\n") != std::string::npos);
+    assert(inter.find("*2\r\n") == 0);
+  }
+  {
+    const auto uni = execute_fields(store, {"SUNION", "s1", "s2"});
+    assert(uni.find("*4\r\n") == 0);
+  }
+  {
+    const auto diff = execute_fields(store, {"SDIFF", "s1", "s2"});
+    assert(diff.find("*1\r\n") == 0);
+    assert(diff.find("$1\r\na\r\n") != std::string::npos);
+  }
+  assert(execute_fields(store, {"SINTERSTORE", "out", "s1", "s2"}) == ":2\r\n");
+  assert(execute_fields(store, {"SCARD", "out"}) == ":2\r\n");
+  assert(execute_fields(store, {"SUNIONSTORE", "uout", "s1", "s2"}) == ":4\r\n");
+  assert(execute_fields(store, {"SDIFFSTORE", "dout", "s1", "s2"}) == ":1\r\n");
+  assert(execute_fields(store, {"SINTERCARD", "2", "s1", "s2"}) == ":2\r\n");
+  assert(execute_fields(store, {"SINTERCARD", "3", "s1", "s2", "s3"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"SINTERCARD", "2", "s1", "s2", "LIMIT", "1"}) ==
+         ":1\r\n");
+  // Missing keys are empty sets.
+  assert(execute_fields(store, {"SINTER", "s1", "nosuch"}) == "*0\r\n");
+  assert(execute_fields(store, {"SINTERSTORE", "emptyout", "s1", "nosuch"}) ==
+         ":0\r\n");
+  assert(execute_fields(store, {"EXISTS", "emptyout"}) == ":0\r\n");
+
+  // SSCAN walks all members.
+  assert(execute_fields(store, {"SADD", "scan", "aa", "ab", "ba", "bb"}) ==
+         ":4\r\n");
+  {
+    std::size_t seen = 0;
+    std::string cursor = "0";
+    do {
+      const auto reply =
+          execute_fields(store, {"SSCAN", "scan", cursor, "COUNT", "1"});
+      // *2\r\n$<len>\r\n<cursor>\r\n*<n>\r\n...
+      assert(reply.find("*2\r\n") == 0);
+      // Parse next cursor bulk after the array header.
+      const auto first_bulk = reply.find("$", 4);
+      assert(first_bulk != std::string::npos);
+      const auto cursor_start = reply.find("\r\n", first_bulk) + 2;
+      const auto cursor_end = reply.find("\r\n", cursor_start);
+      cursor = reply.substr(cursor_start, cursor_end - cursor_start);
+      const auto arr = reply.find("*", cursor_end);
+      assert(arr != std::string::npos);
+      // Count bulk strings in the member array roughly by $ occurrences after.
+      std::size_t pos = arr;
+      while ((pos = reply.find("$", pos + 1)) != std::string::npos) {
+        ++seen;
+      }
+    } while (cursor != "0");
+    assert(seen == 4);
+  }
+  {
+    const auto matched =
+        execute_fields(store, {"SSCAN", "scan", "0", "MATCH", "a*", "COUNT", "10"});
+    assert(matched.find("$2\r\naa\r\n") != std::string::npos ||
+           matched.find("$2\r\nab\r\n") != std::string::npos);
+  }
+
+  // WRONGTYPE on algebra sources.
+  assert(execute_fields(store, {"SET", "str", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"SINTER", "s1", "str"}).find("WRONGTYPE") !=
+         std::string::npos);
+  assert(execute_fields(store, {"SINTERSTORE", "x", "s1", "str"})
+             .find("WRONGTYPE") != std::string::npos);
+}
+
+// Snapshot is a thin wrap of the structure: canonical members in dense id
+// order, optional Swiss accelerator -- not an SADD replay log.
+void test_set_snapshot_roundtrip() {
+  using goblin::core::Set;
+  using goblin::core::Store;
+
+  Set set;
+  assert(set.add("alpha") == 1);
+  assert(set.add("42") == 1);  // compact integer encoding
+  assert(set.add("beta") == 1);
+  assert(set.erase("alpha"));  // swap-remove; ids stay dense
+
+  std::string buf;
+  goblin::core::snapshot::Writer w(buf);
+  set.save(w, /*with_accelerator=*/true);
+
+  goblin::core::snapshot::Reader r(buf);
+  auto fast = Set::load(r, /*use_accelerator=*/true);
+  assert(fast.size() == 2);
+  assert(fast.contains("42") && fast.contains("beta"));
+  assert(!fast.contains("alpha"));
+
+  goblin::core::snapshot::Reader r2(buf);
+  auto rebuilt = Set::load(r2, /*use_accelerator=*/false);
+  assert(rebuilt.size() == 2);
+  assert(rebuilt.contains("42") && rebuilt.contains("beta"));
+  assert(!rebuilt.contains("alpha"));
+
+  // Store-level save/load (section framing) with and without accelerator.
+  Store store;
+  assert(store.sadd("s", std::array<std::string_view, 3>{"x", "y", "100"}) ==
+         3);
+  assert(store.sadd("t", std::array<std::string_view, 1>{"only"}) == 1);
+  for (const bool with_accelerator : {true, false}) {
+    std::stringstream stream;
+    store.save(stream, with_accelerator);
+    Store loaded;
+    const auto stats = loaded.load(stream);
+    assert(stats.keys == 2);
+    assert(stats.members == 4);
+    assert(loaded.scard("s") == 3);
+    assert(loaded.sismember("s", "100"));
+    assert(loaded.sismember("s", "x"));
+    assert(loaded.sismember("t", "only"));
+    assert(loaded.key_type("s") == goblin::core::KeyType::Set);
+  }
+}
+
+// SET data type: Swiss member index over EncodedString members.
+void test_set_basic_and_encoding() {
+  using goblin::core::Set;
+  using goblin::core::SetOptions;
+  using goblin::core::Store;
+
+  Set set;
+  assert(set.add("a") == 1);
+  assert(set.add("a") == 0);
+  assert(set.add("b") == 1);
+  assert(set.size() == 2);
+  assert(set.contains("a") && set.contains("b") && !set.contains("c"));
+  assert(set.erase("a"));
+  assert(!set.contains("a") && set.size() == 1);
+  assert(!set.erase("a"));
+
+  // Compact integer encoding: "42" is not stored as raw three-byte text.
+  Set numbers;
+  assert(numbers.add("42") == 1);
+  assert(numbers.add("42") == 0);
+  assert(numbers.contains("42"));
+  assert(!numbers.contains("043"));  // non-canonical decimal is a different member
+  assert(numbers.add("043") == 1);
+  assert(numbers.size() == 2);
+
+  // UUID hex form packs to 17 encoded bytes (tag + 16).
+  constexpr std::string_view uuid = "00112233445566778899aabbccddeeff";
+  assert(numbers.add(uuid) == 1);
+  assert(numbers.contains(uuid));
+
+  // Command surface.
+  Store store;
+  assert(execute_fields(store, {"SADD", "s", "x", "y", "x"}) == ":2\r\n");
+  assert(execute_fields(store, {"SCARD", "s"}) == ":2\r\n");
+  assert(execute_fields(store, {"SISMEMBER", "s", "x"}) == ":1\r\n");
+  assert(execute_fields(store, {"SISMEMBER", "s", "z"}) == ":0\r\n");
+  assert(execute_fields(store, {"SMISMEMBER", "s", "x", "z", "y"}) ==
+         "*3\r\n:1\r\n:0\r\n:1\r\n");
+  assert(execute_fields(store, {"TYPE", "s"}) == "+set\r\n");
+  const auto members = execute_fields(store, {"SMEMBERS", "s"});
+  assert(members.find("$1\r\nx\r\n") != std::string::npos);
+  assert(members.find("$1\r\ny\r\n") != std::string::npos);
+  assert(execute_fields(store, {"SREM", "s", "x", "missing"}) == ":1\r\n");
+  assert(execute_fields(store, {"SCARD", "s"}) == ":1\r\n");
+  assert(execute_fields(store, {"SREM", "s", "y"}) == ":1\r\n");
+  assert(execute_fields(store, {"EXISTS", "s"}) == ":0\r\n");  // emptied key dropped
+  assert(execute_fields(store, {"SCARD", "missing"}) == ":0\r\n");
+  assert(execute_fields(store, {"SMEMBERS", "missing"}) == "*0\r\n");
+
+  // Encoded ints survive the command path.
+  assert(execute_fields(store, {"SADD", "nums", "1", "2", "100"}) == ":3\r\n");
+  assert(execute_fields(store, {"SISMEMBER", "nums", "100"}) == ":1\r\n");
+  assert(execute_fields(store, {"SADD", "nums", "1"}) == ":0\r\n");
+
+  // WRONGTYPE against other types.
+  assert(execute_fields(store, {"ZADD", "z", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"SADD", "z", "m"}).find("WRONGTYPE") !=
+         std::string::npos);
+  assert(execute_fields(store, {"SADD", "s2", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "s2", "1", "m"}).find("WRONGTYPE") !=
+         std::string::npos);
+
+  // GOBLIN.MEMORY / OPTIMIZE see sets.
+  assert(execute_fields(store, {"GOBLIN.MEMORY", "nums"})
+             .find("member_count") != std::string::npos);
+  assert(execute_fields(store, {"GOBLIN.OPTIMIZE", "nums"}) != "$-1\r\n");
+
+  // Bulk load densifies the Swiss index near the 0.97 target.
+  Set bulk;
+  constexpr int n = 1000;
+  for (int i = 0; i < n; ++i) {
+    assert(bulk.add(std::to_string(i)) == 1);
+  }
+  bulk.compact(Set::kDefaultMemberIndexDensity);
+  assert(bulk.size() == static_cast<std::size_t>(n));
+  const auto capacity = bulk.member_index_capacity();
+  assert(capacity > 0);
+  const double density =
+      static_cast<double>(n) / static_cast<double>(capacity);
+  assert(density >= 0.90 && density <= 1.0);
+  for (int i = 0; i < n; ++i) {
+    assert(bulk.contains(std::to_string(i)));
+  }
 }
 
 // The hash command surface over RESP (id-order iteration is deterministic).
@@ -6164,8 +6793,16 @@ int main() {
   test_snapshot_save_clear_reload();
   test_hash_basic();
   test_hash_snapshot_roundtrip();
+  test_realtime_hash_incremental_splits();
+  test_realtime_hash_shared_arena_and_incremental_merges();
+  test_realtime_hash_buddy_arena_coalescing();
+  test_hash_implementation_aliases_and_realtime_keyspace();
   test_configurable_chunk_size();
   test_zset_arena_auto_compacts_on_removal();
+  test_set_basic_and_encoding();
+  test_set_listpack_mode();
+  test_set_full_command_surface();
+  test_set_snapshot_roundtrip();
   test_hash_commands();
   test_wrongtype();
   test_hash_snapshot_persistence();

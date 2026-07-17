@@ -581,4 +581,98 @@
       <data name="arg" id="1" type="varData"/>
     </group>
   </sbe:message>
+
+  <!-- ============================ Sets (batch 11, ids 102-118) ================= -->
+  <!-- Redis set type (not string SET, which is id 23). Multi-member groups trail
+       the key the same way HDEL trails its field group. -->
+  <sbe:message name="SAdd" id="102" description="SADD key member... -> IntReply">
+    <group name="members" id="1" dimensionType="groupSizeEncoding">
+      <data name="member" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SRem" id="103" description="SREM key member... -> IntReply">
+    <group name="members" id="1" dimensionType="groupSizeEncoding">
+      <data name="member" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SCard" id="104" description="SCARD key -> IntReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SIsMember" id="105" description="SISMEMBER key member -> IntReply">
+    <data name="key" id="1" type="varData"/>
+    <data name="member" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SMIsMember" id="106" description="SMISMEMBER key member... -> ArrayReply of 0/1">
+    <group name="members" id="1" dimensionType="groupSizeEncoding">
+      <data name="member" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SMembers" id="107" description="SMEMBERS key -> ArrayReply">
+    <data name="key" id="1" type="varData"/>
+  </sbe:message>
+  <!-- count=-1 is the scalar form; count>=0 is the counted array form. -->
+  <sbe:message name="SPop" id="108" description="SPOP key [count] -> BulkReply/NilReply/ArrayReply">
+    <field name="count" id="1" type="int64"/>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <!-- count=-1 scalar; count>=0 unique sample; count&lt;0 with-replacement draws. -->
+  <sbe:message name="SRandMember" id="109" description="SRANDMEMBER key [count] -> Bulk/Nil/Array">
+    <field name="count" id="1" type="int64"/>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SMove" id="110" description="SMOVE source destination member -> IntReply">
+    <data name="source" id="1" type="varData"/>
+    <data name="destination" id="2" type="varData"/>
+    <data name="member" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SInter" id="111" description="SINTER key... -> ArrayReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="SUnion" id="112" description="SUNION key... -> ArrayReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="SDiff" id="113" description="SDIFF key... -> ArrayReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="SInterStore" id="114" description="SINTERSTORE destination key... -> IntReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+    <data name="destination" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SUnionStore" id="115" description="SUNIONSTORE destination key... -> IntReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+    <data name="destination" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="SDiffStore" id="116" description="SDIFFSTORE destination key... -> IntReply">
+    <group name="keys" id="1" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+    <data name="destination" id="2" type="varData"/>
+  </sbe:message>
+  <!-- limit 0 means no early-exit cap. -->
+  <sbe:message name="SInterCard" id="117" description="SINTERCARD keys [LIMIT limit] -> IntReply">
+    <field name="limit" id="1" type="int64"/>
+    <group name="keys" id="2" dimensionType="groupSizeEncoding">
+      <data name="key" id="1" type="varData"/>
+    </group>
+  </sbe:message>
+  <!-- match empty string means no MATCH filter. count is the COUNT hint. -->
+  <sbe:message name="SScan" id="118" description="SSCAN key cursor [MATCH] [COUNT] -> ArrayReply">
+    <field name="cursor" id="1" type="uint64"/>
+    <field name="count"  id="2" type="int64"/>
+    <data name="key"   id="3" type="varData"/>
+    <data name="match" id="4" type="varData"/>
+  </sbe:message>
 </sbe:messageSchema>

@@ -40,6 +40,12 @@ two). So `4kb` is exactly 4 KiB on a 4 KiB-page host (x86, most ARM Linux) and
 rounds up to 16 KiB on a 16 KiB-page host (Apple Silicon). `GOBLIN.*`-style tiny
 rings are fine; a ring only needs to hold a request or two in flight.
 
+With `--ring-hugetlb`, the allocation granule is the smallest configured HugeTLB
+page larger than the base page, and each direction rounds up to at least that size.
+That is normally 2 MiB on Intel; Loongson and ARM systems configured with 32 MiB
+huge pages use 32 MiB. A literal `4kb` remains useful for a many-client test without
+HugeTLB, but it is not the normal production geometry.
+
 ## The I/O model changes gears
 
 **Without `--ring`, the server is event-driven and idle-cheap**: it blocks in
@@ -87,16 +93,18 @@ selection used by SBE.
 
 With SBE, the one-time magic is followed by length-prefixed binary messages. Scores
 and counts travel as native numeric fields and the server dispatches on the SBE
-template id. The ring still carries a byte stream; only the protocol interpreting
-those bytes changes.
+template id. `SbeRingClient` publishes each complete request as one contiguous ring
+record, so the server decodes it directly from shared memory without first copying it
+into an accumulator. A request larger than `max_message_bytes()` is rejected before
+any request bytes are published; use a larger ring for a larger request envelope.
 
 Framing: each record starts on a **64-byte cache-line boundary**, with a one-line
 control header (the payload length) followed by the payload on the *next* cache line
 — so a "line of redis messages" starts cache-aligned and may be longer than a cache
-line. Records larger than half the ring are split across several; the client and
-server reassemble the stream, so message size is not capped by the ring size. When a
-record would run off the end of the ring a short WRAP filler skips to the start, so
-every payload is a single contiguous span.
+line. RESP byte streams may be split across records and reassembled by the parser.
+Typed shared-memory SBE requests are never split. When a record would run off the end
+of a non-mirrored ring, a short WRAP filler skips to the start, so every published
+payload remains one contiguous span.
 
 ## Talking to a ring: `redis-cli-ring`
 
@@ -146,6 +154,36 @@ client for the full binary command surface. SBE can also be used over TCP or a
 Unix-domain socket by sending the same `GOBLINS!` handshake followed by framed SBE
 messages.
 
+### Typed SBE pipelines
+
+The typed client separates submission from ordered reply decoding. Hash commands have
+direct writers; `enqueue_sbe<Message>()` makes every generated request type available
+without adding runtime dispatch:
+
+```cpp
+using Entry = std::pair<std::string_view, std::string_view>;
+const Entry update[] = {{"last", "101.25"}};
+
+for (int i = 0; i < 256; ++i) {
+  client->enqueue_hset("prices", update);
+}
+for (int i = 0; i < 256; ++i) {
+  auto changed = client->read_pipeline_int();
+}
+```
+
+Replies have no correlation-id overhead: one connection is single-threaded and the
+server emits ordinary replies in request order. The client counts outstanding replies
+and rejects a synchronous command while a pipeline is pending, preventing a reply from
+being decoded against the wrong command. Pub/Sub pushes that arrive between ordinary
+replies are retained for `try_read_pubsub()` or `read_pubsub()`.
+
+When SQ backpressure occurs, enqueue drains already-published CQ records into its local
+accumulator before retrying. This prevents the full-SQ/full-CQ deadlock possible when a
+pipeline is deeper than both rings. The integration test deliberately exercises 1,024
+requests over a 4 KiB ring; that small ring is a dense-client configuration, not the
+normal HugeTLB-sized deployment geometry.
+
 The SBE client also exposes typed Pub/Sub without falling back to RESP:
 
 ```cpp
@@ -182,8 +220,9 @@ drains abandoned SQ/CQ data and resets protocol state. See the
   clients.
 - **The server creates the ring files; start it first.** The client opens an
   existing, initialized file (and retries briefly to absorb a startup race).
-- **Rings are a co-located transport.** The client and server must share memory
-  (same host); across machines, use the socket interface.
+- **Shared-memory rings are a co-located transport.** The client and server must
+  share memory. Across machines, use the [polled RDMA ring](rdma-rings.md) or a
+  socket interface.
 - **Portability.** Linux and macOS are supported. The ring index discipline and the
   relax hint cover x86, ARM, and LoongArch; the page-size rounding adapts to the
   host automatically.

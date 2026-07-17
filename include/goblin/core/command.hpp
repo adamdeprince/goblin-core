@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -68,6 +69,34 @@ enum class CommandType {
   hexists,
   hstrlen,
   hincrby,
+  sadd,
+  srem,
+  scard,
+  sismember,
+  smismember,
+  smembers,
+  spop,
+  srandmember,
+  smove,
+  sinter,
+  sinterstore,
+  sintercard,
+  sunion,
+  sunionstore,
+  sdiff,
+  sdiffstore,
+  sscan,
+  arreserve,
+  arset,
+  arget,
+  armset,
+  armget,
+  arlen,
+  arcount,
+  ardel,
+  arinsert,
+  arnext,
+  arseek,
   lpush,
   rpush,
   lpushx,
@@ -163,6 +192,10 @@ struct Command {
   bool range_indexes_parsed{false};
   long long range_start{0};
   long long range_stop{0};
+  // Set once at parse for GOBLIN.RT.* / GOBLIN.EFFICENT.* / GOBLIN.CLASSIC.*
+  // so execute can select hash vs array implementation without re-scanning.
+  // 0 = default store policy, 1 = non-RT qualified family, 2 = Realtime.
+  std::uint8_t hash_implementation_tag{0};
 };
 
 struct CommandParseResult {

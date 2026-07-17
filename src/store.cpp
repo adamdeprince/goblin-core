@@ -1,6 +1,7 @@
 #include "goblin/core/store.hpp"
 
 #include "goblin/core/hugetlb.hpp"
+#include "goblin/core/parse_int.hpp"
 #include "goblin/core/rdb.hpp"
 
 #include <algorithm>
@@ -43,16 +44,7 @@ namespace {
 constexpr std::size_t kMemberArenaAutoCompactDeadFloor = std::size_t{1} << 20;
 
 // Parse a base-10 signed 64-bit integer, rejecting trailing junk (for HINCRBY).
-[[nodiscard]] std::optional<long long> parse_i64(std::string_view text) {
-  long long value = 0;
-  const auto* begin = text.data();
-  const auto* end = text.data() + text.size();
-  const auto [ptr, ec] = std::from_chars(begin, end, value);
-  if (ec != std::errc{} || ptr != end) {
-    return std::nullopt;
-  }
-  return value;
-}
+using goblin::core::parse_i64;
 
 // Strict finite double parse for INCRBYFLOAT (rejects trailing junk, inf, nan).
 [[nodiscard]] std::optional<double> parse_double(std::string_view text) {
@@ -76,6 +68,15 @@ constexpr std::size_t kMemberArenaAutoCompactDeadFloor = std::size_t{1} << 20;
   const auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
   (void)ec;
   return std::string(buffer, ptr);
+}
+
+// Stack buffer for integer field values (HINCRBY). 20 digits + sign + NUL.
+[[nodiscard]] std::string_view format_i64(long long value,
+                                          char (&buffer)[32]) noexcept {
+  const auto [ptr, ec] =
+      std::to_chars(buffer, buffer + sizeof(buffer), value);
+  (void)ec;
+  return std::string_view(buffer, static_cast<std::size_t>(ptr - buffer));
 }
 
 [[nodiscard]] long long normalize_index(long long index, std::size_t size) noexcept {
@@ -860,6 +861,7 @@ namespace {
       .string_encoding = options.string_encoding,
       .compaction_work_budget = options.hash_compaction_work_budget,
       .listpack_max_entries = options.hash_listpack_max_entries,
+      .realtime_index_bytes = options.realtime_hash_index_bytes,
   };
 }
 
@@ -875,13 +877,41 @@ namespace {
   };
 }
 
+[[nodiscard]] SetOptions build_set_options(const StoreOptions& options) {
+  return SetOptions{
+      .member_index_growth = options.member_index_growth,
+      .chunk_bytes = options.set_chunk_bytes,
+      .string_encoding = options.string_encoding,
+      .listpack_max_entries = options.set_listpack_max_entries,
+  };
+}
+
+[[nodiscard]] ArrayOptions build_array_options(const StoreOptions& options) {
+  return ArrayOptions{
+      .implementation = options.array_implementation,
+      .slice_slots = options.array_slice_slots,
+      .dir_fanout = 0,  // same as slice_slots
+      .initial_depth = options.array_initial_depth,
+      .chunk_bytes = options.array_chunk_bytes,
+      .arena_growth = options.member_index_growth,
+      .realtime_arena_growth = options.realtime_array_growth,
+      .string_encoding = options.string_encoding,
+  };
+}
+
 }  // namespace
 
 Store::Store(StoreOptions options)
     : options_(options),
       zset_options_(build_zset_options(options)),
       keyspace_(build_hash_options(options), build_list_options(options),
-                options.string_encoding) {}
+                build_set_options(options), build_array_options(options),
+                options.string_encoding,
+                options.real_time ? MemberIndexImplementation::Realtime
+                                  : MemberIndexImplementation::Efficient,
+                options.real_time ||
+                    options.hash_implementation ==
+                        HashImplementation::Realtime) {}
 
 void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   if (!zset.empty()) {
@@ -993,27 +1023,317 @@ void Store::erase_if_empty(std::string_view key, const Hash& hash) {
   (void)erase_key(key);
 }
 
+// ---- Set ----
+
+void Store::erase_if_empty(std::string_view key, const Set& set) {
+  if (!set.empty()) {
+    return;
+  }
+  (void)erase_key(key);
+}
+
+void Store::place_loaded_set(std::string key, Set&& set) {
+  (void)keyspace_.place_loaded_set(key, std::move(set));
+}
+
+void Store::place_loaded_array(std::string key, Array&& array) {
+  (void)keyspace_.place_loaded_array(key, std::move(array));
+}
+
+long long Store::sadd(std::string_view key,
+                      std::span<const std::string_view> members) {
+  if (members.empty()) {
+    return 0;
+  }
+  return get_or_create_set(key).add_many(members);
+}
+
+long long Store::srem(std::string_view key,
+                      std::span<const std::string_view> members) {
+  auto* set = find_set(key);
+  if (set == nullptr) {
+    return 0;
+  }
+  const auto removed = static_cast<long long>(set->erase_many(members));
+  erase_if_empty(key, *set);
+  return removed;
+}
+
+long long Store::scard(std::string_view key) const {
+  const auto* set = find_set(key);
+  return set == nullptr ? 0 : static_cast<long long>(set->size());
+}
+
+bool Store::sismember(std::string_view key, std::string_view member) const {
+  const auto* set = find_set(key);
+  return set != nullptr && set->contains(member);
+}
+
+std::optional<SetMemoryStats> Store::set_memory_stats(
+    std::string_view key) const {
+  const auto* set = find_set(key);
+  if (set == nullptr) {
+    return std::nullopt;
+  }
+  return set->memory_stats();
+}
+
+std::optional<std::string> Store::spop(std::string_view key) {
+  auto* set = find_set(key);
+  if (set == nullptr) {
+    return std::nullopt;
+  }
+  auto member = set->pop();
+  erase_if_empty(key, *set);
+  return member;
+}
+
+std::vector<std::string> Store::spop(std::string_view key, std::size_t count) {
+  auto* set = find_set(key);
+  if (set == nullptr) {
+    return {};
+  }
+  auto members = set->pop_many(count);
+  erase_if_empty(key, *set);
+  return members;
+}
+
+std::optional<std::string> Store::srandmember(std::string_view key) const {
+  const auto* set = find_set(key);
+  if (set == nullptr) {
+    return std::nullopt;
+  }
+  return set->random_member();
+}
+
+std::vector<std::string> Store::srandmember(std::string_view key,
+                                           std::size_t count,
+                                           bool unique) const {
+  const auto* set = find_set(key);
+  if (set == nullptr) {
+    return {};
+  }
+  return set->random_members(count, unique);
+}
+
+int Store::smove(std::string_view source, std::string_view destination,
+                 std::string_view member) {
+  // Same-key SMOVE is an existence check (Redis semantics).
+  if (source == destination) {
+    const auto* set = find_set(source);
+    return set != nullptr && set->contains(member) ? 1 : 0;
+  }
+  auto* src = find_set(source);
+  if (src == nullptr || !src->contains(member)) {
+    return 0;
+  }
+  // Materialize before erase: the member view is invalidated by swap-remove.
+  const auto owned = std::string(member);
+  if (!src->erase(owned)) {
+    return 0;
+  }
+  erase_if_empty(source, *src);
+  (void)get_or_create_set(destination).add(owned);
+  return 1;
+}
+
+std::vector<std::string> Store::sinter(
+    std::span<const std::string_view> keys) const {
+  if (keys.empty()) {
+    return {};
+  }
+  // Pick the smallest existing set as the driver; a missing key empties the
+  // intersection immediately.
+  const Set* driver = nullptr;
+  std::size_t driver_size = std::numeric_limits<std::size_t>::max();
+  std::vector<const Set*> others;
+  others.reserve(keys.size());
+  for (const auto key : keys) {
+    const auto* set = find_set(key);
+    if (set == nullptr) {
+      return {};
+    }
+    if (set->size() < driver_size) {
+      if (driver != nullptr) {
+        others.push_back(driver);
+      }
+      driver = set;
+      driver_size = set->size();
+    } else {
+      others.push_back(set);
+    }
+  }
+  assert(driver != nullptr);
+  std::vector<std::string> out;
+  out.reserve(driver_size);
+  driver->for_each([&](EncodedStringView member) {
+    const auto logical = member.to_string();
+    for (const auto* other : others) {
+      if (!other->contains(logical)) {
+        return;
+      }
+    }
+    out.push_back(std::move(logical));
+  });
+  return out;
+}
+
+std::vector<std::string> Store::sunion(
+    std::span<const std::string_view> keys) const {
+  // Dedup through a temporary Set so encoding/options match the store.
+  Set merged(build_set_options(options_));
+  for (const auto key : keys) {
+    const auto* set = find_set(key);
+    if (set == nullptr) {
+      continue;
+    }
+    set->for_each([&](EncodedStringView member) {
+      (void)merged.add(member.to_string());
+    });
+  }
+  std::vector<std::string> out;
+  out.reserve(merged.size());
+  merged.for_each(
+      [&](EncodedStringView member) { out.push_back(member.to_string()); });
+  return out;
+}
+
+std::vector<std::string> Store::sdiff(
+    std::span<const std::string_view> keys) const {
+  if (keys.empty()) {
+    return {};
+  }
+  const auto* first = find_set(keys[0]);
+  if (first == nullptr) {
+    return {};
+  }
+  std::vector<const Set*> subtract;
+  subtract.reserve(keys.size() - 1);
+  for (std::size_t i = 1; i < keys.size(); ++i) {
+    if (const auto* set = find_set(keys[i])) {
+      subtract.push_back(set);
+    }
+  }
+  std::vector<std::string> out;
+  out.reserve(first->size());
+  first->for_each([&](EncodedStringView member) {
+    const auto logical = member.to_string();
+    for (const auto* other : subtract) {
+      if (other->contains(logical)) {
+        return;
+      }
+    }
+    out.push_back(std::move(logical));
+  });
+  return out;
+}
+
+namespace {
+
+[[nodiscard]] long long store_set_result(Store& store,
+                                         std::string_view destination,
+                                         std::vector<std::string> members) {
+  // Overwrite destination regardless of prior type. Empty result deletes it.
+  (void)store.del(destination);
+  if (members.empty()) {
+    return 0;
+  }
+  std::vector<std::string_view> views;
+  views.reserve(members.size());
+  for (const auto& member : members) {
+    views.push_back(member);
+  }
+  return store.sadd(destination, views);
+}
+
+}  // namespace
+
+long long Store::sinterstore(std::string_view destination,
+                             std::span<const std::string_view> keys) {
+  return store_set_result(*this, destination, sinter(keys));
+}
+
+long long Store::sunionstore(std::string_view destination,
+                             std::span<const std::string_view> keys) {
+  return store_set_result(*this, destination, sunion(keys));
+}
+
+long long Store::sdiffstore(std::string_view destination,
+                            std::span<const std::string_view> keys) {
+  return store_set_result(*this, destination, sdiff(keys));
+}
+
+long long Store::sintercard(std::span<const std::string_view> keys,
+                            std::size_t limit) const {
+  if (keys.empty()) {
+    return 0;
+  }
+  const Set* driver = nullptr;
+  std::size_t driver_size = std::numeric_limits<std::size_t>::max();
+  std::vector<const Set*> others;
+  others.reserve(keys.size());
+  for (const auto key : keys) {
+    const auto* set = find_set(key);
+    if (set == nullptr) {
+      return 0;
+    }
+    if (set->size() < driver_size) {
+      if (driver != nullptr) {
+        others.push_back(driver);
+      }
+      driver = set;
+      driver_size = set->size();
+    } else {
+      others.push_back(set);
+    }
+  }
+  assert(driver != nullptr);
+  long long count = 0;
+  const auto n = static_cast<std::uint32_t>(driver->size());
+  for (std::uint32_t id = 0; id < n; ++id) {
+    if (limit != 0 && static_cast<std::size_t>(count) >= limit) {
+      break;
+    }
+    const auto logical = driver->at(id).to_string();
+    bool in_all = true;
+    for (const auto* other : others) {
+      if (!other->contains(logical)) {
+        in_all = false;
+        break;
+      }
+    }
+    if (in_all) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+
 void Store::place_loaded_hash(std::string key, Hash&& hash) {
   (void)keyspace_.place_loaded_hash(key, std::move(hash));
 }
 
 int Store::hset(std::string_view key, std::string_view field,
-                std::string_view value) {
-  return get_or_create_hash(key).set(field, value);
+                std::string_view value,
+                std::optional<HashImplementation> implementation) {
+  return get_or_create_hash(key, implementation).set(field, value);
 }
 
 long long Store::hset_many(
     std::string_view key,
-    std::span<const std::pair<std::string_view, std::string_view>> fields) {
+    std::span<const std::pair<std::string_view, std::string_view>> fields,
+    std::optional<HashImplementation> implementation) {
   if (fields.empty()) {
     return 0;
   }
-  return get_or_create_hash(key).set_many(fields);
+  return get_or_create_hash(key, implementation).set_many(fields);
 }
 
 int Store::hsetnx(std::string_view key, std::string_view field,
-                  std::string_view value) {
-  return get_or_create_hash(key).set_nx(field, value);
+                  std::string_view value,
+                  std::optional<HashImplementation> implementation) {
+  return get_or_create_hash(key, implementation).set_nx(field, value);
 }
 
 std::optional<EncodedStringView> Store::hget(std::string_view key,
@@ -1068,10 +1388,13 @@ std::optional<std::size_t> Store::hstrlen(std::string_view key,
 
 std::optional<long long> Store::hincrby(std::string_view key,
                                         std::string_view field,
-                                        long long delta) {
-  auto& hash = get_or_create_hash(key);
+                                        long long delta,
+                                        std::optional<HashImplementation>
+                                            implementation) {
+  auto& hash = get_or_create_hash(key, implementation);
   long long current = 0;
   if (const auto value = hash.get(field); value) {
+    // Integer field values are short; SSO covers the common decode path.
     const auto decoded = value->to_string();
     const auto parsed = parse_i64(decoded);
     if (!parsed) {
@@ -1088,7 +1411,8 @@ std::optional<long long> Store::hincrby(std::string_view key,
     return std::nullopt;  // would overflow
   }
   const long long next = current + delta;
-  hash.set(field, std::to_string(next));
+  char encode_buf[32];
+  hash.set(field, format_i64(next, encode_buf));
   return next;
 }
 
@@ -1342,13 +1666,12 @@ std::optional<ListMemoryStats> Store::list_memory_stats(
 // ---- String ----
 
 void Store::set(std::string_view key, std::string_view value) {
-  keyspace_.set_string(key, value);
+  // One keyspace probe; clear TTL by the returned id (no second hash).
+  const auto id = keyspace_.set_string(key, value);
   // SET clears any existing TTL (Redis default; SET ... KEEPTTL keeps it via
-  // set_keep_ttl). Skip the id lookup entirely when no TTLs exist.
+  // set_keep_ttl). Skip when no TTLs exist.
   if (!ttl_.empty()) {
-    if (const auto id = keyspace_.id_of(key)) {
-      ttl_.clear(*id);
-    }
+    ttl_.clear(id);
   }
 }
 
@@ -1847,6 +2170,13 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
     const auto after = list->memory_stats().total_allocated_bytes;
     return before > after ? before - after : 0;
   }
+  if (auto* set = find_set(key); set != nullptr) {
+    const auto before = set->memory_stats().total_allocated_bytes;
+    set->compact(member_index_density);
+    release_unused_heap_pages();
+    const auto after = set->memory_stats().total_allocated_bytes;
+    return before > after ? before - after : 0;
+  }
   return std::nullopt;
 }
 
@@ -2027,7 +2357,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(5);  // section count (ZSET, HASH, LIST, STRING, TTL)
+  writer.u32(7);  // section count (ZSET, HASH, LIST, SET, ARRAY, STRING, TTL)
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -2128,6 +2458,65 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
     out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
   };
   keyspace_.for_each_list(emit_list);
+  out.write(&end, 1);
+
+  // SET section: canonical logical members in dense id order, optional Swiss
+  // accelerator (same hash identity as zset/hash member indexes). Encoding is
+  // the loader's; the accelerator carries an encoding-identity word so a
+  // reclassify mismatch falls back to rebuild.
+  std::string set_header;
+  snapshot::Writer set_writer(set_header);
+  set_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Set));
+  set_writer.u32(with_accelerator ? snapshot::kSetAcceleratorVersion : 0);
+  set_writer.u64(ZSetMemberIndex::hash_identity());
+  out.write(set_header.data(), static_cast<std::streamsize>(set_header.size()));
+
+  auto emit_set = [&out, &operands, with_accelerator](std::string_view key,
+                                                      const Set& set) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    set.save(operand_writer, with_accelerator);
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(snapshot::SetOpcode::Set));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(),
+              static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  };
+  keyspace_.for_each_set(emit_set);
+  out.write(&end, 1);
+
+  // ARRAY section: canonical (index, logical value) pairs + geometry /
+  // implementation. Leaf tables rebuild on load (no accelerator yet).
+  std::string array_header;
+  snapshot::Writer array_writer(array_header);
+  array_writer.u32(static_cast<std::uint32_t>(snapshot::SectionType::Array));
+  array_writer.u32(snapshot::kArrayAcceleratorVersion);
+  array_writer.u64(0);
+  out.write(array_header.data(),
+            static_cast<std::streamsize>(array_header.size()));
+
+  auto emit_array = [&out, &operands](std::string_view key, const Array& array) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    array.save(operand_writer);
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(
+        static_cast<std::uint8_t>(snapshot::ArrayOpcode::Array));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(),
+              static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  };
+  keyspace_.for_each_array(emit_array);
   out.write(&end, 1);
 
   // STRING section stays canonical logical bytes; the in-memory value encoding
@@ -2333,7 +2722,9 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
         std::string_view(snapshot::kMagic, sizeof(snapshot::kMagic))) {
       throw snapshot::snapshot_error("not a Goblin Core snapshot");
     }
-    if (header_reader.u32() != snapshot::kFormatVersion) {
+    const auto format_version = header_reader.u32();
+    if (format_version < snapshot::kOldestReadableFormatVersion ||
+        format_version > snapshot::kFormatVersion) {
       throw snapshot::snapshot_error("unsupported snapshot version");
     }
     (void)header_reader.u32();  // file flags (reserved)
@@ -2356,6 +2747,11 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           static_cast<std::uint32_t>(snapshot::SectionType::String);
       const bool is_list =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::List);
+      const bool is_set =
+          section_type == static_cast<std::uint32_t>(snapshot::SectionType::Set);
+      const bool is_array =
+          section_type ==
+          static_cast<std::uint32_t>(snapshot::SectionType::Array);
       const bool is_ttl =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Ttl);
       const bool zset_use_accelerator =
@@ -2366,6 +2762,9 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           hash_identity == ZSetMemberIndex::hash_identity();
       const bool list_use_accelerator =
           is_list && section_version == snapshot::kListAcceleratorVersion;
+      const bool set_use_accelerator =
+          is_set && section_version == snapshot::kSetAcceleratorVersion &&
+          hash_identity == ZSetMemberIndex::hash_identity();
       // Interpret the section's instruction stream until OP_END.
       for (;;) {
         const auto opcode = static_cast<std::uint8_t>(read_exact(1)[0]);
@@ -2408,9 +2807,16 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
                                  options_.hash_compaction_work_budget,
                              .listpack_max_entries =
                                  options_.hash_listpack_max_entries,
-                         });
+                             .realtime_index_bytes =
+                                 options_.realtime_hash_index_bytes,
+                         },
+                         options_.real_time ? HashImplementation::Realtime
+                                            : options_.hash_implementation,
+                         format_version >= 3);
           stats.used_accelerator =
-              stats.used_accelerator || hash_use_accelerator;
+              stats.used_accelerator ||
+              (hash_use_accelerator &&
+               hash.implementation() == HashImplementation::Efficient);
           stats.members += hash.size();
           place_loaded_hash(std::move(key), std::move(hash));
           ++stats.keys;
@@ -2451,6 +2857,25 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           stats.used_accelerator = stats.used_accelerator || accelerated;
           stats.members += static_cast<std::size_t>(count);
           place_loaded_list(std::move(key), std::move(list));
+          ++stats.keys;
+        } else if (is_set && opcode == static_cast<std::uint8_t>(
+                                           snapshot::SetOpcode::Set)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          Set set = Set::load(reader, set_use_accelerator,
+                              build_set_options(options_));
+          stats.used_accelerator =
+              stats.used_accelerator || set_use_accelerator;
+          stats.members += set.size();
+          place_loaded_set(std::move(key), std::move(set));
+          ++stats.keys;
+        } else if (is_array && opcode == static_cast<std::uint8_t>(
+                                             snapshot::ArrayOpcode::Array)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          Array array = Array::load(reader, build_array_options(options_));
+          stats.members += array.count();
+          place_loaded_array(std::move(key), std::move(array));
           ++stats.keys;
         } else if (is_ttl && opcode == static_cast<std::uint8_t>(
                                            snapshot::TtlOpcode::Ttl)) {
@@ -2504,6 +2929,10 @@ StoreMemoryStats Store::memory_stats() const noexcept {
 
 MemoryReport Store::memory_report() const noexcept {
   MemoryReport r;
+  r.realtime_hash_index_pool_bytes =
+      keyspace_.realtime_hash_index_pool_bytes();
+  r.realtime_keyspace_index_pool_bytes =
+      keyspace_.realtime_keyspace_index_pool_bytes();
   const ZSetOptions* zopts = zset_options();
   // Full zsets: arena used (live + dead) plus fixed index/cache structures.
   // Compact zset blobs are accounted once through the process-wide pool below.
@@ -2541,6 +2970,12 @@ MemoryReport Store::memory_report() const noexcept {
       }
     }
     r.reclaimable_bytes += s.value_dead_bytes;
+  });
+  // Sets own an encoded-member arena and a Swiss member index.
+  keyspace_.for_each_set([&r](std::string_view, const Set& set) {
+    const auto s = set.memory_stats();
+    r.used_memory += s.total_allocated_bytes;
+    r.reclaimable_bytes += s.member_dead_bytes;
   });
   // The keyspace itself: key/value arena (live + dead) plus the swiss index and
   // object/type tables.

@@ -47,14 +47,16 @@ class snapshot_error : public std::runtime_error {
 inline constexpr char kMagic[4] = {'G', 'C', 'S', 'N'};
 
 // Bump when the canonical layer layout changes. v2 records each zset's score
-// width and writes scores at it (i16/i32/f64) instead of always f64. Pre-v2
-// snapshots are rejected by the version check (alpha; no back-compat reader).
-inline constexpr std::uint32_t kFormatVersion = 2;
+// width and writes scores at it (i16/i32/f64) instead of always f64. v3 records
+// each hash's selected efficient/RT representation. The loader retains the v2
+// hash reader and applies the configured default to those older snapshots.
+inline constexpr std::uint32_t kFormatVersion = 3;
+inline constexpr std::uint32_t kOldestReadableFormatVersion = 2;
 
 // The snapshot body is a sequence of typed sections so each Redis value type
 // gets its own section, and a reader can skip a section type it does not
 // recognize (every section's entries are uniformly length-framed). Zsets,
-// strings, hashes, lists, and TTLs currently have emitted sections.
+// strings, hashes, lists, sets, arrays, and TTLs currently have emitted sections.
 enum class SectionType : std::uint32_t {
   Zset = 1,
   String = 2,
@@ -62,6 +64,7 @@ enum class SectionType : std::uint32_t {
   List = 4,
   Set = 5,
   Ttl = 6,
+  Array = 7,
 };
 
 // Each section body is a stream of instructions -- a tiny per-family bytecode --
@@ -105,6 +108,26 @@ enum class ListOpcode : std::uint8_t {
 // Bump when the raw-list accelerator framing changes. Canonical ordered values
 // remain the fallback.
 inline constexpr std::uint32_t kListAcceleratorVersion = 1;
+
+enum class SetOpcode : std::uint8_t {
+  End = kOpEnd,
+  Set = 0x01,  // operands: key, options, canonical members, optional accelerator
+};
+
+// Bump when the SET accelerator (member-index dump) layout, the swiss-table
+// bucketing/fingerprint/control/slot layout, or the encoding-identity word
+// that gates the dump changes. Old accelerators are then ignored and the
+// member index is rebuilt from the canonical layer.
+inline constexpr std::uint32_t kSetAcceleratorVersion = 1;
+
+enum class ArrayOpcode : std::uint8_t {
+  End = kOpEnd,
+  // operands: key, implementation, geometry, insert cursor, (index, value)*
+  Array = 0x01,
+};
+
+// No accelerator yet: leaf tables rebuild from canonical (index, value) pairs.
+inline constexpr std::uint32_t kArrayAcceleratorVersion = 0;
 
 enum class TtlOpcode : std::uint8_t {
   End = kOpEnd,

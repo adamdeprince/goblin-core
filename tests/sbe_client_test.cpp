@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #undef NDEBUG
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -39,15 +40,17 @@ int main(int argc, char** argv) {
   if (pid == 0) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
-    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring.c_str(), "1mb",
+    // A deliberately constrained ring exercises pipeline backpressure. Production
+    // rings are normally sized to their HugeTLB geometry; 4 KiB is useful when a
+    // deployment owns thousands of per-client rings.
+    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring.c_str(), "4kb",
             static_cast<char*>(nullptr));
     _exit(127);
   }
 
   auto c = SbeRingClient::open(ring.c_str(), std::chrono::seconds(5));
   assert(c);
-  // grow-to-ring: the 1 MiB ring dwarfs the 16 KiB default, so the buffer grew to it.
-  assert(c->buffer_size() >= 512 * 1024);
+  assert(c->buffer_size() >= SbeRingClient::kDefaultBufferBytes);
 
   using V = std::vector<std::string_view>;
   using P = std::vector<std::pair<std::string_view, std::string_view>>;
@@ -127,6 +130,22 @@ int main(int argc, char** argv) {
   assert(c->ttl("gone") == -2);
 
   // hash
+  // sets
+  {
+    using SV = std::span<const std::string_view>;
+    const std::string_view ma[] = {"a", "b", "c"};
+    assert(c->sadd("s", SV{ma, 3}) == 3);
+    assert(c->scard("s") == 3);
+    assert(c->sismember("s", "b") == 1);
+    assert(c->smembers("s").size() == 3);
+    const std::string_view mb[] = {"b", "c", "d"};
+    assert(c->sadd("t", SV{mb, 3}) == 3);
+    const std::string_view keys[] = {"s", "t"};
+    assert(c->sinter(SV{keys, 2}).size() == 2);
+    assert(c->sunionstore("u", SV{keys, 2}) == 4);
+    assert(c->srem("s", SV{ma, 1}) == 1);
+  }
+
   assert(c->hset("h", P{{"f1", "1"}, {"f2", "2"}}) == 2);
   assert(c->hget("h", "f1") == "1" && !c->hget("h", "no").has_value());
   assert(c->hlen("h") == 2 && c->hexists("h", "f2") == 1 && c->hstrlen("h", "f1") == 1);
@@ -139,6 +158,103 @@ int main(int argc, char** argv) {
     assert(c->hkeys("h").size() == 2 && c->hvals("h").size() == 2);
   }
   assert(c->hdel("h", V{"f1", "f2"}) == 2);
+
+  // A pipeline much deeper than either direction of the constrained ring proves
+  // that enqueue drains completed replies while waiting for SQ space. Otherwise
+  // the client would wait on a full SQ while the server waited on a full CQ.
+  {
+    constexpr std::size_t kPipelineDepth = 1024;
+    for (std::size_t i = 0; i < kPipelineDepth; ++i) {
+      const std::string field = "f" + std::to_string(i);
+      const std::string value = std::to_string(i);
+      const std::array<std::pair<std::string_view, std::string_view>, 1> entry{{
+          {field, value},
+      }};
+      c->enqueue_hset("pipeline-hash", entry);
+    }
+    assert(c->outstanding_pipeline_replies() == kPipelineDepth);
+
+    bool sync_guarded = false;
+    try {
+      (void)c->ping();
+    } catch (const std::logic_error&) {
+      sync_guarded = true;
+    }
+    assert(sync_guarded);
+
+    for (std::size_t i = 0; i < kPipelineDepth; ++i) {
+      assert(c->read_pipeline_int() == 1);
+    }
+    assert(c->outstanding_pipeline_replies() == 0);
+
+    c->enqueue_hget("pipeline-hash", "f17");
+    c->enqueue_hlen("pipeline-hash");
+    c->enqueue_hincrby("pipeline-hash", "f17", 5);
+    assert(c->read_pipeline_bulk_or_nil() == "17");
+    assert(c->read_pipeline_int() == static_cast<long long>(kPipelineDepth));
+    assert(c->read_pipeline_int() == 22);
+
+    // An error consumes exactly its own ordered reply; the following reply remains
+    // readable, so a caller can handle one failure without losing pipeline framing.
+    c->enqueue_hset("pipeline-hash", P{{"not-an-int", "value"}});
+    c->enqueue_hincrby("pipeline-hash", "not-an-int", 1);
+    c->enqueue_hlen("pipeline-hash");
+    assert(c->read_pipeline_int() == 1);
+    bool pipeline_error = false;
+    try {
+      (void)c->read_pipeline_int();
+    } catch (const std::runtime_error&) {
+      pipeline_error = true;
+    }
+    assert(pipeline_error);
+    assert(c->outstanding_pipeline_replies() == 1);
+    assert(c->read_pipeline_int() ==
+           static_cast<long long>(kPipelineDepth + 1));
+
+    // The generic writer makes every generated request pipeline-capable, while
+    // retaining typed convenience methods for hot command families.
+    c->enqueue_sbe<goblin_sbe::Ping>(0, [](auto&) {});
+    assert(c->read_pipeline_status() == "PONG");
+
+    // A message larger than the contiguous record envelope is rejected before
+    // any of it reaches the SQ, leaving the connection usable and synchronized.
+    const std::string oversized(c->max_message_bytes(), 'x');
+    bool oversized_rejected = false;
+    try {
+      c->enqueue_sbe<goblin_sbe::Echo>(
+          oversized.size(), [&](auto& message) {
+            message.putMessage(oversized.data(),
+                               static_cast<std::uint32_t>(oversized.size()));
+          });
+    } catch (const std::length_error&) {
+      oversized_rejected = true;
+    }
+    assert(oversized_rejected);
+    assert(c->outstanding_pipeline_replies() == 0);
+    assert(c->ping());
+
+    // Windowed pipeline helper (K): depth 16 keeps several HGETs in flight.
+    {
+      constexpr std::size_t kWindow = 16;
+      constexpr std::size_t kOps = 64;
+      std::vector<std::string> fields;
+      fields.reserve(kOps);
+      for (std::size_t i = 0; i < kOps; ++i) {
+        fields.push_back("f" + std::to_string(i % kPipelineDepth));
+      }
+      std::size_t hits = 0;
+      c->pipeline_for(
+          kOps, kWindow,
+          [&](std::size_t i) { c->enqueue_hget("pipeline-hash", fields[i]); },
+          [&](std::size_t) {
+            if (c->read_pipeline_bulk_or_nil().has_value()) {
+              ++hits;
+            }
+          });
+      assert(hits == kOps);
+      assert(c->outstanding_pipeline_replies() == 0);
+    }
+  }
 
   // list: both representations plus scalar/count POP reply forms.
   assert(c->rpush("list", V{"a", "b", "c"},

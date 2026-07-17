@@ -1,21 +1,16 @@
-"""goblin_core -- a redis-py-shaped client that talks to goblin-core over a
-shared-memory ring buffer instead of a socket, speaking the SBE binary wire.
+"""goblin_core -- redis-py-shaped clients for goblin-core over SBE.
 
-    from goblin_core import Redis
-    r = Redis("/tmp/a", decode_responses=True)   # server: goblin-core --ring /tmp/a 64kb
-    r.set("user:42", "alice")
-    r.get("user:42")            # 'alice'
+Transports (selected by class / build flags):
 
-The transport, the busy-poll (with the PAUSE/YIELD relax hint), and the SBE
-encode/decode live in the C++ extension (`_goblin_core`), which wraps the C++
-SbeRingClient; this module is the ergonomic surface that turns each redis-py call
-into one already-encoded command for it.
+    from goblin_core import Redis, RdmaRedis, ExasockRedis, HAS_RDMA, HAS_EXASOCK
 
-SBE is typed per command, so this is a drop-in *only* for what goblin-core actually
-implements: the redis-py methods below plus the `GOBLIN.*` natives. There is no
-`lpush`/`sadd`/`xadd` (the server has no lists, sets, or streams), and
-`execute_command(*args)` reaches only commands goblin-core supports -- not the whole
-redis verb set.
+    r = Redis("/tmp/a")                          # --ring /tmp/a
+    r = RdmaRedis("10.88.88.1", 6380, 64 * 1024) # --rdma ... (if HAS_RDMA)
+    r = ExasockRedis("10.99.99.1", 6379)          # --exasock ... (if HAS_EXASOCK)
+
+The transport, busy-poll, and SBE encode/decode live in the C++ extension
+(`_goblin_core`). SBE is typed per command, so only verbs goblin-core implements
+are reachable (no streams, not the full Redis surface).
 """
 from __future__ import annotations
 
@@ -24,7 +19,21 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 from . import _goblin_core
 from ._goblin_core import ResponseError, RingError
 
-__all__ = ["Redis", "StrictRedis", "ResponseError", "RingError"]
+HAS_RDMA = bool(getattr(_goblin_core, "HAS_RDMA", False))
+HAS_EXASOCK = bool(getattr(_goblin_core, "HAS_EXASOCK", False))
+
+__all__ = [
+    "Redis",
+    "StrictRedis",
+    "ResponseError",
+    "RingError",
+    "HAS_RDMA",
+    "HAS_EXASOCK",
+]
+if HAS_RDMA:
+    __all__.append("RdmaRedis")
+if HAS_EXASOCK:
+    __all__.append("ExasockRedis")
 
 EncodableT = Union[str, bytes, bytearray, memoryview, int, float, bool]
 
@@ -91,6 +100,7 @@ class Redis:
         self._decode_responses = decode_responses
         self._timeout_ms = int(command_timeout * 1000)
         self._ring_path = ring_path
+        self._endpoint = ring_path
 
     def __repr__(self) -> str:
         return f"Redis(ring_path={self._ring_path!r}, decode_responses={self._decode_responses})"
@@ -312,6 +322,88 @@ class Redis:
     def hincrby(self, name: EncodableT, key: EncodableT, amount: int = 1) -> int:
         return self.execute_command("HINCRBY", name, key, amount)
 
+    # -- sets -------------------------------------------------------------------
+    def sadd(self, name: EncodableT, *values: EncodableT) -> int:
+        return self.execute_command("SADD", name, *values)
+
+    def srem(self, name: EncodableT, *values: EncodableT) -> int:
+        return self.execute_command("SREM", name, *values)
+
+    def scard(self, name: EncodableT) -> int:
+        return self.execute_command("SCARD", name)
+
+    def sismember(self, name: EncodableT, value: EncodableT) -> bool:
+        return bool(self.execute_command("SISMEMBER", name, value))
+
+    def smismember(self, name: EncodableT, values: Iterable[EncodableT],
+                   *args: EncodableT) -> list:
+        members = list(values) if not isinstance(values, (str, bytes)) else [values]
+        members += list(args)
+        return self._decode(self.execute_command("SMISMEMBER", name, *members))
+
+    def smembers(self, name: EncodableT) -> set:
+        return set(self._decode(self.execute_command("SMEMBERS", name)))
+
+    def spop(self, name: EncodableT, count: Optional[int] = None) -> Any:
+        if count is None:
+            return self._decode(self.execute_command("SPOP", name))
+        return self._decode(self.execute_command("SPOP", name, count))
+
+    def srandmember(self, name: EncodableT, number: Optional[int] = None) -> Any:
+        if number is None:
+            return self._decode(self.execute_command("SRANDMEMBER", name))
+        return self._decode(self.execute_command("SRANDMEMBER", name, number))
+
+    def smove(self, src: EncodableT, dst: EncodableT, value: EncodableT) -> bool:
+        return bool(self.execute_command("SMOVE", src, dst, value))
+
+    def sinter(self, keys: EncodableT, *args: EncodableT) -> set:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return set(self._decode(self.execute_command("SINTER", *ks)))
+
+    def sunion(self, keys: EncodableT, *args: EncodableT) -> set:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return set(self._decode(self.execute_command("SUNION", *ks)))
+
+    def sdiff(self, keys: EncodableT, *args: EncodableT) -> set:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return set(self._decode(self.execute_command("SDIFF", *ks)))
+
+    def sinterstore(self, dest: EncodableT, keys: EncodableT, *args: EncodableT) -> int:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return self.execute_command("SINTERSTORE", dest, *ks)
+
+    def sunionstore(self, dest: EncodableT, keys: EncodableT, *args: EncodableT) -> int:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return self.execute_command("SUNIONSTORE", dest, *ks)
+
+    def sdiffstore(self, dest: EncodableT, keys: EncodableT, *args: EncodableT) -> int:
+        ks = list(keys) if isinstance(keys, (list, tuple)) else [keys]
+        ks += list(args)
+        return self.execute_command("SDIFFSTORE", dest, *ks)
+
+    def sintercard(self, numkeys: int, keys: Iterable[EncodableT],
+                   limit: Optional[int] = None) -> int:
+        pieces: list[EncodableT] = ["SINTERCARD", numkeys, *list(keys)]
+        if limit is not None:
+            pieces += ["LIMIT", limit]
+        return self.execute_command(*pieces)
+
+    def sscan(self, name: EncodableT, cursor: int = 0, match: Optional[EncodableT] = None,
+              count: Optional[int] = None) -> tuple[int, list]:
+        pieces: list[EncodableT] = ["SSCAN", name, cursor]
+        if match is not None:
+            pieces += ["MATCH", match]
+        if count is not None:
+            pieces += ["COUNT", count]
+        cur, members = self.execute_command(*pieces)
+        return int(cur), self._decode(members)
+
     # -- sorted sets ------------------------------------------------------------
     def zadd(
         self,
@@ -441,3 +533,82 @@ class Redis:
 
 # redis-py exposes StrictRedis as an alias of Redis; keep the habit.
 StrictRedis = Redis
+
+
+if HAS_RDMA:
+    class RdmaRedis(Redis):
+        """redis-py-shaped client over polled RDMA rings (SBE).
+
+        Requires ``-DGOBLIN_CORE_ENABLE_RDMA=ON`` and a server started with
+        ``--rdma HOST PORT SIZE`` using the same ring byte budget.
+        """
+
+        def __init__(
+            self,
+            host: str,
+            port: int,
+            ring_bytes: int,
+            *,
+            decode_responses: bool = False,
+            connect_timeout: float = 5.0,
+            command_timeout: float = 5.0,
+            client_buffer_bytes: int = 64 * 1024,
+        ) -> None:
+            self._client = _goblin_core.RdmaClient(
+                host,
+                int(port),
+                int(ring_bytes),
+                int(connect_timeout * 1000),
+                int(client_buffer_bytes),
+            )
+            self._decode_responses = decode_responses
+            self._timeout_ms = int(command_timeout * 1000)
+            self._ring_path = f"rdma://{host}:{port}/{ring_bytes}"
+            self._endpoint = self._ring_path
+
+        def __repr__(self) -> str:
+            return (
+                f"RdmaRedis(endpoint={self._endpoint!r}, "
+                f"decode_responses={self._decode_responses})"
+            )
+
+
+if HAS_EXASOCK:
+    class ExasockRedis(Redis):
+        """redis-py-shaped client over TCP, optionally accelerated by ExaSock.
+
+        Requires ``-DGOBLIN_CORE_ENABLE_EXASOCK=ON``. For SmartNIC acceleration,
+        run under the ``exasock`` wrapper and point ``host`` at an ExaNIC
+        interface address (server: ``--exasock HOST PORT``).
+        """
+
+        def __init__(
+            self,
+            host: str,
+            port: int = 6379,
+            *,
+            decode_responses: bool = False,
+            connect_timeout: float = 2.0,
+            command_timeout: float = 5.0,
+            client_buffer_bytes: int = 64 * 1024,
+            require_loaded: bool = False,
+            ate_id: int = -1,
+        ) -> None:
+            self._client = _goblin_core.ExasockClient(
+                host,
+                int(port),
+                int(connect_timeout * 1000),
+                int(client_buffer_bytes),
+                bool(require_loaded),
+                int(ate_id),
+            )
+            self._decode_responses = decode_responses
+            self._timeout_ms = int(command_timeout * 1000)
+            self._ring_path = f"exasock://{host}:{port}"
+            self._endpoint = self._ring_path
+
+        def __repr__(self) -> str:
+            return (
+                f"ExasockRedis(endpoint={self._endpoint!r}, "
+                f"decode_responses={self._decode_responses})"
+            )

@@ -1,0 +1,970 @@
+{
+  "generated_at": "2026-07-16 23:02:24 UTC",
+  "rss_source": "ps for mini-redis-go; /proc VmRSS + HugetlbPages otherwise",
+  "server_core": 2,
+  "client_core": 3,
+  "suite": "array",
+  "members": 500000,
+  "value_bytes": 16,
+  "batch": 128,
+  "pipeline": 256,
+  "requests": 200000,
+  "rounds": 3,
+  "increment_latency": {
+    "samples": 500000,
+    "pipeline": 1,
+    "engines": [
+      {
+        "label": "goblin-classic-resp-tcp",
+        "mode": "classic",
+        "transport": "resp",
+        "latency": {
+          "commands": 500000,
+          "logical_operations": 500000,
+          "seconds": 8.639029052,
+          "checksum": 9000000,
+          "latency_p90_us": 16.912,
+          "latency_p99_us": 21.36,
+          "latency_p999_us": 36.419,
+          "latency_p9999_us": 160.994,
+          "reserved": 0,
+          "operations_per_second": 57876.87447170308
+        },
+        "process_residency": {
+          "locked_bytes": 27394048,
+          "swap_bytes": 0
+        }
+      },
+      {
+        "label": "goblin-rt-resp-tcp",
+        "mode": "rt",
+        "transport": "resp",
+        "latency": {
+          "commands": 500000,
+          "logical_operations": 500000,
+          "seconds": 8.571397381,
+          "checksum": 9000000,
+          "latency_p90_us": 16.862,
+          "latency_p99_us": 20.859,
+          "latency_p999_us": 23.284,
+          "latency_p9999_us": 52.82,
+          "reserved": 0,
+          "operations_per_second": 58333.5456023002
+        },
+        "process_residency": {
+          "locked_bytes": 26906624,
+          "swap_bytes": 0
+        }
+      },
+      {
+        "label": "goblin-rt-reserved-resp-tcp",
+        "mode": "rt",
+        "transport": "resp",
+        "latency": {
+          "commands": 500000,
+          "logical_operations": 500000,
+          "seconds": 8.50625593,
+          "checksum": 9000000,
+          "latency_p90_us": 16.761,
+          "latency_p99_us": 20.459,
+          "latency_p999_us": 22.652,
+          "latency_p9999_us": 36.108,
+          "reserved": 1,
+          "operations_per_second": 58780.267618870006
+        },
+        "process_residency": {
+          "locked_bytes": 29642752,
+          "swap_bytes": 0
+        }
+      },
+      {
+        "label": "redis-7.2.4",
+        "mode": "native",
+        "transport": "resp",
+        "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET', with args beginning with: 'array:increment-latency' '0' 'v000000000000000'"
+      },
+      {
+        "label": "redis-8.8",
+        "mode": "native",
+        "transport": "resp",
+        "latency": {
+          "commands": 500000,
+          "logical_operations": 500000,
+          "seconds": 9.219873027,
+          "checksum": 9000000,
+          "latency_p90_us": 18.264,
+          "latency_p99_us": 22.823,
+          "latency_p999_us": 26.921,
+          "latency_p9999_us": 54.483,
+          "operations_per_second": 54230.68176055913
+        }
+      },
+      {
+        "label": "valkey-9.1",
+        "mode": "native",
+        "transport": "resp",
+        "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET', with args beginning with: 'array:increment-latency' '0' 'v000000000000000'"
+      },
+      {
+        "label": "dragonfly",
+        "mode": "native",
+        "transport": "resp",
+        "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command `ARSET`"
+      },
+      {
+        "label": "mini-redis-go-55178df",
+        "mode": "native",
+        "transport": "resp",
+        "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET'"
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "dense",
+      "stride": 1,
+      "engines": [
+        {
+          "label": "goblin-classic-resp-tcp",
+          "mode": "classic",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.105305035,
+            "checksum": 566419,
+            "operations_per_second": 37101.73972213199
+          },
+          "memory": {
+            "rss_bytes": 27492352,
+            "rss_delta_bytes": 15351808,
+            "used_memory_bytes": 590,
+            "key_bytes": 14174270,
+            "goblin_memory": {
+              "implementation": "classic",
+              "element_count": "500000",
+              "logical_length": "500000",
+              "slice_count": "123",
+              "sparse_slices": "1",
+              "dense_slices": "122",
+              "directory_depth": "1",
+              "directory_nodes": "1",
+              "value_live_bytes": "8500000",
+              "value_dead_bytes": "0",
+              "value_allocated_bytes": "11669632",
+              "leaf_table_bytes": "2500294",
+              "realtime_reserved": "0",
+              "reserved_max_index": "0",
+              "reserved_value_capacity": "0",
+              "reserved_value_bytes": "0",
+              "total_allocated_bytes": "14174270"
+            }
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.095207511,
+              "checksum": 9400000,
+              "operations_per_second": 2100674.5990870404,
+              "round_rates": [
+                2118513.7926634913,
+                2078461.5709654798,
+                2100674.5990870404
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.08365187,
+              "checksum": 200000,
+              "operations_per_second": 2390861.07698489,
+              "round_rates": [
+                2400742.2422805303,
+                2390861.07698489,
+                2381310.5981037817
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.184201488,
+              "checksum": 47800000,
+              "operations_per_second": 1085767.5590546804,
+              "round_rates": [
+                1083087.010916017,
+                1093032.2902342193,
+                1085767.5590546804
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.079139092,
+              "checksum": 100003400000,
+              "operations_per_second": 2527196.0411170754,
+              "round_rates": [
+                2524655.0554330307,
+                2533559.9788528816,
+                2527196.0411170754
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.078311958,
+              "checksum": 100003400000,
+              "operations_per_second": 2553888.385730312,
+              "round_rates": [
+                2553998.846435341,
+                2553888.385730312,
+                2535542.6344584627
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.117833738,
+              "checksum": 3600000,
+              "operations_per_second": 1697306.7594613694,
+              "round_rates": [
+                1697306.7594613694,
+                1725861.1289812045,
+                1383788.0443549731
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.104482418,
+              "checksum": 3600000,
+              "operations_per_second": 957098.8297763171,
+              "round_rates": [
+                946909.752919524,
+                958835.0077948492,
+                957098.8297763171
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.054044145,
+              "checksum": 25001650000,
+              "operations_per_second": 1850339.1995562145,
+              "round_rates": [
+                1234433.0432345732,
+                1858287.7907258729,
+                1850339.1995562145
+              ]
+            }
+          },
+          "length": 500000,
+          "final_count": 500000
+        },
+        {
+          "label": "goblin-rt-resp-tcp",
+          "mode": "rt",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.070546817,
+            "checksum": 566419,
+            "operations_per_second": 55381.66236472441
+          },
+          "memory": {
+            "rss_bytes": 26996736,
+            "rss_delta_bytes": 14856192,
+            "used_memory_bytes": 590,
+            "key_bytes": 13685112,
+            "goblin_memory": {
+              "implementation": "realtime",
+              "element_count": "500000",
+              "logical_length": "500000",
+              "slice_count": "123",
+              "sparse_slices": "0",
+              "dense_slices": "123",
+              "directory_depth": "1",
+              "directory_nodes": "1",
+              "value_live_bytes": "8500000",
+              "value_dead_bytes": "0",
+              "value_allocated_bytes": "11665536",
+              "leaf_table_bytes": "2015232",
+              "realtime_reserved": "0",
+              "reserved_max_index": "0",
+              "reserved_value_capacity": "0",
+              "reserved_value_bytes": "0",
+              "total_allocated_bytes": "13685112"
+            }
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.084160932,
+              "checksum": 9400000,
+              "operations_per_second": 2376399.538921456,
+              "round_rates": [
+                2397464.2308525983,
+                2376399.538921456,
+                2373416.163025779
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.072539477,
+              "checksum": 200000,
+              "operations_per_second": 2757119.409614712,
+              "round_rates": [
+                2758992.71603851,
+                2754014.4201021236,
+                2757119.409614712
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.176005602,
+              "checksum": 47800000,
+              "operations_per_second": 1136327.4675768558,
+              "round_rates": [
+                1130415.384189218,
+                1136327.4675768558,
+                1136599.4678373095
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.071334848,
+              "checksum": 100003400000,
+              "operations_per_second": 2803678.785437378,
+              "round_rates": [
+                2792606.791343248,
+                2814173.087460532,
+                2803678.785437378
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.067232016,
+              "checksum": 100003400000,
+              "operations_per_second": 2974773.209240074,
+              "round_rates": [
+                2974773.209240074,
+                3026165.665774982,
+                2973277.4164907094
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.098836257,
+              "checksum": 3600000,
+              "operations_per_second": 2023548.9087774742,
+              "round_rates": [
+                2023548.9087774742,
+                2025341.8673273276,
+                1810170.3661751999
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.092274753,
+              "checksum": 3600000,
+              "operations_per_second": 1083720.0507055272,
+              "round_rates": [
+                1076634.61503885,
+                1102554.7837145294,
+                1083720.0507055272
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.047967299,
+              "checksum": 25001650000,
+              "operations_per_second": 2084753.6151660322,
+              "round_rates": [
+                1714425.709390784,
+                2123478.851233616,
+                2084753.6151660322
+              ]
+            }
+          },
+          "length": 500000,
+          "final_count": 500000
+        },
+        {
+          "label": "redis-7.2.4",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET', with args beginning with: 'array:primary' '0' 'v000000000000000' 'v000000000000001' 'v000000000000002' 'v000000000000003' 'v000000000000004' 'v000000000000'"
+        },
+        {
+          "label": "redis-8.8",
+          "mode": "native",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.079746116,
+            "checksum": 566419,
+            "operations_per_second": 48992.981677001044
+          },
+          "memory": {
+            "rss_bytes": 25251840,
+            "rss_delta_bytes": 16871424,
+            "used_memory_bytes": 17802960,
+            "key_bytes": 17003376,
+            "goblin_memory": {}
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.108696116,
+              "checksum": 9400000,
+              "operations_per_second": 1839992.1483855045,
+              "round_rates": [
+                1851515.7331716244,
+                1839992.1483855045,
+                1838389.3268116103
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.09973766,
+              "checksum": 200000,
+              "operations_per_second": 2005260.6006597707,
+              "round_rates": [
+                2004706.3890483773,
+                2005260.6006597707,
+                2013408.1506406206
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.210013864,
+              "checksum": 47800000,
+              "operations_per_second": 952318.081248198,
+              "round_rates": [
+                954110.0769867128,
+                950891.6748958416,
+                952318.081248198
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.095595836,
+              "checksum": 100003400000,
+              "operations_per_second": 2092141.3355284638,
+              "round_rates": [
+                2083240.694223712,
+                2095906.3260656802,
+                2092141.3355284638
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.096862382,
+              "checksum": 100003400000,
+              "operations_per_second": 2064785.0679534187,
+              "round_rates": [
+                2065493.9205284691,
+                2055626.9509056057,
+                2064785.0679534187
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.140247504,
+              "checksum": 3400000,
+              "operations_per_second": 1426050.3345571128,
+              "round_rates": [
+                1421677.3192118884,
+                1426050.3345571128,
+                1427583.6528509427
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.134741369,
+              "checksum": 3600000,
+              "operations_per_second": 742162.5647873594,
+              "round_rates": [
+                742162.5647873594,
+                743646.8575751921,
+                740637.4684466219
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.067029083,
+              "checksum": 5001650000,
+              "operations_per_second": 1491889.721958452,
+              "round_rates": [
+                1491889.721958452,
+                1487651.488480854,
+                1493810.3966215984
+              ]
+            }
+          },
+          "final_count": 500000
+        },
+        {
+          "label": "valkey-9.1",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET', with args beginning with: 'array:primary' '0' 'v000000000000000' 'v000000000000001' 'v000000000000002' 'v000000000000003' 'v000000000000004' 'v000000000000'"
+        },
+        {
+          "label": "dragonfly",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command `ARSET`"
+        },
+        {
+          "label": "mini-redis-go-55178df",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARSET'"
+        }
+      ]
+    },
+    {
+      "name": "sparse-stride-16",
+      "stride": 16,
+      "engines": [
+        {
+          "label": "goblin-classic-resp-tcp",
+          "mode": "classic",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.121812816,
+            "checksum": 566419,
+            "operations_per_second": 32073.800838821426
+          },
+          "memory": {
+            "rss_bytes": 27459584,
+            "rss_delta_bytes": 15319040,
+            "used_memory_bytes": 590,
+            "key_bytes": 15119292,
+            "goblin_memory": {
+              "implementation": "classic",
+              "element_count": "500000",
+              "logical_length": "7999985",
+              "slice_count": "1954",
+              "sparse_slices": "1954",
+              "dense_slices": "0",
+              "directory_depth": "1",
+              "directory_nodes": "1",
+              "value_live_bytes": "8500000",
+              "value_dead_bytes": "0",
+              "value_allocated_bytes": "11669632",
+              "leaf_table_bytes": "3386724",
+              "realtime_reserved": "0",
+              "reserved_max_index": "0",
+              "reserved_value_capacity": "0",
+              "reserved_value_bytes": "0",
+              "total_allocated_bytes": "15119292"
+            }
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.10035471,
+              "checksum": 9400000,
+              "operations_per_second": 1992930.8748936646,
+              "round_rates": [
+                2011463.5115842347,
+                1992930.8748936646,
+                1968935.6494041514
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.084115137,
+              "checksum": 200000,
+              "operations_per_second": 2377693.32765873,
+              "round_rates": [
+                2395987.4589703623,
+                2376740.1748829186,
+                2377693.32765873
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.195103062,
+              "checksum": 47800000,
+              "operations_per_second": 1025099.2370381148,
+              "round_rates": [
+                1025099.2370381148,
+                1021580.0928446722,
+                1028564.8451686681
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.07915393,
+              "checksum": 100003400000,
+              "operations_per_second": 2526722.2991960095,
+              "round_rates": [
+                2539763.4251005733,
+                2526722.2991960095,
+                2525668.2719351165
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.079085811,
+              "checksum": 1600000400000,
+              "operations_per_second": 2528898.641502203,
+              "round_rates": [
+                2522888.9732823283,
+                2528898.641502203,
+                2546153.909122191
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.122675968,
+              "checksum": 3600000,
+              "operations_per_second": 1630311.1624927223,
+              "round_rates": [
+                1630311.1624927223,
+                1644272.3892432095,
+                1339380.798363641
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.113329386,
+              "checksum": 3600000,
+              "operations_per_second": 882383.6740807896,
+              "round_rates": [
+                875685.4515440507,
+                882383.6740807896,
+                884362.0009564022
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.05749326,
+              "checksum": 25001650000,
+              "operations_per_second": 1739334.3150136208,
+              "round_rates": [
+                1684261.642770194,
+                1756723.2080913829,
+                1739334.3150136208
+              ]
+            }
+          },
+          "length": 7999985,
+          "final_count": 781250
+        },
+        {
+          "label": "goblin-rt-resp-tcp",
+          "mode": "rt",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.116965475,
+            "checksum": 566419,
+            "operations_per_second": 33403.01913876723
+          },
+          "memory": {
+            "rss_bytes": 57004032,
+            "rss_delta_bytes": 44863488,
+            "used_memory_bytes": 590,
+            "key_bytes": 43742808,
+            "goblin_memory": {
+              "implementation": "realtime",
+              "element_count": "500000",
+              "logical_length": "7999985",
+              "slice_count": "1954",
+              "sparse_slices": "0",
+              "dense_slices": "1954",
+              "directory_depth": "1",
+              "directory_nodes": "1",
+              "value_live_bytes": "8500000",
+              "value_dead_bytes": "0",
+              "value_allocated_bytes": "11665536",
+              "leaf_table_bytes": "32014336",
+              "realtime_reserved": "0",
+              "reserved_max_index": "0",
+              "reserved_value_capacity": "0",
+              "reserved_value_bytes": "0",
+              "total_allocated_bytes": "43742808"
+            }
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.084527446,
+              "checksum": 9400000,
+              "operations_per_second": 2366095.3863435076,
+              "round_rates": [
+                2380740.891803159,
+                2366095.3863435076,
+                2352875.7111640368
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.07236151,
+              "checksum": 200000,
+              "operations_per_second": 2763900.3110907995,
+              "round_rates": [
+                2757951.3633898087,
+                2763900.3110907995,
+                2764275.787870084
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.178086229,
+              "checksum": 47800000,
+              "operations_per_second": 1123051.4628955391,
+              "round_rates": [
+                1124466.114030928,
+                1119203.4682638133,
+                1123051.4628955391
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.07088688,
+              "checksum": 100003400000,
+              "operations_per_second": 2821396.568730349,
+              "round_rates": [
+                2800453.9479840603,
+                2848658.088331646,
+                2821396.568730349
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.067348135,
+              "checksum": 1600000400000,
+              "operations_per_second": 2969644.2225163323,
+              "round_rates": [
+                2973566.6134006726,
+                2969644.2225163323,
+                2956592.1857238966
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.100822664,
+              "checksum": 3600000,
+              "operations_per_second": 1983680.9707785542,
+              "round_rates": [
+                1983680.9707785542,
+                1992327.2092216618,
+                1796479.0286538494
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.092867424,
+              "checksum": 3600000,
+              "operations_per_second": 1076803.8532004505,
+              "round_rates": [
+                1070896.7602727886,
+                1101626.0374866156,
+                1076803.8532004505
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.047937652,
+              "checksum": 15001650000,
+              "operations_per_second": 2086042.9292615333,
+              "round_rates": [
+                2033465.225243486,
+                2086042.9292615333,
+                2090544.5360514093
+              ]
+            }
+          },
+          "length": 7999985,
+          "final_count": 781250
+        },
+        {
+          "label": "redis-7.2.4",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARMSET', with args beginning with: 'array:primary' '0' 'v000000000000000' '16' 'v000000000000001' '32' 'v000000000000002' '48' 'v000000000000003' '64' 'v00000000000'"
+        },
+        {
+          "label": "redis-8.8",
+          "mode": "native",
+          "transport": "resp",
+          "population": {
+            "commands": 3907,
+            "logical_operations": 3907,
+            "seconds": 0.14853482,
+            "checksum": 566419,
+            "operations_per_second": 26303.596692007974
+          },
+          "memory": {
+            "rss_bytes": 93167616,
+            "rss_delta_bytes": 84787200,
+            "used_memory_bytes": 92815776,
+            "key_bytes": 92016496,
+            "goblin_memory": {}
+          },
+          "operations": {
+            "get-hit": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.10839173,
+              "checksum": 9400000,
+              "operations_per_second": 1845159.220172978,
+              "round_rates": [
+                1847998.8597847035,
+                1831579.4891303543,
+                1845159.220172978
+              ]
+            },
+            "get-miss": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.100596155,
+              "checksum": 200000,
+              "operations_per_second": 1988147.5589201197,
+              "round_rates": [
+                1986724.6857823555,
+                1988147.5589201197,
+                1992728.9902422735
+              ]
+            },
+            "multi-get": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.20701361,
+              "checksum": 47800000,
+              "operations_per_second": 966120.0536525111,
+              "round_rates": [
+                965031.8676200937,
+                967234.9733131166,
+                966120.0536525111
+              ]
+            },
+            "count": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.095294778,
+              "checksum": 100003400000,
+              "operations_per_second": 2098750.888532423,
+              "round_rates": [
+                2098750.888532423,
+                2099273.9954784997,
+                2086384.5403245243
+              ]
+            },
+            "length": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.096688824,
+              "checksum": 1600000400000,
+              "operations_per_second": 2068491.3904837645,
+              "round_rates": [
+                2068491.3904837645,
+                2068948.4733865417,
+                2065111.6486091928
+              ]
+            },
+            "update": {
+              "commands": 200000,
+              "logical_operations": 200000,
+              "seconds": 0.142424803,
+              "checksum": 3400000,
+              "operations_per_second": 1404249.79208151,
+              "round_rates": [
+                1404249.79208151,
+                1403525.7028819877,
+                1404629.725593152
+              ]
+            },
+            "churn": {
+              "commands": 200000,
+              "logical_operations": 100000,
+              "seconds": 0.136536554,
+              "checksum": 3600000,
+              "operations_per_second": 732404.5984052006,
+              "round_rates": [
+                732250.9741299466,
+                732741.9343871217,
+                732404.5984052006
+              ]
+            },
+            "insert": {
+              "commands": 100000,
+              "logical_operations": 100000,
+              "seconds": 0.069153021,
+              "checksum": 25001650000,
+              "operations_per_second": 1446068.4226651501,
+              "round_rates": [
+                1441515.5379374167,
+                1455340.5891375882,
+                1446068.4226651501
+              ]
+            }
+          },
+          "final_count": 781250
+        },
+        {
+          "label": "valkey-9.1",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARMSET', with args beginning with: 'array:primary' '0' 'v000000000000000' '16' 'v000000000000001' '32' 'v000000000000002' '48' 'v000000000000003' '64' 'v00000000000'"
+        },
+        {
+          "label": "dragonfly",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command `ARMSET`"
+        },
+        {
+          "label": "mini-redis-go-55178df",
+          "mode": "native",
+          "transport": "resp",
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'ARMSET'"
+        }
+      ]
+    }
+  ],
+  "goblin_generated_at": "2026-07-16 23:02:24 UTC",
+  "incumbent_generated_at": "2026-07-16 21:17:44 UTC"
+}

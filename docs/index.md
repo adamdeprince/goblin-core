@@ -2,8 +2,9 @@
 
 Goblin Core is a compact, single-node server with Redis command semantics and
 two independent protocol choices: RESP for compatibility and SBE for typed
-binary clients. Both protocols work over TCP, Unix-domain sockets, and
-shared-memory rings.
+binary clients. Both protocols work over TCP (optionally accelerated with
+Cisco ExaSock on Nexus SmartNIC / ExaNIC), Unix-domain sockets, shared-memory
+rings, and polled one-sided RDMA rings.
 
 ## Start here
 
@@ -13,16 +14,21 @@ shared-memory rings.
 - [Benchmark methodology and results](../BENCHMARKS.md)
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
 - [List storage algorithms](../LISTS.md)
+- [Real-time and memory-efficient hash indexes](real-time-hashes.md)
 
 ## Protocols and transports
 
 | Document | What it covers |
 |---|---|
 | [Shared-memory ring buffers](ring-buffers.md) | Ring creation, SQ/CQ layout, busy polling, reconnect behavior, sizing, HugeTLB, NUMA placement, and the C++ clients. |
+| [Polled RDMA rings](rdma-rings.md) | RC queue-pair setup, sequence-word slots, cached credits, memory registration, mixed-target priority, and RESP/SBE clients. |
+| [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
+| [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
 | [SBE protocol](sbe-protocol.md) | Handshake, framing, schema generation, message and reply types, compatibility rules, and typed-client usage. |
 
-Protocol and transport are independent. RESP and SBE can each run over TCP,
-Unix-domain sockets, or the shared-memory ring.
+Protocol and transport are independent. RESP and SBE can each run over TCP
+(plain or ExaSock-accelerated), Unix-domain sockets, a shared-memory ring, or a
+polled RDMA ring.
 
 ## Command reference
 
@@ -78,18 +84,21 @@ pages.
 
 ### Hashes
 
-- [`HSET`](../README.md#current-commands),
-  [`HSETNX`](../README.md#current-commands),
-  [`HGET`](../README.md#current-commands),
-  [`HMGET`](../README.md#current-commands)
-- [`HDEL`](../README.md#current-commands),
-  [`HEXISTS`](../README.md#current-commands),
-  [`HLEN`](../README.md#current-commands),
-  [`HSTRLEN`](../README.md#current-commands)
-- [`HGETALL`](../README.md#current-commands),
-  [`HKEYS`](../README.md#current-commands),
-  [`HVALS`](../README.md#current-commands),
-  [`HINCRBY`](../README.md#current-commands)
+The [hash implementation guide](real-time-hashes.md) covers the efficient and
+incremental RT indexes, qualified command families, and `--real-time` mode.
+
+- [`HSET`](real-time-hashes.md#selecting-an-implementation),
+  [`HSETNX`](real-time-hashes.md#selecting-an-implementation),
+  [`HGET`](real-time-hashes.md#selecting-an-implementation),
+  [`HMGET`](real-time-hashes.md#selecting-an-implementation)
+- [`HDEL`](real-time-hashes.md#selecting-an-implementation),
+  [`HEXISTS`](real-time-hashes.md#selecting-an-implementation),
+  [`HLEN`](real-time-hashes.md#selecting-an-implementation),
+  [`HSTRLEN`](real-time-hashes.md#selecting-an-implementation)
+- [`HGETALL`](real-time-hashes.md#selecting-an-implementation),
+  [`HKEYS`](real-time-hashes.md#selecting-an-implementation),
+  [`HVALS`](real-time-hashes.md#selecting-an-implementation),
+  [`HINCRBY`](real-time-hashes.md#selecting-an-implementation)
 
 ### Lists
 

@@ -22,6 +22,22 @@ Pub/Sub subscriber sets use the vendored header-only unordered_dense library:
                            https://github.com/martinus/unordered_dense
                            third_party/unordered_dense/LICENSE
 
+Real-time linear-hash field/key indexes use the vendored header-only xxHash
+library (XXH3 via `XXH_INLINE_ALL`):
+
+  xxHash 0.8.3             Copyright (c) 2012-2021 Yann Collet (BSD-2-Clause)
+                           https://github.com/Cyan4973/xxHash
+                           third_party/xxhash/LICENSE
+
+Base-10 integer (and optionally float) parsing on RESP and string-encoding paths
+uses the vendored header-only fast_float library:
+
+  fast_float 8.0.2         Copyright (c) 2021 The fast_float authors
+                           MIT OR Apache-2.0
+                           https://github.com/fastfloat/fast_float
+                           third_party/fast_float/LICENSE-MIT
+                           third_party/fast_float/LICENSE-APACHE
+
 --------------------------------------------------------------------------------
 
 Scripting (EVAL / EVALSHA / SCRIPT)

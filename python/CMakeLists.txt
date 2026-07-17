@@ -36,6 +36,55 @@ target_include_directories(_goblin_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
   ${CMAKE_CURRENT_SOURCE_DIR}/../sbe/generated)
 
+# Optional RDMA / ExaSock (same flags as the parent tree; not vendored).
+option(GOBLIN_CORE_ENABLE_RDMA
+  "Enable InfiniBand/RDMA support in the Python extension"
+  OFF)
+option(GOBLIN_CORE_ENABLE_EXASOCK
+  "Enable Cisco ExaSock support in the Python extension"
+  OFF)
+
+if(GOBLIN_CORE_ENABLE_RDMA)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "GOBLIN_CORE_ENABLE_RDMA requires Linux + libibverbs/librdmacm")
+  endif()
+  find_path(IBVERBS_INCLUDE_DIR NAMES infiniband/verbs.h)
+  find_path(RDMACM_INCLUDE_DIR NAMES rdma/rdma_cma.h)
+  find_library(IBVERBS_LIBRARY NAMES ibverbs)
+  find_library(RDMACM_LIBRARY NAMES rdmacm)
+  if(NOT IBVERBS_INCLUDE_DIR OR NOT RDMACM_INCLUDE_DIR OR
+     NOT IBVERBS_LIBRARY OR NOT RDMACM_LIBRARY)
+    message(FATAL_ERROR
+      "GOBLIN_CORE_ENABLE_RDMA=ON but libibverbs/librdmacm development files not found")
+  endif()
+  target_compile_definitions(_goblin_core PRIVATE GOBLIN_HAS_RDMA=1)
+  target_include_directories(_goblin_core PRIVATE
+    ${IBVERBS_INCLUDE_DIR} ${RDMACM_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+  # ClientTransport lives in rdma_ring.cpp (not header-only).
+  target_sources(_goblin_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/rdma_ring.cpp)
+  target_link_libraries(_goblin_core PRIVATE
+    ${IBVERBS_LIBRARY} ${RDMACM_LIBRARY})
+  message(STATUS "goblin_core Python: RDMA support enabled")
+endif()
+
+if(GOBLIN_CORE_ENABLE_EXASOCK)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "GOBLIN_CORE_ENABLE_EXASOCK requires Linux + ExaSock SDK")
+  endif()
+  find_path(EXASOCK_INCLUDE_DIR NAMES exasock/extensions.h PATHS /usr/local/include /usr/include)
+  find_library(EXASOCK_EXT_LIBRARY NAMES exasock_ext PATHS /usr/local/lib /usr/lib)
+  if(NOT EXASOCK_INCLUDE_DIR OR NOT EXASOCK_EXT_LIBRARY)
+    message(FATAL_ERROR
+      "GOBLIN_CORE_ENABLE_EXASOCK=ON but ExaSock SDK not found (exasock/*.h, libexasock_ext)")
+  endif()
+  target_compile_definitions(_goblin_core PRIVATE GOBLIN_HAS_EXASOCK=1)
+  target_include_directories(_goblin_core PRIVATE ${EXASOCK_INCLUDE_DIR})
+  target_link_libraries(_goblin_core PRIVATE ${EXASOCK_EXT_LIBRARY})
+  message(STATUS "goblin_core Python: ExaSock support enabled")
+endif()
+
 # Drop the extension into the package directory so it is importable in place.
 set_target_properties(_goblin_core PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/goblin_core)

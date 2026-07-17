@@ -1,0 +1,2896 @@
+{
+  "generated_at": "2026-07-16T19:07:13Z",
+  "config": {
+    "rss_source": "ps -o rss= for mini-redis-go; /proc/<pid>/status VmRSS + HugetlbPages otherwise",
+    "transport": "RESP2 over Unix-domain socket",
+    "client": "native C++ RESP/UDS harness",
+    "large_fields": 1000000,
+    "small_total_fields": 500000,
+    "value_bytes": 16,
+    "grown_value_bytes": 64,
+    "hset_batch": 128,
+    "pipeline": 256,
+    "client_read_buffer_bytes": 65536,
+    "goblin_server_read_buffer_bytes": 16384,
+    "server_core": 2,
+    "client_core": 3,
+    "requests": 500000,
+    "rounds": 3,
+    "point_operations": [],
+    "construction_rounds": 3,
+    "relocation_fields": 100000,
+    "relocation_rounds": 1,
+    "mixed_fields": 100000,
+    "mixed_samples": 10000,
+    "mixed_warmup": 1000,
+    "mixed_rounds": 1,
+    "seed": 12648430,
+    "goblin_args": []
+  },
+  "large_hash": [
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "fields": 1000000, "load_seconds": 0.63269051300000001, "load_fields_per_second": 1580551.595847937, "update_hset_operations_per_second": 1892137.899479364, "hstar_operations_per_second": {"HSET update": 1892137.899479364, "HGET hit": 1813211.7651724967, "HSETNX existing": 2041640.4075981542, "HMGET four hits": 961177.40818400378, "HEXISTS hit": 2218602.1832722747, "HSTRLEN hit": 2095675.1660573182, "HLEN": 3939982.7471307493, "HINCRBY": 2218390.8344822307}, "grow_seconds": 0.52599947000000002, "grow_fields_per_second": 1901142.6000106046, "baseline": {
+      "rss_bytes": 7208960,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 57778176,
+      "used_memory_bytes": 40908278,
+      "key_memory_bytes": 50066264,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 5844176,
+        "field_value_allocated_bytes": 44221592,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 35000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 50066264
+      }
+    }, "loaded_after_optimize": {
+      "rss_bytes": 55877632,
+      "used_memory_bytes": 40218758,
+      "key_memory_bytes": 49376744,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 5154656,
+        "field_value_allocated_bytes": 44221592,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 35000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 49376744
+      }
+    }, "grown_before_optimize": {
+      "rss_bytes": 126136320,
+      "used_memory_bytes": 106194270,
+      "key_memory_bytes": 119365304,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 6130016,
+        "field_value_allocated_bytes": 113234792,
+        "field_value_dead_bytes": 17000000,
+        "field_value_live_bytes": 83000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 119365304
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 108167168,
+      "used_memory_bytes": 88218910,
+      "key_memory_bytes": 101182648,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 30589063,
+        "field_compaction_donor_nanoseconds": 77517806,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 18567,
+        "field_compaction_tail_settle_nanoseconds": 34957404,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 5154656,
+        "field_value_allocated_bytes": 96027496,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 83000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 101182648
+      }
+    }, "initial_optimize_seconds": 0.022030583999999999, "grown_optimize_seconds": 0.16457912699999999},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "fields": 1000000, "load_seconds": 0.39329177300000001, "load_fields_per_second": 2542641.5416017361, "update_hset_operations_per_second": 1748939.6991860797, "hstar_operations_per_second": {"HSET update": 1748939.6991860797, "HGET hit": 1747495.6325540652, "HSETNX existing": 1914020.1624721375, "HMGET four hits": 928596.10919678851, "HEXISTS hit": 1822283.0484105709, "HSTRLEN hit": 1750452.3974203037, "HLEN": 3990776.389902812, "HINCRBY": 2291328.1076632389}, "grow_seconds": 0.50481343400000001, "grow_fields_per_second": 1980929.849818537, "baseline": {
+      "rss_bytes": 6829952,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 69931008,
+      "used_memory_bytes": 52010269,
+      "key_memory_bytes": 60431624,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 16216288,
+        "field_value_allocated_bytes": 44214840,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 35000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 60431624
+      }
+    }, "loaded_after_optimize": {
+      "rss_bytes": 67481600,
+      "used_memory_bytes": 52010269,
+      "key_memory_bytes": 60431624,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 16216288,
+        "field_value_allocated_bytes": 44214840,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 35000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 60431624
+      }
+    }, "grown_before_optimize": {
+      "rss_bytes": 136777728,
+      "used_memory_bytes": 117011185,
+      "key_memory_bytes": 129444824,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 16216288,
+        "field_value_allocated_bytes": 113228040,
+        "field_value_dead_bytes": 17000000,
+        "field_value_live_bytes": 83000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 129444824
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 119779328,
+      "used_memory_bytes": 100011185,
+      "key_memory_bytes": 112237528,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 30875464,
+        "field_compaction_donor_nanoseconds": 77353657,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 22368,
+        "field_compaction_tail_settle_nanoseconds": 35420273,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 1000000,
+        "field_index_allocated_bytes": 16216288,
+        "field_value_allocated_bytes": 96020744,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 83000000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 112237528
+      }
+    }, "initial_optimize_seconds": 0.000608521, "grown_optimize_seconds": 0.14458163900000001},
+    {"engine": "redis-7.2.4", "kind": "redis", "fields": 1000000, "load_seconds": 0.47454791200000002, "load_fields_per_second": 2107268.7809023592, "update_hset_operations_per_second": 1420911.7439915801, "hstar_operations_per_second": {"HSET update": 1420911.7439915801, "HGET hit": 1587657.2779738538, "HSETNX existing": 1562798.2307398699, "HMGET four hits": 923880.990632353, "HEXISTS hit": 1665662.3888425617, "HSTRLEN hit": 1644562.8917112402, "HLEN": 3128252.4049222427, "HINCRBY": 1887251.1118239802}, "grow_seconds": 0.51774459500000003, "grow_fields_per_second": 1931454.253037639, "baseline": {
+      "rss_bytes": 7389184,
+      "used_memory_bytes": 1012896,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 95973376,
+      "used_memory_bytes": 81427352,
+      "key_memory_bytes": 80388744,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_after_optimize": {
+      "rss_bytes": 95952896,
+      "used_memory_bytes": 81452040,
+      "key_memory_bytes": 80388744,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 169390080,
+      "used_memory_bytes": 137575048,
+      "key_memory_bytes": 136388744,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_after_optimize": {
+      "rss_bytes": 169390080,
+      "used_memory_bytes": 137575048,
+      "key_memory_bytes": 136388744,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "initial_optimize_seconds": 0, "grown_optimize_seconds": 0},
+    {"engine": "redis-8.8", "kind": "redis", "fields": 1000000, "load_seconds": 0.43545599400000001, "load_fields_per_second": 2296443.3003074015, "update_hset_operations_per_second": 1305163.0320517004, "hstar_operations_per_second": {"HSET update": 1305163.0320517004, "HGET hit": 1397478.7638428309, "HSETNX existing": 1487507.6814152915, "HMGET four hits": 881284.30774815334, "HEXISTS hit": 1586495.7230217075, "HSTRLEN hit": 1591751.9438220058, "HLEN": 2454284.7978978441, "HINCRBY": 1546070.2353177338}, "grow_seconds": 0.45187663500000003, "grow_fields_per_second": 2212993.3759465124, "baseline": {
+      "rss_bytes": 8683520,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 69558272,
+      "used_memory_bytes": 54962512,
+      "key_memory_bytes": 72388720,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_after_optimize": {
+      "rss_bytes": 69562368,
+      "used_memory_bytes": 54987200,
+      "key_memory_bytes": 72388720,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 125607936,
+      "used_memory_bytes": 111131720,
+      "key_memory_bytes": 120388720,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_after_optimize": {
+      "rss_bytes": 125607936,
+      "used_memory_bytes": 111131720,
+      "key_memory_bytes": 120388720,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "initial_optimize_seconds": 0, "grown_optimize_seconds": 0},
+    {"engine": "valkey-9.1", "kind": "redis", "fields": 1000000, "load_seconds": 0.49490543100000001, "load_fields_per_second": 2020588.0504875688, "update_hset_operations_per_second": 1233675.3721331179, "hstar_operations_per_second": {"HSET update": 1233675.3721331179, "HGET hit": 1403896.4365028718, "HSETNX existing": 1364565.5645575493, "HMGET four hits": 795549.60640024114, "HEXISTS hit": 1494731.3783113847, "HSTRLEN hit": 1477415.978533335, "HLEN": 2235562.1394549655, "HINCRBY": 1451918.8478185313}, "grow_seconds": 0.48612107399999999, "grow_fields_per_second": 2057100.6966877556, "baseline": {
+      "rss_bytes": 8351744,
+      "used_memory_bytes": 1074080,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 72224768,
+      "used_memory_bytes": 67983208,
+      "key_memory_bytes": 66883408,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_after_optimize": {
+      "rss_bytes": 72228864,
+      "used_memory_bytes": 68007896,
+      "key_memory_bytes": 66883408,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 129421312,
+      "used_memory_bytes": 114717728,
+      "key_memory_bytes": 113469200,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_after_optimize": {
+      "rss_bytes": 129421312,
+      "used_memory_bytes": 114717728,
+      "key_memory_bytes": 113469200,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "initial_optimize_seconds": 0, "grown_optimize_seconds": 0},
+    {"engine": "dragonfly", "kind": "dragonfly", "fields": 1000000, "load_seconds": 0.43134060800000001, "load_fields_per_second": 2318353.4808760691, "update_hset_operations_per_second": 765235.09184413555, "hstar_operations_per_second": {"HSET update": 765235.09184413555, "HGET hit": 894569.89276361302, "HSETNX existing": 884201.58616285922, "HMGET four hits": 567394.90141687775, "HEXISTS hit": 1101974.5082264645, "HSTRLEN hit": 1002669.4851786109, "HLEN": 1531933.0150156275, "HINCRBY": 1015792.146693128}, "grow_seconds": 0.70826959300000003, "grow_fields_per_second": 1411891.7568723015, "baseline": {
+      "rss_bytes": 23736320,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 99901440,
+      "used_memory_bytes": 76349304,
+      "key_memory_bytes": 76066608,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_after_optimize": {
+      "rss_bytes": 99966976,
+      "used_memory_bytes": 76349304,
+      "key_memory_bytes": 76066608,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 182464512,
+      "used_memory_bytes": 124349368,
+      "key_memory_bytes": 124066608,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_after_optimize": {
+      "rss_bytes": 182464512,
+      "used_memory_bytes": 124349368,
+      "key_memory_bytes": 124066608,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "initial_optimize_seconds": 0, "grown_optimize_seconds": 0},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "fields": 1000000, "load_seconds": 1.1776193619999999, "load_fields_per_second": 849170.82061359659, "update_hset_operations_per_second": 290513.13658947434, "hstar_operations_per_second": {"HSET update": 290513.13658947434, "HGET hit": 310938.35254632193, "HSETNX existing": 0, "HMGET four hits": 0, "HEXISTS hit": 0, "HSTRLEN hit": 0, "HLEN": 376711.43111022684, "HINCRBY": 0}, "grow_seconds": 0.99085650999999997, "grow_fields_per_second": 1009227.8648903463, "baseline": {
+      "rss_bytes": 12685312,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_before_optimize": {
+      "rss_bytes": 243322880,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded_after_optimize": {
+      "rss_bytes": 243322880,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 399847424,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "grown_after_optimize": {
+      "rss_bytes": 399847424,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "initial_optimize_seconds": 0, "grown_optimize_seconds": 0}
+  ],
+  "small_hashes": [
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.15831795300000001, "load_hashes_per_second": 394775.19015168166, "load_fields_per_second": 3158201.5212134533, "update_hset_operations_per_second": 2344672.7569541531, "baseline": {
+      "rss_bytes": 7196672,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 24453120,
+      "used_memory_bytes": 16763509,
+      "key_memory_bytes": 228,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 8,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 228,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 228,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 228,
+        "total_allocated_bytes": 228
+      }
+    }, "after_updates": {
+      "rss_bytes": 24453120,
+      "used_memory_bytes": 16763509,
+      "key_memory_bytes": 228,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 8,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 228,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 228,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 228,
+        "total_allocated_bytes": 228
+      }
+    }},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.201649351, "load_hashes_per_second": 309943.96803191298, "load_fields_per_second": 2479551.7442553039, "update_hset_operations_per_second": 1180815.5002797872, "baseline": {
+      "rss_bytes": 6829952,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 111968256,
+      "used_memory_bytes": 82459290,
+      "key_memory_bytes": 1137,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 8,
+        "field_index_allocated_bytes": 336,
+        "field_value_allocated_bytes": 305,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 176,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 1137
+      }
+    }, "after_updates": {
+      "rss_bytes": 111976448,
+      "used_memory_bytes": 82459290,
+      "key_memory_bytes": 1137,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 8,
+        "field_index_allocated_bytes": 336,
+        "field_value_allocated_bytes": 305,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 176,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 1137
+      }
+    }},
+    {"engine": "redis-7.2.4", "kind": "redis", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.16605265399999999, "load_hashes_per_second": 376386.636976004, "load_fields_per_second": 3011093.095808032, "update_hset_operations_per_second": 1875931.0175292583, "baseline": {
+      "rss_bytes": 7331840,
+      "used_memory_bytes": 1012864,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 25317376,
+      "used_memory_bytes": 19062832,
+      "key_memory_bytes": 280,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 25333760,
+      "used_memory_bytes": 19087488,
+      "key_memory_bytes": 280,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "redis-8.8", "kind": "redis", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.17596209900000001, "load_hashes_per_second": 355190.12534625421, "load_fields_per_second": 2841521.0027700337, "update_hset_operations_per_second": 1491261.296785255, "baseline": {
+      "rss_bytes": 8704000,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 26099712,
+      "used_memory_bytes": 18267504,
+      "key_memory_bytes": 247,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 26116096,
+      "used_memory_bytes": 18292192,
+      "key_memory_bytes": 247,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "valkey-9.1", "kind": "redis", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.196422655, "load_hashes_per_second": 318191.40210684965, "load_fields_per_second": 2545531.2168547972, "update_hset_operations_per_second": 1469760.1335294719, "baseline": {
+      "rss_bytes": 8368128,
+      "used_memory_bytes": 1074144,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 26144768,
+      "used_memory_bytes": 18690928,
+      "key_memory_bytes": 264,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 26181632,
+      "used_memory_bytes": 18715616,
+      "key_memory_bytes": 264,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "dragonfly", "kind": "dragonfly", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.16940970499999999, "load_hashes_per_second": 368928.09653378476, "load_fields_per_second": 2951424.7722702781, "update_hset_operations_per_second": 1067199.6608968808, "baseline": {
+      "rss_bytes": 23744512,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 41803776,
+      "used_memory_bytes": 18215816,
+      "key_memory_bytes": 224,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 41922560,
+      "used_memory_bytes": 18215816,
+      "key_memory_bytes": 224,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "hashes": 62500, "fields_per_hash": 8, "total_fields": 500000, "load_seconds": 0.480031445, "load_hashes_per_second": 130199.80388993058, "load_fields_per_second": 1041598.4311194447, "update_hset_operations_per_second": 286372.92445810547, "baseline": {
+      "rss_bytes": 12660736,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 91033600,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 194416640,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.138939546, "load_hashes_per_second": 112458.98270028895, "load_fields_per_second": 3598687.4464092464, "update_hset_operations_per_second": 2321429.9982789382, "baseline": {
+      "rss_bytes": 7208960,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 22093824,
+      "used_memory_bytes": 14738351,
+      "key_memory_bytes": 900,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 32,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 900,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 900,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 900,
+        "total_allocated_bytes": 900
+      }
+    }, "after_updates": {
+      "rss_bytes": 22093824,
+      "used_memory_bytes": 14738351,
+      "key_memory_bytes": 900,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 32,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 900,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 900,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 900,
+        "total_allocated_bytes": 900
+      }
+    }},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.13884756200000001, "load_hashes_per_second": 112533.48474350596, "load_fields_per_second": 3601071.5117921908, "update_hset_operations_per_second": 1991465.447371501, "baseline": {
+      "rss_bytes": 6858624,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 57401344,
+      "used_memory_bytes": 41621632,
+      "key_memory_bytes": 2453,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 32,
+        "field_index_allocated_bytes": 912,
+        "field_value_allocated_bytes": 1045,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 704,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 2453
+      }
+    }, "after_updates": {
+      "rss_bytes": 57409536,
+      "used_memory_bytes": 41621632,
+      "key_memory_bytes": 2453,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 32,
+        "field_index_allocated_bytes": 912,
+        "field_value_allocated_bytes": 1045,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 704,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 2453
+      }
+    }},
+    {"engine": "redis-7.2.4", "kind": "redis", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.184146382, "load_hashes_per_second": 84850.97469903047, "load_fields_per_second": 2715231.190368975, "update_hset_operations_per_second": 1583611.2703080331, "baseline": {
+      "rss_bytes": 7401472,
+      "used_memory_bytes": 1012864,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 22315008,
+      "used_memory_bytes": 16044616,
+      "key_memory_bytes": 952,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 22331392,
+      "used_memory_bytes": 16069272,
+      "key_memory_bytes": 952,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "redis-8.8", "kind": "redis", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.18330439900000001, "load_hashes_per_second": 85240.725728573481, "load_fields_per_second": 2727703.2233143514, "update_hset_operations_per_second": 1319263.2082792041, "baseline": {
+      "rss_bytes": 8679424,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 23527424,
+      "used_memory_bytes": 15728064,
+      "key_memory_bytes": 847,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 23552000,
+      "used_memory_bytes": 15755640,
+      "key_memory_bytes": 847,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "valkey-9.1", "kind": "redis", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.197144125, "load_hashes_per_second": 79256.73666410298, "load_fields_per_second": 2536215.5732512954, "update_hset_operations_per_second": 1337185.8298941783, "baseline": {
+      "rss_bytes": 8298496,
+      "used_memory_bytes": 1074080,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 23310336,
+      "used_memory_bytes": 15997496,
+      "key_memory_bytes": 936,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 23334912,
+      "used_memory_bytes": 16022184,
+      "key_memory_bytes": 936,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "dragonfly", "kind": "dragonfly", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.168577808, "load_hashes_per_second": 92687.170306544736, "load_fields_per_second": 2965989.4498094316, "update_hset_operations_per_second": 996773.62916229654, "baseline": {
+      "rss_bytes": 23756800,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 38547456,
+      "used_memory_bytes": 15069320,
+      "key_memory_bytes": 896,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 38780928,
+      "used_memory_bytes": 15069320,
+      "key_memory_bytes": 896,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "hashes": 15625, "fields_per_hash": 32, "total_fields": 500000, "load_seconds": 0.41238153999999999, "load_hashes_per_second": 37889.668873150818, "load_fields_per_second": 1212469.4039408262, "update_hset_operations_per_second": 307595.87950736337, "baseline": {
+      "rss_bytes": 12664832,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 127717376,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 149123072,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.14866786200000001, "load_hashes_per_second": 52546.662707774725, "load_fields_per_second": 3362986.4132975824, "update_hset_operations_per_second": 2372267.7572165001, "baseline": {
+      "rss_bytes": 7208960,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 21708800,
+      "used_memory_bytes": 14399893,
+      "key_memory_bytes": 1796,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 64,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 1796,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 1796,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 1796,
+        "total_allocated_bytes": 1796
+      }
+    }, "after_updates": {
+      "rss_bytes": 21708800,
+      "used_memory_bytes": 14399893,
+      "key_memory_bytes": 1796,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 64,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 1796,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 1796,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 1796,
+        "total_allocated_bytes": 1796
+      }
+    }},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.13461104099999999, "load_hashes_per_second": 58033.872570675689, "load_fields_per_second": 3714167.8445232441, "update_hset_operations_per_second": 1993645.9791286639, "baseline": {
+      "rss_bytes": 6858624,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 48271360,
+      "used_memory_bytes": 34814202,
+      "key_memory_bytes": 3582,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 64,
+        "field_index_allocated_bytes": 1056,
+        "field_value_allocated_bytes": 2030,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 1408,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 3582
+      }
+    }, "after_updates": {
+      "rss_bytes": 48275456,
+      "used_memory_bytes": 34814202,
+      "key_memory_bytes": 3582,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 64,
+        "field_index_allocated_bytes": 1056,
+        "field_value_allocated_bytes": 2030,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 1408,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 3582
+      }
+    }},
+    {"engine": "redis-7.2.4", "kind": "redis", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.23644616900000001, "load_hashes_per_second": 33039.232705859569, "load_fields_per_second": 2114510.8931750124, "update_hset_operations_per_second": 1359206.0820731637, "baseline": {
+      "rss_bytes": 7401472,
+      "used_memory_bytes": 1012896,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 21819392,
+      "used_memory_bytes": 15540688,
+      "key_memory_bytes": 1848,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 21835776,
+      "used_memory_bytes": 15565344,
+      "key_memory_bytes": 1848,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "redis-8.8", "kind": "redis", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.22201352799999999, "load_hashes_per_second": 35187.044998447127, "load_fields_per_second": 2251970.8799006161, "update_hset_operations_per_second": 1193350.2837125859, "baseline": {
+      "rss_bytes": 8683520,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 23117824,
+      "used_memory_bytes": 15305208,
+      "key_memory_bytes": 1647,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 23138304,
+      "used_memory_bytes": 15332784,
+      "key_memory_bytes": 1647,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "valkey-9.1", "kind": "redis", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.23531098, "load_hashes_per_second": 33198.620820838871, "load_fields_per_second": 2124711.7325336877, "update_hset_operations_per_second": 1193592.7720375953, "baseline": {
+      "rss_bytes": 8351744,
+      "used_memory_bytes": 1074144,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 22904832,
+      "used_memory_bytes": 15547696,
+      "key_memory_bytes": 1832,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 22941696,
+      "used_memory_bytes": 15572384,
+      "key_memory_bytes": 1832,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "dragonfly", "kind": "dragonfly", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.145173679, "load_hashes_per_second": 53811.407507279611, "load_fields_per_second": 3443930.0804658951, "update_hset_operations_per_second": 969951.66183816316, "baseline": {
+      "rss_bytes": 23678976,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 53743616,
+      "used_memory_bytes": 30417992,
+      "key_memory_bytes": 3824,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 54136832,
+      "used_memory_bytes": 30417992,
+      "key_memory_bytes": 3824,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "hashes": 7812, "fields_per_hash": 64, "total_fields": 499968, "load_seconds": 0.37953799799999999, "load_hashes_per_second": 20582.919341846769, "load_fields_per_second": 1317306.8378781932, "update_hset_operations_per_second": 311516.48851446778, "baseline": {
+      "rss_bytes": 12656640,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 115695616,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 141840384,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.15138976300000001, "load_hashes_per_second": 25800.951944154902, "load_fields_per_second": 3302521.8488518274, "update_hset_operations_per_second": 2330335.5508418046, "baseline": {
+      "rss_bytes": 7204864,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 21295104,
+      "used_memory_bytes": 14231073,
+      "key_memory_bytes": 3588,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 128,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 3588,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3588,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 3588,
+        "total_allocated_bytes": 3588
+      }
+    }, "after_updates": {
+      "rss_bytes": 21295104,
+      "used_memory_bytes": 14231073,
+      "key_memory_bytes": 3588,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 128,
+        "field_index_allocated_bytes": 0,
+        "field_value_allocated_bytes": 3588,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3588,
+        "hash_heap_allocated_bytes": 0,
+        "keyspace_accounted_bytes": 3588,
+        "total_allocated_bytes": 3588
+      }
+    }},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.12662377699999999, "load_hashes_per_second": 30847.28707784479, "load_fields_per_second": 3948452.7459641332, "update_hset_operations_per_second": 2049722.0677312538, "baseline": {
+      "rss_bytes": 6858624,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 43757568,
+      "used_memory_bytes": 31411214,
+      "key_memory_bytes": 7144,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 128,
+        "field_index_allocated_bytes": 2640,
+        "field_value_allocated_bytes": 4008,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 2816,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 7144
+      }
+    }, "after_updates": {
+      "rss_bytes": 43761664,
+      "used_memory_bytes": 31411214,
+      "key_memory_bytes": 7144,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 128,
+        "field_index_allocated_bytes": 2640,
+        "field_value_allocated_bytes": 4008,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 2816,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 7144
+      }
+    }},
+    {"engine": "redis-7.2.4", "kind": "redis", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.34296107199999998, "load_hashes_per_second": 11389.047675941485, "load_fields_per_second": 1457798.1025205101, "update_hset_operations_per_second": 1042930.9444947208, "baseline": {
+      "rss_bytes": 7323648,
+      "used_memory_bytes": 1012896,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 21577728,
+      "used_memory_bytes": 15289184,
+      "key_memory_bytes": 3640,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 21598208,
+      "used_memory_bytes": 15313840,
+      "key_memory_bytes": 3640,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "redis-8.8", "kind": "redis", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.30606715699999998, "load_hashes_per_second": 12761.905061247719, "load_fields_per_second": 1633523.847839708, "update_hset_operations_per_second": 965468.8741852442, "baseline": {
+      "rss_bytes": 8691712,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 22953984,
+      "used_memory_bytes": 15093800,
+      "key_memory_bytes": 3247,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 22966272,
+      "used_memory_bytes": 15121376,
+      "key_memory_bytes": 3247,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "valkey-9.1", "kind": "redis", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.31567361500000002, "load_hashes_per_second": 12373.539676415465, "load_fields_per_second": 1583813.0785811795, "update_hset_operations_per_second": 981390.50810798723, "baseline": {
+      "rss_bytes": 8372224,
+      "used_memory_bytes": 1074208,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 22740992,
+      "used_memory_bytes": 15323488,
+      "key_memory_bytes": 3624,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 22765568,
+      "used_memory_bytes": 15348176,
+      "key_memory_bytes": 3624,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "dragonfly", "kind": "dragonfly", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.138426732, "load_hashes_per_second": 28217.093212891858, "load_fields_per_second": 3611787.9312501578, "update_hset_operations_per_second": 971422.25518555823, "baseline": {
+      "rss_bytes": 23818240,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 53071872,
+      "used_memory_bytes": 29655816,
+      "key_memory_bytes": 7520,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 53395456,
+      "used_memory_bytes": 29655816,
+      "key_memory_bytes": 7520,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "hashes": 3906, "fields_per_hash": 128, "total_fields": 499968, "load_seconds": 0.35372150499999999, "load_hashes_per_second": 11042.585607001758, "load_fields_per_second": 1413450.957696225, "update_hset_operations_per_second": 313313.21443492459, "baseline": {
+      "rss_bytes": 12677120,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 106573824,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_updates": {
+      "rss_bytes": 138940416,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }}
+  ],
+  "relocation_density": [
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 0, "fields": 100000, "grown_fields": 0, "load_fields_per_second": 1850776.4821684349, "first_growth_latency_us": null, "hget_operations_per_second": 2632382.1425786931, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12320768,
+      "used_memory_bytes": 4113345,
+      "key_memory_bytes": 5303904,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5303904
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 12070912,
+      "used_memory_bytes": 4016705,
+      "key_memory_bytes": 5207264,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5207264
+      }
+    }, "optimize_seconds": 0.001942275},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 0.001, "fields": 100000, "grown_fields": 100, "load_fields_per_second": 1851448.3046935881, "first_growth_latency_us": 38.021999999999998, "hget_operations_per_second": 2631379.1841402524, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12320768,
+      "used_memory_bytes": 4119849,
+      "key_memory_bytes": 5328992,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4716320,
+        "field_value_dead_bytes": 1700,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5328992
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 11862016,
+      "used_memory_bytes": 4021509,
+      "key_memory_bytes": 4994784,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3054651,
+        "field_compaction_donor_nanoseconds": 429442,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 230,
+        "field_compaction_tail_settle_nanoseconds": 2057333,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4478752,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 4994784
+      }
+    }, "optimize_seconds": 0.0072699679999999999},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 0.01, "fields": 100000, "grown_fields": 1000, "load_fields_per_second": 1852980.6258831189, "first_growth_latency_us": 39.042999999999999, "hget_operations_per_second": 2619069.6641311352, "baseline": {
+      "rss_bytes": 6860800,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12300288,
+      "used_memory_bytes": 4178348,
+      "key_memory_bytes": 5499744,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4887072,
+        "field_value_dead_bytes": 17000,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5499744
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 12070912,
+      "used_memory_bytes": 4064708,
+      "key_memory_bytes": 5210592,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3058208,
+        "field_compaction_donor_nanoseconds": 454380,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 230,
+        "field_compaction_tail_settle_nanoseconds": 2141723,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4694560,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5210592
+      }
+    }, "optimize_seconds": 0.0073589659999999998},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 0.10000000000000001, "fields": 100000, "grown_fields": 10000, "load_fields_per_second": 1858941.0612884131, "first_growth_latency_us": 38.273000000000003, "hget_operations_per_second": 2621549.5610341094, "baseline": {
+      "rss_bytes": 6885376,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12959744,
+      "used_memory_bytes": 4763347,
+      "key_memory_bytes": 6154080,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 5541408,
+        "field_value_dead_bytes": 170000,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6154080
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 12738560,
+      "used_memory_bytes": 4496707,
+      "key_memory_bytes": 5844448,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3042127,
+        "field_compaction_donor_nanoseconds": 589065,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 301,
+        "field_compaction_tail_settle_nanoseconds": 3111217,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 5328416,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5844448
+      }
+    }, "optimize_seconds": 0.0084680750000000003},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 0.5, "fields": 100000, "grown_fields": 50000, "load_fields_per_second": 1848552.9038002533, "first_growth_latency_us": 38.161999999999999, "hget_operations_per_second": 2313733.0482092332, "baseline": {
+      "rss_bytes": 6885376,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 15548416,
+      "used_memory_bytes": 7363347,
+      "key_memory_bytes": 8735168,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 8122496,
+        "field_value_dead_bytes": 850000,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 8735168
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 14663680,
+      "used_memory_bytes": 6416707,
+      "key_memory_bytes": 7766080,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 5719343,
+        "field_compaction_donor_nanoseconds": 2929974,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 330,
+        "field_compaction_tail_settle_nanoseconds": 5389799,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 7250048,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 7766080
+      }
+    }, "optimize_seconds": 0.015906010000000002},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "random", "density": 1, "fields": 100000, "grown_fields": 100000, "load_fields_per_second": 1867676.5368017631, "first_growth_latency_us": 37.360999999999997, "hget_operations_per_second": 2518714.9588818774, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 18771968,
+      "used_memory_bytes": 10613345,
+      "key_memory_bytes": 11995632,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 11382960,
+        "field_value_dead_bytes": 1700000,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 11995632
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 17063936,
+      "used_memory_bytes": 8816705,
+      "key_memory_bytes": 10166384,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3338818,
+        "field_compaction_donor_nanoseconds": 2199542,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 811,
+        "field_compaction_tail_settle_nanoseconds": 3609881,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 9650352,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 10166384
+      }
+    }, "optimize_seconds": 0.010848869000000001},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 0, "fields": 100000, "grown_fields": 0, "load_fields_per_second": 1853332.9737867364, "first_growth_latency_us": null, "hget_operations_per_second": 2606565.0323170274, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12320768,
+      "used_memory_bytes": 4113348,
+      "key_memory_bytes": 5303904,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5303904
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 12070912,
+      "used_memory_bytes": 4016708,
+      "key_memory_bytes": 5207264,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5207264
+      }
+    }, "optimize_seconds": 0.0019973590000000002},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 0.001, "fields": 100000, "grown_fields": 100, "load_fields_per_second": 1866261.1853431014, "first_growth_latency_us": 30.719000000000001, "hget_operations_per_second": 2626598.8054396734, "baseline": {
+      "rss_bytes": 6877184,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12316672,
+      "used_memory_bytes": 4119852,
+      "key_memory_bytes": 5304672,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4692000,
+        "field_value_dead_bytes": 1700,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5304672
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 11829248,
+      "used_memory_bytes": 4021512,
+      "key_memory_bytes": 4970464,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3107120,
+        "field_compaction_donor_nanoseconds": 431076,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 231,
+        "field_compaction_tail_settle_nanoseconds": 1965169,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4454432,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 4970464
+      }
+    }, "optimize_seconds": 0.0072395899999999997},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 0.01, "fields": 100000, "grown_fields": 1000, "load_fields_per_second": 1868757.8116412475, "first_growth_latency_us": 26.771000000000001, "hget_operations_per_second": 2601374.2404566025, "baseline": {
+      "rss_bytes": 6873088,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12312576,
+      "used_memory_bytes": 4178351,
+      "key_memory_bytes": 5308256,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 4695584,
+        "field_value_dead_bytes": 17000,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5308256
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 11878400,
+      "used_memory_bytes": 4064711,
+      "key_memory_bytes": 5019104,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3103954,
+        "field_compaction_donor_nanoseconds": 435805,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 240,
+        "field_compaction_tail_settle_nanoseconds": 2123929,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4503072,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5019104
+      }
+    }, "optimize_seconds": 0.0073929299999999998},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 0.10000000000000001, "fields": 100000, "grown_fields": 10000, "load_fields_per_second": 1873551.9902152624, "first_growth_latency_us": 57.518000000000001, "hget_operations_per_second": 2576270.2886759806, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 12771328,
+      "used_memory_bytes": 4763350,
+      "key_memory_bytes": 5794656,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 5181984,
+        "field_value_dead_bytes": 170000,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5794656
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 12353536,
+      "used_memory_bytes": 4496710,
+      "key_memory_bytes": 5485024,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 2840525,
+        "field_compaction_donor_nanoseconds": 492332,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 320,
+        "field_compaction_tail_settle_nanoseconds": 2906290,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 4968992,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5485024
+      }
+    }, "optimize_seconds": 0.0080200069999999991},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 0.5, "fields": 100000, "grown_fields": 50000, "load_fields_per_second": 1871018.0059288817, "first_growth_latency_us": 58.850999999999999, "hget_operations_per_second": 2291617.0197387743, "baseline": {
+      "rss_bytes": 6881280,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 15351808,
+      "used_memory_bytes": 7363350,
+      "key_memory_bytes": 8535232,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 7922560,
+        "field_value_dead_bytes": 850000,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 8535232
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 14450688,
+      "used_memory_bytes": 6416710,
+      "key_memory_bytes": 7566144,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 4503523,
+        "field_compaction_donor_nanoseconds": 1237993,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 321,
+        "field_compaction_tail_settle_nanoseconds": 4373737,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 7050112,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 7566144
+      }
+    }, "optimize_seconds": 0.011949482000000001},
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "pattern": "clustered", "density": 1, "fields": 100000, "grown_fields": 100000, "load_fields_per_second": 1875427.6092163238, "first_growth_latency_us": 64.822000000000003, "hget_operations_per_second": 2536538.4817136982, "baseline": {
+      "rss_bytes": 6852608,
+      "used_memory_bytes": 618,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 18739200,
+      "used_memory_bytes": 10613348,
+      "key_memory_bytes": 11995632,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 612176,
+        "field_value_allocated_bytes": 11382960,
+        "field_value_dead_bytes": 1700000,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 11995632
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 17035264,
+      "used_memory_bytes": 8816708,
+      "key_memory_bytes": 10166384,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3049129,
+        "field_compaction_donor_nanoseconds": 1459313,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 411,
+        "field_compaction_tail_settle_nanoseconds": 2822390,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 515536,
+        "field_value_allocated_bytes": 9650352,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 10166384
+      }
+    }, "optimize_seconds": 0.0090009830000000006},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 0, "fields": 100000, "grown_fields": 0, "load_fields_per_second": 2315728.3482062528, "first_growth_latency_us": null, "hget_operations_per_second": 2485693.7388278008, "baseline": {
+      "rss_bytes": 6850432,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28585984,
+      "used_memory_bytes": 20510266,
+      "key_memory_bytes": 6312400,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6312400
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28258304,
+      "used_memory_bytes": 20510266,
+      "key_memory_bytes": 6312400,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6312400
+      }
+    }, "optimize_seconds": 0.00014120699999999999},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 0.001, "fields": 100000, "grown_fields": 100, "load_fields_per_second": 2316618.9354362241, "first_growth_latency_us": 40.957999999999998, "hget_operations_per_second": 2525929.2318995255, "baseline": {
+      "rss_bytes": 6883200,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28626944,
+      "used_memory_bytes": 20516770,
+      "key_memory_bytes": 6337488,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4716320,
+        "field_value_dead_bytes": 1700,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6337488
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28323840,
+      "used_memory_bytes": 20515070,
+      "key_memory_bytes": 6099920,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3365709,
+        "field_compaction_donor_nanoseconds": 435504,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 261,
+        "field_compaction_tail_settle_nanoseconds": 2290545,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4478752,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6099920
+      }
+    }, "optimize_seconds": 0.0063764260000000001},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 0.01, "fields": 100000, "grown_fields": 1000, "load_fields_per_second": 2324354.1363648362, "first_growth_latency_us": 37.911999999999999, "hget_operations_per_second": 2525151.2641361756, "baseline": {
+      "rss_bytes": 6858624,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28659712,
+      "used_memory_bytes": 20575269,
+      "key_memory_bytes": 6508240,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4887072,
+        "field_value_dead_bytes": 17000,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6508240
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28520448,
+      "used_memory_bytes": 20558269,
+      "key_memory_bytes": 6315728,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3123641,
+        "field_compaction_donor_nanoseconds": 453538,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 200,
+        "field_compaction_tail_settle_nanoseconds": 2206435,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4694560,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6315728
+      }
+    }, "optimize_seconds": 0.0059714700000000004},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 0.10000000000000001, "fields": 100000, "grown_fields": 10000, "load_fields_per_second": 2345287.3725178004, "first_growth_latency_us": 40.146000000000001, "hget_operations_per_second": 2531708.3816256705, "baseline": {
+      "rss_bytes": 6834048,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 29229056,
+      "used_memory_bytes": 21160268,
+      "key_memory_bytes": 7162576,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 5541408,
+        "field_value_dead_bytes": 170000,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 7162576
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 29134848,
+      "used_memory_bytes": 20990268,
+      "key_memory_bytes": 6949584,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3057446,
+        "field_compaction_donor_nanoseconds": 590938,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 161,
+        "field_compaction_tail_settle_nanoseconds": 3065862,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 5328416,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6949584
+      }
+    }, "optimize_seconds": 0.0069137030000000002},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 0.5, "fields": 100000, "grown_fields": 50000, "load_fields_per_second": 2327982.5740261213, "first_growth_latency_us": 39.244, "hget_operations_per_second": 2290426.3444948085, "baseline": {
+      "rss_bytes": 6776704,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 31776768,
+      "used_memory_bytes": 23760268,
+      "key_memory_bytes": 9743664,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 8122496,
+        "field_value_dead_bytes": 850000,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 9743664
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 31010816,
+      "used_memory_bytes": 22910268,
+      "key_memory_bytes": 8871216,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 5290962,
+        "field_compaction_donor_nanoseconds": 2912060,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 502,
+        "field_compaction_tail_settle_nanoseconds": 5110020,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 7250048,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 8871216
+      }
+    }, "optimize_seconds": 0.013597691},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "random", "density": 1, "fields": 100000, "grown_fields": 100000, "load_fields_per_second": 2284402.2295034751, "first_growth_latency_us": 40.146000000000001, "hget_operations_per_second": 2445277.9799343422, "baseline": {
+      "rss_bytes": 6854528,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 35106816,
+      "used_memory_bytes": 27010266,
+      "key_memory_bytes": 13004128,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 11382960,
+        "field_value_dead_bytes": 1700000,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 13004128
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 33492992,
+      "used_memory_bytes": 25310266,
+      "key_memory_bytes": 11271520,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3346672,
+        "field_compaction_donor_nanoseconds": 2214663,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 470,
+        "field_compaction_tail_settle_nanoseconds": 3704490,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 9650352,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 11271520
+      }
+    }, "optimize_seconds": 0.0094059899999999995},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 0, "fields": 100000, "grown_fields": 0, "load_fields_per_second": 2319266.4104681294, "first_growth_latency_us": null, "hget_operations_per_second": 2487860.3981122971, "baseline": {
+      "rss_bytes": 6862720,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28598272,
+      "used_memory_bytes": 20510269,
+      "key_memory_bytes": 6312400,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6312400
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28270592,
+      "used_memory_bytes": 20510269,
+      "key_memory_bytes": 6312400,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6312400
+      }
+    }, "optimize_seconds": 0.00014527499999999999},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 0.001, "fields": 100000, "grown_fields": 100, "load_fields_per_second": 2283862.2952537434, "first_growth_latency_us": 45.415999999999997, "hget_operations_per_second": 2454397.8765099356, "baseline": {
+      "rss_bytes": 6817664,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28561408,
+      "used_memory_bytes": 20516773,
+      "key_memory_bytes": 6313168,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4692000,
+        "field_value_dead_bytes": 1700,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6313168
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28229632,
+      "used_memory_bytes": 20515073,
+      "key_memory_bytes": 6075600,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3645869,
+        "field_compaction_donor_nanoseconds": 426256,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 220,
+        "field_compaction_tail_settle_nanoseconds": 2357631,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4454432,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3504800,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6075600
+      }
+    }, "optimize_seconds": 0.0066972539999999997},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 0.01, "fields": 100000, "grown_fields": 1000, "load_fields_per_second": 2307750.5340134734, "first_growth_latency_us": 190.86099999999999, "hget_operations_per_second": 2546828.3935975158, "baseline": {
+      "rss_bytes": 6862720,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 28663808,
+      "used_memory_bytes": 20575272,
+      "key_memory_bytes": 6316752,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4695584,
+        "field_value_dead_bytes": 17000,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6316752
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28323840,
+      "used_memory_bytes": 20558272,
+      "key_memory_bytes": 6124240,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3225805,
+        "field_compaction_donor_nanoseconds": 438540,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 250,
+        "field_compaction_tail_settle_nanoseconds": 2264675,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4503072,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3548000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6124240
+      }
+    }, "optimize_seconds": 0.0061988},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 0.10000000000000001, "fields": 100000, "grown_fields": 10000, "load_fields_per_second": 2311899.0926327799, "first_growth_latency_us": 46.747999999999998, "hget_operations_per_second": 2524247.4795452021, "baseline": {
+      "rss_bytes": 6854528,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 29241344,
+      "used_memory_bytes": 21160271,
+      "key_memory_bytes": 6803152,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 5181984,
+        "field_value_dead_bytes": 170000,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6803152
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 28782592,
+      "used_memory_bytes": 20990271,
+      "key_memory_bytes": 6590160,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 2805509,
+        "field_compaction_donor_nanoseconds": 487362,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 160,
+        "field_compaction_tail_settle_nanoseconds": 3085599,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4968992,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3980000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6590160
+      }
+    }, "optimize_seconds": 0.0066606349999999998},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 0.5, "fields": 100000, "grown_fields": 50000, "load_fields_per_second": 2339485.1186287398, "first_growth_latency_us": 58.210000000000001, "hget_operations_per_second": 2270358.4426470813, "baseline": {
+      "rss_bytes": 6887296,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 31870976,
+      "used_memory_bytes": 23760271,
+      "key_memory_bytes": 9543728,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 7922560,
+        "field_value_dead_bytes": 850000,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 9543728
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 30920704,
+      "used_memory_bytes": 22910271,
+      "key_memory_bytes": 8671280,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 4109817,
+        "field_compaction_donor_nanoseconds": 1229636,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 532,
+        "field_compaction_tail_settle_nanoseconds": 3827253,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 7050112,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 5900000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 8671280
+      }
+    }, "optimize_seconds": 0.0094813420000000002},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "pattern": "clustered", "density": 1, "fields": 100000, "grown_fields": 100000, "load_fields_per_second": 2295509.3157851137, "first_growth_latency_us": 59.201999999999998, "hget_operations_per_second": 2452125.2100839885, "baseline": {
+      "rss_bytes": 6850432,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "grown_before_optimize": {
+      "rss_bytes": 35098624,
+      "used_memory_bytes": 27010269,
+      "key_memory_bytes": 13004128,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 11382960,
+        "field_value_dead_bytes": 1700000,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 13004128
+      }
+    }, "grown_after_optimize": {
+      "rss_bytes": 33488896,
+      "used_memory_bytes": 25310269,
+      "key_memory_bytes": 11271520,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 3088485,
+        "field_compaction_donor_nanoseconds": 1468659,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 390,
+        "field_compaction_tail_settle_nanoseconds": 3178004,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 9650352,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 8300000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 11271520
+      }
+    }, "optimize_seconds": 0.0078589620000000006}
+  ],
+  "mixed_hash_latency": [
+    {"engine": "goblin-efficient-resp-uds", "kind": "goblin", "initial_fields": 100000, "samples": 10000, "operations_per_second": 56333.183515231773, "latency_p50_us": 9.6180000000000003, "latency_p95_us": 11.893000000000001, "latency_p99_us": 13.476000000000001, "latency_p999_us": 2293.3919999999998, "latency_p9999_us": 2345.6309999999999, "latency_max_us": 2385.0659999999998, "final_fields": 99984, "baseline": {
+      "rss_bytes": 7208960,
+      "used_memory_bytes": 63598,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 12730368,
+      "used_memory_bytes": 4080440,
+      "key_memory_bytes": 5208784,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 516336,
+        "field_value_allocated_bytes": 4691952,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5208784
+      }
+    }, "after_mixed": {
+      "rss_bytes": 13479936,
+      "used_memory_bytes": 4357510,
+      "key_memory_bytes": 5856720,
+      "realtime_index_pool_bytes": 0,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 99984,
+        "field_index_allocated_bytes": 516336,
+        "field_value_allocated_bytes": 5339888,
+        "field_value_dead_bytes": 146206,
+        "field_value_live_bytes": 3630864,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 5856720
+      }
+    }},
+    {"engine": "goblin-rt-resp-uds", "kind": "goblin-rt", "initial_fields": 100000, "samples": 10000, "operations_per_second": 96429.816234181344, "latency_p50_us": 10.609999999999999, "latency_p95_us": 11.983000000000001, "latency_p99_us": 13.846, "latency_p999_us": 16.140999999999998, "latency_p9999_us": 87.686000000000007, "latency_max_us": 1643.452, "final_fields": 99984, "baseline": {
+      "rss_bytes": 6862720,
+      "used_memory_bytes": 611,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 28598272,
+      "used_memory_bytes": 20510271,
+      "key_memory_bytes": 6312400,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 100000,
+        "field_index_allocated_bytes": 1620672,
+        "field_value_allocated_bytes": 4691232,
+        "field_value_dead_bytes": 0,
+        "field_value_live_bytes": 3500000,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6312400
+      }
+    }, "after_mixed": {
+      "rss_bytes": 28876800,
+      "used_memory_bytes": 20787341,
+      "key_memory_bytes": 6967104,
+      "realtime_index_pool_bytes": 17008768,
+      "goblin_memory": {
+        "field_compaction_active": 0,
+        "field_compaction_candidates_remaining": 0,
+        "field_compaction_densify_nanoseconds": 0,
+        "field_compaction_donor_nanoseconds": 0,
+        "field_compaction_fields_scanned": 0,
+        "field_compaction_fields_total": 0,
+        "field_compaction_relocated_bytes": 0,
+        "field_compaction_relocated_fields": 0,
+        "field_compaction_selection_nanoseconds": 0,
+        "field_compaction_tail_settle_nanoseconds": 0,
+        "field_compaction_victim_chunk": 0,
+        "field_count": 99984,
+        "field_index_allocated_bytes": 1627440,
+        "field_value_allocated_bytes": 5339168,
+        "field_value_dead_bytes": 146206,
+        "field_value_live_bytes": 3630864,
+        "hash_heap_allocated_bytes": 496,
+        "keyspace_accounted_bytes": 0,
+        "total_allocated_bytes": 6967104
+      }
+    }},
+    {"engine": "redis-7.2.4", "kind": "redis", "initial_fields": 100000, "samples": 10000, "operations_per_second": 91803.263036820717, "latency_p50_us": 11.381, "latency_p95_us": 12.724, "latency_p99_us": 14.798, "latency_p999_us": 22.713000000000001, "latency_p9999_us": 66.697000000000003, "latency_max_us": 81.945999999999998, "final_fields": 99984, "baseline": {
+      "rss_bytes": 7380992,
+      "used_memory_bytes": 1012896,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 16089088,
+      "used_memory_bytes": 9786928,
+      "key_memory_bytes": 8773008,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_mixed": {
+      "rss_bytes": 16285696,
+      "used_memory_bytes": 9464192,
+      "key_memory_bytes": 8247568,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "redis-8.8", "kind": "redis", "initial_fields": 100000, "samples": 10000, "operations_per_second": 88602.202090778053, "latency_p50_us": 11.441000000000001, "latency_p95_us": 13.305, "latency_p99_us": 15.007999999999999, "latency_p999_us": 21.239999999999998, "latency_p9999_us": 104.55800000000001, "latency_max_us": 124.486, "final_fields": 99984, "baseline": {
+      "rss_bytes": 8699904,
+      "used_memory_bytes": 858064,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 14716928,
+      "used_memory_bytes": 6941160,
+      "key_memory_bytes": 7972976,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_mixed": {
+      "rss_bytes": 14897152,
+      "used_memory_bytes": 6600984,
+      "key_memory_bytes": 7579088,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "valkey-9.1", "kind": "redis", "initial_fields": 100000, "samples": 10000, "operations_per_second": 90297.212371548827, "latency_p50_us": 11.000999999999999, "latency_p95_us": 12.083, "latency_p99_us": 13.866, "latency_p999_us": 16.712, "latency_p9999_us": 90.460999999999999, "latency_max_us": 133.68299999999999, "final_fields": 99984, "baseline": {
+      "rss_bytes": 8421376,
+      "used_memory_bytes": 1073760,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 13680640,
+      "used_memory_bytes": 6412608,
+      "key_memory_bytes": 5337816,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_mixed": {
+      "rss_bytes": 13955072,
+      "used_memory_bytes": 6622160,
+      "key_memory_bytes": 5344664,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "dragonfly", "kind": "dragonfly", "initial_fields": 100000, "samples": 10000, "operations_per_second": 93849.248806680989, "latency_p50_us": 10.539999999999999, "latency_p95_us": 13.064, "latency_p99_us": 14.678000000000001, "latency_p999_us": 18.175000000000001, "latency_p9999_us": 37.25, "latency_max_us": 38.662999999999997, "final_fields": 99984, "baseline": {
+      "rss_bytes": 23687168,
+      "used_memory_bytes": 282696,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 31395840,
+      "used_memory_bytes": 8044136,
+      "key_memory_bytes": 7761440,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_mixed": {
+      "rss_bytes": 31678464,
+      "used_memory_bytes": 8171464,
+      "key_memory_bytes": 7888768,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }},
+    {"engine": "mini-redis-go-55178df", "kind": "mini-redis-go", "initial_fields": 100000, "samples": 10000, "operations_per_second": 82308.949754180619, "latency_p50_us": 11.582000000000001, "latency_p95_us": 17.003, "latency_p99_us": 19.396000000000001, "latency_p999_us": 22.652999999999999, "latency_p9999_us": 32.591000000000001, "latency_max_us": 35.557000000000002, "final_fields": 99984, "baseline": {
+      "rss_bytes": 12673024,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "loaded": {
+      "rss_bytes": 35713024,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }, "after_mixed": {
+      "rss_bytes": 36261888,
+      "used_memory_bytes": null,
+      "key_memory_bytes": null,
+      "realtime_index_pool_bytes": null,
+      "goblin_memory": null
+    }}
+  ]
+}

@@ -1,0 +1,669 @@
+{
+  "generated_at": "2026-07-16 19:23:35 UTC",
+  "rss_source": "ps for mini-redis-go; /proc VmRSS + HugetlbPages otherwise",
+  "server_core": 2,
+  "client_core": 3,
+  "suite": "set",
+  "members": 1000000,
+  "value_bytes": 16,
+  "batch": 128,
+  "pipeline": 256,
+  "requests": 200000,
+  "rounds": 3,
+  "ring_size_bytes": 2097152,
+  "engines": [
+    {
+      "label": "goblin-resp-tcp",
+      "transport": "resp",
+      "optimized": true,
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.444801014,
+        "checksum": 1132821,
+        "operations_per_second": 17565.1577988534
+      },
+      "memory": {
+        "rss_bytes": 35082240,
+        "rss_delta_bytes": 28651520,
+        "used_memory_bytes": 28158132,
+        "key_bytes": 28157544,
+        "goblin_memory": {
+          "member_count": "1000000",
+          "member_live_bytes": "17000000",
+          "member_dead_bytes": "0",
+          "member_allocated_bytes": "23002640",
+          "member_index_capacity": "1030928",
+          "member_index_tombstones": "0",
+          "member_index_allocated_bytes": "5154656",
+          "total_allocated_bytes": "28157544"
+        }
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.082030624,
+          "checksum": 3600000,
+          "operations_per_second": 2438113.8439224847,
+          "round_rates": [
+            2247977.3739278936,
+            2438113.8439224847,
+            2463120.1029554647
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.125328571,
+          "checksum": 3400000,
+          "operations_per_second": 1595805.3172089546,
+          "round_rates": [
+            1485638.0436188232,
+            1610108.985540046,
+            1595805.3172089546
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.16408846,
+          "checksum": 24600000,
+          "operations_per_second": 1218854.7567574224,
+          "round_rates": [
+            1197584.1661553183,
+            1218854.7567574224,
+            1223750.2811260333
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.061993946,
+          "checksum": 200003400000,
+          "operations_per_second": 3226121.4667638675,
+          "round_rates": [
+            3219272.522638206,
+            3234805.8902968634,
+            3226121.4667638675
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.096981264,
+          "checksum": 3600000,
+          "operations_per_second": 1031127.0020155646,
+          "round_rates": [
+            683636.2362562882,
+            1034852.1437407144,
+            1031127.0020155646
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 1.486911159,
+          "checksum": 10000340,
+          "operations_per_second": 13.450702739665163,
+          "round_rates": [
+            13.325240577158064,
+            13.453388167433122,
+            13.450702739665163
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "goblin-sbe-ring",
+      "transport": "sbe",
+      "optimized": true,
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.335837739,
+        "checksum": 1132821,
+        "operations_per_second": 23264.21093491223
+      },
+      "memory": {
+        "rss_bytes": 43556864,
+        "rss_delta_bytes": 28770304,
+        "used_memory_bytes": 28158132,
+        "key_bytes": 28157544,
+        "goblin_memory": {
+          "member_count": "1000000",
+          "member_live_bytes": "17000000",
+          "member_dead_bytes": "0",
+          "member_allocated_bytes": "23002640",
+          "member_index_capacity": "1030928",
+          "member_index_tombstones": "0",
+          "member_index_allocated_bytes": "5154656",
+          "total_allocated_bytes": "28157544"
+        }
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.029724866,
+          "checksum": 3600000,
+          "operations_per_second": 6728373.4769401485,
+          "round_rates": [
+            5423780.440594838,
+            6728373.4769401485,
+            6741254.604108363
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.0728942,
+          "checksum": 3400000,
+          "operations_per_second": 2743702.5167983184,
+          "round_rates": [
+            2528129.709234114,
+            2752665.8192126164,
+            2743702.5167983184
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.054655636,
+          "checksum": 10200000,
+          "operations_per_second": 3659274.955651417,
+          "round_rates": [
+            3635355.849624741,
+            3711007.2408431084,
+            3659274.955651417
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.016986343,
+          "checksum": 200003400000,
+          "operations_per_second": 11774164.692188306,
+          "round_rates": [
+            11801353.249375751,
+            11659517.147914207,
+            11774164.692188306
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.039522171,
+          "checksum": 3600000,
+          "operations_per_second": 2530225.376536122,
+          "round_rates": [
+            1069700.6915422424,
+            2554531.6510175634,
+            2530225.376536122
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 1.529635471,
+          "checksum": 10000340,
+          "operations_per_second": 13.075010601659878,
+          "round_rates": [
+            12.923230408506925,
+            13.077965592483267,
+            13.075010601659878
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "redis-7.2.4",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.315201187,
+        "checksum": 1132821,
+        "operations_per_second": 24787.3432024861
+      },
+      "memory": {
+        "rss_bytes": 53358592,
+        "rss_delta_bytes": 46059520,
+        "used_memory_bytes": 39034736,
+        "key_bytes": 56388720,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.109269514,
+          "checksum": 3600000,
+          "operations_per_second": 1830336.6847591177,
+          "round_rates": [
+            1629692.6214745787,
+            1830336.6847591177,
+            1864675.2059778504
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.11140166,
+          "checksum": 3400000,
+          "operations_per_second": 1795305.3841388002,
+          "round_rates": [
+            1785326.1685575712,
+            1827120.6404912937,
+            1795305.3841388002
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.191516778,
+          "checksum": 24600000,
+          "operations_per_second": 1044294.9285623424,
+          "round_rates": [
+            1027749.3665029985,
+            1044294.9285623424,
+            1056303.757806956
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.076732725,
+          "checksum": 200003400000,
+          "operations_per_second": 2606449.855651549,
+          "round_rates": [
+            2606449.855651549,
+            2593043.0521900738,
+            2611943.660897623
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.116865232,
+          "checksum": 3600000,
+          "operations_per_second": 855686.4885186725,
+          "round_rates": [
+            834224.9668816859,
+            855686.4885186725,
+            861508.717486101
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 3.043300301,
+          "checksum": 10000340,
+          "operations_per_second": 6.571812841942738,
+          "round_rates": [
+            6.571812841942738,
+            6.6071362086530545,
+            6.563418885002212
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "redis-8.8",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.32345963,
+        "checksum": 1132821,
+        "operations_per_second": 24154.48258566301
+      },
+      "memory": {
+        "rss_bytes": 54595584,
+        "rss_delta_bytes": 46219264,
+        "used_memory_bytes": 38883168,
+        "key_bytes": 50388696,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.127832421,
+          "checksum": 3600000,
+          "operations_per_second": 1564548.323777737,
+          "round_rates": [
+            1420623.6985533114,
+            1564548.323777737,
+            1580851.025065302
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.127194553,
+          "checksum": 3400000,
+          "operations_per_second": 1572394.3776114376,
+          "round_rates": [
+            1510567.1954744493,
+            1572394.3776114376,
+            1584687.042334954
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.220140489,
+          "checksum": 24600000,
+          "operations_per_second": 908510.7465169663,
+          "round_rates": [
+            896687.0654455528,
+            908510.7465169663,
+            913158.7073760001
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.094446245,
+          "checksum": 200003400000,
+          "operations_per_second": 2117606.687274862,
+          "round_rates": [
+            2113678.535366196,
+            2119944.1504953443,
+            2117606.687274862
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.147850984,
+          "checksum": 3600000,
+          "operations_per_second": 676356.6754483014,
+          "round_rates": [
+            655880.1491838752,
+            676356.6754483014,
+            678436.6561604871
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 3.113488999,
+          "checksum": 10000340,
+          "operations_per_second": 6.423661688357872,
+          "round_rates": [
+            6.4092080548623365,
+            6.427983434985126,
+            6.423661688357872
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "valkey-9.1",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.337559699,
+        "checksum": 1132821,
+        "operations_per_second": 23145.535510149864
+      },
+      "memory": {
+        "rss_bytes": 56291328,
+        "rss_delta_bytes": 48226304,
+        "used_memory_bytes": 51887792,
+        "key_bytes": 50892912,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.134031014,
+          "checksum": 3600000,
+          "operations_per_second": 1492191.9489469803,
+          "round_rates": [
+            1130942.6747041934,
+            1492191.9489469803,
+            1526786.7288491277
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.12728239,
+          "checksum": 3400000,
+          "operations_per_second": 1571309.2753836568,
+          "round_rates": [
+            1500327.9454331328,
+            1571309.2753836568,
+            1616237.719734892
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.223393095,
+          "checksum": 24600000,
+          "operations_per_second": 895282.8197308426,
+          "round_rates": [
+            893697.9171007153,
+            895282.8197308426,
+            899195.8918257451
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.101322711,
+          "checksum": 200003400000,
+          "operations_per_second": 1973891.1249621026,
+          "round_rates": [
+            1961990.8611642884,
+            1976407.4854970973,
+            1973891.1249621026
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.140377377,
+          "checksum": 3600000,
+          "operations_per_second": 712365.4974690117,
+          "round_rates": [
+            707383.2254070493,
+            713386.7145392906,
+            712365.4974690117
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 1.132867939,
+          "checksum": 10000340,
+          "operations_per_second": 17.654308425088196,
+          "round_rates": [
+            16.98179801988516,
+            17.654308425088196,
+            17.68078479572171
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "dragonfly",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.252059457,
+        "checksum": 1132821,
+        "operations_per_second": 30996.654888453562
+      },
+      "memory": {
+        "rss_bytes": 68079616,
+        "rss_delta_bytes": 44900352,
+        "used_memory_bytes": 44347480,
+        "key_bytes": 44064784,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.167425065,
+          "checksum": 3600000,
+          "operations_per_second": 1194564.2667064217,
+          "round_rates": [
+            1102585.4183673817,
+            1194564.2667064217,
+            1216699.8379599154
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.169575575,
+          "checksum": 3400000,
+          "operations_per_second": 1179415.136879235,
+          "round_rates": [
+            1165047.2723173455,
+            1179415.136879235,
+            1186960.2094438768
+          ]
+        },
+        "multi-member": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.272650764,
+          "checksum": 24600000,
+          "operations_per_second": 733539.1145282101,
+          "round_rates": [
+            733539.1145282101,
+            733452.9216097804,
+            736541.9334130002
+          ]
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 0.132319143,
+          "checksum": 200003400000,
+          "operations_per_second": 1511497.093054782,
+          "round_rates": [
+            1504548.8907299554,
+            1511497.093054782,
+            1515857.0432512593
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 0.208451012,
+          "checksum": 3600000,
+          "operations_per_second": 479729.02141631243,
+          "round_rates": [
+            474112.6526557401,
+            479729.02141631243,
+            483517.96063728636
+          ]
+        },
+        "intercard": {
+          "commands": 20,
+          "logical_operations": 20,
+          "seconds": 6.077378685,
+          "checksum": 10000340,
+          "operations_per_second": 3.2908925108391527,
+          "round_rates": [
+            3.296416442544466,
+            3.2866646384341474,
+            3.2908925108391527
+          ]
+        }
+      },
+      "final_cardinality": 1000000
+    },
+    {
+      "label": "mini-redis-go-55178df",
+      "transport": "resp",
+      "population": {
+        "commands": 7813,
+        "logical_operations": 7813,
+        "seconds": 0.727050968,
+        "checksum": 1132821,
+        "operations_per_second": 10746.15170583199
+      },
+      "memory": {
+        "rss_bytes": 142630912,
+        "rss_delta_bytes": 130834432,
+        "used_memory_bytes": null,
+        "key_bytes": null,
+        "goblin_memory": {}
+      },
+      "operations": {
+        "member-hit": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 1.31880233,
+          "checksum": 3600000,
+          "operations_per_second": 151652.7499613987,
+          "round_rates": [
+            151652.7499613987,
+            149360.2122449242,
+            159933.33326141664
+          ]
+        },
+        "member-miss": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 1.313367512,
+          "checksum": 3400000,
+          "operations_per_second": 152280.30096118292,
+          "round_rates": [
+            152280.30096118292,
+            151944.69767906517,
+            158449.04560138576
+          ]
+        },
+        "multi-member": {
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'SMISMEMBER'"
+        },
+        "card": {
+          "commands": 200000,
+          "logical_operations": 200000,
+          "seconds": 1.199705545,
+          "checksum": 200003400000,
+          "operations_per_second": 166707.57323206335,
+          "round_rates": [
+            157251.497810885,
+            166769.87275832272,
+            166707.57323206335
+          ]
+        },
+        "churn": {
+          "commands": 200000,
+          "logical_operations": 100000,
+          "seconds": 1.367298637,
+          "checksum": 3600000,
+          "operations_per_second": 73136.91193272213,
+          "round_rates": [
+            73136.91193272213,
+            76118.71390280746,
+            72418.32572150587
+          ]
+        },
+        "intercard": {
+          "unsupported": "collection_benchmark_worker: server returned error: ERR unknown command 'SINTERCARD'"
+        }
+      },
+      "final_cardinality": 1000000
+    }
+  ]
+}

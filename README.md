@@ -103,6 +103,11 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `HEXISTS key field`
 - `HSTRLEN key field`
 - `HINCRBY key field increment`
+
+Every hash command above is also available under `GOBLIN.RT.*` and
+`GOBLIN.EFFICENT.*`. The qualified family selects the representation for a new
+key; see [Real-time hash indexes](docs/real-time-hashes.md).
+
 - `LPUSH key value [value ...]`
 - `RPUSH key value [value ...]`
 - `LPUSHX key value [value ...]`
@@ -215,17 +220,32 @@ Goblin Core is practical, not pure. It optimizes for low cost and high overall
 throughput, and it deliberately declines guarantees that look good on paper but
 that your users never feel.
 
-The clearest example is tail latency. Goblin Core's Swiss-table member index
-grows by "stop the world and reindex" — an amortized O(1) insert with an
+The clearest example is tail latency. The default efficient Swiss-table member
+index grows by "stop the world and reindex": amortized O(1) insertion with an
 occasional synchronous O(n) rehash. We measured it (see BENCHMARKS.md): through
-p99.9, Goblin Core's write latency matches or slightly beats Redis; the cost
-lands in the far tail, where a rehash during growth is a millisecond-scale pause
-— about 19 spikes per million writes, worst ~28 ms — against Redis's incremental
-rehash and its ~0.4 ms max. We take that trade on purpose. A rare spike while a
-set is growing means one web page, once, loaded a little slowly — and
-`GOBLIN.OPTIMIZE` moves the reindex out of the serving path entirely. Don't
-optimize for a real-time guarantee your web app doesn't cash; you'd be paying RAM
-rent and CPU for determinism your users never notice.
+p99.9, Goblin Core's write latency matches or slightly beats Redis; its cost is
+in the far tail, where growth can pause for milliseconds. That remains the right
+memory-first trade for most web workloads.
+
+It is not the only trade now. `--hash-implementation rt` uses linear hashing over
+small Swiss buckets and advances at most one 16-slot physical bucket of a split
+or reverse merge per mutation. Each slot caches its folded hash so migration
+does not rehash field bytes. Buckets use stable 32-bit handles in a shared,
+prefaulted fixed-record arena; a 160-handle inline prefix and flat 512-entry
+directory blocks keep handle lookup constant-depth. `--rt-hash-index-bytes`
+sizes the bucket-cell pool (16 MiB by default, rounded to 2 MiB slabs), and
+Goblin derives fixed directory headroom from it. `--real-time` also applies the
+index to the top-level keyspace.
+The `GOBLIN.RT.*` and `GOBLIN.EFFICENT.*` hash families let benchmarks and
+clients select explicitly. RT reserves more slack and skips compact hash
+listpacks; in return, serving growth never performs a table-wide rehash. See the
+[algorithm and operational contract](docs/real-time-hashes.md).
+Array mode uses `GOBLIN.CLASSIC.AR*` / `GOBLIN.RT.AR*` (Classic ≈ Redis 8.8-style
+arrays; not the hash EFFICENT family). RT arrays use fixed-capacity dense leaves
+and a separate `--rt-array-arena-growth` policy (default `2.0`).
+`GOBLIN.RT.ARRESERVE key max-index value-slots encoded-bytes` prefaults the
+complete declared index and value budget before serving, then fails closed on
+exhaustion instead of allocating in a mutation.
 
 And RAM rent is not cheap. DRAM prices surged roughly 90% in Q1 2026 versus Q4
 2025, server DRAM ran up over 60% quarter-over-quarter in Q2, and even now, in
@@ -317,15 +337,41 @@ sockets — no syscall, no network stack on the request path:
 redis-cli-ring /tmp/a SET foo bar     # the proof-of-concept ring client
 ```
 
-Transport and protocol are independent: both ordinary sockets and shared-memory
-rings support RESP and the SBE binary wire. An endpoint selects SBE with the
-one-time `GOBLINS!` handshake; otherwise it speaks RESP2 by default and may select
-RESP3 with `HELLO 3`.
+**Polled RDMA rings (the fabric path).** On Linux builds with `libibverbs` and
+`librdmacm`, `--rdma <address> <port> <size>` adds a receiver-polled one-sided
+RDMA target. It may be repeated and interleaved with `--ring`; literal option
+order is strict poll priority:
 
-With rings the server busy-polls them in priority order (the first can starve the
-second, by design) and pegs a core at 100%; with no rings it stays event-driven and
-idle-cheap. A one-header C++ client (`goblin/core/ring_client.hpp`) drives a ring in
-a few lines. Full details: **[docs/ring-buffers.md](docs/ring-buffers.md)**.
+```sh
+./build-release/goblin-core --cpu 77 \
+  --ring /tmp/local 64kb --rdma 10.88.88.1 6380 64kb
+redis-cli-rdma 10.88.88.1 6380 64kb SET foo bar
+```
+
+The established path is inline RC RDMA WRITE into fixed sequence-word slots.
+The receiver polls local registered memory, and an explicit RDMA READ refreshes
+credits only when the sender's cached view says the remote ring is full. See
+**[docs/rdma-rings.md](docs/rdma-rings.md)** for the wire layout, NUMA rules,
+flow control, and C++ RESP/SBE clients.
+
+On Linux, Goblin resolves specific socket and RDMA bind addresses to their NICs
+and NUMA nodes. It selects the slice automatically only when every hardware
+endpoint agrees. If an ordinary NIC and an InfiniBand adapter are on different
+nodes, startup stops and prints the available nodes, CPUs, NICs, and InfiniBand
+devices. Choose deliberately with `--numa 1`, `--numa eth0`, `--numa mlx5_0`,
+or the exact-core form `--cpu 77`. Unknown device locality on a multi-node host
+also requires an explicit choice.
+
+Transport and protocol are independent: ordinary sockets, shared-memory rings,
+and RDMA rings support RESP and the SBE binary wire. An endpoint selects SBE
+with the one-time `GOBLINS!` handshake; otherwise it speaks RESP2 by default and
+may select RESP3 with `HELLO 3`.
+
+With polled targets the server checks them in command-line order (the first can
+starve the second, by design) and pegs a core at 100%; without one it stays
+event-driven and idle-cheap. A one-header C++ client
+(`goblin/core/ring_client.hpp`) drives a local ring in a few lines. Full details:
+**[docs/ring-buffers.md](docs/ring-buffers.md)**.
 
 `--unsolicited-output-buffer-bytes <bytes>` sizes each client's anonymous
 `mmap`-backed Pub/Sub output FIFO. The default is one native page; every positive
@@ -391,6 +437,20 @@ rehash (default `2^0.25 ≈ 1.19`), for both the zset member index and the hash
 field index. A smaller factor keeps the never-compacted load factor high (memory)
 at the cost of more frequent rehashes during writes; `2.0` is the classic
 doubling that favors write throughput.
+
+`--hash-implementation efficient|rt` selects the representation created by
+standard hash commands. `--real-time` selects RT hashes and the incremental
+linear-hash keyspace index together. Existing hashes keep their implementation;
+selectors never convert a live key implicitly.
+
+`--rt-hash-index-bytes <bytes>` sizes the fixed RT bucket-cell pool shared by
+hashes, and the same size is used for the separate keyspace-index pool under
+`--real-time`. The default is `16` MiB; bucket values round up to 2 MiB slabs.
+Flat-directory blocks and per-index block tables add derived headroom; `INFO`
+reports the complete committed size. Every part is allocated, prefaulted, and
+locked before serving. Growth and reverse merges move at most one physical
+bucket per mutation. A mutation that needs an unavailable bucket, directory
+block, or table fails explicitly. The serving path never grows the pool.
 
 `--zset-chunk-bytes <bytes>`, `--hash-chunk-bytes <bytes>`, and
 `--list-chunk-bytes <bytes>` set the packed-arena chunk size per type. Each must
@@ -557,7 +617,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.4.0
+git checkout v0.8.0
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure

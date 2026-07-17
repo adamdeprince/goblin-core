@@ -16,11 +16,13 @@
 #include <variant>
 #include <vector>
 
+#include "goblin/core/array.hpp"
 #include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/hash.hpp"
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/list.hpp"
+#include "goblin/core/set.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/string_value.hpp"
 #include "goblin/core/ttl_set.hpp"
@@ -427,6 +429,8 @@ enum class KeyType : std::uint8_t {
   Zset = 1,
   Hash = 2,
   List = 3,
+  Set = 4,
+  Array = 5,
 };
 
 // The swap-remove an erase performs: the key that had id `from` now lives at id
@@ -452,8 +456,17 @@ struct ExpireFlag {
 // the view decodes them without exposing the stored representation.
 using StringValueView = EncodedStringView;
 
+// One keyspace probe for string readers (GET and friends): distinguishes a missing
+// key from a WRONGTYPE so the command layer does not need a separate type lookup.
+enum class StringLookup : std::uint8_t { Missing, WrongType, Ok };
+
+struct StringGetResult {
+  StringLookup status{StringLookup::Missing};
+  StringValueView value{};
+};
+
 // One key's object. Strings, zsets, and the 16-byte compact/full Hash handle live
-// directly in this slot; lists retain their heap-owned implementation object.
+// directly in this slot; lists, sets, and arrays retain heap-owned objects.
 // A bare union whose active member is named by the parallel KeyType array, so it
 // carries no tag of its own; Keyspace drives construction/destruction/relocation.
 union KeyObjectSlot {
@@ -461,6 +474,8 @@ union KeyObjectSlot {
   ZSet zset;
   Hash hash;
   List* list;
+  Set* set;
+  Array* array;
   KeyObjectSlot() noexcept {}
   ~KeyObjectSlot() {}
 };
@@ -474,15 +489,31 @@ static_assert(sizeof(KeyObjectSlot) == 16);
 // Ids stay dense via swap-remove.
 class Keyspace {
  public:
-  explicit Keyspace(HashOptions hash_options, ListOptions list_options,
-                    StringEncodingOptions string_encoding)
-      : index_(&storage_),
+  explicit Keyspace(
+      HashOptions hash_options, ListOptions list_options,
+      SetOptions set_options, ArrayOptions array_options,
+      StringEncodingOptions string_encoding,
+      MemberIndexImplementation index_implementation =
+          MemberIndexImplementation::Efficient,
+      bool preallocate_realtime_hash_arena = false)
+      : index_(&storage_, ZSetMemberIndex::kDefaultGrowth,
+               index_implementation,
+               index_implementation == MemberIndexImplementation::Realtime
+                   ? std::make_shared<LinearHashArena<KeyMeta>>(
+                         hash_options.realtime_index_bytes)
+                   : nullptr),
         hash_context_(std::make_unique<HashContext>(HashContext{
             .storage = &storage_,
             .options = hash_options,
             .compact_owner = this,
             .maybe_compact = &Keyspace::compact_hash_arena_if_needed})),
+        set_options_(std::make_shared<const SetOptions>(std::move(set_options))),
+        array_options_(
+            std::make_shared<const ArrayOptions>(std::move(array_options))),
         string_encoding_(string_encoding) {
+    if (preallocate_realtime_hash_arena) {
+      (void)hash_context_->ensure_realtime_arena();
+    }
     auto pma = list_options;
     pma.implementation = ListImplementation::Pma;
     list_options_[0] = std::make_shared<const ListOptions>(std::move(pma));
@@ -503,6 +534,8 @@ class Keyspace {
         types_(std::move(other.types_)),
         hash_context_(std::move(other.hash_context_)),
         list_options_(std::move(other.list_options_)),
+        set_options_(std::move(other.set_options_)),
+        array_options_(std::move(other.array_options_)),
         string_encoding_(other.string_encoding_) {
     index_.set_members(&storage_);
     rebind_hash_context();
@@ -516,6 +549,8 @@ class Keyspace {
       types_ = std::move(other.types_);
       hash_context_ = std::move(other.hash_context_);
       list_options_ = std::move(other.list_options_);
+      set_options_ = std::move(other.set_options_);
+      array_options_ = std::move(other.array_options_);
       string_encoding_ = other.string_encoding_;
       index_.set_members(&storage_);
       rebind_hash_context();
@@ -543,30 +578,45 @@ class Keyspace {
   }
 
   // ---- strings ----
-  [[nodiscard]] std::optional<StringValueView> get_string(
+  [[nodiscard]] StringGetResult get_string_result(
       std::string_view key) const noexcept {
     const auto id = find_id(key);
-    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::String)) {
+    if (!id) {
+      return {StringLookup::Missing, {}};
+    }
+    if (types_[*id] != static_cast<std::uint8_t>(KeyType::String)) {
+      return {StringLookup::WrongType, {}};
+    }
+    return {StringLookup::Ok, value_view(objects_[*id].str)};
+  }
+  [[nodiscard]] std::optional<StringValueView> get_string(
+      std::string_view key) const noexcept {
+    const auto result = get_string_result(key);
+    if (result.status != StringLookup::Ok) {
       return std::nullopt;
     }
-    return value_view(objects_[*id].str);
+    return result.value;
   }
   [[nodiscard]] std::optional<std::size_t> string_length(
       std::string_view key) const noexcept {
-    const auto id = find_id(key);
-    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::String)) {
+    const auto result = get_string_result(key);
+    if (result.status != StringLookup::Ok) {
       return std::nullopt;
     }
-    return value_view(objects_[*id].str).size();
+    return result.value.size();
   }
-  // SET: clobbers any prior object at this name.
-  void set_string(std::string_view key, std::string_view value) {
+  // SET: clobbers any prior object at this name. Returns the key id so the
+  // caller can clear a TTL without a second hash probe.
+  std::uint64_t set_string(std::string_view key, std::string_view value) {
     if (const auto id = find_id(key)) {
       store_string(*id, value);
-    } else {
-      write_string_value(objects_[create_key(key, KeyType::String)].str, value);
+      maybe_compact();
+      return *id;
     }
+    const auto id = create_key(key, KeyType::String);
+    write_string_value(objects_[id].str, value);
     maybe_compact();
+    return id;
   }
   // SETNX-style: set only if the key is absent (of any type). true = stored.
   [[nodiscard]] bool set_string_if_absent(std::string_view key,
@@ -628,7 +678,8 @@ class Keyspace {
     }
     return &objects_[*id].hash;
   }
-  [[nodiscard]] Hash& get_or_create_hash(std::string_view key) {
+  [[nodiscard]] Hash& get_or_create_hash(
+      std::string_view key, HashImplementation implementation) {
     if (const auto id = find_id(key)) {
       // See get_or_create_zset: fail loud on a type mismatch rather than reinterpret
       // the union in a release build (where the assert is compiled out).
@@ -639,7 +690,7 @@ class Keyspace {
     }
     const auto id = create_key(key, KeyType::Hash);
     return *::new (static_cast<void*>(&objects_[id].hash))
-        Hash(*hash_context_);
+        Hash(*hash_context_, implementation);
   }
   [[nodiscard]] Hash& place_loaded_hash(std::string_view key, Hash&& hash) {
     const auto id = create_key(key, KeyType::Hash);
@@ -680,6 +731,72 @@ class Keyspace {
     const auto id = create_key(key, KeyType::List);
     objects_[id].list = new List(std::move(list));
     return *objects_[id].list;
+  }
+
+  // ---- set ----
+  [[nodiscard]] Set* find_set(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Set)) {
+      return nullptr;
+    }
+    return objects_[*id].set;
+  }
+  [[nodiscard]] const Set* find_set(std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Set)) {
+      return nullptr;
+    }
+    return objects_[*id].set;
+  }
+  [[nodiscard]] Set& get_or_create_set(std::string_view key) {
+    if (const auto id = find_id(key)) {
+      if (types_[*id] != static_cast<std::uint8_t>(KeyType::Set)) {
+        throw std::logic_error("get_or_create_set on a key that is not a set");
+      }
+      return *objects_[*id].set;
+    }
+    const auto id = create_key(key, KeyType::Set);
+    objects_[id].set = new Set(*set_options_);
+    return *objects_[id].set;
+  }
+  [[nodiscard]] Set& place_loaded_set(std::string_view key, Set&& set) {
+    const auto id = create_key(key, KeyType::Set);
+    objects_[id].set = new Set(std::move(set));
+    return *objects_[id].set;
+  }
+
+  // ---- array ----
+  [[nodiscard]] Array* find_array(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Array)) {
+      return nullptr;
+    }
+    return objects_[*id].array;
+  }
+  [[nodiscard]] const Array* find_array(std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id || types_[*id] != static_cast<std::uint8_t>(KeyType::Array)) {
+      return nullptr;
+    }
+    return objects_[*id].array;
+  }
+  [[nodiscard]] Array& get_or_create_array(
+      std::string_view key, ArrayImplementation implementation) {
+    if (const auto id = find_id(key)) {
+      if (types_[*id] != static_cast<std::uint8_t>(KeyType::Array)) {
+        throw std::logic_error(
+            "get_or_create_array on a key that is not an array");
+      }
+      return *objects_[*id].array;
+    }
+    const auto id = create_key(key, KeyType::Array);
+    objects_[id].array = alloc_array(implementation);
+    return *objects_[id].array;
+  }
+  [[nodiscard]] Array& place_loaded_array(std::string_view key, Array&& array) {
+    const auto id = create_key(key, KeyType::Array);
+    objects_[id].array = new Array(std::move(array));
+    return *objects_[id].array;
   }
 
   // ---- lifecycle ----
@@ -747,19 +864,38 @@ class Keyspace {
       }
     }
   }
+  template <class Fn>
+  void for_each_set(Fn&& fn) const {  // fn(std::string_view, const Set&)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::Set)) {
+        fn(storage_.view(id), *objects_[id].set);
+      }
+    }
+  }
+  template <class Fn>
+  void for_each_array(Fn&& fn) const {  // fn(std::string_view, const Array&)
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::Array)) {
+        fn(storage_.view(id), *objects_[id].array);
+      }
+    }
+  }
 
   void clear() noexcept {
     destroy_all();
     objects_.clear();
     types_.clear();
     storage_ = KeyspaceStorage(storage_.chunk_bytes());
-    index_ = MemberIndex<KeyspaceStorage, KeyMeta>(&storage_);
+    index_.clear();
+    index_.set_members(&storage_);
     rebind_hash_context();
   }
 
   [[nodiscard]] std::size_t allocated_bytes() const noexcept {
     return storage_.allocated_bytes() + index_.allocated_bytes() +
-           types_.capacity() + types_.size() * sizeof(KeyObjectSlot);
+           index_.realtime_arena_slack_bytes() +
+           realtime_hash_arena_slack_bytes() + types_.capacity() +
+           types_.size() * sizeof(KeyObjectSlot);
   }
   [[nodiscard]] std::size_t value_arena_used_bytes() const noexcept {
     return storage_.used_bytes();
@@ -768,13 +904,34 @@ class Keyspace {
   // bytes plus the fixed index / type / object-slot tables (no dead of their own).
   [[nodiscard]] std::size_t footprint_used_bytes() const noexcept {
     return storage_.used_bytes() + index_.allocated_bytes() +
-           types_.capacity() + types_.size() * sizeof(KeyObjectSlot);
+           index_.realtime_arena_slack_bytes() +
+           realtime_hash_arena_slack_bytes() + types_.capacity() +
+           types_.size() * sizeof(KeyObjectSlot);
   }
   [[nodiscard]] std::size_t footprint_dead_bytes() const noexcept {
     return storage_.dead_bytes();
   }
+  [[nodiscard]] std::size_t realtime_hash_index_pool_bytes() const noexcept {
+    return hash_context_ && hash_context_->realtime_index_arena
+               ? hash_context_->realtime_index_arena->allocated_bytes()
+               : 0;
+  }
+  [[nodiscard]] std::size_t realtime_keyspace_index_pool_bytes() const
+      noexcept {
+    return index_.realtime_arena_allocated_bytes();
+  }
 
  private:
+  [[nodiscard]] std::size_t realtime_hash_arena_slack_bytes() const noexcept {
+    if (!hash_context_ || !hash_context_->realtime_index_arena) {
+      return 0;
+    }
+    const auto& arena = *hash_context_->realtime_index_arena;
+    return arena.allocated_bytes() -
+           arena.live_cells() * arena.cell_bytes() -
+           arena.live_directory_bytes();
+  }
+
   [[nodiscard]] std::optional<std::uint64_t> find_id(
       std::string_view key) const noexcept {
     const auto* meta = index_.find(key);
@@ -810,7 +967,67 @@ class Keyspace {
     write_string_value(objects_[id].str, value);
   }
 
+  // Store a raw-encoded (0xff-tagged) or verbatim value without building an
+  // EncodedString classifier object. Caller guarantees the value fits the
+  // corresponding max and is not a compact int/UUID/LZ4 candidate.
+  void write_raw_string_value(StringValue& slot, std::string_view value,
+                              bool verbatim) {
+    if (verbatim) {
+      slot.length = static_cast<std::uint16_t>(value.size());
+      if (slot.is_inline()) {
+        if (!value.empty()) {
+          std::memcpy(slot.inline_bytes, value.data(), value.size());
+        }
+        return;
+      }
+      const auto head_n = StringValue::kPrefixCap;
+      std::memcpy(slot.spill.prefix, value.data(), head_n);
+      const auto loc = storage_.append_tail(value.substr(head_n));
+      slot.set_tail(loc.block, loc.offset);
+      return;
+    }
+    // Encoded raw: one tag byte + payload.
+    slot.length = static_cast<std::uint16_t>(value.size() + 1);
+    if (slot.is_inline()) {
+      slot.inline_bytes[0] = static_cast<char>(kStringRaw);
+      if (!value.empty()) {
+        std::memcpy(slot.inline_bytes + 1, value.data(), value.size());
+      }
+      return;
+    }
+    slot.spill.prefix[0] = static_cast<char>(kStringRaw);
+    constexpr auto kHeadPayload = StringValue::kPrefixCap - 1;
+    std::memcpy(slot.spill.prefix + 1, value.data(), kHeadPayload);
+    const auto loc = storage_.append_tail(value.substr(kHeadPayload));
+    slot.set_tail(loc.block, loc.offset);
+  }
+
   void write_string_value(StringValue& slot, std::string_view value) {
+    // Hot path: most values are neither compact integers, UUIDs, nor LZ4
+    // candidates. Write the raw/verbatim form without constructing EncodedString.
+    if (!string_encoding_.encoding_enabled()) {
+      if (value.size() <= kStringMaxVerbatimBytes) {
+        write_raw_string_value(slot, value, /*verbatim=*/true);
+        return;
+      }
+    } else {
+      const bool maybe_int =
+          !value.empty() &&
+          ((value.front() >= '0' && value.front() <= '9') ||
+           (value.front() == '-' && value.size() > 1 && value[1] >= '0' &&
+            value[1] <= '9'));
+      const bool maybe_uuid = value.size() == 32 || value.size() == 36;
+      const bool may_lz4 =
+          string_encoding_.lz4_enabled() &&
+          (value.size() >= string_encoding_.lz4_min_bytes() ||
+           value.size() > kStringMaxBytes);
+      if (!maybe_int && !maybe_uuid && !may_lz4 &&
+          value.size() <= kStringMaxBytes) {
+        write_raw_string_value(slot, value, /*verbatim=*/false);
+        return;
+      }
+    }
+
     const EncodedString encoded(value, string_encoding_);
     slot.length = static_cast<std::uint16_t>(encoded.size());
     if (slot.is_inline()) {
@@ -853,6 +1070,14 @@ class Keyspace {
         recycle_list(objects_[id].list);
         objects_[id].list = nullptr;
         break;
+      case KeyType::Set:
+        delete objects_[id].set;
+        objects_[id].set = nullptr;
+        break;
+      case KeyType::Array:
+        delete objects_[id].array;
+        objects_[id].array = nullptr;
+        break;
     }
   }
 
@@ -876,6 +1101,14 @@ class Keyspace {
         objects_[dst].list = objects_[src].list;
         objects_[src].list = nullptr;
         break;
+      case KeyType::Set:
+        objects_[dst].set = objects_[src].set;
+        objects_[src].set = nullptr;
+        break;
+      case KeyType::Array:
+        objects_[dst].array = objects_[src].array;
+        objects_[src].array = nullptr;
+        break;
     }
   }
 
@@ -890,6 +1123,12 @@ class Keyspace {
     return new List(list_options_[index]);
   }
   void recycle_list(List* list) noexcept { delete list; }
+
+  [[nodiscard]] Array* alloc_array(ArrayImplementation implementation) {
+    ArrayOptions options = *array_options_;
+    options.implementation = implementation;
+    return new Array(std::move(options));
+  }
 
   void maybe_compact() {
     if (storage_.should_compact()) {
@@ -934,11 +1173,13 @@ class Keyspace {
   }
 
   KeyspaceStorage storage_;
-  MemberIndex<KeyspaceStorage, KeyMeta> index_;
+  SelectableMemberIndex<KeyspaceStorage, KeyMeta> index_;
   std::deque<KeyObjectSlot> objects_;
   std::vector<std::uint8_t> types_;
   std::unique_ptr<HashContext> hash_context_;
   std::array<std::shared_ptr<const ListOptions>, 2> list_options_;
+  std::shared_ptr<const SetOptions> set_options_;
+  std::shared_ptr<const ArrayOptions> array_options_;
   StringEncodingOptions string_encoding_;
 };
 
@@ -967,6 +1208,15 @@ struct StoreOptions {
   // By default only the 64 KiB blob limit forces promotion to swiss+arena.
   std::size_t hash_listpack_max_entries{
       HashOptions::kDefaultListpackMaxEntries};
+  // Fixed, prefaulted cell pool used by RT hash indexes (and by the keyspace
+  // index under --real-time). Rounded up to 2 MiB slabs.
+  std::size_t realtime_hash_index_bytes{
+      LinearHashArena<ZSetMemberMeta>::kDefaultBytes};
+  // Standard Redis hash commands create this representation. Qualified command
+  // families bypass the selector for new keys.
+  HashImplementation hash_implementation{HashImplementation::Efficient};
+  // Aggregate latency mode: use linear hashing for the top-level keyspace too.
+  bool real_time{false};
   // Lists stay as a single inline-value blob through this many entries, then
   // promote to the selected large-list representation.
   std::size_t list_listpack_max_entries{32};
@@ -974,8 +1224,25 @@ struct StoreOptions {
   // Implementation-qualified commands bypass the selector.
   ListImplementation list_implementation{ListImplementation::Segmented};
   std::size_t list_chunk_bytes{ListValueArena::kDefaultChunkBytes};
+  std::size_t set_chunk_bytes{SetStorage::kDefaultChunkBytes};
+  // Max entries a set keeps as a compact listpack before promoting to Swiss.
+  // 0 disables the listpack (always full). Default matches lists/zsets.
+  std::size_t set_listpack_max_entries{SetOptions::kDefaultListpackMaxEntries};
+  // Geometry for AR* (shared by Classic and RT). Classic may auto-promote
+  // depth; RT treats initial_depth as a hard ceiling.
+  std::size_t array_slice_slots{4096};
+  std::size_t array_initial_depth{1};
+  // Page-arena chunk size for array element bytes (power of two).
+  std::size_t array_chunk_bytes{ArrayStorage::kDefaultChunkBytes};
+  // RT arrays relocate their active value block less often than Classic. This
+  // is independent of --member-index-growth so RT latency tuning does not
+  // change the memory-oriented structures.
+  double realtime_array_growth{2.0};
+  // Unqualified AR* creates this implementation. GOBLIN.RT.AR* /
+  // GOBLIN.CLASSIC.AR* override per command. Default Classic (Redis 8.8-style).
+  ArrayImplementation array_implementation{ArrayImplementation::Classic};
   // Shared logical-value encoding. A configured LZ4 threshold applies to
-  // top-level strings, hash values, and the current PMA list implementation.
+  // top-level strings, hash values, list values, and set members.
   StringEncodingOptions string_encoding{};
   // Independent PMA controls: steady-state packing ceiling and geometric
   // resize step. The defaults favor memory without conflating the two policies.
@@ -1010,6 +1277,8 @@ struct MemoryReport {
   std::size_t blob_pool_fragmentation_bytes{0};
   std::size_t blob_pool_live_allocations{0};
   std::size_t blob_pool_upstream_allocations{0};
+  std::size_t realtime_hash_index_pool_bytes{0};
+  std::size_t realtime_keyspace_index_pool_bytes{0};
 };
 
 class Store {
@@ -1019,6 +1288,11 @@ class Store {
   [[nodiscard]] ListImplementation list_implementation() const noexcept {
     return options_.list_implementation;
   }
+  [[nodiscard]] HashImplementation hash_implementation() const noexcept {
+    return options_.real_time ? HashImplementation::Realtime
+                              : options_.hash_implementation;
+  }
+  [[nodiscard]] bool real_time() const noexcept { return options_.real_time; }
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
   [[nodiscard]] long long zrem(std::string_view key, std::span<const std::string_view> members);
@@ -1311,14 +1585,19 @@ class Store {
   }
 
   [[nodiscard]] int hset(std::string_view key, std::string_view field,
-                         std::string_view value);
+                         std::string_view value,
+                         std::optional<HashImplementation> implementation =
+                             std::nullopt);
   // Multi-field HSET: one keyspace lookup, optional reserve, then set each pair.
   // Returns the number of newly created fields (Redis HSET integer reply).
   [[nodiscard]] long long hset_many(
       std::string_view key,
-      std::span<const std::pair<std::string_view, std::string_view>> fields);
+      std::span<const std::pair<std::string_view, std::string_view>> fields,
+      std::optional<HashImplementation> implementation = std::nullopt);
   [[nodiscard]] int hsetnx(std::string_view key, std::string_view field,
-                           std::string_view value);
+                           std::string_view value,
+                           std::optional<HashImplementation> implementation =
+                               std::nullopt);
   [[nodiscard]] std::optional<EncodedStringView> hget(
       std::string_view key, std::string_view field) const;
   [[nodiscard]] bool hexists(std::string_view key, std::string_view field) const;
@@ -1330,7 +1609,10 @@ class Store {
                                                    std::string_view field) const;
   [[nodiscard]] std::optional<long long> hincrby(std::string_view key,
                                                  std::string_view field,
-                                                 long long delta);
+                                                 long long delta,
+                                                 std::optional<HashImplementation>
+                                                     implementation =
+                                                         std::nullopt);
   // GOBLIN.HCAD compare-and-delete on a field: if `field` holds a string equal to
   // `expected`, delete the field and return true; otherwise false. Deleting the
   // last field drops the key. A non-hash key is WRONGTYPE (command layer).
@@ -1354,7 +1636,152 @@ class Store {
       hash->for_each(std::forward<Fn>(fn));
     }
   }
+  // One keyspace probe: emit `header(size)` then each (field, value). Missing
+  // keys call header(0) and skip the body. Used by HGETALL / HKEYS / HVALS so
+  // the reply header and iteration share a single lookup.
+  template <class HeaderFn, class BodyFn>
+  void hash_for_each_sized(std::string_view key, HeaderFn&& header,
+                           BodyFn&& body) const {
+    const auto* hash = find_hash(key);
+    if (hash == nullptr) {
+      header(std::size_t{0});
+      return;
+    }
+    header(hash->size());
+    hash->for_each(std::forward<BodyFn>(body));
+  }
+  // Multi-field read with one keyspace probe. `fn` receives
+  // `std::optional<EncodedStringView>` per field (nullopt if key or field
+  // is missing).
+  template <class Fn>
+  void hash_mget(std::string_view key,
+                 std::span<const std::string_view> fields, Fn&& fn) const {
+    const auto* hash = find_hash(key);
+    for (const auto field : fields) {
+      if (hash == nullptr) {
+        fn(std::optional<EncodedStringView>{});
+      } else {
+        fn(hash->get(field));
+      }
+    }
+  }
   [[nodiscard]] std::optional<HashMemoryStats> hash_memory_stats(
+      std::string_view key) const;
+
+  // --- Set (unique members) ---
+  [[nodiscard]] bool key_is_set(std::string_view key) const noexcept {
+    return find_set(key) != nullptr;
+  }
+  // SADD: insert members; returns the count of newly added members.
+  [[nodiscard]] long long sadd(std::string_view key,
+                               std::span<const std::string_view> members);
+  // SREM: remove members; returns the count removed. Drops an emptied key.
+  [[nodiscard]] long long srem(std::string_view key,
+                               std::span<const std::string_view> members);
+  [[nodiscard]] long long scard(std::string_view key) const;
+  [[nodiscard]] bool sismember(std::string_view key,
+                               std::string_view member) const;
+  // SMISMEMBER: one keyspace probe; `fn(bool)` per member.
+  template <class Fn>
+  void smismember(std::string_view key,
+                  std::span<const std::string_view> members, Fn&& fn) const {
+    const auto* set = find_set(key);
+    for (const auto member : members) {
+      fn(set != nullptr && set->contains(member));
+    }
+  }
+  // SMEMBERS: emit header(size) then each decoded member.
+  template <class HeaderFn, class BodyFn>
+  void smembers_for_each(std::string_view key, HeaderFn&& header,
+                         BodyFn&& body) const {
+    const auto* set = find_set(key);
+    if (set == nullptr) {
+      header(std::size_t{0});
+      return;
+    }
+    header(set->size());
+    set->for_each(std::forward<BodyFn>(body));
+  }
+  // SPOP: remove and return one random member (nullopt if key/set empty).
+  [[nodiscard]] std::optional<std::string> spop(std::string_view key);
+  // SPOP count: remove and return up to `count` distinct members.
+  [[nodiscard]] std::vector<std::string> spop(std::string_view key,
+                                              std::size_t count);
+  // SRANDMEMBER: sample one (nullopt if empty).
+  [[nodiscard]] std::optional<std::string> srandmember(
+      std::string_view key) const;
+  // SRANDMEMBER count: unique when count >= 0 semantics are applied by the
+  // caller (pass unique=true for positive count, false for negative).
+  [[nodiscard]] std::vector<std::string> srandmember(std::string_view key,
+                                                     std::size_t count,
+                                                     bool unique) const;
+  // SMOVE source -> destination. Returns 1 if moved (or same-key exists), else 0.
+  // Caller has verified both keys are sets-or-missing.
+  [[nodiscard]] int smove(std::string_view source, std::string_view destination,
+                          std::string_view member);
+  // Set algebra. Missing keys are empty sets. Caller has type-checked sources.
+  [[nodiscard]] std::vector<std::string> sinter(
+      std::span<const std::string_view> keys) const;
+  [[nodiscard]] std::vector<std::string> sunion(
+      std::span<const std::string_view> keys) const;
+  [[nodiscard]] std::vector<std::string> sdiff(
+      std::span<const std::string_view> keys) const;
+  // *STORE variants overwrite destination (any prior type). Empty result deletes
+  // dest. Return the cardinality of the stored set.
+  [[nodiscard]] long long sinterstore(std::string_view destination,
+                                      std::span<const std::string_view> keys);
+  [[nodiscard]] long long sunionstore(std::string_view destination,
+                                      std::span<const std::string_view> keys);
+  [[nodiscard]] long long sdiffstore(std::string_view destination,
+                                     std::span<const std::string_view> keys);
+  // SINTERCARD with optional early-exit LIMIT (0 = no limit).
+  [[nodiscard]] long long sintercard(std::span<const std::string_view> keys,
+                                     std::size_t limit = 0) const;
+  // ---- Array (AR*) ----
+  [[nodiscard]] ArrayImplementation array_implementation() const noexcept {
+    return options_.array_implementation;
+  }
+  [[nodiscard]] Array* find_array(std::string_view key) noexcept {
+    return keyspace_.find_array(key);
+  }
+  [[nodiscard]] const Array* find_array(std::string_view key) const noexcept {
+    return keyspace_.find_array(key);
+  }
+  [[nodiscard]] Array& get_or_create_array(
+      std::string_view key, ArrayImplementation implementation) {
+    return keyspace_.get_or_create_array(key, implementation);
+  }
+  [[nodiscard]] Array& get_or_create_array(std::string_view key) {
+    return get_or_create_array(key, options_.array_implementation);
+  }
+  void erase_if_empty(std::string_view key, const Array& array) {
+    if (array.count() != 0 || array.realtime_reserved()) {
+      return;
+    }
+    (void)erase_key(key);
+  }
+  [[nodiscard]] std::optional<ArrayMemoryStats> array_memory_stats(
+      std::string_view key) const {
+    const auto* array = find_array(key);
+    if (array == nullptr) {
+      return std::nullopt;
+    }
+    return array->memory_stats();
+  }
+
+  // SSCAN: cursor is a dense member id. `match` filters logical members;
+  // `emit` receives each match. Returns the next cursor (0 when done).
+  template <class MatchFn, class EmitFn>
+  std::uint64_t sscan(std::string_view key, std::uint64_t cursor,
+                      std::size_t count, MatchFn&& match, EmitFn&& emit) const {
+    const auto* set = find_set(key);
+    if (set == nullptr) {
+      return 0;
+    }
+    return set->scan(cursor, count, std::forward<MatchFn>(match),
+                     std::forward<EmitFn>(emit));
+  }
+  [[nodiscard]] std::optional<SetMemoryStats> set_memory_stats(
       std::string_view key) const;
 
   // --- List (ordered strings) ---
@@ -1410,6 +1837,12 @@ class Store {
   }
   void set(std::string_view key, std::string_view value);
   [[nodiscard]] bool set_nx(std::string_view key, std::string_view value);
+  // One keyspace probe: Missing / WrongType / Ok+value. Prefer this over
+  // key_type()+get() on the GET hot path.
+  [[nodiscard]] StringGetResult get_result(
+      std::string_view key) const noexcept {
+    return keyspace_.get_string_result(key);
+  }
   [[nodiscard]] std::optional<StringValueView> get(
       std::string_view key) const noexcept;
   [[nodiscard]] std::optional<std::string> get_set(std::string_view key,
@@ -1609,8 +2042,13 @@ class Store {
   [[nodiscard]] const Hash* find_hash(std::string_view key) const noexcept {
     return keyspace_.find_hash(key);
   }
-  [[nodiscard]] Hash& get_or_create_hash(std::string_view key) {
-    return keyspace_.get_or_create_hash(key);
+  [[nodiscard]] Hash& get_or_create_hash(
+      std::string_view key,
+      std::optional<HashImplementation> implementation = std::nullopt) {
+    return keyspace_.get_or_create_hash(
+        key, implementation.value_or(
+                 options_.real_time ? HashImplementation::Realtime
+                                    : options_.hash_implementation));
   }
   void erase_if_empty(std::string_view key, const Hash& hash);
 
@@ -1626,6 +2064,19 @@ class Store {
     return keyspace_.get_or_create_list(key, implementation);
   }
   void erase_if_empty(std::string_view key, const List& list);
+
+  void place_loaded_set(std::string key, Set&& set);
+  void place_loaded_array(std::string key, Array&& array);
+  [[nodiscard]] Set* find_set(std::string_view key) noexcept {
+    return keyspace_.find_set(key);
+  }
+  [[nodiscard]] const Set* find_set(std::string_view key) const noexcept {
+    return keyspace_.find_set(key);
+  }
+  [[nodiscard]] Set& get_or_create_set(std::string_view key) {
+    return keyspace_.get_or_create_set(key);
+  }
+  void erase_if_empty(std::string_view key, const Set& set);
 
   // Erase a key (any type), clearing its own TTL and rekeying the TTL of the key
   // that the swap-remove slid into its slot.

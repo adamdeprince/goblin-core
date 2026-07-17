@@ -208,6 +208,64 @@ inline void append_bulk_string(std::string& out, std::string_view value) {
 
 inline void append_bulk_string(std::string& out,
                                const EncodedStringView& value) {
+  // Raw / verbatim: logical bytes are a tag-stripped (or untagged) copy of the
+  // stored layout. Skip valid()+decode and use the same single-shot small-bulk
+  // path as plain string_view when the payload is contiguous.
+  if (value.is_raw()) {
+    if (!value.encoding_enabled()) {
+      if (value.encoded_tail().empty()) {
+        append_bulk_string(out, value.encoded_head());
+        return;
+      }
+      detail::append_bulk_framing(out, value.encoded_size());
+      out.append(value.encoded_head());
+      out.append(value.encoded_tail());
+      out.append("\r\n", 2);
+      return;
+    }
+    // Encoded raw: leading 0xff tag, then logical payload across head/tail.
+    const auto encoded = value.encoded_size();
+    if (encoded == 0) {
+      append_bulk_string(out, std::string_view{});
+      return;
+    }
+    const auto logical = encoded - 1;
+    const auto& head = value.encoded_head();
+    const auto& tail = value.encoded_tail();
+    if (tail.empty() && head.size() >= 1) {
+      append_bulk_string(out, std::string_view(head.data() + 1, head.size() - 1));
+      return;
+    }
+    // Split payload: head after the tag, then full tail.
+    if (detail::can_write_small_bulk_string(logical)) {
+      const auto offset = out.size();
+      out.resize(offset + detail::bulk_string_wire_size(logical));
+      char* dst = out.data() + offset;
+      const auto& header = detail::kSmallBulkHeaders[logical];
+      std::memcpy(dst, header.bytes.data(), header.size);
+      dst += header.size;
+      if (head.size() > 1) {
+        std::memcpy(dst, head.data() + 1, head.size() - 1);
+        dst += head.size() - 1;
+      }
+      if (!tail.empty()) {
+        std::memcpy(dst, tail.data(), tail.size());
+        dst += tail.size();
+      }
+      dst[0] = '\r';
+      dst[1] = '\n';
+      return;
+    }
+    detail::append_bulk_framing(out, logical);
+    if (head.size() > 1) {
+      out.append(head.data() + 1, head.size() - 1);
+    }
+    out.append(tail);
+    out.append("\r\n", 2);
+    return;
+  }
+
+  // Compact int / UUID / LZ4: one size()+decode pass.
   detail::append_bulk_framing(out, value.size());
   value.append_to(out);
   out.append("\r\n", 2);

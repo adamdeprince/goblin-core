@@ -11,6 +11,7 @@
 #include <lz4.h>
 #include <lz4hc.h>
 
+#include "goblin/core/parse_int.hpp"
 #include "goblin/core/simd_ops.hpp"
 
 namespace goblin::core {
@@ -18,13 +19,7 @@ namespace {
 
 [[nodiscard]] bool parse_canonical_magnitude(std::string_view digits,
                                              std::uint64_t& value) noexcept {
-  if (digits.empty() || (digits.size() > 1 && digits.front() == '0')) {
-    return false;
-  }
-  const auto* begin = digits.data();
-  const auto* end = begin + digits.size();
-  const auto [ptr, error] = std::from_chars(begin, end, value, 10);
-  return error == std::errc{} && ptr == end;
+  return parse_canonical_u64(digits, value);
 }
 
 void write_big_endian(char* destination, std::uint64_t value,
@@ -147,44 +142,57 @@ EncodedString::EncodedString(std::string_view value,
     return;
   }
 
-  std::uint64_t magnitude = 0;
-  if (parse_canonical_magnitude(value, magnitude)) {
-    storage_ = Storage::Inline;
-    if (magnitude <= 127) {
-      inline_[0] = static_cast<char>(magnitude);
-      encoded_size_ = 1;
+  // Cheap reject: only attempt compact integer encoding when the first
+  // character looks like a canonical decimal (optional leading '-').
+  const bool maybe_int =
+      !value.empty() &&
+      ((value.front() >= '0' && value.front() <= '9') ||
+       (value.front() == '-' && value.size() > 1 && value[1] >= '0' &&
+        value[1] <= '9'));
+  if (maybe_int) {
+    std::uint64_t magnitude = 0;
+    if (parse_canonical_magnitude(value, magnitude)) {
+      storage_ = Storage::Inline;
+      if (magnitude <= 127) {
+        inline_[0] = static_cast<char>(magnitude);
+        encoded_size_ = 1;
+        return;
+      }
+      auto offset = magnitude - 128;
+      const auto width = width_for_offset(offset);
+      inline_[0] = static_cast<char>(kStringPositiveBase + width - 1);
+      write_big_endian(inline_.data() + 1, offset, width);
+      encoded_size_ = static_cast<std::uint16_t>(width + 1);
       return;
     }
-    auto offset = magnitude - 128;
-    const auto width = width_for_offset(offset);
-    inline_[0] = static_cast<char>(kStringPositiveBase + width - 1);
-    write_big_endian(inline_.data() + 1, offset, width);
-    encoded_size_ = static_cast<std::uint16_t>(width + 1);
-    return;
+
+    if (value.size() > 1 && value.front() == '-' &&
+        parse_canonical_magnitude(value.substr(1), magnitude) &&
+        magnitude != 0) {
+      storage_ = Storage::Inline;
+      auto offset = magnitude - 1;
+      const auto width = width_for_offset(offset);
+      inline_[0] = static_cast<char>(kStringNegativeBase + width - 1);
+      write_big_endian(inline_.data() + 1, offset, width);
+      encoded_size_ = static_cast<std::uint16_t>(width + 1);
+      return;
+    }
   }
 
-  if (value.size() > 1 && value.front() == '-' &&
-      parse_canonical_magnitude(value.substr(1), magnitude) && magnitude != 0) {
-    storage_ = Storage::Inline;
-    auto offset = magnitude - 1;
-    const auto width = width_for_offset(offset);
-    inline_[0] = static_cast<char>(kStringNegativeBase + width - 1);
-    write_big_endian(inline_.data() + 1, offset, width);
-    encoded_size_ = static_cast<std::uint16_t>(width + 1);
-    return;
-  }
-
-  if (encode_uuid(value, false, inline_)) {
-    storage_ = Storage::Inline;
-    inline_[0] = static_cast<char>(kStringUuidHex);
-    encoded_size_ = 17;
-    return;
-  }
-  if (encode_uuid(value, true, inline_)) {
-    storage_ = Storage::Inline;
-    inline_[0] = static_cast<char>(kStringUuidDashed);
-    encoded_size_ = 17;
-    return;
+  // UUIDs are fixed width; skip both encoders for any other size.
+  if (value.size() == 32 || value.size() == 36) {
+    if (encode_uuid(value, false, inline_)) {
+      storage_ = Storage::Inline;
+      inline_[0] = static_cast<char>(kStringUuidHex);
+      encoded_size_ = 17;
+      return;
+    }
+    if (encode_uuid(value, true, inline_)) {
+      storage_ = Storage::Inline;
+      inline_[0] = static_cast<char>(kStringUuidDashed);
+      encoded_size_ = 17;
+      return;
+    }
   }
 
   const bool may_compress =
