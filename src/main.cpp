@@ -19,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <sys/mman.h>
@@ -34,6 +35,108 @@ namespace {
     return std::nullopt;
   }
   return static_cast<std::uint16_t>(value);
+}
+
+[[nodiscard]] std::string format_tcp_endpoint(std::string_view address,
+                                              std::uint16_t port) {
+  std::string result;
+  if (address.find(':') != std::string_view::npos) {
+    result.reserve(address.size() + 8);
+    result.push_back('[');
+    result.append(address);
+    result.push_back(']');
+  } else {
+    result.assign(address);
+  }
+  result.push_back(':');
+  result.append(std::to_string(port));
+  return result;
+}
+
+[[nodiscard]] std::optional<goblin::core::TcpListenerConfig>
+parse_tcp_listener(std::string_view endpoint, std::string& error) {
+  std::string_view address;
+  std::string_view port_text;
+  if (endpoint.starts_with('[')) {
+    const auto close = endpoint.find(']');
+    if (close == std::string_view::npos || close == 1 ||
+        close + 1 >= endpoint.size() || endpoint[close + 1] != ':') {
+      error = "expected bracketed IPv6 endpoint [ADDRESS]:PORT";
+      return std::nullopt;
+    }
+    address = endpoint.substr(1, close - 1);
+    port_text = endpoint.substr(close + 2);
+  } else {
+    const auto separator = endpoint.rfind(':');
+    if (separator == std::string_view::npos || separator == 0 ||
+        separator + 1 == endpoint.size()) {
+      error = "expected ADDRESS:PORT";
+      return std::nullopt;
+    }
+    if (endpoint.find(':') != separator) {
+      error = "IPv6 addresses must use [ADDRESS]:PORT";
+      return std::nullopt;
+    }
+    address = endpoint.substr(0, separator);
+    port_text = endpoint.substr(separator + 1);
+  }
+
+  const auto port = parse_port(port_text);
+  if (!port) {
+    error = "port must be an integer from 1 through 65535";
+    return std::nullopt;
+  }
+  return goblin::core::TcpListenerConfig{
+      .bind_address = std::string(address), .port = *port};
+}
+
+[[nodiscard]] bool add_tcp_listener(
+    goblin::core::ServerConfig& config,
+    goblin::core::TcpListenerConfig listener) {
+  for (const auto& configured : config.socket_listeners) {
+    const auto* tcp = std::get_if<goblin::core::TcpListenerConfig>(&configured);
+    if (tcp != nullptr && tcp->bind_address == listener.bind_address &&
+        tcp->port == listener.port) {
+      std::cerr << "goblin-core: duplicate --tcp-listen "
+                << format_tcp_endpoint(listener.bind_address, listener.port)
+                << '\n';
+      return false;
+    }
+  }
+  config.socket_listeners.emplace_back(std::move(listener));
+  return true;
+}
+
+[[nodiscard]] bool add_uds_listener(goblin::core::ServerConfig& config,
+                                    std::string path,
+                                    std::string_view option) {
+  if (path.empty()) {
+    std::cerr << "goblin-core: " << option << " path must not be empty\n";
+    return false;
+  }
+  for (const auto& configured : config.socket_listeners) {
+    const auto* uds = std::get_if<goblin::core::UdsListenerConfig>(&configured);
+    if (uds != nullptr && uds->path == path) {
+      std::cerr << "goblin-core: duplicate UDS listener path: " << path << '\n';
+      return false;
+    }
+  }
+  config.socket_listeners.emplace_back(
+      goblin::core::UdsListenerConfig{.path = std::move(path)});
+  return true;
+}
+
+void materialize_legacy_listener(goblin::core::ServerConfig& config) {
+  if (!config.socket_listeners.empty()) {
+    return;
+  }
+  if (!config.unix_socket_path.empty()) {
+    config.socket_listeners.emplace_back(
+        goblin::core::UdsListenerConfig{.path = config.unix_socket_path});
+  } else {
+    config.socket_listeners.emplace_back(goblin::core::TcpListenerConfig{
+        .bind_address = config.bind_address, .port = config.port});
+  }
 }
 
 [[nodiscard]] std::optional<std::size_t> parse_mib(std::string_view text) {
@@ -209,10 +312,16 @@ void lock_server_memory() noexcept {
     return true;
   };
 
-  if (config.unix_socket_path.empty() &&
-      !collect_address(config.bind_address,
-                       "socket bind " + config.bind_address)) {
-    return false;
+  for (const auto& listener : config.socket_listeners) {
+    if (const auto* tcp =
+            std::get_if<goblin::core::TcpListenerConfig>(&listener);
+        tcp != nullptr &&
+        !collect_address(
+            tcp->bind_address,
+            "socket bind " +
+                format_tcp_endpoint(tcp->bind_address, tcp->port))) {
+      return false;
+    }
   }
   for (const auto& target : config.poll_targets) {
     if (const auto* rdma = std::get_if<goblin::core::RdmaConfig>(&target)) {
@@ -336,7 +445,8 @@ void lock_server_memory() noexcept {
 
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
-            << " [--bind ADDRESS] [--port PORT] [--unixsocket PATH]\n"
+            << " [--tcp-listen ADDRESS:PORT]... [--uds-listen PATH]...\n"
+            << "       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...\n"
             << "       [--rank-cache|--no-rank-cache]\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
@@ -373,6 +483,11 @@ void print_usage(std::string_view program) {
             << "       [--rdma ADDRESS PORT SIZE]..."
                " (e.g. --rdma 10.88.88.1 6380 1mb; repeatable;\n"
             << "                               requires -DGOBLIN_CORE_ENABLE_RDMA=ON)\n"
+            << "       [--pubsub-listener-ring PATH]\n"
+            << "       [--pubsub-listener-rdma ADDRESS PORT SIZE]\n"
+            << "       [--pubsub-listener-uds PATH]\n"
+            << "       [--pubsub-listener-tcp HOST PORT]\n"
+            << "       [--pubsub-listener-pattern GLOB] (default: *)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
             << "                               unsafe with fork-COW SAVE, so off by default)\n"
@@ -384,7 +499,12 @@ void print_usage(std::string_view program) {
             << "before plain sockets. Example:\n"
             << "  --ring /tmp/a 64kb --exasock 10.99.99.1 6379 --rdma 10.88.88.1 6380 1mb\n"
             << "  --ring /tmp/b 1mb\n"
-            << "scans A, ExaSock, RDMA, B, then the sparse plain-socket pass.\n";
+            << "scans A, ExaSock, RDMA, B, then the sparse plain-socket pass.\n"
+            << "\n"
+            << "Socket listeners are repeatable and may be mixed. IPv6 uses\n"
+            << "--tcp-listen [ADDRESS]:PORT. Legacy --bind/--port selects one TCP\n"
+            << "listener only when no explicit socket listener is configured; legacy\n"
+            << "--unixsocket is a repeatable alias for --uds-listen.\n";
 }
 
 }  // namespace
@@ -394,6 +514,7 @@ int main(int argc, char** argv) {
   goblin::core::StoreOptions store_options;
   std::optional<std::string> load_path;
   std::optional<std::string> numa_selector;
+  bool pubsub_listener_pattern_set = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -425,12 +546,46 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--tcp-listen") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --tcp-listen requires ADDRESS:PORT\n";
+        return 2;
+      }
+      const std::string_view endpoint = argv[++i];
+      std::string error;
+      auto listener = parse_tcp_listener(endpoint, error);
+      if (!listener) {
+        std::cerr << "goblin-core: invalid --tcp-listen '" << endpoint
+                  << "': " << error << '\n';
+        return 2;
+      }
+      if (!add_tcp_listener(config, std::move(*listener))) {
+        return 2;
+      }
+      continue;
+    }
+
+    if (arg == "--uds-listen") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --uds-listen requires PATH\n";
+        return 2;
+      }
+      if (!add_uds_listener(config, argv[++i], "--uds-listen")) {
+        return 2;
+      }
+      continue;
+    }
+
     if (arg == "--unixsocket") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
         return 2;
       }
-      config.unix_socket_path = argv[++i];
+      std::string path = argv[++i];
+      config.unix_socket_path = path;
+      if (!add_uds_listener(config, std::move(path), "--unixsocket")) {
+        return 2;
+      }
       continue;
     }
 
@@ -510,6 +665,117 @@ int main(int argc, char** argv) {
                    " -DGOBLIN_CORE_ENABLE_RDMA=ON)\n";
       return 2;
 #endif
+      continue;
+    }
+
+    if (arg == "--pubsub-listener-ring") {
+#if defined(GOBLIN_HAS_SBE)
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --pubsub-listener-ring requires PATH\n";
+        return 2;
+      }
+      if (config.pubsub_listener) {
+        std::cerr << "goblin-core: configure only one Pub/Sub listener\n";
+        return 2;
+      }
+      config.pubsub_listener = goblin::core::PubSubListenerRingConfig{
+          .path = argv[++i]};
+#else
+      std::cerr << "goblin-core: --pubsub-listener-ring requires SBE support\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--pubsub-listener-rdma") {
+#if defined(GOBLIN_HAS_SBE) && defined(GOBLIN_HAS_RDMA)
+      if (i + 3 >= argc) {
+        std::cerr << "goblin-core: --pubsub-listener-rdma requires ADDRESS, "
+                     "PORT, and SIZE\n";
+        return 2;
+      }
+      if (config.pubsub_listener) {
+        std::cerr << "goblin-core: configure only one Pub/Sub listener\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const std::string_view size_text = argv[++i];
+      const auto port = parse_port(port_text);
+      const auto size = goblin::core::ring::parse_size(size_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --pubsub-listener-rdma port: "
+                  << port_text << '\n';
+        return 2;
+      }
+      if (!size || *size == 0) {
+        std::cerr << "goblin-core: invalid --pubsub-listener-rdma size: "
+                  << size_text << '\n';
+        return 2;
+      }
+      config.pubsub_listener = goblin::core::PubSubListenerRdmaConfig{
+          .address = address, .port = *port, .bytes = *size};
+#else
+      std::cerr << "goblin-core: --pubsub-listener-rdma is unavailable in this "
+                   "build (requires SBE, Linux, libibverbs, and librdmacm)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--pubsub-listener-uds") {
+#if defined(GOBLIN_HAS_SBE)
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --pubsub-listener-uds requires PATH\n";
+        return 2;
+      }
+      if (config.pubsub_listener) {
+        std::cerr << "goblin-core: configure only one Pub/Sub listener\n";
+        return 2;
+      }
+      config.pubsub_listener =
+          goblin::core::PubSubListenerUdsConfig{.path = argv[++i]};
+#else
+      std::cerr << "goblin-core: --pubsub-listener-uds requires SBE support\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--pubsub-listener-tcp") {
+#if defined(GOBLIN_HAS_SBE)
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --pubsub-listener-tcp requires HOST and PORT\n";
+        return 2;
+      }
+      if (config.pubsub_listener) {
+        std::cerr << "goblin-core: configure only one Pub/Sub listener\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const auto port = parse_port(port_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --pubsub-listener-tcp port: "
+                  << port_text << '\n';
+        return 2;
+      }
+      config.pubsub_listener = goblin::core::PubSubListenerTcpConfig{
+          .address = address, .port = *port};
+#else
+      std::cerr << "goblin-core: --pubsub-listener-tcp requires SBE support\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--pubsub-listener-pattern") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --pubsub-listener-pattern requires GLOB\n";
+        return 2;
+      }
+      config.pubsub_listener_pattern = argv[++i];
+      pubsub_listener_pattern_set = true;
       continue;
     }
 
@@ -1005,6 +1271,59 @@ int main(int argc, char** argv) {
     std::cerr << "goblin-core: unknown option: " << arg << '\n';
     print_usage(argv[0]);
     return 2;
+  }
+
+  materialize_legacy_listener(config);
+
+  if (pubsub_listener_pattern_set && !config.pubsub_listener) {
+    std::cerr << "goblin-core: --pubsub-listener-pattern requires "
+                 "a --pubsub-listener-* transport\n";
+    return 2;
+  }
+  if (const auto* listener =
+          config.pubsub_listener
+              ? std::get_if<goblin::core::PubSubListenerRingConfig>(
+                    &*config.pubsub_listener)
+              : nullptr) {
+    for (const auto& target : config.poll_targets) {
+      if (const auto* ring = std::get_if<goblin::core::RingConfig>(&target);
+          ring != nullptr && ring->path == listener->path) {
+        std::cerr << "goblin-core: Pub/Sub listener ring must not be one of this "
+                     "server's --ring paths\n";
+        return 2;
+      }
+    }
+  }
+  if (const auto* listener =
+          config.pubsub_listener
+              ? std::get_if<goblin::core::PubSubListenerUdsConfig>(
+                    &*config.pubsub_listener)
+              : nullptr) {
+    for (const auto& configured : config.socket_listeners) {
+      const auto* uds =
+          std::get_if<goblin::core::UdsListenerConfig>(&configured);
+      if (uds != nullptr && uds->path == listener->path) {
+        std::cerr << "goblin-core: Pub/Sub listener UDS path must not be one "
+                     "of this server's --uds-listen/--unixsocket paths\n";
+        return 2;
+      }
+    }
+  }
+  if (const auto* listener =
+          config.pubsub_listener
+              ? std::get_if<goblin::core::PubSubListenerTcpConfig>(
+                    &*config.pubsub_listener)
+              : nullptr) {
+    for (const auto& configured : config.socket_listeners) {
+      const auto* tcp =
+          std::get_if<goblin::core::TcpListenerConfig>(&configured);
+      if (tcp != nullptr && tcp->bind_address == listener->address &&
+          tcp->port == listener->port) {
+        std::cerr << "goblin-core: Pub/Sub listener TCP endpoint must not be "
+                     "one of this server's --tcp-listen endpoints\n";
+        return 2;
+      }
+    }
   }
 
   const auto caps = goblin::core::simd::detect_capabilities();

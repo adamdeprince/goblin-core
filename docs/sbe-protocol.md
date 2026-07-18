@@ -26,9 +26,15 @@ and counts ride as **native `double` / `int64`** rather than ASCII, so neither s
 parses or re-stringifies numbers, and the server dispatches straight out of the buffer.
 
 The C++ typed client is compile-time-dispatched over its transport:
-`SbeRingClient` uses the co-located shared-memory ring and `SbeRdmaClient` uses
-the cross-host one-sided ring. They expose the same command API without a virtual
-call on the request path.
+`SbeSocketClient` uses TCP or a Unix-domain socket, `SbeRingClient` uses the
+co-located shared-memory ring, and `SbeRdmaClient` uses the cross-host one-sided
+ring. They expose the same command API without a virtual call on the request
+path.
+
+**SBE is a lockstep protocol in Goblin Core. An SBE client and server must run
+exactly the same Goblin Core version; behavior is undefined when their versions
+differ. Use RESP2 or RESP3 when compatibility across independent upgrades is a
+priority.**
 
 ### Latency over the ring
 
@@ -159,20 +165,17 @@ The server keeps a page-backed unsolicited-output FIFO per SBE connection, just
 as it does for RESP. See the [Pub/Sub command reference](commands/pubsub.md) for
 the byte limit and slow-consumer disconnect policy.
 
-## Backward-compatible extension
+## Version contract
 
-Goblin adds commands continuously, so the schema is **append-only** — this is the rule
-that keeps a deployed client working when the server grows:
+The schema remains append-only as an engineering discipline: template ids are
+never renumbered or reused, fields are appended rather than reordered, and the
+schema version advances with changes. This keeps generated-code changes
+reviewable and prevents accidental reinterpretation within a release.
 
-* **`templateId` is a permanent command id.** A new command takes the next unused id,
-  appended. Never renumber, never reuse a retired id. `sbe/goblin_sbe.xml` is the ledger.
-* **Fields within a message are append-only.** A new argument is appended (a fixed field
-  after the block, or a group / var-data after the existing ones) tagged
-  `sinceVersion="V"`. An SBE decoder reads the *wire's* `blockLength` and skips anything
-  it does not know, so a new server and an old client interoperate untouched.
-* **Bump the schema `version`** on each additive change.
-
-This is the same additive-evolution model as Protocol Buffers.
+It is not a cross-version compatibility promise. Goblin Core does not test or
+support an SBE client from one release against a server from another release.
+They must have exactly matching Goblin Core versions. Use RESP when deployments
+need rolling upgrades or long-lived clients that upgrade independently.
 
 ## Adding a command (the recipe)
 

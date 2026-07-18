@@ -362,8 +362,8 @@ public:
 
     SBE_NODISCARD std::uint64_t cursor() const SBE_NOEXCEPT
     {
-        std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
@@ -612,6 +612,181 @@ public:
     }
     #endif
 
+    SBE_NODISCARD static const char *matchMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static const char *matchCharacterEncoding() SBE_NOEXCEPT
+    {
+        return "null";
+    }
+
+    static SBE_CONSTEXPR std::uint64_t matchSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    bool matchInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t matchId() SBE_NOEXCEPT
+    {
+        return 3;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t matchHeaderLength() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD std::uint32_t matchLength() const
+    {
+        std::uint32_t length;
+        std::memcpy(&length, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_32(length);
+    }
+
+    std::uint64_t skipMatch()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        sbePosition(lengthPosition + lengthOfLengthField + dataLength);
+        return dataLength;
+    }
+
+    SBE_NODISCARD const char *match()
+    {
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        const char *fieldPtr = m_buffer + sbePosition() + 4;
+        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue));
+        return fieldPtr;
+    }
+
+    std::uint64_t getMatch(char *dst, const std::uint64_t length)
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t bytesToCopy = length < dataLength ? length : dataLength;
+        std::uint64_t pos = sbePosition();
+        sbePosition(pos + dataLength);
+        std::memcpy(dst, m_buffer + pos, static_cast<std::size_t>(bytesToCopy));
+        return bytesToCopy;
+    }
+
+    SScan &putMatch(const char *src, const std::uint32_t length)
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        std::uint32_t lengthFieldValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::memcpy(m_buffer + lengthPosition, &lengthFieldValue, sizeof(std::uint32_t));
+        if (length != std::uint32_t(0))
+        {
+            std::uint64_t pos = sbePosition();
+            sbePosition(pos + length);
+            std::memcpy(m_buffer + pos, src, length);
+        }
+        return *this;
+    }
+
+    std::string getMatchAsString()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t pos = sbePosition();
+        const std::string result(m_buffer + pos, dataLength);
+        sbePosition(pos + dataLength);
+        return result;
+    }
+
+    std::string getMatchAsJsonEscapedString()
+    {
+        std::ostringstream oss;
+        std::string s = getMatchAsString();
+
+        for (const auto c : s)
+        {
+            switch (c)
+            {
+                case '"': oss << "\\\""; break;
+                case '\\': oss << "\\\\"; break;
+                case '\b': oss << "\\b"; break;
+                case '\f': oss << "\\f"; break;
+                case '\n': oss << "\\n"; break;
+                case '\r': oss << "\\r"; break;
+                case '\t': oss << "\\t"; break;
+
+                default:
+                    if ('\x00' <= c && c <= '\x1f')
+                    {
+                        oss << "\\u" << std::hex << std::setw(4)
+                            << std::setfill('0') << (int)(c);
+                    }
+                    else
+                    {
+                        oss << c;
+                    }
+            }
+        }
+
+        return oss.str();
+    }
+
+    #ifdef SBE_USE_STRING_VIEW
+    std::string_view getMatchAsStringView()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t pos = sbePosition();
+        const std::string_view result(m_buffer + pos, dataLength);
+        sbePosition(pos + dataLength);
+        return result;
+    }
+    #endif
+
+    SScan &putMatch(const std::string &str)
+    {
+        if (str.length() > 1073741824)
+        {
+            throw std::runtime_error("std::string too long for length type [E109]");
+        }
+        return putMatch(str.data(), static_cast<std::uint32_t>(str.length()));
+    }
+
+    #ifdef SBE_USE_STRING_VIEW
+    SScan &putMatch(const std::string_view str)
+    {
+        if (str.length() > 1073741824)
+        {
+            throw std::runtime_error("std::string too long for length type [E109]");
+        }
+        return putMatch(str.data(), static_cast<std::uint32_t>(str.length()));
+    }
+    #endif
+
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
     std::basic_ostream<CharT, Traits> &builder, const SScan &_writer)
@@ -648,6 +823,7 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 void skip()
 {
     skipKey();
+    skipMatch();
 }
 
 SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
@@ -655,7 +831,7 @@ SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
     return false;
 }
 
-SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0)
+SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0, std::size_t matchLength = 0)
 {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -669,6 +845,13 @@ SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0)
         throw std::runtime_error("keyLength too long for length type [E109]");
     }
     length += keyLength;
+
+    length += matchHeaderLength();
+    if (matchLength > 1073741824LL)
+    {
+        throw std::runtime_error("matchLength too long for length type [E109]");
+    }
+    length += matchLength;
 
     return length;
 #if defined(__GNUG__) && !defined(__clang__)

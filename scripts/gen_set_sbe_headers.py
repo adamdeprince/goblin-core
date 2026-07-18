@@ -164,17 +164,34 @@ def main() -> None:
                 ("field", "key"),
                 ("FIELDS", "KEYS"),
                 ("FIELD", "KEY"),
-                ("putKey", "putDestination"),
-                ("getKey", "getDestination"),
-                ("keyMetaAttribute", "destinationMetaAttribute"),
-                ("keyId()", "destinationId()"),
-                ("keySinceVersion", "destinationSinceVersion"),
-                ("keyInActingVersion", "destinationInActingVersion"),
-                ("keyEncodingOffset", "destinationEncodingOffset"),
-                ("keyLength", "destinationLength"),
-                ('"key"', '"destination"'),
             ],
         )
+        # HDel's group field and trailing key are both named "key" after the
+        # group rename. Only rename the trailing varData block; the group must
+        # retain its getKey/putKey API.
+        path = GEN / f"{name}.h"
+        text = path.read_text()
+        blocks = list(re.finditer(r"static const char \*keyMetaAttribute", text))
+        if len(blocks) != 2:
+            raise RuntimeError(f"unexpected {name} key block layout")
+        split = blocks[1].start()
+        head, tail = text[:split], text[split:]
+        for old, new in (
+            ("putKey", "putDestination"),
+            ("getKey", "getDestination"),
+            ("keyMetaAttribute", "destinationMetaAttribute"),
+            ("keyCharacterEncoding", "destinationCharacterEncoding"),
+            ("keyId", "destinationId"),
+            ("keySinceVersion", "destinationSinceVersion"),
+            ("keyInActingVersion", "destinationInActingVersion"),
+            ("keyEncodingOffset", "destinationEncodingOffset"),
+            ("keyHeaderLength", "destinationHeaderLength"),
+            ("keyLength", "destinationLength"),
+            ("skipKey", "skipDestination"),
+            ('"key"', '"destination"'),
+        ):
+            tail = tail.replace(old, new)
+        write_header(path, head + tail)
 
     # limit + keys group: start from LPop (count field) but need keys group.
     # Build SInterCard from Eval-like isn't available. Use a hybrid:
@@ -275,7 +292,10 @@ def gen_sintercard() -> None:
         )
     # Insert before "Keys m_keys" or keys() method
     if "Keys m_keys" in text:
-        text = text.replace("Keys m_keys", limit_accessors + "\n    Keys m_keys")
+        text = text.replace(
+            "Keys m_keys",
+            "public:\n" + limit_accessors + "\nprivate:\n    Keys m_keys",
+        )
     elif "class Keys" in text:
         text = text.replace("class Keys", limit_accessors + "\n    class Keys")
     write_header(GEN / "SInterCard.h", text)
@@ -307,20 +327,40 @@ def gen_sscan() -> None:
     text = text.replace("std::int64_t cursor", "std::uint64_t cursor")
     text = text.replace("const std::int64_t value) SBE_NOEXCEPT\n    {\n        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);\n        std::memcpy(m_buffer + m_offset + 0",
                         "const std::uint64_t value) SBE_NOEXCEPT\n    {\n        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);\n        std::memcpy(m_buffer + m_offset + 0")
-    # Add match varData after key by cloning key block as match.
-    key_put = re.search(
-        r"(SBE_NODISCARD static const char \*keyMetaAttribute.*?SScan &putKey\(const std::string_view str\).*?return putKey\(str\.data\(\), static_cast<std::uint32_t>\(str\.length\(\)\);\s*\})",
-        text,
-        re.S,
+    # Add match varData after key by cloning the complete key accessor block.
+    key_start = text.index("    SBE_NODISCARD static const char *keyMetaAttribute")
+    key_end = text.index("\ntemplate<typename CharT", key_start)
+    key_block = text[key_start:key_end]
+    match_block = (
+        key_block.replace("key", "match")
+        .replace("Key", "Match")
+        .replace("KEY", "MATCH")
     )
-    if key_put:
-        match_block = (
-            key_put.group(1)
-            .replace("key", "match")
-            .replace("Key", "Match")
-            .replace("KEY", "MATCH")
-        )
-        text = text.replace(key_put.group(1), key_put.group(1) + "\n" + match_block)
+    match_block = re.sub(
+        r"(matchId\(\) SBE_NOEXCEPT\s*\{\s*return static_cast<std::uint16_t>\()3(\);)",
+        r"\g<1>4\2",
+        match_block,
+        count=1,
+    )
+    text = text[:key_end] + "\n" + match_block + text[key_end:]
+    text = text.replace("    skipKey();\n", "    skipKey();\n    skipMatch();\n", 1)
+    text = text.replace(
+        "computeLength(std::size_t keyLength = 0)",
+        "computeLength(std::size_t keyLength = 0, std::size_t matchLength = 0)",
+        1,
+    )
+    length_tail = """
+    length += matchHeaderLength();
+    if (matchLength > 1073741824LL)
+    {
+        throw std::runtime_error("matchLength too long for length type [E109]");
+    }
+    length += matchLength;
+"""
+    text = text.replace("\n    return length;", length_tail + "\n    return length;", 1)
+    text = text.replace("std::int64_t val;\n        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));",
+                        "std::uint64_t val;\n        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint64_t));",
+                        1)
     write_header(GEN / "SScan.h", text)
     print("  LRange.h -> SScan.h (id=118)")
 

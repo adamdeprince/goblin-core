@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -44,12 +45,57 @@ struct ExasockConfig {
 using PollTargetConfig =
     std::variant<RingConfig, RdmaConfig, ExasockConfig>;
 
+// One outbound SBE Pub/Sub subscription. The local server subscribes to the
+// upstream Goblin Core instance and republishes received channel/payload pairs
+// through its own PubSubRegistry.
+struct PubSubListenerRingConfig {
+  std::string path;
+};
+
+struct PubSubListenerRdmaConfig {
+  std::string address;
+  std::uint16_t port{0};
+  std::uint64_t bytes{0};
+};
+
+struct PubSubListenerUdsConfig {
+  std::string path;
+};
+
+struct PubSubListenerTcpConfig {
+  std::string address;
+  std::uint16_t port{0};
+};
+
+using PubSubListenerConfig =
+    std::variant<PubSubListenerRingConfig, PubSubListenerRdmaConfig,
+                 PubSubListenerUdsConfig, PubSubListenerTcpConfig>;
+
+// Ordinary RESP/SBE socket listeners. These are intentionally separate from
+// polled ring, RDMA, and ExaSock targets: every configured socket participates
+// in the same sparse poll() pass.
+struct TcpListenerConfig {
+  std::string bind_address;
+  std::uint16_t port{0};
+};
+
+struct UdsListenerConfig {
+  std::string path;
+};
+
+using SocketListenerConfig =
+    std::variant<TcpListenerConfig, UdsListenerConfig>;
+
 struct ServerConfig {
+  // Legacy single-listener fields used by --bind/--port/--unixsocket and by
+  // callers constructing ServerConfig directly. socket_listeners takes
+  // precedence when it is non-empty.
   std::string bind_address{"127.0.0.1"};
   std::uint16_t port{6379};
-  // When non-empty, listen on this AF_UNIX path instead of TCP -- no network
-  // stack, so the per-round-trip cost of a synchronous client drops sharply.
   std::string unix_socket_path{};
+  // Repeatable --tcp-listen and --uds-listen endpoints. Multiple TCP and UDS
+  // listeners can coexist and all serve the same Store.
+  std::vector<SocketListenerConfig> socket_listeners{};
   int backlog{128};
   std::size_t max_output_buffer_bytes{1024U * 1024U};
   std::size_t resume_output_buffer_bytes{256U * 1024U};
@@ -65,6 +111,10 @@ struct ServerConfig {
   // the sparse plain-socket pass (and spins at 100% CPU by design); when empty it
   // runs the ordinary low-CPU poll() loop.
   std::vector<PollTargetConfig> poll_targets{};
+  // Optional upstream Goblin Core instance. It is always an SBE PSUBSCRIBE
+  // client and therefore requires the exact same Goblin Core version.
+  std::optional<PubSubListenerConfig> pubsub_listener{};
+  std::string pubsub_listener_pattern{"*"};
   // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.

@@ -409,7 +409,9 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated/goblin_sbe/ZAdd.h)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sbe/generated>)
   target_link_libraries(goblin_core PRIVATE goblin_sbe_headers)
   target_compile_definitions(goblin_core PRIVATE GOBLIN_HAS_SBE=1)
-  target_sources(goblin_core PRIVATE src/sbe_dispatch.cpp)
+  target_sources(goblin_core PRIVATE
+    src/pubsub_listener.cpp
+    src/sbe_dispatch.cpp)
   set_source_files_properties(src/sbe_dispatch.cpp PROPERTIES COMPILE_OPTIONS "-Wno-pedantic")
   # goblin_core is a static lib in the install export, so even this header-only
   # INTERFACE dep must be a member of the same export set (it installs nothing).
@@ -439,6 +441,9 @@ endif()
 
 add_executable(goblin_core_server src/main.cpp)
 target_link_libraries(goblin_core_server PRIVATE goblin_core)
+if(TARGET goblin_sbe_headers)
+  target_compile_definitions(goblin_core_server PRIVATE GOBLIN_HAS_SBE=1)
+endif()
 set_target_properties(goblin_core_server PROPERTIES
   OUTPUT_NAME goblin-core
   CXX_STANDARD 23
@@ -485,6 +490,17 @@ if(GOBLIN_HAS_RDMA_BUILD)
       CXX_STANDARD_REQUIRED ON
       CXX_EXTENSIONS OFF)
     target_compile_options(goblin_core_rdma_latency_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+
+    add_executable(goblin_core_pubsub_rdma_relay_benchmark
+      benchmarks/pubsub_rdma_relay_benchmark.cpp)
+    target_link_libraries(goblin_core_pubsub_rdma_relay_benchmark PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_pubsub_rdma_relay_benchmark PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_pubsub_rdma_relay_benchmark PRIVATE
       -Wall -Wextra -Wpedantic)
   endif()
 endif()
@@ -568,6 +584,19 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
       target_compile_options(goblin_core_pubsub_benchmark PRIVATE
         -Wall -Wextra -Wpedantic)
 
+      add_executable(goblin_core_pubsub_rebroadcast_benchmark
+        benchmarks/pubsub_rebroadcast_benchmark.cpp)
+      target_link_libraries(goblin_core_pubsub_rebroadcast_benchmark PRIVATE
+        goblin_sbe_headers)
+      target_include_directories(goblin_core_pubsub_rebroadcast_benchmark PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+      set_target_properties(goblin_core_pubsub_rebroadcast_benchmark PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_pubsub_rebroadcast_benchmark PRIVATE
+        -Wall -Wextra -Wpedantic)
+
       add_executable(goblin_core_list_sbe_benchmark
         benchmarks/list_sbe_benchmark.cpp)
       target_link_libraries(goblin_core_list_sbe_benchmark PRIVATE
@@ -629,6 +658,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_resp3_socket_test $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_resp3_socket PROPERTIES TIMEOUT 60)
 
+  add_executable(goblin_core_socket_listeners_test
+    tests/socket_listeners_test.cpp)
+  target_link_libraries(goblin_core_socket_listeners_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_socket_listeners_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_socket_listeners
+    COMMAND goblin_core_socket_listeners_test
+            $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_socket_listeners PROPERTIES TIMEOUT 60)
+
   add_executable(goblin_core_pubsub_socket_test tests/pubsub_socket_test.cpp)
   target_link_libraries(goblin_core_pubsub_socket_test PRIVATE goblin_core)
   set_target_properties(goblin_core_pubsub_socket_test PROPERTIES
@@ -663,6 +702,28 @@ if(GOBLIN_CORE_BUILD_TESTS)
     add_test(NAME goblin_core_sbe_client
       COMMAND goblin_core_sbe_client_test $<TARGET_FILE:goblin_core_server>)
     set_tests_properties(goblin_core_sbe_client PROPERTIES TIMEOUT 60)
+
+    add_executable(goblin_core_pubsub_listener_ring_test
+      tests/pubsub_listener_ring_test.cpp)
+    target_link_libraries(goblin_core_pubsub_listener_ring_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_pubsub_listener_ring_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_pubsub_listener_ring
+      COMMAND goblin_core_pubsub_listener_ring_test
+              $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_pubsub_listener_ring PROPERTIES TIMEOUT 60)
+
+    add_executable(goblin_core_pubsub_listener_socket_test
+      tests/pubsub_listener_socket_test.cpp)
+    target_link_libraries(goblin_core_pubsub_listener_socket_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_pubsub_listener_socket_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_pubsub_listener_socket
+      COMMAND goblin_core_pubsub_listener_socket_test
+              $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_pubsub_listener_socket PROPERTIES TIMEOUT 60)
 
     # A client that SIGKILLs mid-operation leaves the ring dirty; a fresh client must
     # reconnect and recover it with no server restart (the ring reconnect handshake).

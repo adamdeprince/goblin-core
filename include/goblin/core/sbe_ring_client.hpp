@@ -1,11 +1,11 @@
 #pragma once
 
-// A C++ SBE client for the shared-memory ring, covering the full command surface.
-// It includes the generated SBE codecs (header-only -- no link dependency) and speaks
-// the length-prefixed SBE framing (see sbe_frame.hpp): it sends the GOBLINS! magic
-// once on open, then builds typed requests and decodes typed replies. Calls may be
-// synchronous or explicitly enqueued and read back in order. An ErrorReply becomes
-// a thrown std::runtime_error ("<code> <message>").
+// A compile-time-transport C++ SBE client covering the full command surface.
+// It includes the generated SBE codecs (header-only -- no link dependency) and
+// speaks the length-prefixed SBE framing (see sbe_frame.hpp): it sends the
+// GOBLINS! magic once on open, then builds typed requests and decodes typed
+// replies. Calls may be synchronous or explicitly enqueued and read back in
+// order. An ErrorReply becomes a thrown std::runtime_error ("<code> <message>").
 //
 // Every request builds into a growable send buffer (logical values may be larger
 // when server-side LZ4 is enabled). Shared-memory requests are published as one
@@ -15,6 +15,7 @@
 #include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#include "goblin/core/sbe_socket_transport.hpp"
 #if defined(GOBLIN_HAS_RDMA)
 #include "goblin/core/rdma_ring.hpp"
 #endif
@@ -286,8 +287,8 @@ class BasicSbeClient {
   using ms = std::chrono::milliseconds;
   static constexpr ms kDefaultTimeout{5000};
   // Initial size of the request/reply buffers. It is a floor: the client grows it
-  // silently to the ring's capacity if the ring is larger (so a full ring record
-  // always fits), and per request if a value would not otherwise fit.
+  // to the transport capacity and per request when a value would not otherwise
+  // fit.
   static constexpr std::size_t kDefaultBufferBytes = 16 * 1024;
 
   template <class... Args>
@@ -335,7 +336,7 @@ class BasicSbeClient {
       ms timeout = kDefaultTimeout) {
     if (outstanding_pipeline_replies_ == 0) {
       throw std::logic_error(
-          "SbeRingClient: no pipelined reply is outstanding");
+          "SbeClient: no pipelined reply is outstanding");
     }
     read_frame(timeout);
     --outstanding_pipeline_replies_;
@@ -542,7 +543,7 @@ class BasicSbeClient {
       return std::nullopt;
     }
     if (!reply_is<goblin_sbe::PubSubPush>()) {
-      throw std::runtime_error("SbeRingClient: unexpected synchronous reply while reading Pub/Sub");
+      throw std::runtime_error("SbeClient: unexpected synchronous reply while reading Pub/Sub");
     }
     return decode_pubsub();
   }
@@ -776,7 +777,7 @@ class BasicSbeClient {
   void pipeline_for(std::size_t count, std::size_t depth, EnqueueFn&& enqueue,
                     ReadFn&& read) {
     if (depth == 0) {
-      throw std::invalid_argument("SbeRingClient: pipeline depth must be >= 1");
+      throw std::invalid_argument("SbeClient: pipeline depth must be >= 1");
     }
     std::size_t issued = 0;
     std::size_t completed = 0;
@@ -1326,7 +1327,7 @@ class BasicSbeClient {
   static void require_pubsub_count(std::span<const std::string_view> values,
                                    std::string_view operation) {
     if (values.size() > std::numeric_limits<std::uint16_t>::max()) {
-      throw std::invalid_argument("SbeRingClient: " + std::string(operation) +
+      throw std::invalid_argument("SbeClient: " + std::string(operation) +
                                   " accepts at most 65535 names");
     }
   }
@@ -1335,7 +1336,7 @@ class BasicSbeClient {
                                    std::string_view operation) {
     require_pubsub_count(values, operation);
     if (values.empty()) {
-      throw std::invalid_argument("SbeRingClient: " + std::string(operation) +
+      throw std::invalid_argument("SbeClient: " + std::string(operation) +
                                   " requires at least one name");
     }
   }
@@ -1447,7 +1448,7 @@ class BasicSbeClient {
                       SbeListImplementation implementation,
                       bool only_if_exists, ms t) {
     if (values.empty() || values.size() > std::numeric_limits<std::uint16_t>::max()) {
-      throw std::invalid_argument("SbeRingClient: list push requires 1..65535 values");
+      throw std::invalid_argument("SbeClient: list push requires 1..65535 values");
     }
     std::size_t need = key.size();
     for (const auto value : values) need += value.size();
@@ -1474,7 +1475,7 @@ class BasicSbeClient {
   std::optional<std::vector<std::string>> list_pop_many(
       std::string_view key, std::size_t count, ms t) {
     if (count > static_cast<std::size_t>(std::numeric_limits<long long>::max())) {
-      throw std::invalid_argument("SbeRingClient: list pop count is out of range");
+      throw std::invalid_argument("SbeClient: list pop count is out of range");
     }
     auto m = build<Msg>(key.size());
     m.count(static_cast<long long>(count));
@@ -1518,7 +1519,7 @@ class BasicSbeClient {
   void require_no_pipeline() const {
     if (outstanding_pipeline_replies_ != 0) {
       throw std::logic_error(
-          "SbeRingClient: synchronous command would consume a pipelined reply");
+          "SbeClient: synchronous command would consume a pipelined reply");
     }
   }
 
@@ -1558,8 +1559,8 @@ class BasicSbeClient {
     const std::size_t maximum = transport_.max_message_bytes();
     if (bytes.size() > maximum) {
       throw std::length_error(
-          "SbeRingClient: message (" + std::to_string(bytes.size()) +
-          " bytes) exceeds this ring's contiguous message capacity (" +
+          "SbeClient: message (" + std::to_string(bytes.size()) +
+          " bytes) exceeds this transport's message capacity (" +
           std::to_string(maximum) + " bytes)");
     }
 
@@ -1576,7 +1577,7 @@ class BasicSbeClient {
     }
     if (!sent) {
       throw std::runtime_error(
-          "SbeRingClient: timed out or transport failed while enqueueing a message");
+          "SbeClient: timed out or transport failed while enqueueing a message");
     }
   }
 
@@ -1585,7 +1586,7 @@ class BasicSbeClient {
     const std::size_t message_length =
         goblin_sbe::MessageHeader::encodedLength() + message.encodedLength();
     if (message_length > std::numeric_limits<std::uint32_t>::max()) {
-      throw std::length_error("SbeRingClient: SBE message exceeds uint32 framing");
+      throw std::length_error("SbeClient: SBE message exceeds uint32 framing");
     }
     const auto length = static_cast<std::uint32_t>(message_length);
     std::memcpy(sendbuf_.data(), &length, kSbeLenPrefix);
@@ -1707,7 +1708,7 @@ class BasicSbeClient {
       throw std::runtime_error(code + " " + message);
     }
   }
-  [[noreturn]] void unexpected() { throw std::runtime_error("SbeRingClient: unexpected reply type"); }
+  [[noreturn]] void unexpected() { throw std::runtime_error("SbeClient: unexpected reply type"); }
 
   [[nodiscard]] long long as_int() {
     // One header read: error check + type check + decode (was 3× reply_header).
@@ -1909,7 +1910,7 @@ class BasicSbeClient {
         transport_.pop();
       }
       if ((++spins & 63u) == 0 && std::chrono::steady_clock::now() >= deadline)
-        throw std::runtime_error("SbeRingClient: timed out waiting for a reply");
+        throw std::runtime_error("SbeClient: timed out waiting for a reply");
       // Adaptive spin-then-park on the CQ tail (macOS); pure relax elsewhere.
       transport_.wait_for_record();
     }
@@ -1940,6 +1941,7 @@ class BasicSbeClient {
 };
 
 using SbeRingClient = BasicSbeClient<RingSbeTransport>;
+using SbeSocketClient = BasicSbeClient<SocketSbeTransport>;
 #if defined(GOBLIN_HAS_RDMA)
 using SbeRdmaClient = BasicSbeClient<rdma::ClientTransport>;
 #endif

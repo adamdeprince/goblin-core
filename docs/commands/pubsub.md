@@ -2,7 +2,7 @@
 
 Goblin Core provides Redis-compatible literal and pattern subscriptions over
 RESP2, RESP3, and SBE. Protocol and transport are independent: Pub/Sub works over
-TCP, Unix-domain sockets, and shared-memory rings.
+TCP, Unix-domain sockets, shared-memory rings, and polled RDMA rings.
 
 ## Command summary
 
@@ -52,10 +52,58 @@ field distinguishes `message`, `pmessage`, subscribe, and unsubscribe events.
 `PUBSUB NUMSUB` uses `PubSubNumSubReply` (template 13); the other introspection
 forms reuse `ArrayReply` and `IntReply`.
 
-The header-only `SbeRingClient` exposes `subscribe`, `unsubscribe`, `psubscribe`,
-`punsubscribe`, `publish`, `pubsub_channels`, `pubsub_numsub`, `pubsub_numpat`,
-`try_read_pubsub`, and `read_pubsub`. It queues asynchronous pushes encountered
-while waiting for a synchronous command reply.
+The header-only typed SBE clients expose `subscribe`, `unsubscribe`,
+`psubscribe`, `punsubscribe`, `publish`, `pubsub_channels`, `pubsub_numsub`,
+`pubsub_numpat`, `try_read_pubsub`, and `read_pubsub`. They queue asynchronous
+pushes encountered while waiting for a synchronous command reply.
+
+## Upstream rebroadcast
+
+A Goblin Core server can subscribe to one other Goblin Core server over SBE and
+rebroadcast every received channel/payload pair to its own local subscribers.
+For a shared-memory ring:
+
+```sh
+# The upstream server owns this ring.
+goblin-core --ring /run/goblin/upstream.ring 2mb
+
+# The downstream server connects as an SBE PSUBSCRIBE client.
+goblin-core --pubsub-listener-ring /run/goblin/upstream.ring
+```
+
+The equivalent cross-host listener uses a polled RDMA ring:
+
+```sh
+goblin-core --pubsub-listener-rdma 10.88.88.1 6380 2mb
+```
+
+SBE can also use an ordinary Unix-domain socket or TCP connection:
+
+```sh
+goblin-core --pubsub-listener-uds /run/goblin/upstream.sock
+goblin-core --pubsub-listener-tcp goblin-upstream.internal 6379
+```
+
+All forms subscribe to `*` by default. Select a narrower Redis glob with:
+
+```sh
+goblin-core --pubsub-listener-ring /run/goblin/upstream.ring \
+  --pubsub-listener-pattern 'orders:*'
+```
+
+The listener transport flags are mutually exclusive and startup fails if the
+upstream connection or SBE subscription cannot be established. Ring and RDMA
+listeners use the server's busy-poll loop; TCP and UDS listeners use nonblocking
+sockets in that same loop. Rebroadcast is one-way: local publications are not
+sent upstream. The relay carries the original binary-safe channel and payload
+into the local registry, where ordinary literal/pattern matching, delivery
+counts, and slow-consumer limits apply.
+
+The upstream and downstream servers must be exactly the same Goblin Core version
+because this link uses SBE. A different-version pairing has undefined behavior.
+Use RESP when independent client/server upgrades are required. Do not configure
+relay cycles: forwarded publications carry no origin marker, so a cycle can
+rebroadcast the same message indefinitely.
 
 ## Slow consumers
 

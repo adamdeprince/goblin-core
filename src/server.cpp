@@ -28,12 +28,16 @@
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "pubsub.hpp"
+#ifdef GOBLIN_HAS_SBE
+#include "pubsub_listener.hpp"
+#endif
 
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <netdb.h>
 #include <optional>
 #include <poll.h>
 #include <string>
@@ -311,7 +315,30 @@ void set_tcp_nodelay(int fd) {
   }
 }
 
-[[nodiscard]] std::optional<int> create_unix_listener(const ServerConfig& config) {
+struct SocketListenerRuntime {
+  int fd{-1};
+  bool tcp{false};
+  std::string description;
+  std::string uds_path;
+};
+
+[[nodiscard]] std::string format_tcp_endpoint(std::string_view address,
+                                              std::uint16_t port) {
+  std::string result;
+  if (address.find(':') != std::string_view::npos) {
+    result.push_back('[');
+    result.append(address);
+    result.push_back(']');
+  } else {
+    result.assign(address);
+  }
+  result.push_back(':');
+  result.append(std::to_string(port));
+  return result;
+}
+
+[[nodiscard]] std::optional<SocketListenerRuntime> create_unix_listener(
+    const UdsListenerConfig& config, int backlog) {
   const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) {
     std::cerr << "goblin-core: socket(AF_UNIX) failed: " << std::strerror(errno)
@@ -322,93 +349,148 @@ void set_tcp_nodelay(int fd) {
 
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
-  if (config.unix_socket_path.size() >= sizeof(address.sun_path)) {
-    std::cerr << "goblin-core: unix socket path too long: "
-              << config.unix_socket_path << '\n';
+  if (config.path.size() >= sizeof(address.sun_path)) {
+    std::cerr << "goblin-core: unix socket path too long: " << config.path
+              << '\n';
     close_fd(fd);
     return std::nullopt;
   }
-  std::memcpy(address.sun_path, config.unix_socket_path.c_str(),
-              config.unix_socket_path.size() + 1);
-  ::unlink(config.unix_socket_path.c_str());  // clear any stale socket file
+  std::memcpy(address.sun_path, config.path.c_str(), config.path.size() + 1);
+  ::unlink(config.path.c_str());  // clear any stale socket file
 
   if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
-    std::cerr << "goblin-core: bind(unix) failed: " << std::strerror(errno) << '\n';
+    std::cerr << "goblin-core: bind(unix " << config.path
+              << ") failed: " << std::strerror(errno) << '\n';
     close_fd(fd);
     return std::nullopt;
   }
-  if (::listen(fd, config.backlog) != 0) {
+  if (::listen(fd, backlog) != 0) {
     std::cerr << "goblin-core: listen failed: " << std::strerror(errno) << '\n';
     close_fd(fd);
+    ::unlink(config.path.c_str());
     return std::nullopt;
   }
   if (!set_nonblocking(fd)) {
     std::cerr << "goblin-core: failed to set listener nonblocking: "
               << std::strerror(errno) << '\n';
     close_fd(fd);
+    ::unlink(config.path.c_str());
     return std::nullopt;
   }
-  return fd;
+  return SocketListenerRuntime{.fd = fd,
+                               .tcp = false,
+                               .description = "unix:" + config.path,
+                               .uds_path = config.path};
 }
 
-[[nodiscard]] std::optional<int> create_listener(const ServerConfig& config) {
-  if (!config.unix_socket_path.empty()) {
-    return create_unix_listener(config);
-  }
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    std::cerr << "goblin-core: socket failed: " << std::strerror(errno) << '\n';
+[[nodiscard]] std::optional<SocketListenerRuntime> create_network_listener(
+    const TcpListenerConfig& config, int backlog) {
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+  hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
+
+  addrinfo* resolved = nullptr;
+  const std::string port_text = std::to_string(config.port);
+  const int lookup = ::getaddrinfo(config.bind_address.c_str(),
+                                   port_text.c_str(), &hints, &resolved);
+  if (lookup != 0) {
+    std::cerr << "goblin-core: invalid TCP bind address "
+              << format_tcp_endpoint(config.bind_address, config.port) << ": "
+              << ::gai_strerror(lookup) << '\n';
     return std::nullopt;
   }
 
-  int reuse = 1;
-  if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0) {
-    std::cerr << "goblin-core: setsockopt(SO_REUSEADDR) failed: " << std::strerror(errno)
-              << '\n';
-    close_fd(fd);
-    return std::nullopt;
-  }
-  set_no_sigpipe(fd);
+  int last_error = 0;
+  for (const addrinfo* candidate = resolved; candidate != nullptr;
+       candidate = candidate->ai_next) {
+    const int fd = ::socket(candidate->ai_family, candidate->ai_socktype,
+                            candidate->ai_protocol);
+    if (fd < 0) {
+      last_error = errno;
+      continue;
+    }
 
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = htons(config.port);
-  if (::inet_pton(AF_INET, config.bind_address.c_str(), &address.sin_addr) != 1) {
-    std::cerr << "goblin-core: invalid IPv4 bind address: " << config.bind_address << '\n';
-    close_fd(fd);
-    return std::nullopt;
+    int enabled = 1;
+    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enabled,
+                     sizeof(enabled)) != 0) {
+      last_error = errno;
+      close_fd(fd);
+      continue;
+    }
+    if (candidate->ai_family == AF_INET6 &&
+        ::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &enabled,
+                     sizeof(enabled)) != 0) {
+      last_error = errno;
+      close_fd(fd);
+      continue;
+    }
+    set_no_sigpipe(fd);
+
+    if (::bind(fd, candidate->ai_addr,
+               static_cast<socklen_t>(candidate->ai_addrlen)) != 0 ||
+        ::listen(fd, backlog) != 0 || !set_nonblocking(fd)) {
+      last_error = errno;
+      close_fd(fd);
+      continue;
+    }
+
+    ::freeaddrinfo(resolved);
+    return SocketListenerRuntime{
+        .fd = fd,
+        .tcp = true,
+        .description = format_tcp_endpoint(config.bind_address, config.port),
+        .uds_path = {}};
   }
 
-  if (::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
-    std::cerr << "goblin-core: bind failed: " << std::strerror(errno) << '\n';
-    close_fd(fd);
-    return std::nullopt;
-  }
-
-  if (::listen(fd, config.backlog) != 0) {
-    std::cerr << "goblin-core: listen failed: " << std::strerror(errno) << '\n';
-    close_fd(fd);
-    return std::nullopt;
-  }
-
-  if (!set_nonblocking(fd)) {
-    std::cerr << "goblin-core: failed to set listener nonblocking: " << std::strerror(errno)
-              << '\n';
-    close_fd(fd);
-    return std::nullopt;
-  }
-
-  return fd;
+  ::freeaddrinfo(resolved);
+  std::cerr << "goblin-core: bind/listen "
+            << format_tcp_endpoint(config.bind_address, config.port)
+            << " failed: " << std::strerror(last_error) << '\n';
+  return std::nullopt;
 }
 
-void accept_clients(int listener,
+void close_socket_listeners(
+    std::vector<SocketListenerRuntime>& listeners) noexcept {
+  for (auto& listener : listeners) {
+    close_fd(listener.fd);
+    listener.fd = -1;
+    if (!listener.uds_path.empty()) {
+      (void)::unlink(listener.uds_path.c_str());
+    }
+  }
+}
+
+[[nodiscard]] std::optional<std::vector<SocketListenerRuntime>>
+create_socket_listeners(const ServerConfig& config) {
+  std::vector<SocketListenerRuntime> listeners;
+  listeners.reserve(config.socket_listeners.size());
+  for (const auto& configured : config.socket_listeners) {
+    std::optional<SocketListenerRuntime> listener;
+    if (const auto* tcp = std::get_if<TcpListenerConfig>(&configured)) {
+      listener = create_network_listener(*tcp, config.backlog);
+    } else {
+      listener = create_unix_listener(std::get<UdsListenerConfig>(configured),
+                                      config.backlog);
+    }
+    if (!listener) {
+      close_socket_listeners(listeners);
+      return std::nullopt;
+    }
+    listeners.push_back(std::move(*listener));
+  }
+  return listeners;
+}
+
+void accept_clients(int listener_fd, bool tcp,
                     std::vector<std::unique_ptr<Client>>& clients,
                     const ServerConfig& config) {
   for (;;) {
     sockaddr_storage address{};
     socklen_t address_len = sizeof(address);
     const int client_fd =
-        ::accept(listener, reinterpret_cast<sockaddr*>(&address), &address_len);
+        ::accept(listener_fd, reinterpret_cast<sockaddr*>(&address), &address_len);
     if (client_fd < 0) {
       if (would_block()) {
         return;
@@ -427,8 +509,8 @@ void accept_clients(int listener,
       continue;
     }
     set_no_sigpipe(client_fd);
-    if (config.unix_socket_path.empty()) {
-      set_tcp_nodelay(client_fd);  // no-op / warning on AF_UNIX
+    if (tcp) {
+      set_tcp_nodelay(client_fd);
     }
 
     try {
@@ -1026,8 +1108,29 @@ template <class NetFn>
       numa::reset_policy();
     }
   }
-  std::cout << "goblin-core: polled mode -- busy-polling " << targets.size()
-            << " ordered target(s) ahead of sockets (100% CPU by design)\n"
+
+#ifdef GOBLIN_HAS_SBE
+  std::unique_ptr<detail::PubSubListenerRuntime> pubsub_listener;
+  if (config.pubsub_listener) {
+    try {
+      pubsub_listener = std::make_unique<detail::PubSubListenerRuntime>(
+          *config.pubsub_listener, config.pubsub_listener_pattern);
+      std::cout << "goblin-core: Pub/Sub listener connected to "
+                << pubsub_listener->description() << " and subscribed to pattern '"
+                << config.pubsub_listener_pattern << "' over SBE\n";
+    } catch (const std::exception& error) {
+      std::cerr << "goblin-core: Pub/Sub listener setup failed: "
+                << error.what() << '\n';
+      return false;
+    }
+  }
+#endif
+
+  std::cout << "goblin-core: polled mode -- busy-polling "
+            << targets.size()
+            << " ordered server target(s)"
+            << (config.pubsub_listener ? " plus one Pub/Sub listener" : "")
+            << " ahead of sockets (100% CPU by design)\n"
             << std::flush;
 
   // Drain one SQ record from `ep`, run whatever commands it completes, and push
@@ -1297,7 +1400,7 @@ template <class NetFn>
   const auto process_exasock_target = [&](ExasockRuntimeTarget& target) -> bool {
     bool progressed = false;
     const auto before_accept = target.clients.size();
-    accept_clients(target.listener_fd, target.clients, config);
+    accept_clients(target.listener_fd, true, target.clients, config);
     if (target.clients.size() > before_accept) {
       progressed = true;
     }
@@ -1431,6 +1534,27 @@ template <class NetFn>
         break;  // restart from the highest-priority configured target
       }
     }
+
+#ifdef GOBLIN_HAS_SBE
+    bool listener_progress = false;
+    if (pubsub_listener) {
+      try {
+        listener_progress = pubsub_listener->rebroadcast_one(pubsub);
+      } catch (const std::exception& error) {
+        std::cerr << "goblin-core: Pub/Sub listener failed: " << error.what()
+                  << '\n';
+        running = false;
+        break;
+      }
+      if (listener_progress) {
+        // Relaying can enqueue output for ordinary TCP/UDS subscribers. Service
+        // them now even when the upstream stream never goes idle.
+        network_iteration(0);
+        progressed = true;
+      }
+    }
+#endif
+
     if (progressed) {
       idle_spins = 0;
       continue;
@@ -1470,6 +1594,15 @@ template <class NetFn>
 
 Server::Server(ServerConfig config, Store& store)
     : config_(std::move(config)), store_(store) {
+  if (config_.socket_listeners.empty()) {
+    if (!config_.unix_socket_path.empty()) {
+      config_.socket_listeners.emplace_back(
+          UdsListenerConfig{.path = config_.unix_socket_path});
+    } else {
+      config_.socket_listeners.emplace_back(TcpListenerConfig{
+          .bind_address = config_.bind_address, .port = config_.port});
+    }
+  }
   const std::size_t page = static_cast<std::size_t>(ring::page_size());
   if (config_.unsolicited_output_buffer_bytes == 0) {
     config_.unsolicited_output_buffer_bytes = page;
@@ -1499,11 +1632,11 @@ void Server::stop() noexcept {
 int Server::run() {
   std::signal(SIGPIPE, SIG_IGN);
 
-  auto listener = create_listener(config_);
-  if (!listener) {
+  auto listeners_result = create_socket_listeners(config_);
+  if (!listeners_result) {
     return 1;
   }
-  const int listener_fd = *listener;
+  auto listeners = std::move(*listeners_result);
 
   detail::PubSubRegistry pubsub;
   std::vector<std::unique_ptr<Client>> clients;
@@ -1527,8 +1660,9 @@ int Server::run() {
   UPythonEngine upython_engine(store_, nested_dispatch);
   QuickJsEngine quickjs_engine(store_, nested_dispatch);
 
-  std::cout << "goblin-core listening on " << config_.bind_address << ':' << config_.port
-            << '\n';
+  for (const auto& listener : listeners) {
+    std::cout << "goblin-core listening on " << listener.description << '\n';
+  }
 
   // Keys expired per active-expiration sweep. A bounded batch keeps a mass
   // expiry from stalling the loop; when a sweep fills the batch more are likely
@@ -1560,8 +1694,12 @@ int Server::run() {
     }
 
     std::vector<pollfd> pollfds;
-    pollfds.reserve(clients.size() + 1);
-    pollfds.push_back(pollfd{.fd = listener_fd, .events = POLLIN, .revents = 0});
+    const std::size_t listener_count = listeners.size();
+    pollfds.reserve(clients.size() + listener_count);
+    for (const auto& listener : listeners) {
+      pollfds.push_back(
+          pollfd{.fd = listener.fd, .events = POLLIN, .revents = 0});
+    }
     for (auto& client_ptr : clients) {
       auto& client = *client_ptr;
       update_read_backpressure(client, config_);
@@ -1589,7 +1727,7 @@ int Server::run() {
     for (std::size_t i = 0; i < clients.size(); ++i) {
       bool keep = !clients[i]->close_requested;
       auto& client = *clients[i];
-      const auto revents = pollfds[i + 1].revents;
+      const auto revents = pollfds[listener_count + i].revents;
 
       if (keep && (revents & POLLOUT) != 0 && has_pending_output(client)) {
         keep = write_client(client, config_);
@@ -1639,12 +1777,14 @@ int Server::run() {
       }
     }
 
-    if ((pollfds[0].revents & POLLIN) != 0) {
-      accept_clients(listener_fd, clients, config_);
+    for (std::size_t i = 0; i < listener_count; ++i) {
+      if ((pollfds[i].revents & POLLIN) != 0) {
+        accept_clients(listeners[i].fd, listeners[i].tcp, clients, config_);
+      }
     }
   };
 
-  if (config_.poll_targets.empty()) {
+  if (config_.poll_targets.empty() && !config_.pubsub_listener) {
     // No polled targets: the ordinary event-driven server. poll() blocks, so an idle
     // server costs no CPU.
     while (running_) {
@@ -1654,7 +1794,7 @@ int Server::run() {
                                  luau_engine, wren_engine, tcl_engine,
                                  upython_engine, quickjs_engine,
                                  network_iteration)) {
-    close_fd(listener_fd);
+    close_socket_listeners(listeners);
     return 1;
   }
 
@@ -1662,7 +1802,7 @@ int Server::run() {
     pubsub.remove(*client);
     close_fd(client->fd);
   }
-  close_fd(listener_fd);
+  close_socket_listeners(listeners);
 
   return 0;
 }

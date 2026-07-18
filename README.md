@@ -328,6 +328,23 @@ cmake --install build-release --prefix /usr/local
 ./build-release/goblin-core --port 6379
 ```
 
+**Socket listeners.** Repeat `--tcp-listen <address>:<port>` and
+`--uds-listen <path>` to serve the same store through multiple TCP, IPv6, and
+Unix-domain endpoints at once. IPv6 addresses use brackets:
+
+```sh
+./build-release/goblin-core \
+  --tcp-listen 127.0.0.1:6379 \
+  --tcp-listen '[::1]:6379' \
+  --uds-listen /run/goblin/client.sock \
+  --uds-listen /run/goblin/admin.sock
+```
+
+The older `--bind <address> --port <port>` spelling still configures one TCP
+listener when no explicit socket listener is present. `--unixsocket <path>` is
+a repeatable alias for `--uds-listen`; as before, using it without an explicit
+`--tcp-listen` creates a UDS-only server.
+
 **Shared-memory rings (the fast path).** Pass `--ring <path> <size>` (repeatable) to
 accept requests over io_uring-style SQ/CQ ring buffers in shared memory instead of
 sockets — no syscall, no network stack on the request path:

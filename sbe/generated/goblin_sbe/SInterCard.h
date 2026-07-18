@@ -683,7 +683,8 @@ public:
     };
 
 private:
-    SBE_NODISCARD static const char *limitMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    public:
+SBE_NODISCARD static const char *limitMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
         {
@@ -745,6 +746,7 @@ private:
         std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
         return *this;
     }
+private:
     Keys m_keys;
 
 public:

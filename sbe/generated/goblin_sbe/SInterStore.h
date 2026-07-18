@@ -462,7 +462,7 @@ public:
         }
 
 
-        SBE_NODISCARD static const char *destinationMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+        SBE_NODISCARD static const char *keyMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
         {
             switch (metaAttribute)
             {
@@ -476,17 +476,17 @@ public:
             return "null";
         }
 
-        static SBE_CONSTEXPR std::uint64_t destinationSinceVersion() SBE_NOEXCEPT
+        static SBE_CONSTEXPR std::uint64_t keySinceVersion() SBE_NOEXCEPT
         {
             return 0;
         }
 
-        bool destinationInActingVersion() SBE_NOEXCEPT
+        bool keyInActingVersion() SBE_NOEXCEPT
         {
             return true;
         }
 
-        static SBE_CONSTEXPR std::uint16_t destinationId() SBE_NOEXCEPT
+        static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
         {
             return 1;
         }
@@ -496,7 +496,7 @@ public:
             return 4;
         }
 
-        SBE_NODISCARD std::uint32_t destinationLength() const
+        SBE_NODISCARD std::uint32_t keyLength() const
         {
             std::uint32_t length;
             std::memcpy(&length, m_buffer + sbePosition(), sizeof(std::uint32_t));
@@ -523,7 +523,7 @@ public:
             return keyPtr;
         }
 
-        std::uint64_t getDestination(char *dst, const std::uint64_t length)
+        std::uint64_t getKey(char *dst, const std::uint64_t length)
         {
             std::uint64_t lengthOfLengthKey = 4;
             std::uint64_t lengthPosition = sbePosition();
@@ -538,7 +538,7 @@ public:
             return bytesToCopy;
         }
 
-        Keys &putDestination(const char *src, const std::uint32_t length)
+        Keys &putKey(const char *src, const std::uint32_t length)
         {
             std::uint64_t lengthOfLengthKey = 4;
             std::uint64_t lengthPosition = sbePosition();
@@ -554,7 +554,7 @@ public:
             return *this;
         }
 
-        std::string getDestinationAsString()
+        std::string getKeyAsString()
         {
             std::uint64_t lengthOfLengthKey = 4;
             std::uint64_t lengthPosition = sbePosition();
@@ -568,10 +568,10 @@ public:
             return result;
         }
 
-        std::string getDestinationAsJsonEscapedString()
+        std::string getKeyAsJsonEscapedString()
         {
             std::ostringstream oss;
-            std::string s = getDestinationAsString();
+            std::string s = getKeyAsString();
 
             for (const auto c : s)
             {
@@ -602,7 +602,7 @@ public:
         }
 
         #ifdef SBE_USE_STRING_VIEW
-        std::string_view getDestinationAsStringView()
+        std::string_view getKeyAsStringView()
         {
             std::uint64_t lengthOfLengthKey = 4;
             std::uint64_t lengthPosition = sbePosition();
@@ -617,23 +617,23 @@ public:
         }
         #endif
 
-        Keys &putDestination(const std::string &str)
+        Keys &putKey(const std::string &str)
         {
             if (str.length() > 1073741824)
             {
                 throw std::runtime_error("std::string too long for length type [E109]");
             }
-            return putDestination(str.data(), static_cast<std::uint32_t>(str.length()));
+            return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
         }
 
         #ifdef SBE_USE_STRING_VIEW
-        Keys &putDestination(const std::string_view str)
+        Keys &putKey(const std::string_view str)
         {
             if (str.length() > 1073741824)
             {
                 throw std::runtime_error("std::string too long for length type [E109]");
             }
-            return putDestination(str.data(), static_cast<std::uint32_t>(str.length()));
+            return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
         }
         #endif
 
@@ -642,7 +642,7 @@ public:
             std::basic_ostream<CharT, Traits> &builder, Keys &writer)
         {
             builder << '{';
-            builder << R"("destination": )";
+            builder << R"("key": )";
             builder << '"' <<
                 writer.skipKey() << " bytes of raw data\"";
             builder << '}';
@@ -660,7 +660,7 @@ public:
             return false;
         }
 
-        SBE_NODISCARD static std::size_t computeLength(std::size_t destinationLength = 0)
+        SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0)
         {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -669,11 +669,11 @@ public:
             std::size_t length = sbeBlockLength();
 
             length += keyHeaderLength();
-            if (destinationLength > 1073741824LL)
+            if (keyLength > 1073741824LL)
             {
-                throw std::runtime_error("destinationLength too long for length type [E109]");
+                throw std::runtime_error("keyLength too long for length type [E109]");
             }
-            length += destinationLength;
+            length += keyLength;
 
             return length;
 #if defined(__GNUG__) && !defined(__clang__)
@@ -722,7 +722,7 @@ public:
         }
     }
 
-    static const char *keyCharacterEncoding() SBE_NOEXCEPT
+    static const char *destinationCharacterEncoding() SBE_NOEXCEPT
     {
         return "null";
     }
@@ -742,7 +742,7 @@ public:
         return 2;
     }
 
-    static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t destinationHeaderLength() SBE_NOEXCEPT
     {
         return 4;
     }
@@ -754,7 +754,7 @@ public:
         return SBE_LITTLE_ENDIAN_ENCODE_32(length);
     }
 
-    std::uint64_t skipKey()
+    std::uint64_t skipDestination()
     {
         std::uint64_t lengthOfLengthKey = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -924,7 +924,7 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << ", ";
     builder << R"("destination": )";
     builder << '"' <<
-        writer.skipKey() << " bytes of raw data\"";
+        writer.skipDestination() << " bytes of raw data\"";
     builder << '}';
 
     return builder;
@@ -937,7 +937,7 @@ void skip()
     {
         keysGroup.next().skip();
     }
-    skipKey();
+    skipDestination();
 }
 
 SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
@@ -970,7 +970,7 @@ SBE_NODISCARD static std::size_t computeLength(
         #endif
     }
 
-    length += keyHeaderLength();
+    length += destinationHeaderLength();
     if (destinationLength > 1073741824LL)
     {
         throw std::runtime_error("destinationLength too long for length type [E109]");
