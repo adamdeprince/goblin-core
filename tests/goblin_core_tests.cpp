@@ -3715,6 +3715,14 @@ void test_adaptive_pma_rank_select() {
   insert_batch(batched.size(), 193);
   insert_batch(0, 71);
   insert_batch(200, 89);
+  batched.erase_range(50, 137);
+  batch_expected.erase(batch_expected.begin() + 50,
+                       batch_expected.begin() + 187);
+  assert(batched.size() == batch_expected.size());
+  assert(batched.check_invariants());
+  for (std::size_t index = 0; index < batch_expected.size(); ++index) {
+    assert(batched.at(index) == batch_expected[index]);
+  }
 
   // Endpoint activity reserves a concrete share of compacted slack, not a
   // weight that disappears through integer rounding on a large list.
@@ -3918,6 +3926,43 @@ void test_list_listpack_and_pma() {
   assert(segmented_batches.at(2) == "a");
   assert(segmented_batches.check_invariants());
 
+  // Counted endpoint pops cross listpack leaves with one structural range
+  // erase and retain Redis's head-to-tail / tail-to-head reply ordering.
+  for (const auto implementation : {goblin::core::ListImplementation::Pma,
+                                    goblin::core::ListImplementation::Segmented}) {
+    List counted(ListOptions{
+        .implementation = implementation,
+        .listpack_max_entries = 0,
+        .max_density = 0.90,
+        .resize_growth = 1.20,
+    });
+    std::vector<std::string> storage;
+    std::vector<std::string_view> views;
+    storage.reserve(300);
+    views.reserve(300);
+    for (std::size_t index = 0; index < 300; ++index) {
+      storage.push_back("counted-" + std::to_string(index));
+    }
+    for (const auto& value : storage) {
+      views.push_back(value);
+    }
+    assert(counted.push_back(views) == 300);
+    const auto front_values = counted.pop_front(130);
+    assert(front_values.size() == 130);
+    for (std::size_t index = 0; index < front_values.size(); ++index) {
+      assert(front_values[index] == storage[index]);
+    }
+    const auto back_values = counted.pop_back(129);
+    assert(back_values.size() == 129);
+    for (std::size_t index = 0; index < back_values.size(); ++index) {
+      assert(back_values[index] == storage[299 - index]);
+    }
+    assert(counted.size() == 41);
+    assert(counted.at(0) == storage[130]);
+    assert(counted.at(40) == storage[170]);
+    assert(counted.check_invariants());
+  }
+
   // Repeated leaf-sized endpoint batches splice already-final leaves instead
   // of decoding and rebuilding the full tail on every batch.
   List segmented_leaf_batches(ListOptions{
@@ -4043,6 +4088,38 @@ void test_list_commands() {
   assert(execute_fields(store, {"LPUSHX", "missing", "x"}) == ":0\r\n");
   assert(execute_fields(store, {"LPOP", "missing", "3"}) == "$-1\r\n");
 
+  assert(execute_fields(store, {"RPUSH", "move-source", "a", "b", "c"}) ==
+         ":3\r\n");
+  assert(execute_fields(
+             store,
+             {"LMOVE", "move-source", "move-destination", "RIGHT", "LEFT"}) ==
+         "$1\r\nc\r\n");
+  assert(execute_fields(store,
+                        {"RPOPLPUSH", "move-source", "move-destination"}) ==
+         "$1\r\nb\r\n");
+  assert(execute_fields(store,
+                        {"LMOVE", "move-destination", "move-destination",
+                         "LEFT", "RIGHT"}) == "$1\r\nb\r\n");
+  assert(execute_fields(store,
+                        {"LRANGE", "move-destination", "0", "-1"}) ==
+         "*2\r\n$1\r\nc\r\n$1\r\nb\r\n");
+
+  assert(execute_fields(store, {"RPUSH", "multi-ready", "one", "two", "three"}) ==
+         ":3\r\n");
+  assert(execute_fields(store,
+                        {"LMPOP", "2", "multi-missing", "multi-ready",
+                         "RIGHT", "COUNT", "2"}) ==
+         "*2\r\n$11\r\nmulti-ready\r\n*2\r\n$5\r\nthree\r\n$3\r\ntwo\r\n");
+  assert(execute_fields(store, {"BLPOP", "multi-ready", "0"}) ==
+         "*2\r\n$11\r\nmulti-ready\r\n$3\r\none\r\n");
+  assert(execute_fields(store, {"BLPOP", "missing", "0"}) == "*-1\r\n");
+  assert(execute_fields(store,
+                        {"BLMOVE", "missing", "move-destination", "LEFT",
+                         "RIGHT", "0"}) == "$-1\r\n");
+  assert(execute_fields(store,
+                        {"BLMPOP", "0", "1", "missing", "LEFT"}) ==
+         "*-1\r\n");
+
   // A qualified push selects PMA for a new key. Standard command names then
   // keep operating on that existing representation without converting it.
   assert(execute_fields(store, {"GOBLIN.PMA.RPUSH", "qualified", "a", "b"}) ==
@@ -4053,6 +4130,12 @@ void test_list_commands() {
          "*4\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\na\r\n$1\r\nb\r\n");
   assert(execute_fields(store, {"GOBLIN.PMA.LLEN", "qualified"}) ==
          ":4\r\n");
+  assert(execute_fields(
+             store,
+             {"GOBLIN.PMA.LMOVE", "qualified", "qualified-moved", "RIGHT",
+              "LEFT"}) == "$1\r\nb\r\n");
+  assert(store.list_memory_stats("qualified-moved")->implementation ==
+         goblin::core::ListImplementation::Pma);
 
   // Every implementation has a qualified family. A qualified push selects
   // the representation for a new key; all list names then operate on that
@@ -4091,6 +4174,12 @@ void test_list_commands() {
   assert(execute_fields(store,
                         {"GOBLIN.SEGMENTED.LLEN", "seg-qualified"}) ==
          ":1\r\n");
+  assert(execute_fields(
+             store,
+             {"GOBLIN.SEGMENTED.LMOVE", "seg-qualified", "seg-moved",
+              "LEFT", "RIGHT"}) == "$1\r\nB\r\n");
+  assert(store.list_memory_stats("seg-moved")->implementation ==
+         goblin::core::ListImplementation::Segmented);
   assert(execute_fields(store, {"INFO"})
              .find("list_implementation:segmented") != std::string::npos);
 

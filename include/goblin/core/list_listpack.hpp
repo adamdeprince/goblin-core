@@ -239,6 +239,23 @@ class ListListpack {
     return removed;
   }
 
+  // Remove one contiguous logical range with a single blob allocation/copy.
+  // Callers that need the removed values read them before invoking this method.
+  void erase_range(std::size_t first, std::size_t count) {
+    const auto hdr = unpack();
+    if (first >= hdr.count || count == 0) {
+      return;
+    }
+    const auto removed_count =
+        std::min<std::size_t>(count, hdr.count - first);
+    const auto offset = offset_of(first, hdr);
+    auto removed_bytes = std::size_t{0};
+    for (std::size_t index = 0; index < removed_count; ++index) {
+      removed_bytes += read_entry(hdr.entries + offset + removed_bytes).bytes();
+    }
+    erase_range_at(offset, removed_bytes, removed_count, hdr);
+  }
+
   // Concatenate another listpack's entries onto this one with a single
   // allocation. Preserves stored encodings; used by segmented leaf merges.
   [[nodiscard]] bool concat(
@@ -527,6 +544,11 @@ class ListListpack {
   }
 
   void erase_at(std::size_t offset, std::size_t bytes, const Header& hdr) {
+    erase_range_at(offset, bytes, 1, hdr);
+  }
+
+  void erase_range_at(std::size_t offset, std::size_t bytes,
+                      std::size_t count, const Header& hdr) {
     const auto new_len = hdr.len - static_cast<std::uint32_t>(bytes);
     if (new_len == 0) {
       free_blob(p_);
@@ -534,7 +556,8 @@ class ListListpack {
       return;
     }
     char* next = alloc_blob(new_len);
-    write_header(next, new_len, static_cast<std::uint16_t>(hdr.count - 1));
+    write_header(next, new_len,
+                 static_cast<std::uint16_t>(hdr.count - count));
     char* dst = next + kListListpackHeaderBytes;
     if (offset != 0) {
       std::memcpy(dst, hdr.entries, offset);

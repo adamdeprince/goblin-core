@@ -296,6 +296,66 @@ class SegmentedList {
     return removed;
   }
 
+  // Remove a range at either endpoint. Whole leaves are discarded together
+  // and the sole partial leaf, if any, is rewritten once.
+  void erase_endpoint(std::size_t first, std::size_t count) {
+    if (first >= size_ || count == 0) {
+      return;
+    }
+    count = std::min(count, size_ - first);
+    assert(first == 0 || first + count == size_);
+
+    bool removed_whole_leaf = false;
+    std::size_t partial_leaf = 0;
+    if (first == 0) {
+      auto remaining = count;
+      std::size_t whole_leaves = 0;
+      while (whole_leaves < leaves_.size() &&
+             remaining >= leaves_[whole_leaves].size()) {
+        remaining -= leaves_[whole_leaves].size();
+        ++whole_leaves;
+      }
+      if (remaining != 0) {
+        leaves_[whole_leaves].erase_range(0, remaining);
+      }
+      if (whole_leaves != 0) {
+        removed_whole_leaf = true;
+        leaves_.erase(
+            leaves_.begin(),
+            leaves_.begin() + static_cast<std::ptrdiff_t>(whole_leaves));
+      }
+    } else {
+      auto remaining = count;
+      auto suffix_begin = leaves_.size();
+      while (suffix_begin != 0 &&
+             remaining >= leaves_[suffix_begin - 1].size()) {
+        remaining -= leaves_[suffix_begin - 1].size();
+        --suffix_begin;
+      }
+      if (remaining != 0) {
+        partial_leaf = suffix_begin - 1;
+        auto& leaf = leaves_[partial_leaf];
+        leaf.erase_range(leaf.size() - remaining, remaining);
+      }
+      if (suffix_begin != leaves_.size()) {
+        removed_whole_leaf = true;
+        leaves_.erase(
+            leaves_.begin() + static_cast<std::ptrdiff_t>(suffix_begin),
+            leaves_.end());
+      }
+    }
+
+    size_ -= count;
+    if (removed_whole_leaf) {
+      rebuild_index();
+    } else {
+      add_count(partial_leaf, -static_cast<int>(count));
+    }
+    if (!leaves_.empty()) {
+      maybe_merge(first == 0 ? 0 : leaves_.size() - 1);
+    }
+  }
+
   template <class Fn>
   void for_each(Fn&& fn) const {
     for (const auto& leaf : leaves_) {

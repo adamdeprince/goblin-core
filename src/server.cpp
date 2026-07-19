@@ -38,6 +38,8 @@
 #endif
 
 #include <cerrno>
+#include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <cstring>
 #include <iostream>
@@ -65,6 +67,14 @@ constexpr std::size_t kOutputCompactThreshold = 64 * 1024;
 struct ReplyBoundary {
   std::uint64_t sequence{0};
   std::size_t end_offset{0};
+};
+
+struct BlockedListRequest {
+  using Clock = std::chrono::steady_clock;
+
+  std::vector<std::string> fields;
+  std::optional<Clock::time_point> deadline;
+  bool null_array{false};
 };
 
 struct EndpointSession : detail::PubSubSession {
@@ -97,6 +107,7 @@ struct EndpointSession : detail::PubSubSession {
   std::size_t output_offset{0};
   std::vector<ReplyBoundary> replies;
   std::size_t reply_index{0};
+  std::optional<BlockedListRequest> blocked_list;
 
   void record_reply(std::size_t prior_size) {
     if (output.size() != prior_size) {
@@ -126,9 +137,189 @@ struct EndpointSession : detail::PubSubSession {
     clear_unsolicited_front_cache();
     next_output_sequence = 1;
     close_requested = false;
+    blocked_list.reset();
     transaction.reset();
   }
 };
+
+class BlockingListRegistry {
+ public:
+  [[nodiscard]] bool park(EndpointSession& session, const Command& command) {
+    if (session.blocked_list) {
+      return true;
+    }
+
+    BlockedListRequest request;
+    try {
+      request.fields.reserve(command.args.size() + 1);
+      request.fields.emplace_back(command.name);
+      for (const auto arg : command.args) {
+        request.fields.emplace_back(arg);
+      }
+      request.null_array = null_array_reply(command.type);
+      if (command.list_timeout_seconds > 0.0) {
+        const auto now = BlockedListRequest::Clock::now();
+        const auto available = BlockedListRequest::Clock::time_point::max() - now;
+        const auto available_seconds =
+            std::chrono::duration<double>(available).count();
+        request.deadline = command.list_timeout_seconds >= available_seconds
+                               ? BlockedListRequest::Clock::time_point::max()
+                               : now + std::chrono::duration_cast<
+                                           BlockedListRequest::Clock::duration>(
+                                           std::chrono::duration<double>(
+                                               command.list_timeout_seconds));
+      }
+      session.blocked_list.emplace(std::move(request));
+      waiters_.push_back(&session);
+      return true;
+    } catch (const std::bad_alloc&) {
+      session.blocked_list.reset();
+      return false;
+    }
+  }
+
+  void remove(EndpointSession& session) noexcept {
+    const auto found = std::find(waiters_.begin(), waiters_.end(), &session);
+    if (found != waiters_.end()) {
+      waiters_.erase(found);
+    }
+    session.blocked_list.reset();
+  }
+
+  void modified() noexcept { dirty_ = true; }
+
+  void serve_ready(Store& store) {
+    if (!dirty_ && !deadline_due(BlockedListRequest::Clock::now())) {
+      return;
+    }
+    dirty_ = false;
+
+    std::size_t index = 0;
+    while (index < waiters_.size()) {
+      auto& session = *waiters_[index];
+      if (!session.blocked_list) {
+        waiters_.erase(waiters_.begin() + static_cast<std::ptrdiff_t>(index));
+        continue;
+      }
+
+      auto& request = *session.blocked_list;
+      session.fields.clear();
+      session.fields.reserve(request.fields.size());
+      for (const auto& field : request.fields) {
+        session.fields.emplace_back(field);
+      }
+
+      const auto parsed = parse_command(session.fields);
+      const std::size_t prior_size = session.output.size();
+      if (!parsed.ok()) {
+        resp::append_error(session.output, parsed.error);
+      } else {
+        CommandExecutionOptions options;
+        options.resp_version = &session.resp_version;
+        options.blocking_lists = BlockingListDispatch{
+            .context = nullptr,
+            .park = [](void*, const Command&) { return true; }};
+        execute_command_into(store, *parsed.command, session.output, options);
+      }
+
+      if (session.output.size() != prior_size) {
+        session.record_reply(prior_size);
+        session.fields.clear();
+        session.blocked_list.reset();
+        waiters_.erase(waiters_.begin() + static_cast<std::ptrdiff_t>(index));
+        // A successful BLMOVE can make a destination ready for an older waiter.
+        index = 0;
+        continue;
+      }
+
+      if (request.deadline &&
+          *request.deadline <= BlockedListRequest::Clock::now()) {
+        if (request.null_array && session.resp_version == resp::Version::resp2) {
+          session.output.append("*-1\r\n");
+        } else {
+          resp::append_null(session.output, session.resp_version);
+        }
+        session.record_reply(prior_size);
+        session.fields.clear();
+        session.blocked_list.reset();
+        waiters_.erase(waiters_.begin() + static_cast<std::ptrdiff_t>(index));
+        continue;
+      }
+      session.fields.clear();
+      ++index;
+    }
+    dirty_ = false;
+  }
+
+  [[nodiscard]] int clamp_poll_timeout(int requested_ms) const noexcept {
+    if (requested_ms <= 0) {
+      return requested_ms;
+    }
+    const auto now = BlockedListRequest::Clock::now();
+    int result = requested_ms;
+    for (const auto* session : waiters_) {
+      if (session == nullptr || !session->blocked_list ||
+          !session->blocked_list->deadline) {
+        continue;
+      }
+      const auto deadline = *session->blocked_list->deadline;
+      if (deadline <= now) {
+        return 0;
+      }
+      const auto remaining = deadline - now;
+      auto rounded =
+          std::chrono::duration_cast<std::chrono::milliseconds>(remaining);
+      if (std::chrono::duration_cast<BlockedListRequest::Clock::duration>(
+              rounded) < remaining) {
+        rounded += std::chrono::milliseconds(1);
+      }
+      const auto millis = rounded.count();
+      result = std::min(result, static_cast<int>(std::min<long long>(
+                                    millis, std::numeric_limits<int>::max())));
+    }
+    return result;
+  }
+
+ private:
+  [[nodiscard]] static bool null_array_reply(CommandType type) noexcept {
+    switch (type) {
+      case CommandType::blpop:
+      case CommandType::brpop:
+      case CommandType::blmpop:
+      case CommandType::pma_blpop:
+      case CommandType::pma_brpop:
+      case CommandType::pma_blmpop:
+      case CommandType::segmented_blpop:
+      case CommandType::segmented_brpop:
+      case CommandType::segmented_blmpop:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  [[nodiscard]] bool deadline_due(
+      BlockedListRequest::Clock::time_point now) const noexcept {
+    return std::any_of(waiters_.begin(), waiters_.end(), [now](const auto* waiter) {
+      return waiter != nullptr && waiter->blocked_list &&
+             waiter->blocked_list->deadline &&
+             *waiter->blocked_list->deadline <= now;
+    });
+  }
+
+  std::vector<EndpointSession*> waiters_;
+  bool dirty_{false};
+};
+
+struct BlockingListParkContext {
+  BlockingListRegistry* registry{nullptr};
+  EndpointSession* session{nullptr};
+};
+
+[[nodiscard]] bool park_blocking_list(void* context, const Command& command) {
+  auto& park = *static_cast<BlockingListParkContext*>(context);
+  return park.registry->park(*park.session, command);
+}
 
 struct Client : EndpointSession {
   Client(int client_fd, std::size_t unsolicited_output_bytes,
@@ -669,6 +860,8 @@ void execute_queued_transaction(EndpointSession& session, Store& store,
   const std::size_t count = transaction.commands.command_count();
   resp::append_array_header(session.output, count);
   transaction.in_multi = false;
+  auto queued_options = exec_options;
+  queued_options.blocking_lists = {};
   std::size_t offset = 0;
   for (std::size_t index = 0; index < count; ++index) {
     if (!transaction.commands.decode(offset, session.fields)) {
@@ -685,7 +878,8 @@ void execute_queued_transaction(EndpointSession& session, Store& store,
     } else if (is_pubsub_command(parsed.command->type)) {
       pubsub.execute(session, *parsed.command, session.output);
     } else {
-      execute_command_into(store, *parsed.command, session.output, exec_options);
+      execute_command_into(store, *parsed.command, session.output,
+                           queued_options);
     }
     scrub_auth_request(session.fields);
   }
@@ -766,6 +960,7 @@ void execute_queued_transaction(EndpointSession& session, Store& store,
 void dispatch_resp_command(EndpointSession& session, Store& store,
                            detail::PubSubRegistry& pubsub,
                            detail::WatchRegistry& watches,
+                           BlockingListRegistry& blocking_lists,
                            std::span<const std::string_view> fields,
                            const CommandExecutionOptions& exec_options) {
   const std::size_t prior_size = session.output.size();
@@ -820,6 +1015,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                 : detail::WireMode::resp2;
       }
       session.record_reply(prior_size);
+      blocking_lists.serve_ready(store);
       return;
     }
   } else if (is_pubsub_command(command.type)) {
@@ -835,6 +1031,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                             : detail::WireMode::resp2;
   }
   session.record_reply(prior_size);
+  blocking_lists.serve_ready(store);
 }
 
 #ifdef GOBLIN_HAS_SBE
@@ -956,6 +1153,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                              Store& store,
                                              detail::PubSubRegistry& pubsub,
                                              detail::WatchRegistry& watches,
+                                             BlockingListRegistry& blocking_lists,
                                              ScriptEngine& script_engine,
                                              LuauEngine& luau_engine,
                                              WrenEngine& wren_engine,
@@ -964,9 +1162,14 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                              QuickJsEngine& quickjs_engine,
                                              const ServerConfig& config,
                                              const AuthDatabase* auth_database) {
+  if (client.blocked_list) {
+    return true;
+  }
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
 
+  BlockingListParkContext park_context{.registry = &blocking_lists,
+                                       .session = &client};
   const CommandExecutionOptions exec_options{
       .output_reserve_limit = config.max_output_buffer_bytes,
       .resp_version = &client.resp_version,
@@ -978,6 +1181,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       .client_library_name = &client.client_library_name,
       .client_library_version = &client.client_library_version,
       .quit_requested = &client.close_after_write,
+      .blocking_lists = BlockingListDispatch{.context = &park_context,
+                                             .park = park_blocking_list},
       .script_engine = &script_engine,
       .luau_engine = &luau_engine,
       .wren_engine = &wren_engine,
@@ -1027,6 +1232,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
         break;
       }
       client.record_reply(prior_size);
+      blocking_lists.serve_ready(store);
       off += consumed;
       compact_output_if_needed(client);
       update_read_backpressure(client, config);
@@ -1042,12 +1248,12 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   client.parser.append(client.inbuf);
   secure_zero_memory(client.inbuf.data(), client.inbuf.size());
   client.inbuf.clear();
-  while (!client.read_backpressured) {
+  while (!client.read_backpressured && !client.blocked_list) {
     if (!client.parser.pop_into(client.fields)) {
       break;
     }
-    dispatch_resp_command(client, store, pubsub, watches, client.fields,
-                          exec_options);
+    dispatch_resp_command(client, store, pubsub, watches, blocking_lists,
+                          client.fields, exec_options);
     if (client.close_after_write) {
       break;
     }
@@ -1055,7 +1261,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     update_read_backpressure(client, config);
   }
 
-  if (client.parser.has_error()) {
+  if (!client.blocked_list && client.parser.has_error()) {
     if (!client.close_after_write) {
       const std::size_t prior_size = client.output.size();
       resp::append_error(client.output, client.parser.error());
@@ -1073,6 +1279,9 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 // Drives the post-backpressure drain loop; a partial SBE frame returns false so that
 // loop cannot spin.
 [[nodiscard]] bool has_buffered_work(const Client& client) {
+  if (client.blocked_list) {
+    return false;
+  }
 #ifdef GOBLIN_HAS_SBE
   if (client.wire_mode == detail::WireMode::sbe) {
     if (client.inbuf.size() < kSbeLenPrefix) {
@@ -1089,6 +1298,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 [[nodiscard]] bool read_client(Client& client, Store& store,
                                detail::PubSubRegistry& pubsub,
                                detail::WatchRegistry& watches,
+                               BlockingListRegistry& blocking_lists,
                                ScriptEngine& script_engine,
                                LuauEngine& luau_engine,
                                WrenEngine& wren_engine,
@@ -1110,11 +1320,14 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     if (received > 0) {
       client.inbuf.append(buffer.data(), static_cast<std::size_t>(received));
 
-      if (!process_buffered_commands(client, store, pubsub, watches,
-                                     script_engine, luau_engine, wren_engine,
-                                     tcl_engine, upython_engine, quickjs_engine,
-                                     config, auth_database)) {
-        return false;
+      if (!client.blocked_list) {
+        if (!process_buffered_commands(client, store, pubsub, watches,
+                                       blocking_lists, script_engine,
+                                       luau_engine, wren_engine, tcl_engine,
+                                       upython_engine, quickjs_engine, config,
+                                       auth_database)) {
+          return false;
+        }
       }
       if (client.close_after_write) {
         return true;
@@ -1261,6 +1474,7 @@ template <class NetFn>
 [[nodiscard]] bool run_polled_targets(
     const ServerConfig& config, Store& store, std::atomic_bool& running,
     detail::PubSubRegistry& pubsub, detail::WatchRegistry& watches,
+    BlockingListRegistry& blocking_lists,
     ScriptEngine& script_engine,
     LuauEngine& luau_engine, WrenEngine& wren_engine, TclEngine& tcl_engine,
     UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
@@ -1469,7 +1683,12 @@ template <class NetFn>
     if (ep.close_requested || has_pending_output(ep)) {
       return output_progress;
     }
+    if (ep.blocked_list) {
+      return output_progress;
+    }
 
+    BlockingListParkContext park_context{.registry = &blocking_lists,
+                                         .session = &ep};
     const CommandExecutionOptions exec_options{
         .output_reserve_limit = config.max_output_buffer_bytes,
         .resp_version = &ep.resp_version,
@@ -1481,6 +1700,8 @@ template <class NetFn>
         .client_library_name = &ep.client_library_name,
         .client_library_version = &ep.client_library_version,
         .quit_requested = &ep.quit_after_write,
+        .blocking_lists = BlockingListDispatch{.context = &park_context,
+                                               .park = park_blocking_list},
         .script_engine = &script_engine,
         .luau_engine = &luau_engine,
         .wren_engine = &wren_engine,
@@ -1539,6 +1760,7 @@ template <class NetFn>
             break;
           }
           ep.record_reply(prior_size);
+          blocking_lists.serve_ready(store);
           off += consumed;
         }
         if (off == record->size()) {
@@ -1574,6 +1796,7 @@ template <class NetFn>
             break;
           }
           ep.record_reply(prior_size);
+          blocking_lists.serve_ready(store);
           off += consumed;
         }
         if (off > 0) {
@@ -1587,14 +1810,14 @@ template <class NetFn>
       ep.parser.append(ep.inbuf);
       secure_zero_memory(ep.inbuf.data(), ep.inbuf.size());
       ep.inbuf.clear();
-      while (ep.parser.pop_into(ep.fields)) {
-        dispatch_resp_command(ep, store, pubsub, watches, ep.fields,
-                              exec_options);
-        if (ep.quit_after_write) {
+      while (!ep.blocked_list && ep.parser.pop_into(ep.fields)) {
+        dispatch_resp_command(ep, store, pubsub, watches, blocking_lists,
+                              ep.fields, exec_options);
+        if (ep.quit_after_write || ep.blocked_list) {
           break;
         }
       }
-      if (ep.parser.has_error()) {
+      if (!ep.blocked_list && ep.parser.has_error()) {
         const std::size_t prior_size = ep.output.size();
         resp::append_error(ep.output, ep.parser.error());
         ep.record_reply(prior_size);
@@ -1613,6 +1836,7 @@ template <class NetFn>
         epoch != ep.acked_epoch) {
       pubsub.remove(ep);
       watches.remove(ep.transaction);
+      blocking_lists.remove(ep);
       ep.mapping.drain_for_reconnect();
       ep.reset_connection(next_connection_id());
       ep.mapping.ack_epoch(epoch);
@@ -1660,6 +1884,7 @@ template <class NetFn>
       }
       pubsub.remove(endpoint);
       watches.remove(endpoint.transaction);
+      blocking_lists.remove(endpoint);
       target.endpoints.erase(target.endpoints.begin() +
                              static_cast<std::ptrdiff_t>(index));
       if (target.next_endpoint > index) {
@@ -1717,6 +1942,7 @@ template <class NetFn>
       if (client.close_requested && !has_pending_output(client)) {
         pubsub.remove(client);
         watches.remove(client.transaction);
+        blocking_lists.remove(client);
         close_fd(client.fd);
         target.clients.erase(target.clients.begin() +
                              static_cast<std::ptrdiff_t>(index));
@@ -1751,7 +1977,8 @@ template <class NetFn>
 
       if (keep && !client.read_backpressured && has_buffered_work(client)) {
         keep = process_buffered_commands(
-            client, store, pubsub, watches, script_engine, luau_engine,
+            client, store, pubsub, watches, blocking_lists, script_engine,
+            luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config,
             auth_database);
         did_work = true;
@@ -1771,9 +1998,10 @@ template <class NetFn>
       }
 
       if (keep && (pfd.revents & POLLIN) != 0 && !client.read_backpressured) {
-        keep = read_client(client, store, pubsub, watches, script_engine,
-                           luau_engine, wren_engine, tcl_engine, upython_engine,
-                           quickjs_engine, config, auth_database);
+        keep = read_client(client, store, pubsub, watches, blocking_lists,
+                           script_engine, luau_engine, wren_engine, tcl_engine,
+                           upython_engine, quickjs_engine, config,
+                           auth_database);
         did_work = true;
       }
       if (keep && (pfd.revents & POLLOUT) != 0 && has_pending_output(client)) {
@@ -1784,6 +2012,7 @@ template <class NetFn>
       if (!keep || client.close_requested) {
         pubsub.remove(client);
         watches.remove(client.transaction);
+        blocking_lists.remove(client);
         close_fd(client.fd);
         target.clients.erase(target.clients.begin() +
                              static_cast<std::ptrdiff_t>(index));
@@ -1876,12 +2105,14 @@ template <class NetFn>
     if (target.ring_endpoint) {
       pubsub.remove(*target.ring_endpoint);
       watches.remove(target.ring_endpoint->transaction);
+      blocking_lists.remove(*target.ring_endpoint);
     }
 #ifdef GOBLIN_HAS_EXASOCK
     if (target.exasock_target) {
       for (auto& client : target.exasock_target->clients) {
         pubsub.remove(*client);
         watches.remove(client->transaction);
+        blocking_lists.remove(*client);
         close_fd(client->fd);
         client->fd = -1;
       }
@@ -1894,6 +2125,7 @@ template <class NetFn>
       for (auto& endpoint : target.rdma_target->endpoints) {
         pubsub.remove(*endpoint);
         watches.remove(endpoint->transaction);
+        blocking_lists.remove(*endpoint);
       }
     }
 #endif
@@ -2010,13 +2242,22 @@ int Server::run() {
 
   detail::PubSubRegistry pubsub;
   detail::WatchRegistry watches;
+  BlockingListRegistry blocking_lists;
+  struct StoreObservers {
+    detail::WatchRegistry* watches;
+    BlockingListRegistry* blocking_lists;
+  } store_observers{.watches = &watches, .blocking_lists = &blocking_lists};
   store_.set_mutation_observer(StoreMutationObserver{
-      .context = &watches,
+      .context = &store_observers,
       .key_modified = [](void* context, std::string_view key) noexcept {
-        static_cast<detail::WatchRegistry*>(context)->modified(key);
+        auto& observers = *static_cast<StoreObservers*>(context);
+        observers.watches->modified(key);
+        observers.blocking_lists->modified();
       },
       .all_modified = [](void* context) noexcept {
-        static_cast<detail::WatchRegistry*>(context)->modified_all();
+        auto& observers = *static_cast<StoreObservers*>(context);
+        observers.watches->modified_all();
+        observers.blocking_lists->modified();
       }});
   struct MutationObserverReset {
     Store* store;
@@ -2099,6 +2340,8 @@ int Server::run() {
         poll_timeout = 0;  // batch full -- more are likely due, sweep again now
       }
     }
+    blocking_lists.serve_ready(store_);
+    poll_timeout = blocking_lists.clamp_poll_timeout(poll_timeout);
 
     std::vector<pollfd> pollfds;
     const std::size_t listener_count = listeners.size();
@@ -2163,15 +2406,16 @@ int Server::run() {
 
       if (keep && !client.read_backpressured) {
         keep = process_buffered_commands(
-            client, store_, pubsub, watches, script_engine, luau_engine,
+            client, store_, pubsub, watches, blocking_lists, script_engine,
+            luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
             auth);
       }
 
       if (keep && (revents & POLLIN) != 0 && !client.read_backpressured) {
-        keep = read_client(client, store_, pubsub, watches, script_engine,
-                           luau_engine, wren_engine, tcl_engine, upython_engine,
-                           quickjs_engine, config_, auth);
+        keep = read_client(client, store_, pubsub, watches, blocking_lists,
+                           script_engine, luau_engine, wren_engine, tcl_engine,
+                           upython_engine, quickjs_engine, config_, auth);
       }
 
       if (keep && has_pending_output(client)) {
@@ -2181,7 +2425,8 @@ int Server::run() {
       while (keep && !client.read_backpressured &&
              has_buffered_work(client)) {
         keep = process_buffered_commands(
-            client, store_, pubsub, watches, script_engine, luau_engine,
+            client, store_, pubsub, watches, blocking_lists, script_engine,
+            luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
             auth);
         if (keep && has_pending_output(client)) {
@@ -2204,6 +2449,7 @@ int Server::run() {
       if (close_client[index] != 0) {
         pubsub.remove(*clients[index]);
         watches.remove(clients[index]->transaction);
+        blocking_lists.remove(*clients[index]);
         close_fd(clients[index]->fd);
         clients.erase(clients.begin() + static_cast<long>(index));
       }
@@ -2223,7 +2469,8 @@ int Server::run() {
       network_iteration(1000);
     }
   } else if (!run_polled_targets(config_, store_, running_, pubsub, watches,
-                                 script_engine, luau_engine, wren_engine,
+                                 blocking_lists, script_engine, luau_engine,
+                                 wren_engine,
                                  tcl_engine, upython_engine, quickjs_engine,
                                  auth, network_iteration)) {
     close_socket_listeners(listeners);
@@ -2233,6 +2480,7 @@ int Server::run() {
   for (const auto& client : clients) {
     pubsub.remove(*client);
     watches.remove(client->transaction);
+    blocking_lists.remove(*client);
     close_fd(client->fd);
   }
   close_socket_listeners(listeners);

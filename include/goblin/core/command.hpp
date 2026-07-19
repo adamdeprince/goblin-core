@@ -123,6 +123,13 @@ enum class CommandType {
   rpushx,
   lpop,
   rpop,
+  lmove,
+  rpoplpush,
+  blpop,
+  brpop,
+  blmove,
+  lmpop,
+  blmpop,
   llen,
   lindex,
   lrange,
@@ -136,6 +143,13 @@ enum class CommandType {
   pma_rpushx,
   pma_lpop,
   pma_rpop,
+  pma_lmove,
+  pma_rpoplpush,
+  pma_blpop,
+  pma_brpop,
+  pma_blmove,
+  pma_lmpop,
+  pma_blmpop,
   pma_llen,
   pma_lindex,
   pma_lrange,
@@ -149,6 +163,13 @@ enum class CommandType {
   segmented_rpushx,
   segmented_lpop,
   segmented_rpop,
+  segmented_lmove,
+  segmented_rpoplpush,
+  segmented_blpop,
+  segmented_brpop,
+  segmented_blmove,
+  segmented_lmpop,
+  segmented_blmpop,
   segmented_llen,
   segmented_lindex,
   segmented_lrange,
@@ -218,6 +239,15 @@ struct Command {
   bool range_has_limit{false};
   long long range_limit_offset{0};
   long long range_limit_count{-1};
+  // Parsed list move/pop shape. For LMPOP/BLMPOP, list_key_offset points to the
+  // first key in args and list_key_count is the declared numkeys. Blocking
+  // commands store a finite non-negative timeout in seconds; zero is indefinite.
+  std::size_t list_key_offset{0};
+  std::size_t list_key_count{0};
+  std::size_t list_count{1};
+  double list_timeout_seconds{0.0};
+  bool list_pop_front{true};
+  bool list_push_front{true};
   // Set once at parse for GOBLIN.RT.* / GOBLIN.EFFICENT.* / GOBLIN.CLASSIC.*
   // so execute can select hash vs array implementation without re-scanning.
   // 0 = default store policy, 1 = non-RT qualified family, 2 = Realtime.
@@ -229,6 +259,15 @@ struct CommandParseResult {
   std::string error;
 
   [[nodiscard]] bool ok() const noexcept { return command.has_value(); }
+};
+
+struct BlockingListDispatch {
+  void* context{nullptr};
+  // Called only after a valid blocking command finds no immediately available
+  // element. Returning true means the live connection was parked and no reply
+  // should be emitted yet. Direct/script/transaction callers leave this null and
+  // receive the command's ordinary null reply instead.
+  bool (*park)(void*, const Command&){nullptr};
 };
 
 struct CommandExecutionOptions {
@@ -248,6 +287,7 @@ struct CommandExecutionOptions {
   std::string* client_library_name{nullptr};
   std::string* client_library_version{nullptr};
   bool* quit_requested{nullptr};
+  BlockingListDispatch blocking_lists{};
   // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
   // that do not enable scripting; those see the "not available" error instead.

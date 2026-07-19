@@ -2041,6 +2041,10 @@ class Store {
                                                std::size_t count);
   [[nodiscard]] std::vector<std::string> rpop(std::string_view key,
                                                std::size_t count);
+  [[nodiscard]] std::optional<std::string> lmove(
+      std::string_view source, std::string_view destination,
+      bool source_front, bool destination_front,
+      std::optional<ListImplementation> implementation = std::nullopt);
   [[nodiscard]] std::size_t llen(std::string_view key) const noexcept;
   [[nodiscard]] std::optional<EncodedStringView> lindex(
       std::string_view key, long long index) const noexcept;

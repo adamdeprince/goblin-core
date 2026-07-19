@@ -181,15 +181,18 @@ quicklist2 nodes containing plain values or listpacks.
 ## Commands
 
 The implemented suffixes are `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`,
-`RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LSET`, `LTRIM`, `LREM`, and `LINSERT`.
+`RPOP`, `LMOVE`, `RPOPLPUSH`, `BLPOP`, `BRPOP`, `BLMOVE`, `LMPOP`, `BLMPOP`,
+`LLEN`, `LINDEX`, `LRANGE`, `LSET`, `LTRIM`, `LREM`, and `LINSERT`.
 Prefix any suffix with `GOBLIN.PMA.` or `GOBLIN.SEGMENTED.` to select a concrete
 implementation for a new key. Standard names resolve through
 `--list-implementation`.
 
 Redis calls `BLPOP`, `BRPOP`, and related operations "blocking" because an
-empty-list request parks the client until a producer supplies a value. That
-waiting-client event-loop behavior is separate from command atomicity and is
-not part of the current list surface.
+empty-list request parks the client until a producer supplies a value. Goblin
+Core parks only that connection: other clients continue to execute, commands
+remain atomic, waiters wake FIFO, and a multi-key request checks keys in the
+client's declared order. `MULTI`/`EXEC` and scripts use the non-blocking form so
+an atomic block can never suspend the server.
 
 The repeatable 100,000-element comparison, including RESP population,
 rank-sensitive reads, middle and endpoint mutations, RSS, and per-key allocation, is in

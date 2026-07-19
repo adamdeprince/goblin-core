@@ -146,13 +146,19 @@ incremental RT indexes, qualified command families, and `--real-time` mode.
 ### Lists
 
 The [list command reference](commands/lists.md) covers both the default
-segmented backend and the adaptive-PMA backend.
+segmented backend and the adaptive-PMA backend. The
+[local work-queue benchmark](../LIST-WORK-QUEUE-BENCHMARK.md) compares the new
+commands with the existing list surface over one RESP2/UDS path.
 
 - [`LPUSH`](commands/lists.md), [`RPUSH`](commands/lists.md),
   [`LPUSHX`](commands/lists.md), [`RPUSHX`](commands/lists.md)
 - [`LPOP`](commands/lists.md), [`RPOP`](commands/lists.md),
+  [`LMOVE`](commands/lists.md), [`RPOPLPUSH`](commands/lists.md),
   [`LLEN`](commands/lists.md), [`LINDEX`](commands/lists.md),
   [`LRANGE`](commands/lists.md)
+- [`BLPOP`](commands/lists.md), [`BRPOP`](commands/lists.md),
+  [`BLMOVE`](commands/lists.md), [`LMPOP`](commands/lists.md),
+  [`BLMPOP`](commands/lists.md)
 - [`LSET`](commands/lists.md), [`LTRIM`](commands/lists.md),
   [`LREM`](commands/lists.md), [`LINSERT`](commands/lists.md)
 

@@ -139,6 +139,13 @@ and mutation semantics.
 - `RPUSHX key value [value ...]`
 - `LPOP key [count]`
 - `RPOP key [count]`
+- `LMOVE source destination LEFT|RIGHT LEFT|RIGHT`
+- `RPOPLPUSH source destination`
+- `BLPOP key [key ...] timeout`
+- `BRPOP key [key ...] timeout`
+- `BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout`
+- `LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]`
+- `BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]`
 - `LLEN key`
 - `LINDEX key index`
 - `LRANGE key start stop`

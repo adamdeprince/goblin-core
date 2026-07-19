@@ -252,6 +252,29 @@ class AdaptivePma {
     return removed;
   }
 
+  // Remove a logical range by clearing its occupancy words once, then perform
+  // at most one geometric shrink. Endpoint COUNT pops use this path so they do
+  // not pay rank/select, Fenwick maintenance, and shrink checks per element.
+  void erase_range(size_type rank, size_type count) {
+    if (rank > size_ || count > size_ - rank) {
+      throw std::out_of_range("PMA erase range");
+    }
+    if (count == 0) {
+      return;
+    }
+    const auto prior_size = size_;
+    const auto first_slot = select_slot(rank);
+    const auto last_slot = select_slot(rank + count - 1);
+    set_occupied_range(first_slot, last_slot + 1, false);
+    size_ -= count;
+    note_erase_range(rank, count, prior_size);
+    if (size_ == 0) {
+      clear();
+    } else {
+      maybe_shrink();
+    }
+  }
+
   void clear() noexcept {
     blocks_.clear();
     offsets_.clear();
@@ -1045,6 +1068,19 @@ class AdaptivePma {
       front_bias_ = std::min<std::uint8_t>(kMaxEndpointBias, front_bias_ + 1);
     } else if (rank == size_) {
       back_bias_ = std::min<std::uint8_t>(kMaxEndpointBias, back_bias_ + 1);
+    }
+  }
+
+  void note_erase_range(size_type rank, size_type count,
+                        size_type prior_size) noexcept {
+    const auto bump = static_cast<std::uint8_t>(
+        std::min<size_type>(count, kMaxEndpointBias));
+    if (rank == 0) {
+      front_bias_ = std::min<std::uint8_t>(
+          kMaxEndpointBias, static_cast<std::uint8_t>(front_bias_ + bump));
+    } else if (rank + count == prior_size) {
+      back_bias_ = std::min<std::uint8_t>(
+          kMaxEndpointBias, static_cast<std::uint8_t>(back_bias_ + bump));
     }
   }
 

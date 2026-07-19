@@ -235,6 +235,14 @@ class List {
                    : std::optional<std::string>(erase(size() - 1));
   }
 
+  [[nodiscard]] std::vector<std::string> pop_front(std::size_t count) {
+    return pop_endpoint(count, true);
+  }
+
+  [[nodiscard]] std::vector<std::string> pop_back(std::size_t count) {
+    return pop_endpoint(count, false);
+  }
+
   [[nodiscard]] EncodedStringView at(std::size_t index) const noexcept {
     assert(index < size());
     if (const auto* lp = small_ptr()) {
@@ -636,6 +644,54 @@ class List {
       state.order.set(rank, refs[rank]);
     }
     state.values = std::move(fresh);
+  }
+
+  [[nodiscard]] std::vector<std::string> pop_endpoint(std::size_t count,
+                                                       bool front) {
+    std::vector<std::string> removed;
+    const auto take = std::min(count, size());
+    if (take == 0) {
+      return removed;
+    }
+    const auto first = front ? std::size_t{0} : size() - take;
+    removed.reserve(take);
+
+    if (auto* packed = small_ptr()) {
+      packed->for_range(
+          first, take,
+          [&removed](EncodedStringView value) {
+            removed.push_back(value.to_string());
+          },
+          options_->string_encoding);
+      packed->erase_range(first, take);
+    } else if (auto* segmented = segmented_ptr()) {
+      (*segmented)->for_range(first, take, [&removed](EncodedStringView value) {
+        removed.push_back(value.to_string());
+      });
+      (*segmented)->erase_endpoint(first, take);
+      maybe_demote();
+    } else {
+      auto& state = full();
+      std::vector<ListValueRef> refs;
+      refs.reserve(take);
+      state.order.for_range(first, take,
+                            [&state, &removed, &refs](ListValueRef ref) {
+                              removed.push_back(
+                                  state.values.view(ref).to_string());
+                              refs.push_back(ref);
+                            });
+      state.order.erase_range(first, take);
+      for (const auto ref : refs) {
+        state.values.orphan(ref);
+      }
+      maybe_compact_values();
+      maybe_demote();
+    }
+
+    if (!front) {
+      std::reverse(removed.begin(), removed.end());
+    }
+    return removed;
   }
 
   std::shared_ptr<const ListOptions> options_;

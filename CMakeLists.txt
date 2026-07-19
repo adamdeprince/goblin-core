@@ -42,6 +42,7 @@ set(GOBLIN_CORE_HTML_DOCS
   ${CMAKE_CURRENT_SOURCE_DIR}/html/BENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/HSET-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LIST-BENCHMARK.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/LIST-WORK-QUEUE-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/SET-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/ARRAY-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LATENCY-SHOOTOUT.html
@@ -626,6 +627,15 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     target_compile_options(goblin_core_hset_benchmark PRIVATE
       -Wall -Wextra -Wpedantic)
 
+    add_executable(goblin_core_list_work_queue_benchmark
+      benchmarks/list_work_queue_benchmark.cpp)
+    target_link_libraries(goblin_core_list_work_queue_benchmark PRIVATE
+      goblin_core)
+    set_target_properties(goblin_core_list_work_queue_benchmark PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_list_work_queue_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+
     if(TARGET goblin_sbe_headers)
       add_executable(goblin_core_collection_benchmark_worker
         benchmarks/collection_benchmark_worker.cpp)
@@ -724,6 +734,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_transaction_socket_test
             $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_transaction_socket PROPERTIES TIMEOUT 60)
+
+  add_executable(goblin_core_list_blocking_socket_test
+    tests/list_blocking_socket_test.cpp)
+  target_link_libraries(goblin_core_list_blocking_socket_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_list_blocking_socket_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_list_blocking_socket
+    COMMAND goblin_core_list_blocking_socket_test
+            $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_list_blocking_socket PROPERTIES TIMEOUT 60)
 
   add_executable(goblin_core_array_test tests/array_test.cpp)
   target_link_libraries(goblin_core_array_test PRIVATE goblin_core)

@@ -263,6 +263,14 @@ struct ScoreBound {
                                          : resp::Version::resp2;
 }
 
+void append_null_array(std::string& out, resp::Version version) {
+  if (version == resp::Version::resp3) {
+    resp::append_null(out, version);
+  } else {
+    out.append("*-1\r\n");
+  }
+}
+
 void append_hello_response(std::string& out, resp::Version version,
                            std::uint64_t connection_id) {
   constexpr std::size_t kFieldCount = 7;
@@ -754,6 +762,13 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::rpushx:
     case CommandType::lpop:
     case CommandType::rpop:
+    case CommandType::lmove:
+    case CommandType::rpoplpush:
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::blmove:
+    case CommandType::lmpop:
+    case CommandType::blmpop:
     case CommandType::llen:
     case CommandType::lindex:
     case CommandType::lrange:
@@ -767,6 +782,13 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::pma_rpushx:
     case CommandType::pma_lpop:
     case CommandType::pma_rpop:
+    case CommandType::pma_lmove:
+    case CommandType::pma_rpoplpush:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::pma_blmove:
+    case CommandType::pma_lmpop:
+    case CommandType::pma_blmpop:
     case CommandType::pma_llen:
     case CommandType::pma_lindex:
     case CommandType::pma_lrange:
@@ -780,6 +802,13 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::segmented_rpushx:
     case CommandType::segmented_lpop:
     case CommandType::segmented_rpop:
+    case CommandType::segmented_lmove:
+    case CommandType::segmented_rpoplpush:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop:
+    case CommandType::segmented_blmove:
+    case CommandType::segmented_lmpop:
+    case CommandType::segmented_blmpop:
     case CommandType::segmented_llen:
     case CommandType::segmented_lindex:
     case CommandType::segmented_lrange:
@@ -810,6 +839,20 @@ constexpr std::string_view kValueTooLarge =
           return CommandType::segmented_lpop;
         case CommandType::rpop:
           return CommandType::segmented_rpop;
+        case CommandType::lmove:
+          return CommandType::segmented_lmove;
+        case CommandType::rpoplpush:
+          return CommandType::segmented_rpoplpush;
+        case CommandType::blpop:
+          return CommandType::segmented_blpop;
+        case CommandType::brpop:
+          return CommandType::segmented_brpop;
+        case CommandType::blmove:
+          return CommandType::segmented_blmove;
+        case CommandType::lmpop:
+          return CommandType::segmented_lmpop;
+        case CommandType::blmpop:
+          return CommandType::segmented_blmpop;
         case CommandType::llen:
           return CommandType::segmented_llen;
         case CommandType::lindex:
@@ -841,6 +884,20 @@ constexpr std::string_view kValueTooLarge =
           return CommandType::pma_lpop;
         case CommandType::rpop:
           return CommandType::pma_rpop;
+        case CommandType::lmove:
+          return CommandType::pma_lmove;
+        case CommandType::rpoplpush:
+          return CommandType::pma_rpoplpush;
+        case CommandType::blpop:
+          return CommandType::pma_blpop;
+        case CommandType::brpop:
+          return CommandType::pma_brpop;
+        case CommandType::blmove:
+          return CommandType::pma_blmove;
+        case CommandType::lmpop:
+          return CommandType::pma_lmpop;
+        case CommandType::blmpop:
+          return CommandType::pma_blmpop;
         case CommandType::llen:
           return CommandType::pma_llen;
         case CommandType::lindex:
@@ -911,6 +968,19 @@ constexpr std::string_view kValueTooLarge =
     return KeyType::Array;
   }
   if (is_list_command(type)) {
+    switch (type) {
+      // These commands carry timeout/numkeys before their first actual key and
+      // validate every declared key in their handler.
+      case CommandType::lmpop:
+      case CommandType::blmpop:
+      case CommandType::pma_lmpop:
+      case CommandType::pma_blmpop:
+      case CommandType::segmented_lmpop:
+      case CommandType::segmented_blmpop:
+        return std::nullopt;
+      default:
+        break;
+    }
     return KeyType::List;
   }
   if (is_typed_string_command(type)) {
@@ -1849,6 +1919,153 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = looked_up_type;
       return {.command = std::move(command)};
+    case CommandType::lmove:
+    case CommandType::pma_lmove:
+    case CommandType::segmented_lmove:
+      if (command.args.size() != 4) {
+        return parse_error(wrong_arity(command.name));
+      }
+      if (!equals_ci(command.args[2], "LEFT") &&
+          !equals_ci(command.args[2], "RIGHT")) {
+        return parse_error(syntax_error());
+      }
+      if (!equals_ci(command.args[3], "LEFT") &&
+          !equals_ci(command.args[3], "RIGHT")) {
+        return parse_error(syntax_error());
+      }
+      command.list_pop_front = equals_ci(command.args[2], "LEFT");
+      command.list_push_front = equals_ci(command.args[3], "LEFT");
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    case CommandType::rpoplpush:
+    case CommandType::pma_rpoplpush:
+    case CommandType::segmented_rpoplpush:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.list_pop_front = false;
+      command.list_push_front = true;
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    case CommandType::blmove:
+    case CommandType::pma_blmove:
+    case CommandType::segmented_blmove: {
+      if (command.args.size() != 5) {
+        return parse_error(wrong_arity(command.name));
+      }
+      if (!equals_ci(command.args[2], "LEFT") &&
+          !equals_ci(command.args[2], "RIGHT")) {
+        return parse_error(syntax_error());
+      }
+      if (!equals_ci(command.args[3], "LEFT") &&
+          !equals_ci(command.args[3], "RIGHT")) {
+        return parse_error(syntax_error());
+      }
+      const auto timeout = parse_score(command.args[4]);
+      if (!timeout) {
+        return parse_error("ERR timeout is not a float or out of range");
+      }
+      if (*timeout < 0.0) {
+        return parse_error("ERR timeout is negative");
+      }
+      command.list_pop_front = equals_ci(command.args[2], "LEFT");
+      command.list_push_front = equals_ci(command.args[3], "LEFT");
+      command.list_timeout_seconds = *timeout;
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    }
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop: {
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      const auto timeout = parse_score(command.args.back());
+      if (!timeout) {
+        return parse_error("ERR timeout is not a float or out of range");
+      }
+      if (*timeout < 0.0) {
+        return parse_error("ERR timeout is negative");
+      }
+      command.list_key_offset = 0;
+      command.list_key_count = command.args.size() - 1;
+      command.list_timeout_seconds = *timeout;
+      command.list_pop_front =
+          looked_up_type == CommandType::blpop ||
+          looked_up_type == CommandType::pma_blpop ||
+          looked_up_type == CommandType::segmented_blpop;
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    }
+    case CommandType::lmpop:
+    case CommandType::pma_lmpop:
+    case CommandType::segmented_lmpop:
+    case CommandType::blmpop:
+    case CommandType::pma_blmpop:
+    case CommandType::segmented_blmpop: {
+      const bool blocking = looked_up_type == CommandType::blmpop ||
+                            looked_up_type == CommandType::pma_blmpop ||
+                            looked_up_type == CommandType::segmented_blmpop;
+      const std::size_t minimum = blocking ? 4 : 3;
+      if (command.args.size() < minimum) {
+        return parse_error(wrong_arity(command.name));
+      }
+      std::size_t numkeys_offset = 0;
+      if (blocking) {
+        const auto timeout = parse_score(command.args[0]);
+        if (!timeout) {
+          return parse_error("ERR timeout is not a float or out of range");
+        }
+        if (*timeout < 0.0) {
+          return parse_error("ERR timeout is negative");
+        }
+        command.list_timeout_seconds = *timeout;
+        numkeys_offset = 1;
+      }
+      const auto numkeys = parse_ll(command.args[numkeys_offset]);
+      if (!numkeys) {
+        return parse_error(integer_range_error());
+      }
+      if (*numkeys <= 0) {
+        return parse_error("ERR numkeys should be greater than 0");
+      }
+      if (static_cast<unsigned long long>(*numkeys) >
+          command.args.size()) {
+        return parse_error(syntax_error());
+      }
+      const auto key_count = static_cast<std::size_t>(*numkeys);
+      const auto side_offset = numkeys_offset + 1 + key_count;
+      if (side_offset >= command.args.size() ||
+          (command.args.size() != side_offset + 1 &&
+           command.args.size() != side_offset + 3)) {
+        return parse_error(syntax_error());
+      }
+      if (!equals_ci(command.args[side_offset], "LEFT") &&
+          !equals_ci(command.args[side_offset], "RIGHT")) {
+        return parse_error(syntax_error());
+      }
+      command.list_key_offset = numkeys_offset + 1;
+      command.list_key_count = key_count;
+      command.list_pop_front = equals_ci(command.args[side_offset], "LEFT");
+      if (command.args.size() == side_offset + 3) {
+        if (!equals_ci(command.args[side_offset + 1], "COUNT")) {
+          return parse_error(syntax_error());
+        }
+        const auto count = parse_ll(command.args[side_offset + 2]);
+        if (!count) {
+          return parse_error(integer_range_error());
+        }
+        if (*count <= 0) {
+          return parse_error("ERR count should be greater than 0");
+        }
+        command.list_count = static_cast<std::size_t>(*count);
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    }
     case CommandType::llen:
     case CommandType::pma_llen:
     case CommandType::segmented_llen:
@@ -2165,6 +2382,13 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::rpushx:
     case CommandType::lpop:
     case CommandType::rpop:
+    case CommandType::lmove:
+    case CommandType::rpoplpush:
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::blmove:
+    case CommandType::lmpop:
+    case CommandType::blmpop:
     case CommandType::lset:
     case CommandType::ltrim:
     case CommandType::lrem:
@@ -2175,6 +2399,13 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::pma_rpushx:
     case CommandType::pma_lpop:
     case CommandType::pma_rpop:
+    case CommandType::pma_lmove:
+    case CommandType::pma_rpoplpush:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::pma_blmove:
+    case CommandType::pma_lmpop:
+    case CommandType::pma_blmpop:
     case CommandType::pma_lset:
     case CommandType::pma_ltrim:
     case CommandType::pma_lrem:
@@ -2185,6 +2416,13 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::segmented_rpushx:
     case CommandType::segmented_lpop:
     case CommandType::segmented_rpop:
+    case CommandType::segmented_lmove:
+    case CommandType::segmented_rpoplpush:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop:
+    case CommandType::segmented_blmove:
+    case CommandType::segmented_lmpop:
+    case CommandType::segmented_blmpop:
     case CommandType::segmented_lset:
     case CommandType::segmented_ltrim:
     case CommandType::segmented_lrem:
@@ -2356,6 +2594,9 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::arseek:
     case CommandType::goblin_cad:
     case CommandType::goblin_increx:
+    case CommandType::rpoplpush:
+    case CommandType::pma_rpoplpush:
+    case CommandType::segmented_rpoplpush:
       return 3;
     case CommandType::getrange:
     case CommandType::setrange:
@@ -2392,9 +2633,15 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::pma_linsert:
     case CommandType::segmented_linsert:
     case CommandType::goblin_claim:
+    case CommandType::lmove:
+    case CommandType::pma_lmove:
+    case CommandType::segmented_lmove:
       return 5;
     case CommandType::goblin_td_leaderboard_rescore:
     case CommandType::goblin_zwindow:
+    case CommandType::blmove:
+    case CommandType::pma_blmove:
+    case CommandType::segmented_blmove:
       return 6;
     case CommandType::ping:
     case CommandType::info:
@@ -2464,7 +2711,21 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::segmented_rpushx:
     case CommandType::set:
     case CommandType::mset:
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop:
       return -3;
+    case CommandType::lmpop:
+    case CommandType::pma_lmpop:
+    case CommandType::segmented_lmpop:
+      return -4;
+    case CommandType::blmpop:
+    case CommandType::pma_blmpop:
+    case CommandType::segmented_blmpop:
+      return -5;
     case CommandType::script:
     case CommandType::luau_script:
     case CommandType::wren_script:
@@ -2534,6 +2795,30 @@ struct CommandKeyRange {
       return {1, -1, 1};
     case CommandType::smove:
       return {1, 2, 1};
+    case CommandType::lmove:
+    case CommandType::rpoplpush:
+    case CommandType::blmove:
+    case CommandType::pma_lmove:
+    case CommandType::pma_rpoplpush:
+    case CommandType::pma_blmove:
+    case CommandType::segmented_lmove:
+    case CommandType::segmented_rpoplpush:
+    case CommandType::segmented_blmove:
+      return {1, 2, 1};
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop:
+      return {1, -2, 1};
+    case CommandType::lmpop:
+    case CommandType::blmpop:
+    case CommandType::pma_lmpop:
+    case CommandType::pma_blmpop:
+    case CommandType::segmented_lmpop:
+    case CommandType::segmented_blmpop:
+      return {};
     case CommandType::watch:
       return {1, -1, 1};
     default:
@@ -4135,6 +4420,136 @@ void execute_command_into(Store& store,
       for (const auto& value : values) {
         resp::append_bulk_string(out, value);
       }
+      return;
+    }
+
+    case CommandType::lmove:
+    case CommandType::rpoplpush:
+    case CommandType::blmove:
+    case CommandType::pma_lmove:
+    case CommandType::pma_rpoplpush:
+    case CommandType::pma_blmove:
+    case CommandType::segmented_lmove:
+    case CommandType::segmented_rpoplpush:
+    case CommandType::segmented_blmove: {
+      const bool blocking = type == CommandType::blmove ||
+                            type == CommandType::pma_blmove ||
+                            type == CommandType::segmented_blmove;
+      const auto source = command.args[0];
+      const auto destination = command.args[1];
+
+      // Redis does not inspect a wrong-type destination until the source can
+      // actually produce an item. This matters to BLMOVE waiting on an empty
+      // source and to LMOVE against a missing source.
+      if (store.llen(source) != 0) {
+        if (destination != source) {
+          if (!store.ttl_empty()) {
+            (void)store.purge_if_expired(destination, store.now_ms());
+          }
+          if (const auto destination_type = store.key_type(destination);
+              destination_type && *destination_type != KeyType::List) {
+            resp::append_error(out, kWrongType);
+            return;
+          }
+        }
+        const auto implementation =
+            type == CommandType::segmented_lmove ||
+                    type == CommandType::segmented_rpoplpush ||
+                    type == CommandType::segmented_blmove
+                ? ListImplementation::Segmented
+                : ListImplementation::Pma;
+        const auto value = store.lmove(
+            source, destination, command.list_pop_front,
+            command.list_push_front, implementation);
+        if (value) {
+          resp::append_bulk_string(out, *value);
+          return;
+        }
+      }
+
+      if (blocking && options.blocking_lists.park != nullptr &&
+          options.blocking_lists.park(options.blocking_lists.context, command)) {
+        return;
+      }
+      resp::append_null(out, version);
+      return;
+    }
+
+    case CommandType::blpop:
+    case CommandType::brpop:
+    case CommandType::lmpop:
+    case CommandType::blmpop:
+    case CommandType::pma_blpop:
+    case CommandType::pma_brpop:
+    case CommandType::pma_lmpop:
+    case CommandType::pma_blmpop:
+    case CommandType::segmented_blpop:
+    case CommandType::segmented_brpop:
+    case CommandType::segmented_lmpop:
+    case CommandType::segmented_blmpop: {
+      const bool blocking = type == CommandType::blpop ||
+                            type == CommandType::brpop ||
+                            type == CommandType::blmpop ||
+                            type == CommandType::pma_blpop ||
+                            type == CommandType::pma_brpop ||
+                            type == CommandType::pma_blmpop ||
+                            type == CommandType::segmented_blpop ||
+                            type == CommandType::segmented_brpop ||
+                            type == CommandType::segmented_blmpop;
+      const bool single = type == CommandType::blpop ||
+                          type == CommandType::brpop ||
+                          type == CommandType::pma_blpop ||
+                          type == CommandType::pma_brpop ||
+                          type == CommandType::segmented_blpop ||
+                          type == CommandType::segmented_brpop;
+      const auto keys = command.args.subspan(command.list_key_offset,
+                                             command.list_key_count);
+      const auto now = store.now_ms();
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) {
+          (void)store.purge_if_expired(key, now);
+        }
+        if (const auto actual = store.key_type(key);
+            actual && *actual != KeyType::List) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+        if (store.llen(key) == 0) {
+          continue;
+        }
+
+        if (single) {
+          const auto value = command.list_pop_front ? store.lpop(key)
+                                                    : store.rpop(key);
+          if (!value) {
+            continue;
+          }
+          resp::append_array_header(out, 2);
+          resp::append_bulk_string(out, key);
+          resp::append_bulk_string(out, *value);
+          return;
+        }
+
+        const auto values = command.list_pop_front
+                                ? store.lpop(key, command.list_count)
+                                : store.rpop(key, command.list_count);
+        if (values.empty()) {
+          continue;
+        }
+        resp::append_array_header(out, 2);
+        resp::append_bulk_string(out, key);
+        resp::append_array_header(out, values.size());
+        for (const auto& value : values) {
+          resp::append_bulk_string(out, value);
+        }
+        return;
+      }
+
+      if (blocking && options.blocking_lists.park != nullptr &&
+          options.blocking_lists.park(options.blocking_lists.context, command)) {
+        return;
+      }
+      append_null_array(out, version);
       return;
     }
 

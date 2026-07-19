@@ -1779,11 +1779,7 @@ std::vector<std::string> Store::lpop(std::string_view key, std::size_t count) {
   if (list == nullptr || count == 0) {
     return values;
   }
-  const auto take = std::min(count, list->size());
-  values.reserve(take);
-  for (std::size_t i = 0; i < take; ++i) {
-    values.push_back(*list->pop_front());
-  }
+  values = list->pop_front(count);
   if (!values.empty() && !list->empty()) {
     signal_key_modified(key);
   }
@@ -1797,16 +1793,74 @@ std::vector<std::string> Store::rpop(std::string_view key, std::size_t count) {
   if (list == nullptr || count == 0) {
     return values;
   }
-  const auto take = std::min(count, list->size());
-  values.reserve(take);
-  for (std::size_t i = 0; i < take; ++i) {
-    values.push_back(*list->pop_back());
-  }
+  values = list->pop_back(count);
   if (!values.empty() && !list->empty()) {
     signal_key_modified(key);
   }
   erase_if_empty(key, *list);
   return values;
+}
+
+std::optional<std::string> Store::lmove(
+    std::string_view source, std::string_view destination, bool source_front,
+    bool destination_front,
+    std::optional<ListImplementation> implementation) {
+  auto* source_list = find_list(source);
+  if (source_list == nullptr || source_list->empty()) {
+    return std::nullopt;
+  }
+
+  const auto pop_source = [&]() {
+    return source_front ? source_list->pop_front() : source_list->pop_back();
+  };
+  const auto restore_source = [&](std::string_view value) {
+    if (source_front) {
+      (void)source_list->push_front(value);
+    } else {
+      (void)source_list->push_back(value);
+    }
+  };
+
+  auto value = pop_source();
+  if (!value) {
+    return std::nullopt;
+  }
+
+  if (source == destination) {
+    try {
+      if (destination_front) {
+        (void)source_list->push_front(*value);
+      } else {
+        (void)source_list->push_back(*value);
+      }
+    } catch (...) {
+      restore_source(*value);
+      throw;
+    }
+    signal_key_modified(source);
+    return value;
+  }
+
+  try {
+    auto& destination_list = get_or_create_list(
+        destination, implementation.value_or(options_.list_implementation));
+    if (destination_front) {
+      (void)destination_list.push_front(*value);
+    } else {
+      (void)destination_list.push_back(*value);
+    }
+  } catch (...) {
+    restore_source(*value);
+    throw;
+  }
+
+  if (source_list->empty()) {
+    (void)erase_key(source);
+  } else {
+    signal_key_modified(source);
+  }
+  signal_key_modified(destination);
+  return value;
 }
 
 std::size_t Store::llen(std::string_view key) const noexcept {
