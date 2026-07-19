@@ -72,7 +72,7 @@
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (false)
 #  elif defined(_MSC_VER)
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (exp)
-#  else
+#  else 
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (__builtin_expect(exp, c))
 #  endif
 
@@ -113,10 +113,10 @@ private:
 
 public:
     static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(55);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(105);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT
@@ -354,32 +354,32 @@ public:
 
     std::uint64_t skipKey()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
-        sbePosition(lengthPosition + lengthOfLengthMember + dataLength);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        sbePosition(lengthPosition + lengthOfLengthField + dataLength);
         return dataLength;
     }
 
     SBE_NODISCARD const char *key()
     {
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
-        const char *memberPtr = m_buffer + sbePosition() + 4;
-        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue));
-        return memberPtr;
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        const char *fieldPtr = m_buffer + sbePosition() + 4;
+        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue));
+        return fieldPtr;
     }
 
     std::uint64_t getKey(char *dst, const std::uint64_t length)
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t bytesToCopy = length < dataLength ? length : dataLength;
         std::uint64_t pos = sbePosition();
         sbePosition(pos + dataLength);
@@ -389,11 +389,11 @@ public:
 
     SIsMember &putKey(const char *src, const std::uint32_t length)
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        std::uint32_t lengthMemberValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::memcpy(m_buffer + lengthPosition, &lengthMemberValue, sizeof(std::uint32_t));
+        std::uint32_t lengthFieldValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::memcpy(m_buffer + lengthPosition, &lengthFieldValue, sizeof(std::uint32_t));
         if (length != std::uint32_t(0))
         {
             std::uint64_t pos = sbePosition();
@@ -405,12 +405,12 @@ public:
 
     std::string getKeyAsString()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t pos = sbePosition();
         const std::string result(m_buffer + pos, dataLength);
         sbePosition(pos + dataLength);
@@ -450,15 +450,15 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getKeyAsStringView()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t pos = sbePosition();
         const std::string_view result(m_buffer + pos, dataLength);
         sbePosition(pos + dataLength);
@@ -475,7 +475,7 @@ public:
         return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SIsMember &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -529,32 +529,32 @@ public:
 
     std::uint64_t skipMember()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
-        sbePosition(lengthPosition + lengthOfLengthMember + dataLength);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        sbePosition(lengthPosition + lengthOfLengthField + dataLength);
         return dataLength;
     }
 
     SBE_NODISCARD const char *member()
     {
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
-        const char *memberPtr = m_buffer + sbePosition() + 4;
-        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue));
-        return memberPtr;
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        const char *fieldPtr = m_buffer + sbePosition() + 4;
+        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue));
+        return fieldPtr;
     }
 
     std::uint64_t getMember(char *dst, const std::uint64_t length)
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t bytesToCopy = length < dataLength ? length : dataLength;
         std::uint64_t pos = sbePosition();
         sbePosition(pos + dataLength);
@@ -564,11 +564,11 @@ public:
 
     SIsMember &putMember(const char *src, const std::uint32_t length)
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        std::uint32_t lengthMemberValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::memcpy(m_buffer + lengthPosition, &lengthMemberValue, sizeof(std::uint32_t));
+        std::uint32_t lengthFieldValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::memcpy(m_buffer + lengthPosition, &lengthFieldValue, sizeof(std::uint32_t));
         if (length != std::uint32_t(0))
         {
             std::uint64_t pos = sbePosition();
@@ -580,12 +580,12 @@ public:
 
     std::string getMemberAsString()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t pos = sbePosition();
         const std::string result(m_buffer + pos, dataLength);
         sbePosition(pos + dataLength);
@@ -625,15 +625,15 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getMemberAsStringView()
     {
-        std::uint64_t lengthOfLengthMember = 4;
+        std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
-        sbePosition(lengthPosition + lengthOfLengthMember);
-        std::uint32_t lengthMemberValue;
-        std::memcpy(&lengthMemberValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthMemberValue);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
         std::uint64_t pos = sbePosition();
         const std::string_view result(m_buffer + pos, dataLength);
         sbePosition(pos + dataLength);
@@ -650,7 +650,7 @@ public:
         return putMember(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SIsMember &putMember(const std::string_view str)
     {
         if (str.length() > 1073741824)

@@ -115,8 +115,8 @@ public:
     static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(26);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT
@@ -450,7 +450,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getKeyAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -475,7 +475,7 @@ public:
         return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     GetDel &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)

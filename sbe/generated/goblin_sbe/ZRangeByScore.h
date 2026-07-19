@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_EXPIRE_CXX_H_
-#define _GOBLIN_SBE_EXPIRE_CXX_H_
+#ifndef _GOBLIN_SBE_ZRANGEBYSCORE_CXX_H_
+#define _GOBLIN_SBE_ZRANGEBYSCORE_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class Expire
+class ZRangeByScore
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(9);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(37);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(36);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(120);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    Expire() = default;
+    ZRangeByScore() = default;
 
-    Expire(
+    ZRangeByScore(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    Expire(char *buffer, const std::uint64_t bufferLength) :
-        Expire(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    ZRangeByScore(char *buffer, const std::uint64_t bufferLength) :
+        ZRangeByScore(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    Expire(
+    ZRangeByScore(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        Expire(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        ZRangeByScore(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(9);
+        return static_cast<std::uint16_t>(36);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(37);
+        return static_cast<std::uint16_t>(120);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    Expire &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZRangeByScore &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    Expire &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZRangeByScore &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    Expire &wrapForDecode(
+    ZRangeByScore &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    Expire &sbeRewind()
+    ZRangeByScore &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        Expire skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        ZRangeByScore skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -311,7 +311,7 @@ public:
         return m_actingVersion;
     }
 
-    SBE_NODISCARD static const char *amountMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    SBE_NODISCARD static const char *minMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
         {
@@ -320,61 +320,64 @@ public:
         }
     }
 
-    static SBE_CONSTEXPR std::uint16_t amountId() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint16_t minId() SBE_NOEXCEPT
     {
         return 1;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t amountSinceVersion() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t minSinceVersion() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    SBE_NODISCARD bool amountInActingVersion() SBE_NOEXCEPT
+    SBE_NODISCARD bool minInActingVersion() SBE_NOEXCEPT
     {
         return true;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t amountEncodingOffset() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t minEncodingOffset() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    static SBE_CONSTEXPR std::int64_t amountNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR double minNullValue() SBE_NOEXCEPT
     {
-        return SBE_NULLVALUE_INT64;
+        return SBE_DOUBLE_NAN;
     }
 
-    static SBE_CONSTEXPR std::int64_t amountMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR double minMinValue() SBE_NOEXCEPT
     {
-        return INT64_C(-9223372036854775807);
+        return -1.7976931348623157E308;
     }
 
-    static SBE_CONSTEXPR std::int64_t amountMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR double minMaxValue() SBE_NOEXCEPT
     {
-        return INT64_C(9223372036854775807);
+        return 1.7976931348623157E308;
     }
 
-    static SBE_CONSTEXPR std::size_t amountEncodingLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::size_t minEncodingLength() SBE_NOEXCEPT
     {
         return 8;
     }
 
-    SBE_NODISCARD std::int64_t amount() const SBE_NOEXCEPT
+    SBE_NODISCARD double min() const SBE_NOEXCEPT
     {
-        std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+        union sbe_double_as_uint_u val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(double));
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        return val.fp_value;
     }
 
-    Expire &amount(const std::int64_t value) SBE_NOEXCEPT
+    ZRangeByScore &min(const double value) SBE_NOEXCEPT
     {
-        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
+        union sbe_double_as_uint_u val;
+        val.fp_value = value;
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(double));
         return *this;
     }
 
-    SBE_NODISCARD static const char *flagsMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    SBE_NODISCARD static const char *maxMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
         {
@@ -383,57 +386,438 @@ public:
         }
     }
 
-    static SBE_CONSTEXPR std::uint16_t flagsId() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint16_t maxId() SBE_NOEXCEPT
     {
         return 2;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t flagsSinceVersion() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t maxSinceVersion() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    SBE_NODISCARD bool flagsInActingVersion() SBE_NOEXCEPT
+    SBE_NODISCARD bool maxInActingVersion() SBE_NOEXCEPT
     {
         return true;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t flagsEncodingOffset() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t maxEncodingOffset() SBE_NOEXCEPT
     {
         return 8;
     }
 
-    static SBE_CONSTEXPR std::uint8_t flagsNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR double maxNullValue() SBE_NOEXCEPT
+    {
+        return SBE_DOUBLE_NAN;
+    }
+
+    static SBE_CONSTEXPR double maxMinValue() SBE_NOEXCEPT
+    {
+        return -1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR double maxMaxValue() SBE_NOEXCEPT
+    {
+        return 1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR std::size_t maxEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD double max() const SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(double));
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        return val.fp_value;
+    }
+
+    ZRangeByScore &max(const double value) SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        val.fp_value = value;
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(double));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *limitOffsetMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t limitOffsetId() SBE_NOEXCEPT
+    {
+        return 3;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t limitOffsetSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool limitOffsetInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t limitOffsetEncodingOffset() SBE_NOEXCEPT
+    {
+        return 16;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t limitOffsetNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT64;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t limitOffsetMinValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0x0);
+    }
+
+    static SBE_CONSTEXPR std::uint64_t limitOffsetMaxValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0xfffffffffffffffe);
+    }
+
+    static SBE_CONSTEXPR std::size_t limitOffsetEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::uint64_t limitOffset() const SBE_NOEXCEPT
+    {
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::uint64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    ZRangeByScore &limitOffset(const std::uint64_t value) SBE_NOEXCEPT
+    {
+        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::uint64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *limitCountMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t limitCountId() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t limitCountSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool limitCountInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t limitCountEncodingOffset() SBE_NOEXCEPT
+    {
+        return 24;
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitCountNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitCountMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitCountMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t limitCountEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t limitCount() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 24, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    ZRangeByScore &limitCount(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 24, &val, sizeof(std::int64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *minExclusiveMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t minExclusiveId() SBE_NOEXCEPT
+    {
+        return 5;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t minExclusiveSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool minExclusiveInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t minExclusiveEncodingOffset() SBE_NOEXCEPT
+    {
+        return 32;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t minExclusiveNullValue() SBE_NOEXCEPT
     {
         return SBE_NULLVALUE_UINT8;
     }
 
-    static SBE_CONSTEXPR std::uint8_t flagsMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint8_t minExclusiveMinValue() SBE_NOEXCEPT
     {
         return static_cast<std::uint8_t>(0);
     }
 
-    static SBE_CONSTEXPR std::uint8_t flagsMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint8_t minExclusiveMaxValue() SBE_NOEXCEPT
     {
         return static_cast<std::uint8_t>(254);
     }
 
-    static SBE_CONSTEXPR std::size_t flagsEncodingLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::size_t minExclusiveEncodingLength() SBE_NOEXCEPT
     {
         return 1;
     }
 
-    SBE_NODISCARD std::uint8_t flags() const SBE_NOEXCEPT
+    SBE_NODISCARD std::uint8_t minExclusive() const SBE_NOEXCEPT
     {
         std::uint8_t val;
-        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::uint8_t));
+        std::memcpy(&val, m_buffer + m_offset + 32, sizeof(std::uint8_t));
         return (val);
     }
 
-    Expire &flags(const std::uint8_t value) SBE_NOEXCEPT
+    ZRangeByScore &minExclusive(const std::uint8_t value) SBE_NOEXCEPT
     {
         std::uint8_t val = (value);
-        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::uint8_t));
+        std::memcpy(m_buffer + m_offset + 32, &val, sizeof(std::uint8_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *maxExclusiveMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t maxExclusiveId() SBE_NOEXCEPT
+    {
+        return 6;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t maxExclusiveSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool maxExclusiveInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t maxExclusiveEncodingOffset() SBE_NOEXCEPT
+    {
+        return 33;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t maxExclusiveEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t maxExclusive() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 33, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZRangeByScore &maxExclusive(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 33, &val, sizeof(std::uint8_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *reverseMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t reverseId() SBE_NOEXCEPT
+    {
+        return 7;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t reverseSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool reverseInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t reverseEncodingOffset() SBE_NOEXCEPT
+    {
+        return 34;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t reverseNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t reverseMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t reverseMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t reverseEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t reverse() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 34, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZRangeByScore &reverse(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 34, &val, sizeof(std::uint8_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *withScoresMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t withScoresId() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t withScoresSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool withScoresInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t withScoresEncodingOffset() SBE_NOEXCEPT
+    {
+        return 35;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t withScoresNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t withScoresMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t withScoresMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t withScoresEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t withScores() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 35, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZRangeByScore &withScores(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 35, &val, sizeof(std::uint8_t));
         return *this;
     }
 
@@ -463,7 +847,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 3;
+        return 9;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -513,7 +897,7 @@ public:
         return bytesToCopy;
     }
 
-    Expire &putKey(const char *src, const std::uint32_t length)
+    ZRangeByScore &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -592,7 +976,7 @@ public:
     }
     #endif
 
-    Expire &putKey(const std::string &str)
+    ZRangeByScore &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -602,7 +986,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    Expire &putKey(const std::string_view str)
+    ZRangeByScore &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -614,9 +998,9 @@ public:
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const Expire &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const ZRangeByScore &_writer)
 {
-    Expire writer(
+    ZRangeByScore writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -624,17 +1008,41 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "Expire", )";
+    builder << R"("Name": "ZRangeByScore", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
-    builder << R"("amount": )";
-    builder << +writer.amount();
+    builder << R"("min": )";
+    builder << +writer.min();
 
     builder << ", ";
-    builder << R"("flags": )";
-    builder << +writer.flags();
+    builder << R"("max": )";
+    builder << +writer.max();
+
+    builder << ", ";
+    builder << R"("limitOffset": )";
+    builder << +writer.limitOffset();
+
+    builder << ", ";
+    builder << R"("limitCount": )";
+    builder << +writer.limitCount();
+
+    builder << ", ";
+    builder << R"("minExclusive": )";
+    builder << +writer.minExclusive();
+
+    builder << ", ";
+    builder << R"("maxExclusive": )";
+    builder << +writer.maxExclusive();
+
+    builder << ", ";
+    builder << R"("reverse": )";
+    builder << +writer.reverse();
+
+    builder << ", ";
+    builder << R"("withScores": )";
+    builder << +writer.withScores();
 
     builder << ", ";
     builder << R"("key": )";

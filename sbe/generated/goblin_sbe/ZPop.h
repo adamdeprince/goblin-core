@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_PTTL_CXX_H_
-#define _GOBLIN_SBE_PTTL_CXX_H_
+#ifndef _GOBLIN_SBE_ZPOP_CXX_H_
+#define _GOBLIN_SBE_ZPOP_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class PTtl
+class ZPop
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(42);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(9);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(123);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    PTtl() = default;
+    ZPop() = default;
 
-    PTtl(
+    ZPop(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    PTtl(char *buffer, const std::uint64_t bufferLength) :
-        PTtl(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    ZPop(char *buffer, const std::uint64_t bufferLength) :
+        ZPop(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    PTtl(
+    ZPop(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        PTtl(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        ZPop(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(9);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(42);
+        return static_cast<std::uint16_t>(123);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    PTtl &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZPop &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZPop &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapForDecode(
+    ZPop &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    PTtl &sbeRewind()
+    ZPop &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        PTtl skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        ZPop skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -309,6 +309,132 @@ public:
     SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
     {
         return m_actingVersion;
+    }
+
+    SBE_NODISCARD static const char *countMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t countId() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t countSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool countInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t countEncodingOffset() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT64;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countMinValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0x0);
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countMaxValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0xfffffffffffffffe);
+    }
+
+    static SBE_CONSTEXPR std::size_t countEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::uint64_t count() const SBE_NOEXCEPT
+    {
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    ZPop &count(const std::uint64_t value) SBE_NOEXCEPT
+    {
+        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *maximumMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t maximumId() SBE_NOEXCEPT
+    {
+        return 2;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t maximumSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool maximumInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t maximumEncodingOffset() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maximumNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maximumMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maximumMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t maximumEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t maximum() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZPop &maximum(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::uint8_t));
+        return *this;
     }
 
     SBE_NODISCARD static const char *keyMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
@@ -337,7 +463,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 1;
+        return 3;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -387,7 +513,7 @@ public:
         return bytesToCopy;
     }
 
-    PTtl &putKey(const char *src, const std::uint32_t length)
+    ZPop &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -466,7 +592,7 @@ public:
     }
     #endif
 
-    PTtl &putKey(const std::string &str)
+    ZPop &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -476,7 +602,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    PTtl &putKey(const std::string_view str)
+    ZPop &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -488,9 +614,9 @@ public:
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const PTtl &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const ZPop &_writer)
 {
-    PTtl writer(
+    ZPop writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -498,11 +624,19 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "PTtl", )";
+    builder << R"("Name": "ZPop", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
+    builder << R"("count": )";
+    builder << +writer.count();
+
+    builder << ", ";
+    builder << R"("maximum": )";
+    builder << +writer.maximum();
+
+    builder << ", ";
     builder << R"("key": )";
     builder << '"' <<
         writer.skipKey() << " bytes of raw data\"";

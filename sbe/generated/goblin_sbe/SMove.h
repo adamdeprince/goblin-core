@@ -72,7 +72,7 @@
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (false)
 #  elif defined(_MSC_VER)
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (exp)
-#  else
+#  else 
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (__builtin_expect(exp, c))
 #  endif
 
@@ -113,10 +113,10 @@ private:
 
 public:
     static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(47);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(110);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT
@@ -320,7 +320,7 @@ public:
         }
     }
 
-    static const char *keyCharacterEncoding() SBE_NOEXCEPT
+    static const char *sourceCharacterEncoding() SBE_NOEXCEPT
     {
         return "null";
     }
@@ -340,7 +340,7 @@ public:
         return 1;
     }
 
-    static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t sourceHeaderLength() SBE_NOEXCEPT
     {
         return 4;
     }
@@ -352,7 +352,7 @@ public:
         return SBE_LITTLE_ENDIAN_ENCODE_32(length);
     }
 
-    std::uint64_t skipKey()
+    std::uint64_t skipSource()
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -363,7 +363,7 @@ public:
         return dataLength;
     }
 
-    SBE_NODISCARD const char *key()
+    SBE_NODISCARD const char *source()
     {
         std::uint32_t lengthFieldValue;
         std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
@@ -450,7 +450,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getSourceAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -475,7 +475,7 @@ public:
         return putSource(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SMove &putSource(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -495,7 +495,7 @@ public:
         }
     }
 
-    static const char *fieldCharacterEncoding() SBE_NOEXCEPT
+    static const char *destinationCharacterEncoding() SBE_NOEXCEPT
     {
         return "null";
     }
@@ -515,7 +515,7 @@ public:
         return 2;
     }
 
-    static SBE_CONSTEXPR std::uint64_t fieldHeaderLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t destinationHeaderLength() SBE_NOEXCEPT
     {
         return 4;
     }
@@ -527,7 +527,7 @@ public:
         return SBE_LITTLE_ENDIAN_ENCODE_32(length);
     }
 
-    std::uint64_t skipField()
+    std::uint64_t skipDestination()
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -538,7 +538,7 @@ public:
         return dataLength;
     }
 
-    SBE_NODISCARD const char *field()
+    SBE_NODISCARD const char *destination()
     {
         std::uint32_t lengthFieldValue;
         std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
@@ -625,7 +625,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getDestinationAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -650,7 +650,7 @@ public:
         return putDestination(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SMove &putDestination(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -670,7 +670,7 @@ public:
         }
     }
 
-    static const char *valueCharacterEncoding() SBE_NOEXCEPT
+    static const char *memberCharacterEncoding() SBE_NOEXCEPT
     {
         return "null";
     }
@@ -690,7 +690,7 @@ public:
         return 3;
     }
 
-    static SBE_CONSTEXPR std::uint64_t valueHeaderLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t memberHeaderLength() SBE_NOEXCEPT
     {
         return 4;
     }
@@ -702,7 +702,7 @@ public:
         return SBE_LITTLE_ENDIAN_ENCODE_32(length);
     }
 
-    std::uint64_t skipValue()
+    std::uint64_t skipMember()
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -713,7 +713,7 @@ public:
         return dataLength;
     }
 
-    SBE_NODISCARD const char *value()
+    SBE_NODISCARD const char *member()
     {
         std::uint32_t lengthFieldValue;
         std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
@@ -800,7 +800,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getMemberAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -825,7 +825,7 @@ public:
         return putMember(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SMove &putMember(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -855,15 +855,15 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 
     builder << R"("source": )";
     builder << '"' <<
-        writer.skipKey() << " bytes of raw data\"";
+        writer.skipSource() << " bytes of raw data\"";
     builder << ", ";
     builder << R"("destination": )";
     builder << '"' <<
-        writer.skipField() << " bytes of raw data\"";
+        writer.skipDestination() << " bytes of raw data\"";
     builder << ", ";
     builder << R"("member": )";
     builder << '"' <<
-        writer.skipValue() << " bytes of raw data\"";
+        writer.skipMember() << " bytes of raw data\"";
     builder << '}';
 
     return builder;
@@ -871,9 +871,9 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 
 void skip()
 {
-    skipKey();
-    skipField();
-    skipValue();
+    skipSource();
+    skipDestination();
+    skipMember();
 }
 
 SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
@@ -892,21 +892,21 @@ SBE_NODISCARD static std::size_t computeLength(
 #endif
     std::size_t length = sbeBlockLength();
 
-    length += keyHeaderLength();
+    length += sourceHeaderLength();
     if (sourceLength > 1073741824LL)
     {
         throw std::runtime_error("sourceLength too long for length type [E109]");
     }
     length += sourceLength;
 
-    length += fieldHeaderLength();
+    length += destinationHeaderLength();
     if (destinationLength > 1073741824LL)
     {
         throw std::runtime_error("destinationLength too long for length type [E109]");
     }
     length += destinationLength;
 
-    length += valueHeaderLength();
+    length += memberHeaderLength();
     if (memberLength > 1073741824LL)
     {
         throw std::runtime_error("memberLength too long for length type [E109]");

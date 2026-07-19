@@ -72,7 +72,7 @@
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (false)
 #  elif defined(_MSC_VER)
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (exp)
-#  else
+#  else 
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (__builtin_expect(exp, c))
 #  endif
 
@@ -112,11 +112,11 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(64);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(8);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(117);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT
@@ -309,6 +309,69 @@ public:
     SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
     {
         return m_actingVersion;
+    }
+
+    SBE_NODISCARD static const char *limitMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t limitId() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t limitSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool limitInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t limitEncodingOffset() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t limitMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t limitEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t limit() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    SInterCard &limit(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
+        return *this;
     }
 
     class Keys
@@ -601,7 +664,7 @@ public:
             return oss.str();
         }
 
-        #ifdef SBE_USE_STRING_VIEW
+        #if __cplusplus >= 201703L
         std::string_view getKeyAsStringView()
         {
             std::uint64_t lengthOfLengthField = 4;
@@ -626,7 +689,7 @@ public:
             return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
         }
 
-        #ifdef SBE_USE_STRING_VIEW
+        #if __cplusplus >= 201703L
         Keys &putKey(const std::string_view str)
         {
             if (str.length() > 1073741824)
@@ -683,76 +746,12 @@ public:
     };
 
 private:
-    public:
-SBE_NODISCARD static const char *limitMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-    {
-        switch (metaAttribute)
-        {
-            case MetaAttribute::PRESENCE: return "required";
-            default: return "";
-        }
-    }
-
-    static SBE_CONSTEXPR std::uint16_t limitId() SBE_NOEXCEPT
-    {
-        return 1;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t limitSinceVersion() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    SBE_NODISCARD bool limitInActingVersion() SBE_NOEXCEPT
-    {
-        return true;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t limitEncodingOffset() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    static SBE_CONSTEXPR std::int64_t limitNullValue() SBE_NOEXCEPT
-    {
-        return SBE_NULLVALUE_INT64;
-    }
-
-    static SBE_CONSTEXPR std::int64_t limitMinValue() SBE_NOEXCEPT
-    {
-        return INT64_C(-9223372036854775807);
-    }
-
-    static SBE_CONSTEXPR std::int64_t limitMaxValue() SBE_NOEXCEPT
-    {
-        return INT64_C(9223372036854775807);
-    }
-
-    static SBE_CONSTEXPR std::size_t limitEncodingLength() SBE_NOEXCEPT
-    {
-        return 8;
-    }
-
-    SBE_NODISCARD std::int64_t limit() const SBE_NOEXCEPT
-    {
-        std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
-    }
-
-    SInterCard &limit(const std::int64_t value) SBE_NOEXCEPT
-    {
-        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
-        return *this;
-    }
-private:
     Keys m_keys;
 
 public:
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t keysId() SBE_NOEXCEPT
     {
-        return 1;
+        return 2;
     }
 
     SBE_NODISCARD inline Keys &keys()
@@ -794,6 +793,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << writer.sbeTemplateId();
     builder << ", ";
 
+    builder << R"("limit": )";
+    builder << +writer.limit();
+
+    builder << ", ";
     {
         bool atLeastOne = false;
         builder << R"("keys": [)";

@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #undef NDEBUG
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -26,6 +27,7 @@ using goblin::core::RespValue;
 using goblin::core::PubSubKind;
 using goblin::core::SbeRingClient;
 using goblin::core::SbeListImplementation;
+using goblin::core::SbeZAddOptions;
 
 int main(int argc, char** argv) {
   if (argc < 2) { std::fprintf(stderr, "usage: sbe_client_test <goblin-core>\n"); return 2; }
@@ -290,6 +292,7 @@ int main(int argc, char** argv) {
 
   // zset
   using S = std::vector<SbeRingClient::Scored>;
+  using ReturnedS = std::vector<std::pair<std::string, double>>;
   assert(c->zadd("z", S{{1.5, "a"}, {2.0, "b"}, {3.0, "c"}}) == 3);
   assert(c->zcard("z") == 3);
   assert(c->zscore("z", "b") == 2.0 && !c->zscore("z", "x").has_value());
@@ -302,6 +305,58 @@ int main(int argc, char** argv) {
   }
   assert(c->zrem("z", V{"a"}) == 1);
   assert(c->zremrangebyscore("z", 2.0, false, 3.0, false) == 2 && c->zcard("z") == 0);
+
+  assert(c->zadd("za", S{{1.0, "one"}, {2.0, "two"}, {3.0, "three"},
+                           {4.0, "four"}, {5.0, "five"}}) == 5);
+  SbeZAddOptions nx;
+  nx.nx = true;
+  assert(c->zadd("za", S{{9.0, "one"}}, nx) == 0);
+  SbeZAddOptions gt_ch;
+  gt_ch.gt = true;
+  gt_ch.ch = true;
+  assert(c->zadd("za", S{{1.5, "one"}}, gt_ch) == 1);
+  SbeZAddOptions xx;
+  xx.xx = true;
+  assert(!c->zadd_increment("za", 1.0, "ghost", xx).has_value());
+  assert(c->zadd_increment("za", 2.0, "three") == 5.0);
+  assert(c->zincrby("za", -1.0, "four") == 3.0);
+  assert(c->zcount("za", 1.5, true, 5.0, true) == 2);
+  assert((c->zrangebyscore("za", 1.5, false, 5.0, false,
+                           false, 1, 2) ==
+          std::vector<std::string>{"two", "four"}));
+  {
+    const auto ws = c->zrangebyscore_withscores(
+        "za", 1.5, false, 5.0, false, true, 1, 2);
+    assert(ws == ReturnedS({{"five", 5.0}, {"four", 3.0}}));
+  }
+  {
+    const auto scores = c->zmscore("za", V{"one", "ghost", "three"});
+    assert(scores.size() == 3 && scores[0] == 1.5 && !scores[1] &&
+           scores[2] == 5.0);
+  }
+  {
+    std::uint64_t cursor = 0;
+    std::vector<std::string> members;
+    do {
+      auto page = c->zscan("za", cursor, 2);
+      cursor = page.next_cursor;
+      for (const auto& [member, score] : page.items) {
+        (void)score;
+        members.push_back(member);
+      }
+    } while (cursor != 0);
+    std::sort(members.begin(), members.end());
+    assert((members ==
+            std::vector<std::string>{"five", "four", "one", "three", "two"}));
+  }
+  {
+    const auto popped = c->zpopmin("za", 2);
+    assert(popped == ReturnedS({{"one", 1.5}, {"two", 2.0}}));
+  }
+  {
+    const auto popped = c->zpopmax("za", 2);
+    assert(popped == ReturnedS({{"three", 5.0}, {"five", 5.0}}));
+  }
 
   // a GOBLIN.* native + admin
   (void)c->set("lock", "tok");

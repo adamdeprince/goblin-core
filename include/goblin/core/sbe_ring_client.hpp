@@ -34,10 +34,12 @@
 #include "goblin_sbe/MapReply.h"
 #include "goblin_sbe/NilReply.h"
 #include "goblin_sbe/NullableArrayReply.h"
+#include "goblin_sbe/NullableDoubleArrayReply.h"
 #include "goblin_sbe/PubSubNumSubReply.h"
 #include "goblin_sbe/PubSubPush.h"
 #include "goblin_sbe/RespValueReply.h"
 #include "goblin_sbe/ScoredArrayReply.h"
+#include "goblin_sbe/ScoredScanReply.h"
 #include "goblin_sbe/StatusReply.h"
 // String
 #include "goblin_sbe/Append.h"
@@ -115,11 +117,17 @@
 // Zset
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
+#include "goblin_sbe/ZCount.h"
+#include "goblin_sbe/ZIncrBy.h"
+#include "goblin_sbe/ZMScore.h"
+#include "goblin_sbe/ZPop.h"
 #include "goblin_sbe/ZRange.h"
+#include "goblin_sbe/ZRangeByScore.h"
 #include "goblin_sbe/ZRank.h"
 #include "goblin_sbe/ZRem.h"
 #include "goblin_sbe/ZRemRangeByScore.h"
 #include "goblin_sbe/ZRevRank.h"
+#include "goblin_sbe/ZScan.h"
 #include "goblin_sbe/ZScore.h"
 // GOBLIN.* natives + admin
 #include "goblin_sbe/Echo.h"
@@ -188,6 +196,26 @@ struct SetOptions {
 struct SetReply {
   bool ok = false;
   std::optional<std::string> old;
+};
+
+struct SbeZAddOptions {
+  bool nx{false};
+  bool xx{false};
+  bool gt{false};
+  bool lt{false};
+  bool ch{false};
+
+  [[nodiscard]] constexpr std::uint8_t flags(bool increment = false) const {
+    return static_cast<std::uint8_t>((nx ? 0x01 : 0) | (xx ? 0x02 : 0) |
+                                     (gt ? 0x04 : 0) | (lt ? 0x08 : 0) |
+                                     (ch ? 0x10 : 0) |
+                                     (increment ? 0x20 : 0));
+  }
+};
+
+struct SbeZScanResult {
+  std::uint64_t next_cursor{0};
+  std::vector<std::pair<std::string, double>> items;
 };
 
 // A decoded script reply (the flattened RespValueReply rebuilt into a tree).
@@ -1118,17 +1146,58 @@ class BasicSbeClient {
 
   // ---- zset ------------------------------------------------------------------
   [[nodiscard]] long long zadd(std::string_view key, std::span<const Scored> members, ms t = kDefaultTimeout) {
+    return zadd(key, members, SbeZAddOptions{}, t);
+  }
+  [[nodiscard]] long long zadd(std::string_view key,
+                               std::span<const Scored> members,
+                               SbeZAddOptions options,
+                               ms t = kDefaultTimeout) {
     std::size_t need = key.size();
     for (const auto& [s, mem] : members) need += mem.size();
     auto m = build<goblin_sbe::ZAdd>(need);
-    m.flags(0);
+    m.flags(options.flags());
     auto& g = m.membersCount(u16(members.size()));
     for (const auto& [s, mem] : members) g.next().score(s).putMember(mem.data(), u32(mem.size()));
     m.putKey(key.data(), u32(key.size()));
     finish(m, t);
     return as_int();
   }
+  [[nodiscard]] std::optional<double> zadd_increment(
+      std::string_view key, double increment, std::string_view member,
+      SbeZAddOptions options = {}, ms t = kDefaultTimeout) {
+    const Scored item{increment, member};
+    auto m = build<goblin_sbe::ZAdd>(key.size() + member.size());
+    m.flags(options.flags(true));
+    auto& g = m.membersCount(1);
+    g.next().score(item.first).putMember(item.second.data(), u32(item.second.size()));
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_double_or_nil();
+  }
+  [[nodiscard]] double zincrby(std::string_view key, double increment,
+                               std::string_view member,
+                               ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::ZIncrBy>(key.size() + member.size());
+    m.increment(increment);
+    m.putKey(key.data(), u32(key.size()));
+    m.putMember(member.data(), u32(member.size()));
+    finish(m, t);
+    const auto result = as_double_or_nil();
+    if (!result) unexpected();
+    return *result;
+  }
   [[nodiscard]] long long zcard(std::string_view key, ms t = kDefaultTimeout) { return key_int<goblin_sbe::ZCard>(key, t); }
+  [[nodiscard]] long long zcount(std::string_view key, double min,
+                                 bool min_exclusive, double max,
+                                 bool max_exclusive,
+                                 ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::ZCount>(key.size());
+    m.min(min).max(max).minExclusive(min_exclusive ? 1 : 0)
+        .maxExclusive(max_exclusive ? 1 : 0);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_int();
+  }
   [[nodiscard]] std::optional<double> zscore(std::string_view key, std::string_view member, ms t = kDefaultTimeout) {
     auto m = key_member<goblin_sbe::ZScore>(key, member);
     finish(m, t);
@@ -1170,6 +1239,63 @@ class BasicSbeClient {
     auto m = zrange_build(key, start, stop, true, rev);
     finish(m, t);
     return as_scored_array();
+  }
+  [[nodiscard]] std::vector<std::string> zrangebyscore(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse = false, std::size_t offset = 0,
+      std::optional<std::size_t> limit = std::nullopt,
+      ms t = kDefaultTimeout) {
+    auto m = zrangebyscore_build(key, min, min_exclusive, max, max_exclusive,
+                                 reverse, false, offset, limit);
+    finish(m, t);
+    return as_array();
+  }
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  zrangebyscore_withscores(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse = false, std::size_t offset = 0,
+      std::optional<std::size_t> limit = std::nullopt,
+      ms t = kDefaultTimeout) {
+    auto m = zrangebyscore_build(key, min, min_exclusive, max, max_exclusive,
+                                 reverse, true, offset, limit);
+    finish(m, t);
+    return as_scored_array();
+  }
+  [[nodiscard]] std::vector<std::optional<double>> zmscore(
+      std::string_view key, std::span<const std::string_view> members,
+      ms t = kDefaultTimeout) {
+    std::size_t need = key.size();
+    for (const auto member : members) need += member.size();
+    auto m = build<goblin_sbe::ZMScore>(need);
+    auto& group = m.membersCount(u16(members.size()));
+    for (const auto member : members) {
+      group.next().putMember(member.data(), u32(member.size()));
+    }
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_nullable_double_array();
+  }
+  [[nodiscard]] std::vector<std::pair<std::string, double>> zpopmin(
+      std::string_view key, std::size_t count = 1,
+      ms t = kDefaultTimeout) {
+    return zpop(key, count, false, t);
+  }
+  [[nodiscard]] std::vector<std::pair<std::string, double>> zpopmax(
+      std::string_view key, std::size_t count = 1,
+      ms t = kDefaultTimeout) {
+    return zpop(key, count, true, t);
+  }
+  [[nodiscard]] SbeZScanResult zscan(
+      std::string_view key, std::uint64_t cursor, std::size_t count = 10,
+      std::optional<std::string_view> match = std::nullopt,
+      ms t = kDefaultTimeout) {
+    const auto pattern = match.value_or(std::string_view{});
+    auto m = build<goblin_sbe::ZScan>(key.size() + pattern.size());
+    m.cursor(cursor).count(count).hasMatch(match.has_value() ? 1 : 0);
+    m.putKey(key.data(), u32(key.size()));
+    m.putMatch(pattern.data(), u32(pattern.size()));
+    finish(m, t);
+    return as_scored_scan();
   }
 
   // ---- GOBLIN.* natives ------------------------------------------------------
@@ -1497,6 +1623,35 @@ class BasicSbeClient {
     m.putKey(key.data(), u32(key.size()));
     return m;
   }
+  goblin_sbe::ZRangeByScore zrangebyscore_build(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse, bool with_scores, std::size_t offset,
+      std::optional<std::size_t> limit) {
+    if (limit.has_value() &&
+        *limit > static_cast<std::size_t>(
+                     std::numeric_limits<std::int64_t>::max())) {
+      throw std::invalid_argument("SbeClient: score-range limit is out of range");
+    }
+    auto m = build<goblin_sbe::ZRangeByScore>(key.size());
+    m.min(min)
+        .max(max)
+        .limitOffset(offset)
+        .limitCount(limit ? static_cast<std::int64_t>(*limit) : -1)
+        .minExclusive(min_exclusive ? 1 : 0)
+        .maxExclusive(max_exclusive ? 1 : 0)
+        .reverse(reverse ? 1 : 0)
+        .withScores(with_scores ? 1 : 0);
+    m.putKey(key.data(), u32(key.size()));
+    return m;
+  }
+  std::vector<std::pair<std::string, double>> zpop(
+      std::string_view key, std::size_t count, bool maximum, ms t) {
+    auto m = build<goblin_sbe::ZPop>(key.size());
+    m.count(count).maximum(maximum ? 1 : 0);
+    m.putKey(key.data(), u32(key.size()));
+    finish(m, t);
+    return as_scored_array();
+  }
   template <class Msg>
   RespValue eval_impl(std::string_view code, std::span<const std::string_view> keys,
                       std::span<const std::string_view> args, Language lang, ms t, bool) {
@@ -1788,6 +1943,34 @@ class BasicSbeClient {
       const auto v = g.getValueAsStringView();
       if (present) out.emplace_back(std::string(v.data(), v.size()));
       else out.emplace_back(std::nullopt);
+    }
+    return out;
+  }
+  [[nodiscard]] std::vector<std::optional<double>> as_nullable_double_array() {
+    throw_if_error();
+    if (!reply_is<goblin_sbe::NullableDoubleArrayReply>()) unexpected();
+    auto reply = decode<goblin_sbe::NullableDoubleArrayReply>();
+    std::vector<std::optional<double>> out;
+    auto& group = reply.items();
+    while (group.hasNext()) {
+      group.next();
+      if (group.present() != 0) out.emplace_back(group.value());
+      else out.emplace_back(std::nullopt);
+    }
+    return out;
+  }
+  [[nodiscard]] SbeZScanResult as_scored_scan() {
+    throw_if_error();
+    if (!reply_is<goblin_sbe::ScoredScanReply>()) unexpected();
+    auto reply = decode<goblin_sbe::ScoredScanReply>();
+    SbeZScanResult out{.next_cursor = reply.nextCursor()};
+    auto& group = reply.items();
+    while (group.hasNext()) {
+      group.next();
+      const auto score = group.score();
+      const auto member = group.getMemberAsStringView();
+      out.items.emplace_back(std::string(member.data(), member.size()),
+                             score);
     }
     return out;
   }

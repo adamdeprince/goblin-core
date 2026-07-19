@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_SCRIPT_CXX_H_
-#define _GOBLIN_SBE_SCRIPT_CXX_H_
+#ifndef _GOBLIN_SBE_NULLABLEDOUBLEARRAYREPLY_CXX_H_
+#define _GOBLIN_SBE_NULLABLEDOUBLEARRAYREPLY_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class Script
+class NullableDoubleArrayReply
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(1);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(81);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(14);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    Script() = default;
+    NullableDoubleArrayReply() = default;
 
-    Script(
+    NullableDoubleArrayReply(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    Script(char *buffer, const std::uint64_t bufferLength) :
-        Script(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    NullableDoubleArrayReply(char *buffer, const std::uint64_t bufferLength) :
+        NullableDoubleArrayReply(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    Script(
+    NullableDoubleArrayReply(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        Script(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        NullableDoubleArrayReply(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(1);
+        return static_cast<std::uint16_t>(0);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(81);
+        return static_cast<std::uint16_t>(14);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    Script &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    NullableDoubleArrayReply &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    Script &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    NullableDoubleArrayReply &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    Script &wrapForDecode(
+    NullableDoubleArrayReply &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    Script &sbeRewind()
+    NullableDoubleArrayReply &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        Script skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        NullableDoubleArrayReply skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -311,70 +311,7 @@ public:
         return m_actingVersion;
     }
 
-    SBE_NODISCARD static const char *languageMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-    {
-        switch (metaAttribute)
-        {
-            case MetaAttribute::PRESENCE: return "required";
-            default: return "";
-        }
-    }
-
-    static SBE_CONSTEXPR std::uint16_t languageId() SBE_NOEXCEPT
-    {
-        return 1;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t languageSinceVersion() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    SBE_NODISCARD bool languageInActingVersion() SBE_NOEXCEPT
-    {
-        return true;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t languageEncodingOffset() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    static SBE_CONSTEXPR std::uint8_t languageNullValue() SBE_NOEXCEPT
-    {
-        return SBE_NULLVALUE_UINT8;
-    }
-
-    static SBE_CONSTEXPR std::uint8_t languageMinValue() SBE_NOEXCEPT
-    {
-        return static_cast<std::uint8_t>(0);
-    }
-
-    static SBE_CONSTEXPR std::uint8_t languageMaxValue() SBE_NOEXCEPT
-    {
-        return static_cast<std::uint8_t>(254);
-    }
-
-    static SBE_CONSTEXPR std::size_t languageEncodingLength() SBE_NOEXCEPT
-    {
-        return 1;
-    }
-
-    SBE_NODISCARD std::uint8_t language() const SBE_NOEXCEPT
-    {
-        std::uint8_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint8_t));
-        return (val);
-    }
-
-    Script &language(const std::uint8_t value) SBE_NOEXCEPT
-    {
-        std::uint8_t val = (value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint8_t));
-        return *this;
-    }
-
-    class Args
+    class Items
     {
     private:
         char *m_buffer = nullptr;
@@ -393,7 +330,7 @@ public:
         }
 
     public:
-        Args() = default;
+        Items() = default;
 
         inline void wrapForDecode(
             char *buffer,
@@ -434,11 +371,11 @@ public:
             m_buffer = buffer;
             m_bufferLength = bufferLength;
             GroupSizeEncoding dimensions(buffer, *pos, bufferLength, actingVersion);
-            dimensions.blockLength(static_cast<std::uint16_t>(0));
+            dimensions.blockLength(static_cast<std::uint16_t>(9));
             dimensions.numInGroup(static_cast<std::uint16_t>(count));
             m_index = 0;
             m_count = count;
-            m_blockLength = 0;
+            m_blockLength = 9;
             m_actingVersion = actingVersion;
             m_initialPosition = *pos;
             m_positionPtr = pos;
@@ -452,7 +389,7 @@ public:
 
         static SBE_CONSTEXPR std::uint64_t sbeBlockLength() SBE_NOEXCEPT
         {
-            return 0;
+            return 9;
         }
 
         SBE_NODISCARD std::uint64_t sbeActingBlockLength() SBE_NOEXCEPT
@@ -490,7 +427,7 @@ public:
             return m_index < m_count;
         }
 
-        inline Args &next()
+        inline Items &next()
         {
             if (m_index >= m_count)
             {
@@ -525,7 +462,7 @@ public:
         }
 
 
-        SBE_NODISCARD static const char *argMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+        SBE_NODISCARD static const char *presentMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
         {
             switch (metaAttribute)
             {
@@ -534,180 +471,138 @@ public:
             }
         }
 
-        static const char *argCharacterEncoding() SBE_NOEXCEPT
-        {
-            return "null";
-        }
-
-        static SBE_CONSTEXPR std::uint64_t argSinceVersion() SBE_NOEXCEPT
-        {
-            return 0;
-        }
-
-        bool argInActingVersion() SBE_NOEXCEPT
-        {
-            return true;
-        }
-
-        static SBE_CONSTEXPR std::uint16_t argId() SBE_NOEXCEPT
+        static SBE_CONSTEXPR std::uint16_t presentId() SBE_NOEXCEPT
         {
             return 1;
         }
 
-        static SBE_CONSTEXPR std::uint64_t argHeaderLength() SBE_NOEXCEPT
+        SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t presentSinceVersion() SBE_NOEXCEPT
         {
-            return 4;
+            return 0;
         }
 
-        SBE_NODISCARD std::uint32_t argLength() const
+        SBE_NODISCARD bool presentInActingVersion() SBE_NOEXCEPT
         {
-            std::uint32_t length;
-            std::memcpy(&length, m_buffer + sbePosition(), sizeof(std::uint32_t));
-            return SBE_LITTLE_ENDIAN_ENCODE_32(length);
+            return true;
         }
 
-        std::uint64_t skipArg()
+        SBE_NODISCARD static SBE_CONSTEXPR std::size_t presentEncodingOffset() SBE_NOEXCEPT
         {
-            std::uint64_t lengthOfLengthField = 4;
-            std::uint64_t lengthPosition = sbePosition();
-            std::uint32_t lengthFieldValue;
-            std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-            std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
-            sbePosition(lengthPosition + lengthOfLengthField + dataLength);
-            return dataLength;
+            return 0;
         }
 
-        SBE_NODISCARD const char *arg()
+        static SBE_CONSTEXPR std::uint8_t presentNullValue() SBE_NOEXCEPT
         {
-            std::uint32_t lengthFieldValue;
-            std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
-            const char *fieldPtr = m_buffer + sbePosition() + 4;
-            sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue));
-            return fieldPtr;
+            return SBE_NULLVALUE_UINT8;
         }
 
-        std::uint64_t getArg(char *dst, const std::uint64_t length)
+        static SBE_CONSTEXPR std::uint8_t presentMinValue() SBE_NOEXCEPT
         {
-            std::uint64_t lengthOfLengthField = 4;
-            std::uint64_t lengthPosition = sbePosition();
-            sbePosition(lengthPosition + lengthOfLengthField);
-            std::uint32_t lengthFieldValue;
-            std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-            std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
-            std::uint64_t bytesToCopy = length < dataLength ? length : dataLength;
-            std::uint64_t pos = sbePosition();
-            sbePosition(pos + dataLength);
-            std::memcpy(dst, m_buffer + pos, static_cast<std::size_t>(bytesToCopy));
-            return bytesToCopy;
+            return static_cast<std::uint8_t>(0);
         }
 
-        Args &putArg(const char *src, const std::uint32_t length)
+        static SBE_CONSTEXPR std::uint8_t presentMaxValue() SBE_NOEXCEPT
         {
-            std::uint64_t lengthOfLengthField = 4;
-            std::uint64_t lengthPosition = sbePosition();
-            std::uint32_t lengthFieldValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
-            sbePosition(lengthPosition + lengthOfLengthField);
-            std::memcpy(m_buffer + lengthPosition, &lengthFieldValue, sizeof(std::uint32_t));
-            if (length != std::uint32_t(0))
-            {
-                std::uint64_t pos = sbePosition();
-                sbePosition(pos + length);
-                std::memcpy(m_buffer + pos, src, length);
-            }
+            return static_cast<std::uint8_t>(254);
+        }
+
+        static SBE_CONSTEXPR std::size_t presentEncodingLength() SBE_NOEXCEPT
+        {
+            return 1;
+        }
+
+        SBE_NODISCARD std::uint8_t present() const SBE_NOEXCEPT
+        {
+            std::uint8_t val;
+            std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint8_t));
+            return (val);
+        }
+
+        Items &present(const std::uint8_t value) SBE_NOEXCEPT
+        {
+            std::uint8_t val = (value);
+            std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint8_t));
             return *this;
         }
 
-        std::string getArgAsString()
+        SBE_NODISCARD static const char *valueMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
         {
-            std::uint64_t lengthOfLengthField = 4;
-            std::uint64_t lengthPosition = sbePosition();
-            sbePosition(lengthPosition + lengthOfLengthField);
-            std::uint32_t lengthFieldValue;
-            std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-            std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
-            std::uint64_t pos = sbePosition();
-            const std::string result(m_buffer + pos, dataLength);
-            sbePosition(pos + dataLength);
-            return result;
-        }
-
-        std::string getArgAsJsonEscapedString()
-        {
-            std::ostringstream oss;
-            std::string s = getArgAsString();
-
-            for (const auto c : s)
+            switch (metaAttribute)
             {
-                switch (c)
-                {
-                    case '"': oss << "\\\""; break;
-                    case '\\': oss << "\\\\"; break;
-                    case '\b': oss << "\\b"; break;
-                    case '\f': oss << "\\f"; break;
-                    case '\n': oss << "\\n"; break;
-                    case '\r': oss << "\\r"; break;
-                    case '\t': oss << "\\t"; break;
-
-                    default:
-                        if ('\x00' <= c && c <= '\x1f')
-                        {
-                            oss << "\\u" << std::hex << std::setw(4)
-                                << std::setfill('0') << (int)(c);
-                        }
-                        else
-                        {
-                            oss << c;
-                        }
-                }
+                case MetaAttribute::PRESENCE: return "required";
+                default: return "";
             }
-
-            return oss.str();
         }
 
-        #if __cplusplus >= 201703L
-        std::string_view getArgAsStringView()
+        static SBE_CONSTEXPR std::uint16_t valueId() SBE_NOEXCEPT
         {
-            std::uint64_t lengthOfLengthField = 4;
-            std::uint64_t lengthPosition = sbePosition();
-            sbePosition(lengthPosition + lengthOfLengthField);
-            std::uint32_t lengthFieldValue;
-            std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
-            std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
-            std::uint64_t pos = sbePosition();
-            const std::string_view result(m_buffer + pos, dataLength);
-            sbePosition(pos + dataLength);
-            return result;
-        }
-        #endif
-
-        Args &putArg(const std::string &str)
-        {
-            if (str.length() > 1073741824)
-            {
-                throw std::runtime_error("std::string too long for length type [E109]");
-            }
-            return putArg(str.data(), static_cast<std::uint32_t>(str.length()));
+            return 2;
         }
 
-        #if __cplusplus >= 201703L
-        Args &putArg(const std::string_view str)
+        SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t valueSinceVersion() SBE_NOEXCEPT
         {
-            if (str.length() > 1073741824)
-            {
-                throw std::runtime_error("std::string too long for length type [E109]");
-            }
-            return putArg(str.data(), static_cast<std::uint32_t>(str.length()));
+            return 0;
         }
-        #endif
+
+        SBE_NODISCARD bool valueInActingVersion() SBE_NOEXCEPT
+        {
+            return true;
+        }
+
+        SBE_NODISCARD static SBE_CONSTEXPR std::size_t valueEncodingOffset() SBE_NOEXCEPT
+        {
+            return 1;
+        }
+
+        static SBE_CONSTEXPR double valueNullValue() SBE_NOEXCEPT
+        {
+            return SBE_DOUBLE_NAN;
+        }
+
+        static SBE_CONSTEXPR double valueMinValue() SBE_NOEXCEPT
+        {
+            return -1.7976931348623157E308;
+        }
+
+        static SBE_CONSTEXPR double valueMaxValue() SBE_NOEXCEPT
+        {
+            return 1.7976931348623157E308;
+        }
+
+        static SBE_CONSTEXPR std::size_t valueEncodingLength() SBE_NOEXCEPT
+        {
+            return 8;
+        }
+
+        SBE_NODISCARD double value() const SBE_NOEXCEPT
+        {
+            union sbe_double_as_uint_u val;
+            std::memcpy(&val, m_buffer + m_offset + 1, sizeof(double));
+            val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+            return val.fp_value;
+        }
+
+        Items &value(const double value) SBE_NOEXCEPT
+        {
+            union sbe_double_as_uint_u val;
+            val.fp_value = value;
+            val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+            std::memcpy(m_buffer + m_offset + 1, &val, sizeof(double));
+            return *this;
+        }
 
         template<typename CharT, typename Traits>
         friend std::basic_ostream<CharT, Traits> & operator << (
-            std::basic_ostream<CharT, Traits> &builder, Args &writer)
+            std::basic_ostream<CharT, Traits> &builder, Items &writer)
         {
             builder << '{';
-            builder << R"("arg": )";
-            builder << '"' <<
-                writer.skipArg() << " bytes of raw data\"";
+            builder << R"("present": )";
+            builder << +writer.present();
+
+            builder << ", ";
+            builder << R"("value": )";
+            builder << +writer.value();
+
             builder << '}';
 
             return builder;
@@ -715,28 +610,20 @@ public:
 
         void skip()
         {
-            skipArg();
         }
 
         SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
         {
-            return false;
+            return true;
         }
 
-        SBE_NODISCARD static std::size_t computeLength(std::size_t argLength = 0)
+        SBE_NODISCARD static std::size_t computeLength()
         {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wtype-limits"
 #endif
             std::size_t length = sbeBlockLength();
-
-            length += argHeaderLength();
-            if (argLength > 1073741824LL)
-            {
-                throw std::runtime_error("argLength too long for length type [E109]");
-            }
-            length += argLength;
 
             return length;
 #if defined(__GNUG__) && !defined(__clang__)
@@ -746,41 +633,41 @@ public:
     };
 
 private:
-    Args m_args;
+    Items m_items;
 
 public:
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t argsId() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t itemsId() SBE_NOEXCEPT
     {
-        return 2;
+        return 1;
     }
 
-    SBE_NODISCARD inline Args &args()
+    SBE_NODISCARD inline Items &items()
     {
-        m_args.wrapForDecode(m_buffer, sbePositionPtr(), m_actingVersion, m_bufferLength);
-        return m_args;
+        m_items.wrapForDecode(m_buffer, sbePositionPtr(), m_actingVersion, m_bufferLength);
+        return m_items;
     }
 
-    Args &argsCount(const std::uint16_t count)
+    Items &itemsCount(const std::uint16_t count)
     {
-        m_args.wrapForEncode(m_buffer, count, sbePositionPtr(), m_actingVersion, m_bufferLength);
-        return m_args;
+        m_items.wrapForEncode(m_buffer, count, sbePositionPtr(), m_actingVersion, m_bufferLength);
+        return m_items;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t argsSinceVersion() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t itemsSinceVersion() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    SBE_NODISCARD bool argsInActingVersion() const SBE_NOEXCEPT
+    SBE_NODISCARD bool itemsInActingVersion() const SBE_NOEXCEPT
     {
         return true;
     }
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const Script &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const NullableDoubleArrayReply &_writer)
 {
-    Script writer(
+    NullableDoubleArrayReply writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -788,27 +675,23 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "Script", )";
+    builder << R"("Name": "NullableDoubleArrayReply", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
-    builder << R"("language": )";
-    builder << +writer.language();
-
-    builder << ", ";
     {
         bool atLeastOne = false;
-        builder << R"("args": [)";
-        writer.args().forEach(
-            [&](Args &args)
+        builder << R"("items": [)";
+        writer.items().forEach(
+            [&](Items &items)
             {
                 if (atLeastOne)
                 {
                     builder << ", ";
                 }
                 atLeastOne = true;
-                builder << args;
+                builder << items;
             });
         builder << ']';
     }
@@ -820,10 +703,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 
 void skip()
 {
-    auto &argsGroup { args() };
-    while (argsGroup.hasNext())
+    auto &itemsGroup { items() };
+    while (itemsGroup.hasNext())
     {
-        argsGroup.next().skip();
+        itemsGroup.next().skip();
     }
 }
 
@@ -832,7 +715,7 @@ SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
     return false;
 }
 
-SBE_NODISCARD static std::size_t computeLength(const std::vector<std::tuple<std::size_t>> &argsItemLengths = {})
+SBE_NODISCARD static std::size_t computeLength(std::size_t itemsLength = 0)
 {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -840,20 +723,12 @@ SBE_NODISCARD static std::size_t computeLength(const std::vector<std::tuple<std:
 #endif
     std::size_t length = sbeBlockLength();
 
-    length += Args::sbeHeaderSize();
-    if (argsItemLengths.size() > 65534LL)
+    length += Items::sbeHeaderSize();
+    if (itemsLength > 65534LL)
     {
-        throw std::runtime_error("argsItemLengths.size() outside of allowed range [E110]");
+        throw std::runtime_error("itemsLength outside of allowed range [E110]");
     }
-
-    for (const auto &e: argsItemLengths)
-    {
-        #if __cplusplus >= 201703L
-        length += std::apply(Args::computeLength, e);
-        #else
-        length += Args::computeLength(std::get<0>(e));
-        #endif
-    }
+    length += itemsLength *Items::sbeBlockLength();
 
     return length;
 #if defined(__GNUG__) && !defined(__clang__)

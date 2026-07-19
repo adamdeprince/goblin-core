@@ -72,7 +72,7 @@
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (false)
 #  elif defined(_MSC_VER)
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (exp)
-#  else
+#  else 
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (__builtin_expect(exp, c))
 #  endif
 
@@ -113,10 +113,10 @@ private:
 
 public:
     static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(16);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(91);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(118);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT
@@ -342,17 +342,17 @@ public:
 
     static SBE_CONSTEXPR std::uint64_t cursorNullValue() SBE_NOEXCEPT
     {
-        return SBE_NULLVALUE_INT64;
+        return SBE_NULLVALUE_UINT64;
     }
 
     static SBE_CONSTEXPR std::uint64_t cursorMinValue() SBE_NOEXCEPT
     {
-        return INT64_C(-9223372036854775807);
+        return UINT64_C(0x0);
     }
 
     static SBE_CONSTEXPR std::uint64_t cursorMaxValue() SBE_NOEXCEPT
     {
-        return INT64_C(9223372036854775807);
+        return UINT64_C(0xfffffffffffffffe);
     }
 
     static SBE_CONSTEXPR std::size_t cursorEncodingLength() SBE_NOEXCEPT
@@ -370,7 +370,7 @@ public:
     SScan &cursor(const std::uint64_t value) SBE_NOEXCEPT
     {
         std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint64_t));
         return *this;
     }
 
@@ -576,7 +576,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getKeyAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -601,7 +601,7 @@ public:
         return putKey(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SScan &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -638,7 +638,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t matchId() SBE_NOEXCEPT
     {
-        return 3;
+        return 4;
     }
 
     static SBE_CONSTEXPR std::uint64_t matchHeaderLength() SBE_NOEXCEPT
@@ -751,7 +751,7 @@ public:
         return oss.str();
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     std::string_view getMatchAsStringView()
     {
         std::uint64_t lengthOfLengthField = 4;
@@ -776,7 +776,7 @@ public:
         return putMatch(str.data(), static_cast<std::uint32_t>(str.length()));
     }
 
-    #ifdef SBE_USE_STRING_VIEW
+    #if __cplusplus >= 201703L
     SScan &putMatch(const std::string_view str)
     {
         if (str.length() > 1073741824)
@@ -815,6 +815,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << R"("key": )";
     builder << '"' <<
         writer.skipKey() << " bytes of raw data\"";
+    builder << ", ";
+    builder << R"("match": )";
+    builder << '"' <<
+        writer.skipMatch() << " bytes of raw data\"";
     builder << '}';
 
     return builder;
@@ -831,7 +835,9 @@ SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
     return false;
 }
 
-SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0, std::size_t matchLength = 0)
+SBE_NODISCARD static std::size_t computeLength(
+    std::size_t keyLength = 0,
+    std::size_t matchLength = 0)
 {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push

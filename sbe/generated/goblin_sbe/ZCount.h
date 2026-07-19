@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_PTTL_CXX_H_
-#define _GOBLIN_SBE_PTTL_CXX_H_
+#ifndef _GOBLIN_SBE_ZCOUNT_CXX_H_
+#define _GOBLIN_SBE_ZCOUNT_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class PTtl
+class ZCount
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(42);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(18);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(121);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    PTtl() = default;
+    ZCount() = default;
 
-    PTtl(
+    ZCount(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    PTtl(char *buffer, const std::uint64_t bufferLength) :
-        PTtl(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    ZCount(char *buffer, const std::uint64_t bufferLength) :
+        ZCount(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    PTtl(
+    ZCount(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        PTtl(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        ZCount(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(18);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(42);
+        return static_cast<std::uint16_t>(121);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    PTtl &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZCount &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZCount &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapForDecode(
+    ZCount &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    PTtl &sbeRewind()
+    ZCount &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        PTtl skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        ZCount skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -309,6 +309,264 @@ public:
     SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
     {
         return m_actingVersion;
+    }
+
+    SBE_NODISCARD static const char *minMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t minId() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t minSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool minInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t minEncodingOffset() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    static SBE_CONSTEXPR double minNullValue() SBE_NOEXCEPT
+    {
+        return SBE_DOUBLE_NAN;
+    }
+
+    static SBE_CONSTEXPR double minMinValue() SBE_NOEXCEPT
+    {
+        return -1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR double minMaxValue() SBE_NOEXCEPT
+    {
+        return 1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR std::size_t minEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD double min() const SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(double));
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        return val.fp_value;
+    }
+
+    ZCount &min(const double value) SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        val.fp_value = value;
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(double));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *maxMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t maxId() SBE_NOEXCEPT
+    {
+        return 2;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t maxSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool maxInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t maxEncodingOffset() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    static SBE_CONSTEXPR double maxNullValue() SBE_NOEXCEPT
+    {
+        return SBE_DOUBLE_NAN;
+    }
+
+    static SBE_CONSTEXPR double maxMinValue() SBE_NOEXCEPT
+    {
+        return -1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR double maxMaxValue() SBE_NOEXCEPT
+    {
+        return 1.7976931348623157E308;
+    }
+
+    static SBE_CONSTEXPR std::size_t maxEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD double max() const SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(double));
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        return val.fp_value;
+    }
+
+    ZCount &max(const double value) SBE_NOEXCEPT
+    {
+        union sbe_double_as_uint_u val;
+        val.fp_value = value;
+        val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(double));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *minExclusiveMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t minExclusiveId() SBE_NOEXCEPT
+    {
+        return 3;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t minExclusiveSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool minExclusiveInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t minExclusiveEncodingOffset() SBE_NOEXCEPT
+    {
+        return 16;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t minExclusiveNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t minExclusiveMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t minExclusiveMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t minExclusiveEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t minExclusive() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZCount &minExclusive(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::uint8_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *maxExclusiveMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t maxExclusiveId() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t maxExclusiveSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool maxExclusiveInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t maxExclusiveEncodingOffset() SBE_NOEXCEPT
+    {
+        return 17;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t maxExclusiveMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t maxExclusiveEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t maxExclusive() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 17, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZCount &maxExclusive(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 17, &val, sizeof(std::uint8_t));
+        return *this;
     }
 
     SBE_NODISCARD static const char *keyMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
@@ -337,7 +595,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 1;
+        return 5;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -387,7 +645,7 @@ public:
         return bytesToCopy;
     }
 
-    PTtl &putKey(const char *src, const std::uint32_t length)
+    ZCount &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -466,7 +724,7 @@ public:
     }
     #endif
 
-    PTtl &putKey(const std::string &str)
+    ZCount &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -476,7 +734,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    PTtl &putKey(const std::string_view str)
+    ZCount &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -488,9 +746,9 @@ public:
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const PTtl &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const ZCount &_writer)
 {
-    PTtl writer(
+    ZCount writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -498,11 +756,27 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "PTtl", )";
+    builder << R"("Name": "ZCount", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
+    builder << R"("min": )";
+    builder << +writer.min();
+
+    builder << ", ";
+    builder << R"("max": )";
+    builder << +writer.max();
+
+    builder << ", ";
+    builder << R"("minExclusive": )";
+    builder << +writer.minExclusive();
+
+    builder << ", ";
+    builder << R"("maxExclusive": )";
+    builder << +writer.maxExclusive();
+
+    builder << ", ";
     builder << R"("key": )";
     builder << '"' <<
         writer.skipKey() << " bytes of raw data\"";

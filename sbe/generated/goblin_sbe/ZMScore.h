@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_ZADD_CXX_H_
-#define _GOBLIN_SBE_ZADD_CXX_H_
+#ifndef _GOBLIN_SBE_ZMSCORE_CXX_H_
+#define _GOBLIN_SBE_ZMSCORE_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class ZAdd
+class ZMScore
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(1);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(17);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(122);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    ZAdd() = default;
+    ZMScore() = default;
 
-    ZAdd(
+    ZMScore(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    ZAdd(char *buffer, const std::uint64_t bufferLength) :
-        ZAdd(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    ZMScore(char *buffer, const std::uint64_t bufferLength) :
+        ZMScore(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    ZAdd(
+    ZMScore(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        ZAdd(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        ZMScore(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(1);
+        return static_cast<std::uint16_t>(0);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(17);
+        return static_cast<std::uint16_t>(122);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    ZAdd &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZMScore &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    ZAdd &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZMScore &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    ZAdd &wrapForDecode(
+    ZMScore &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    ZAdd &sbeRewind()
+    ZMScore &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        ZAdd skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        ZMScore skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -309,69 +309,6 @@ public:
     SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
     {
         return m_actingVersion;
-    }
-
-    SBE_NODISCARD static const char *flagsMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-    {
-        switch (metaAttribute)
-        {
-            case MetaAttribute::PRESENCE: return "required";
-            default: return "";
-        }
-    }
-
-    static SBE_CONSTEXPR std::uint16_t flagsId() SBE_NOEXCEPT
-    {
-        return 1;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t flagsSinceVersion() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    SBE_NODISCARD bool flagsInActingVersion() SBE_NOEXCEPT
-    {
-        return true;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t flagsEncodingOffset() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    static SBE_CONSTEXPR std::uint8_t flagsNullValue() SBE_NOEXCEPT
-    {
-        return SBE_NULLVALUE_UINT8;
-    }
-
-    static SBE_CONSTEXPR std::uint8_t flagsMinValue() SBE_NOEXCEPT
-    {
-        return static_cast<std::uint8_t>(0);
-    }
-
-    static SBE_CONSTEXPR std::uint8_t flagsMaxValue() SBE_NOEXCEPT
-    {
-        return static_cast<std::uint8_t>(254);
-    }
-
-    static SBE_CONSTEXPR std::size_t flagsEncodingLength() SBE_NOEXCEPT
-    {
-        return 1;
-    }
-
-    SBE_NODISCARD std::uint8_t flags() const SBE_NOEXCEPT
-    {
-        std::uint8_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint8_t));
-        return (val);
-    }
-
-    ZAdd &flags(const std::uint8_t value) SBE_NOEXCEPT
-    {
-        std::uint8_t val = (value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint8_t));
-        return *this;
     }
 
     class Members
@@ -434,11 +371,11 @@ public:
             m_buffer = buffer;
             m_bufferLength = bufferLength;
             GroupSizeEncoding dimensions(buffer, *pos, bufferLength, actingVersion);
-            dimensions.blockLength(static_cast<std::uint16_t>(8));
+            dimensions.blockLength(static_cast<std::uint16_t>(0));
             dimensions.numInGroup(static_cast<std::uint16_t>(count));
             m_index = 0;
             m_count = count;
-            m_blockLength = 8;
+            m_blockLength = 0;
             m_actingVersion = actingVersion;
             m_initialPosition = *pos;
             m_positionPtr = pos;
@@ -452,7 +389,7 @@ public:
 
         static SBE_CONSTEXPR std::uint64_t sbeBlockLength() SBE_NOEXCEPT
         {
-            return 8;
+            return 0;
         }
 
         SBE_NODISCARD std::uint64_t sbeActingBlockLength() SBE_NOEXCEPT
@@ -525,72 +462,6 @@ public:
         }
 
 
-        SBE_NODISCARD static const char *scoreMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-        {
-            switch (metaAttribute)
-            {
-                case MetaAttribute::PRESENCE: return "required";
-                default: return "";
-            }
-        }
-
-        static SBE_CONSTEXPR std::uint16_t scoreId() SBE_NOEXCEPT
-        {
-            return 1;
-        }
-
-        SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t scoreSinceVersion() SBE_NOEXCEPT
-        {
-            return 0;
-        }
-
-        SBE_NODISCARD bool scoreInActingVersion() SBE_NOEXCEPT
-        {
-            return true;
-        }
-
-        SBE_NODISCARD static SBE_CONSTEXPR std::size_t scoreEncodingOffset() SBE_NOEXCEPT
-        {
-            return 0;
-        }
-
-        static SBE_CONSTEXPR double scoreNullValue() SBE_NOEXCEPT
-        {
-            return SBE_DOUBLE_NAN;
-        }
-
-        static SBE_CONSTEXPR double scoreMinValue() SBE_NOEXCEPT
-        {
-            return -1.7976931348623157E308;
-        }
-
-        static SBE_CONSTEXPR double scoreMaxValue() SBE_NOEXCEPT
-        {
-            return 1.7976931348623157E308;
-        }
-
-        static SBE_CONSTEXPR std::size_t scoreEncodingLength() SBE_NOEXCEPT
-        {
-            return 8;
-        }
-
-        SBE_NODISCARD double score() const SBE_NOEXCEPT
-        {
-            union sbe_double_as_uint_u val;
-            std::memcpy(&val, m_buffer + m_offset + 0, sizeof(double));
-            val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
-            return val.fp_value;
-        }
-
-        Members &score(const double value) SBE_NOEXCEPT
-        {
-            union sbe_double_as_uint_u val;
-            val.fp_value = value;
-            val.uint_value = SBE_LITTLE_ENDIAN_ENCODE_64(val.uint_value);
-            std::memcpy(m_buffer + m_offset + 0, &val, sizeof(double));
-            return *this;
-        }
-
         SBE_NODISCARD static const char *memberMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
         {
             switch (metaAttribute)
@@ -617,7 +488,7 @@ public:
 
         static SBE_CONSTEXPR std::uint16_t memberId() SBE_NOEXCEPT
         {
-            return 2;
+            return 1;
         }
 
         static SBE_CONSTEXPR std::uint64_t memberHeaderLength() SBE_NOEXCEPT
@@ -771,10 +642,6 @@ public:
             std::basic_ostream<CharT, Traits> &builder, Members &writer)
         {
             builder << '{';
-            builder << R"("score": )";
-            builder << +writer.score();
-
-            builder << ", ";
             builder << R"("member": )";
             builder << '"' <<
                 writer.skipMember() << " bytes of raw data\"";
@@ -821,7 +688,7 @@ private:
 public:
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t membersId() SBE_NOEXCEPT
     {
-        return 2;
+        return 1;
     }
 
     SBE_NODISCARD inline Members &members()
@@ -872,7 +739,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 3;
+        return 2;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -922,7 +789,7 @@ public:
         return bytesToCopy;
     }
 
-    ZAdd &putKey(const char *src, const std::uint32_t length)
+    ZMScore &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -1001,7 +868,7 @@ public:
     }
     #endif
 
-    ZAdd &putKey(const std::string &str)
+    ZMScore &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -1011,7 +878,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    ZAdd &putKey(const std::string_view str)
+    ZMScore &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -1023,9 +890,9 @@ public:
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const ZAdd &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const ZMScore &_writer)
 {
-    ZAdd writer(
+    ZMScore writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -1033,15 +900,11 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "ZAdd", )";
+    builder << R"("Name": "ZMScore", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
-    builder << R"("flags": )";
-    builder << +writer.flags();
-
-    builder << ", ";
     {
         bool atLeastOne = false;
         builder << R"("members": [)";

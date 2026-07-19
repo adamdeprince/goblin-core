@@ -25,8 +25,8 @@
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="goblin_sbe"
                    id="7"
-                   version="0"
-                   semanticVersion="1.0"
+                   version="1"
+                   semanticVersion="1.1"
                    description="Goblin Core SBE wire (binary alternative to RESP)"
                    byteOrder="littleEndian">
   <types>
@@ -123,11 +123,25 @@
       <data name="channel" id="2" type="varData"/>
     </group>
   </sbe:message>
+  <sbe:message name="NullableDoubleArrayReply" id="14" description="ordered nullable native doubles (ZMSCORE)">
+    <group name="items" id="1" dimensionType="groupSizeEncoding">
+      <field name="present" id="1" type="uint8"/>
+      <field name="value" id="2" type="double"/>
+    </group>
+  </sbe:message>
+  <sbe:message name="ScoredScanReply" id="15" description="ZSCAN cursor and (member, native score) page">
+    <field name="nextCursor" id="1" type="uint64"/>
+    <group name="items" id="2" dimensionType="groupSizeEncoding">
+      <field name="score" id="1" type="double"/>
+      <data name="member" id="2" type="varData"/>
+    </group>
+  </sbe:message>
 
   <!-- ================= Request messages (ids 16+, appended densely) ============== -->
   <sbe:message name="Ping" id="16" description="PING -> StatusReply PONG"/>
 
-  <!-- ZADD key [score member]... : flags byte, members group, then the key. -->
+  <!-- ZADD flags: 0x01 NX, 0x02 XX, 0x04 GT, 0x08 LT, 0x10 CH,
+       0x20 INCR. INCR requires exactly one member and replies DoubleReply/NilReply. -->
   <sbe:message name="ZAdd" id="17" description="ZADD key [score member]... -> IntReply">
     <field name="flags" id="1" type="uint8"/>
     <group name="members" id="2" dimensionType="groupSizeEncoding">
@@ -674,5 +688,50 @@
     <field name="count"  id="2" type="int64"/>
     <data name="key"   id="3" type="varData"/>
     <data name="match" id="4" type="varData"/>
+  </sbe:message>
+
+  <!-- ================= Sorted-set completion (batch 12, ids 119-124) ========== -->
+  <sbe:message name="ZIncrBy" id="119" description="ZINCRBY key increment member -> DoubleReply">
+    <field name="increment" id="1" type="double"/>
+    <data name="key" id="2" type="varData"/>
+    <data name="member" id="3" type="varData"/>
+  </sbe:message>
+  <!-- limitCount -1 means unlimited. Bounds are normalized min then max even
+       when reverse is set; offset applies in traversal order. -->
+  <sbe:message name="ZRangeByScore" id="120" description="ZRANGE BYSCORE [REV] [LIMIT] [WITHSCORES]">
+    <field name="min" id="1" type="double"/>
+    <field name="max" id="2" type="double"/>
+    <field name="limitOffset" id="3" type="uint64"/>
+    <field name="limitCount" id="4" type="int64"/>
+    <field name="minExclusive" id="5" type="uint8"/>
+    <field name="maxExclusive" id="6" type="uint8"/>
+    <field name="reverse" id="7" type="uint8"/>
+    <field name="withScores" id="8" type="uint8"/>
+    <data name="key" id="9" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ZCount" id="121" description="ZCOUNT key min max -> IntReply">
+    <field name="min" id="1" type="double"/>
+    <field name="max" id="2" type="double"/>
+    <field name="minExclusive" id="3" type="uint8"/>
+    <field name="maxExclusive" id="4" type="uint8"/>
+    <data name="key" id="5" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ZMScore" id="122" description="ZMSCORE key member... -> NullableDoubleArrayReply">
+    <group name="members" id="1" dimensionType="groupSizeEncoding">
+      <data name="member" id="1" type="varData"/>
+    </group>
+    <data name="key" id="2" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ZPop" id="123" description="ZPOPMIN/ZPOPMAX key count -> ScoredArrayReply">
+    <field name="count" id="1" type="uint64"/>
+    <field name="maximum" id="2" type="uint8"/>
+    <data name="key" id="3" type="varData"/>
+  </sbe:message>
+  <sbe:message name="ZScan" id="124" description="ZSCAN key cursor [MATCH] [COUNT] -> ScoredScanReply">
+    <field name="cursor" id="1" type="uint64"/>
+    <field name="count" id="2" type="uint64"/>
+    <field name="hasMatch" id="3" type="uint8"/>
+    <data name="key" id="4" type="varData"/>
+    <data name="match" id="5" type="varData"/>
   </sbe:message>
 </sbe:messageSchema>

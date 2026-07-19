@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_PTTL_CXX_H_
-#define _GOBLIN_SBE_PTTL_CXX_H_
+#ifndef _GOBLIN_SBE_ZSCAN_CXX_H_
+#define _GOBLIN_SBE_ZSCAN_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class PTtl
+class ZScan
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(42);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(17);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(124);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    PTtl() = default;
+    ZScan() = default;
 
-    PTtl(
+    ZScan(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    PTtl(char *buffer, const std::uint64_t bufferLength) :
-        PTtl(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    ZScan(char *buffer, const std::uint64_t bufferLength) :
+        ZScan(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    PTtl(
+    ZScan(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        PTtl(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        ZScan(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(17);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(42);
+        return static_cast<std::uint16_t>(124);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    PTtl &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZScan &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    ZScan &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    PTtl &wrapForDecode(
+    ZScan &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    PTtl &sbeRewind()
+    ZScan &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        PTtl skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        ZScan skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -309,6 +309,195 @@ public:
     SBE_NODISCARD std::uint64_t actingVersion() const SBE_NOEXCEPT
     {
         return m_actingVersion;
+    }
+
+    SBE_NODISCARD static const char *cursorMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t cursorId() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t cursorSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool cursorInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t cursorEncodingOffset() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t cursorNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT64;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t cursorMinValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0x0);
+    }
+
+    static SBE_CONSTEXPR std::uint64_t cursorMaxValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0xfffffffffffffffe);
+    }
+
+    static SBE_CONSTEXPR std::size_t cursorEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::uint64_t cursor() const SBE_NOEXCEPT
+    {
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::uint64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    ZScan &cursor(const std::uint64_t value) SBE_NOEXCEPT
+    {
+        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *countMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t countId() SBE_NOEXCEPT
+    {
+        return 2;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t countSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool countInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t countEncodingOffset() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT64;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countMinValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0x0);
+    }
+
+    static SBE_CONSTEXPR std::uint64_t countMaxValue() SBE_NOEXCEPT
+    {
+        return UINT64_C(0xfffffffffffffffe);
+    }
+
+    static SBE_CONSTEXPR std::size_t countEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::uint64_t count() const SBE_NOEXCEPT
+    {
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::uint64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    ZScan &count(const std::uint64_t value) SBE_NOEXCEPT
+    {
+        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::uint64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *hasMatchMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t hasMatchId() SBE_NOEXCEPT
+    {
+        return 3;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t hasMatchSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool hasMatchInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t hasMatchEncodingOffset() SBE_NOEXCEPT
+    {
+        return 16;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t hasMatchEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t hasMatch() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    ZScan &hasMatch(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::uint8_t));
+        return *this;
     }
 
     SBE_NODISCARD static const char *keyMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
@@ -337,7 +526,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 1;
+        return 4;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -387,7 +576,7 @@ public:
         return bytesToCopy;
     }
 
-    PTtl &putKey(const char *src, const std::uint32_t length)
+    ZScan &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -466,7 +655,7 @@ public:
     }
     #endif
 
-    PTtl &putKey(const std::string &str)
+    ZScan &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -476,7 +665,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    PTtl &putKey(const std::string_view str)
+    ZScan &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -486,11 +675,186 @@ public:
     }
     #endif
 
+    SBE_NODISCARD static const char *matchMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static const char *matchCharacterEncoding() SBE_NOEXCEPT
+    {
+        return "null";
+    }
+
+    static SBE_CONSTEXPR std::uint64_t matchSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    bool matchInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    static SBE_CONSTEXPR std::uint16_t matchId() SBE_NOEXCEPT
+    {
+        return 5;
+    }
+
+    static SBE_CONSTEXPR std::uint64_t matchHeaderLength() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD std::uint32_t matchLength() const
+    {
+        std::uint32_t length;
+        std::memcpy(&length, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_32(length);
+    }
+
+    std::uint64_t skipMatch()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        sbePosition(lengthPosition + lengthOfLengthField + dataLength);
+        return dataLength;
+    }
+
+    SBE_NODISCARD const char *match()
+    {
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + sbePosition(), sizeof(std::uint32_t));
+        const char *fieldPtr = m_buffer + sbePosition() + 4;
+        sbePosition(sbePosition() + 4 + SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue));
+        return fieldPtr;
+    }
+
+    std::uint64_t getMatch(char *dst, const std::uint64_t length)
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t bytesToCopy = length < dataLength ? length : dataLength;
+        std::uint64_t pos = sbePosition();
+        sbePosition(pos + dataLength);
+        std::memcpy(dst, m_buffer + pos, static_cast<std::size_t>(bytesToCopy));
+        return bytesToCopy;
+    }
+
+    ZScan &putMatch(const char *src, const std::uint32_t length)
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        std::uint32_t lengthFieldValue = SBE_LITTLE_ENDIAN_ENCODE_32(length);
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::memcpy(m_buffer + lengthPosition, &lengthFieldValue, sizeof(std::uint32_t));
+        if (length != std::uint32_t(0))
+        {
+            std::uint64_t pos = sbePosition();
+            sbePosition(pos + length);
+            std::memcpy(m_buffer + pos, src, length);
+        }
+        return *this;
+    }
+
+    std::string getMatchAsString()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t pos = sbePosition();
+        const std::string result(m_buffer + pos, dataLength);
+        sbePosition(pos + dataLength);
+        return result;
+    }
+
+    std::string getMatchAsJsonEscapedString()
+    {
+        std::ostringstream oss;
+        std::string s = getMatchAsString();
+
+        for (const auto c : s)
+        {
+            switch (c)
+            {
+                case '"': oss << "\\\""; break;
+                case '\\': oss << "\\\\"; break;
+                case '\b': oss << "\\b"; break;
+                case '\f': oss << "\\f"; break;
+                case '\n': oss << "\\n"; break;
+                case '\r': oss << "\\r"; break;
+                case '\t': oss << "\\t"; break;
+
+                default:
+                    if ('\x00' <= c && c <= '\x1f')
+                    {
+                        oss << "\\u" << std::hex << std::setw(4)
+                            << std::setfill('0') << (int)(c);
+                    }
+                    else
+                    {
+                        oss << c;
+                    }
+            }
+        }
+
+        return oss.str();
+    }
+
+    #if __cplusplus >= 201703L
+    std::string_view getMatchAsStringView()
+    {
+        std::uint64_t lengthOfLengthField = 4;
+        std::uint64_t lengthPosition = sbePosition();
+        sbePosition(lengthPosition + lengthOfLengthField);
+        std::uint32_t lengthFieldValue;
+        std::memcpy(&lengthFieldValue, m_buffer + lengthPosition, sizeof(std::uint32_t));
+        std::uint64_t dataLength = SBE_LITTLE_ENDIAN_ENCODE_32(lengthFieldValue);
+        std::uint64_t pos = sbePosition();
+        const std::string_view result(m_buffer + pos, dataLength);
+        sbePosition(pos + dataLength);
+        return result;
+    }
+    #endif
+
+    ZScan &putMatch(const std::string &str)
+    {
+        if (str.length() > 1073741824)
+        {
+            throw std::runtime_error("std::string too long for length type [E109]");
+        }
+        return putMatch(str.data(), static_cast<std::uint32_t>(str.length()));
+    }
+
+    #if __cplusplus >= 201703L
+    ZScan &putMatch(const std::string_view str)
+    {
+        if (str.length() > 1073741824)
+        {
+            throw std::runtime_error("std::string too long for length type [E109]");
+        }
+        return putMatch(str.data(), static_cast<std::uint32_t>(str.length()));
+    }
+    #endif
+
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const PTtl &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const ZScan &_writer)
 {
-    PTtl writer(
+    ZScan writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -498,14 +862,30 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "PTtl", )";
+    builder << R"("Name": "ZScan", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
 
+    builder << R"("cursor": )";
+    builder << +writer.cursor();
+
+    builder << ", ";
+    builder << R"("count": )";
+    builder << +writer.count();
+
+    builder << ", ";
+    builder << R"("hasMatch": )";
+    builder << +writer.hasMatch();
+
+    builder << ", ";
     builder << R"("key": )";
     builder << '"' <<
         writer.skipKey() << " bytes of raw data\"";
+    builder << ", ";
+    builder << R"("match": )";
+    builder << '"' <<
+        writer.skipMatch() << " bytes of raw data\"";
     builder << '}';
 
     return builder;
@@ -514,6 +894,7 @@ friend std::basic_ostream<CharT, Traits> & operator << (
 void skip()
 {
     skipKey();
+    skipMatch();
 }
 
 SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
@@ -521,7 +902,9 @@ SBE_NODISCARD static SBE_CONSTEXPR bool isConstLength() SBE_NOEXCEPT
     return false;
 }
 
-SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0)
+SBE_NODISCARD static std::size_t computeLength(
+    std::size_t keyLength = 0,
+    std::size_t matchLength = 0)
 {
 #if defined(__GNUG__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -535,6 +918,13 @@ SBE_NODISCARD static std::size_t computeLength(std::size_t keyLength = 0)
         throw std::runtime_error("keyLength too long for length type [E109]");
     }
     length += keyLength;
+
+    length += matchHeaderLength();
+    if (matchLength > 1073741824LL)
+    {
+        throw std::runtime_error("matchLength too long for length type [E109]");
+    }
+    length += matchLength;
 
     return length;
 #if defined(__GNUG__) && !defined(__clang__)

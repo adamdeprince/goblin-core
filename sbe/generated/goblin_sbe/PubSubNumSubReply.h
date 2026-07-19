@@ -72,7 +72,7 @@
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (false)
 #  elif defined(_MSC_VER)
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (exp)
-#  else
+#  else 
 #    define SBE_BOUNDS_CHECK_EXPECT(exp, c) (__builtin_expect(exp, c))
 #  endif
 
@@ -115,8 +115,8 @@ public:
     static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(0);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(13);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
-    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
-    static constexpr const char* SBE_SEMANTIC_VERSION = "1.0";
+    static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(1);
+    static constexpr const char* SBE_SEMANTIC_VERSION = "1.1";
 
     enum MetaAttribute
     {
@@ -190,12 +190,12 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaVersion() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(0);
+        return static_cast<std::uint16_t>(1);
     }
 
     SBE_NODISCARD static const char *sbeSemanticVersion() SBE_NOEXCEPT
     {
-        return "1.0";
+        return "1.1";
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR const char *sbeSemanticType() SBE_NOEXCEPT

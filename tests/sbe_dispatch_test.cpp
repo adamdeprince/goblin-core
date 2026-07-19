@@ -26,8 +26,10 @@
 #include "goblin_sbe/IntReply.h"
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/NilReply.h"
+#include "goblin_sbe/NullableDoubleArrayReply.h"
 #include "goblin_sbe/Ping.h"
 #include "goblin_sbe/ScoredArrayReply.h"
+#include "goblin_sbe/ScoredScanReply.h"
 #include "goblin_sbe/Set.h"
 #include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
@@ -88,11 +90,18 @@
 #include "goblin_sbe/MapReply.h"
 #include "goblin_sbe/ZAdd.h"
 #include "goblin_sbe/ZCard.h"
+#include "goblin_sbe/ZCount.h"
+#include "goblin_sbe/ZIncrBy.h"
+#include "goblin_sbe/ZMScore.h"
+#include "goblin_sbe/ZPop.h"
 #include "goblin_sbe/ZRange.h"
+#include "goblin_sbe/ZRangeByScore.h"
 #include "goblin_sbe/ZRank.h"
+#include "goblin_sbe/ZScan.h"
 #include "goblin_sbe/ZScore.h"
 
 #undef NDEBUG
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -124,11 +133,12 @@ std::string ping_frame() {
   return framed(buf, static_cast<std::uint32_t>(sbe::Ping::sbeBlockAndHeaderLength()));
 }
 
-std::string zadd_frame(std::string_view key, const std::vector<Scored>& members) {
+std::string zadd_frame(std::string_view key, const std::vector<Scored>& members,
+                       std::uint8_t flags = 0) {
   char buf[4096];
   sbe::ZAdd z;
   z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
-  z.flags(0);
+  z.flags(flags);
   auto& g = z.membersCount(static_cast<std::uint16_t>(members.size()));
   for (const auto& [s, m] : members) {
     g.next().score(s).putMember(m.data(), static_cast<std::uint32_t>(m.size()));
@@ -162,6 +172,81 @@ std::string zrange_frame(std::string_view key, long long start, long long stop, 
   z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
   z.start(start).stop(stop).withScores(with_scores ? 1 : 0).rev(rev ? 1 : 0);
   z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zincrby_frame(std::string_view key, double increment, std::string_view member) {
+  char buf[512];
+  sbe::ZIncrBy z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.increment(increment);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  z.putMember(member.data(), static_cast<std::uint32_t>(member.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zrangebyscore_frame(std::string_view key, double min, bool min_exclusive,
+                                double max, bool max_exclusive, bool reverse = false,
+                                bool with_scores = false, std::uint64_t offset = 0,
+                                std::int64_t count = -1) {
+  char buf[512];
+  sbe::ZRangeByScore z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.min(min)
+      .max(max)
+      .limitOffset(offset)
+      .limitCount(count)
+      .minExclusive(min_exclusive ? 1 : 0)
+      .maxExclusive(max_exclusive ? 1 : 0)
+      .reverse(reverse ? 1 : 0)
+      .withScores(with_scores ? 1 : 0);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zcount_frame(std::string_view key, double min, bool min_exclusive,
+                         double max, bool max_exclusive) {
+  char buf[512];
+  sbe::ZCount z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.min(min)
+      .max(max)
+      .minExclusive(min_exclusive ? 1 : 0)
+      .maxExclusive(max_exclusive ? 1 : 0);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zmscore_frame(std::string_view key, const std::vector<std::string_view>& members) {
+  char buf[4096];
+  sbe::ZMScore z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  auto& group = z.membersCount(static_cast<std::uint16_t>(members.size()));
+  for (const auto member : members) {
+    group.next().putMember(member.data(), static_cast<std::uint32_t>(member.size()));
+  }
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zpop_frame(std::string_view key, std::uint64_t count, bool maximum) {
+  char buf[512];
+  sbe::ZPop z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.count(count).maximum(maximum ? 1 : 0);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string zscan_frame(std::string_view key, std::uint64_t cursor, std::uint64_t count,
+                        std::optional<std::string_view> match = std::nullopt) {
+  char buf[512];
+  sbe::ZScan z;
+  z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  z.cursor(cursor).count(count).hasMatch(match.has_value() ? 1 : 0);
+  z.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  const auto pattern = match.value_or(std::string_view{});
+  z.putMatch(pattern.data(), static_cast<std::uint32_t>(pattern.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
 }
 
@@ -563,6 +648,128 @@ int main() {
     auto r = decode<sbe::ArrayReply>(h, m, l);
     assert(!r.items().hasNext());
   });
+
+  // Conditional ZADD and increment forms share one atomic storage path.
+  dispatch(store,
+           zadd_frame("advanced", {{1.0, "one"}, {2.0, "two"},
+                                    {3.0, "three"}, {4.0, "four"},
+                                    {5.0, "five"}}),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 5);
+           });
+  dispatch(store, zadd_frame("advanced", {{9.0, "one"}}, 0x01),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 0);
+           });
+  dispatch(store, zadd_frame("advanced", {{9.0, "six"}}, 0x02),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 0);
+           });
+  dispatch(store, zadd_frame("advanced", {{1.5, "one"}}, 0x04 | 0x10),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 1);
+           });
+  dispatch(store, zadd_frame("advanced", {{1.75, "two"}}, 0x08 | 0x10),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 1);
+           });
+  dispatch(store, zadd_frame("advanced", {{1.0, "ghost"}}, 0x02 | 0x20),
+           [](sbe::MessageHeader& h, char*, std::uint32_t) {
+             assert(h.templateId() == sbe::NilReply::sbeTemplateId());
+           });
+  dispatch(store, zadd_frame("advanced", {{2.0, "three"}}, 0x20),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::DoubleReply>(h, m, l).value() == 5.0);
+           });
+  dispatch(store, zincrby_frame("advanced", -1.0, "four"),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::DoubleReply>(h, m, l).value() == 3.0);
+           });
+
+  dispatch(store, zcount_frame("advanced", 1.5, true, 5.0, true),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             assert(decode<sbe::IntReply>(h, m, l).value() == 2);
+           });
+  dispatch(store,
+           zrangebyscore_frame("advanced", 1.5, false, 5.0, false,
+                                false, false, 1, 2),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::ArrayReply>(h, m, l);
+             std::vector<std::string> got;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const auto value = g.getValueAsStringView();
+               got.emplace_back(value.data(), value.size());
+             }
+             assert((got == std::vector<std::string>{"two", "four"}));
+           });
+  dispatch(store,
+           zrangebyscore_frame("advanced", 1.5, false, 5.0, false,
+                                true, true, 1, 2),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::ScoredArrayReply>(h, m, l);
+             std::vector<std::pair<std::string, double>> got;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const auto member = g.getMemberAsStringView();
+               got.emplace_back(std::string(member), g.score());
+             }
+             assert((got == std::vector<std::pair<std::string, double>>{
+                                {"five", 5.0}, {"four", 3.0}}));
+           });
+  dispatch(store, zmscore_frame("advanced", {"one", "ghost", "three"}),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::NullableDoubleArrayReply>(h, m, l);
+             auto& g = r.items();
+             g.next();
+             assert(g.present() == 1 && g.value() == 1.5);
+             g.next();
+             assert(g.present() == 0);
+             g.next();
+             assert(g.present() == 1 && g.value() == 5.0);
+             assert(!g.hasNext());
+           });
+
+  std::uint64_t scan_cursor = 0;
+  std::vector<std::string> scanned;
+  do {
+    dispatch(store, zscan_frame("advanced", scan_cursor, 2),
+             [&](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::ScoredScanReply>(h, m, l);
+               scan_cursor = r.nextCursor();
+               auto& g = r.items();
+               while (g.hasNext()) {
+                 g.next();
+                 const auto member = g.getMemberAsStringView();
+                 scanned.emplace_back(member.data(), member.size());
+               }
+             });
+  } while (scan_cursor != 0);
+  std::sort(scanned.begin(), scanned.end());
+  assert((scanned == std::vector<std::string>{"five", "four", "one", "three", "two"}));
+
+  dispatch(store, zpop_frame("advanced", 2, false),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::ScoredArrayReply>(h, m, l);
+             auto& g = r.items();
+             g.next();
+             assert(g.getMemberAsStringView() == "one" && g.score() == 1.5);
+             g.next();
+             assert(g.getMemberAsStringView() == "two" && g.score() == 1.75);
+             assert(!g.hasNext());
+           });
+  dispatch(store, zpop_frame("advanced", 2, true),
+           [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+             auto r = decode<sbe::ScoredArrayReply>(h, m, l);
+             auto& g = r.items();
+             g.next();
+             assert(g.getMemberAsStringView() == "three" && g.score() == 5.0);
+             g.next();
+             assert(g.getMemberAsStringView() == "five" && g.score() == 5.0);
+             assert(!g.hasNext());
+           });
 
   // ---- String core (batch 1) ----
   auto is_nil = [](sbe::MessageHeader& h, char*, std::uint32_t) {
