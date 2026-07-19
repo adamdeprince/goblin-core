@@ -561,6 +561,24 @@ constexpr std::string_view kValueTooLarge =
     "ERR value does not fit the 65,535-byte encoded limit; use "
     "https://goblin-store.dev";
 
+[[nodiscard]] constexpr std::string_view key_type_name(KeyType type) noexcept {
+  switch (type) {
+    case KeyType::String:
+      return "string";
+    case KeyType::Zset:
+      return "zset";
+    case KeyType::Hash:
+      return "hash";
+    case KeyType::List:
+      return "list";
+    case KeyType::Set:
+      return "set";
+    case KeyType::Array:
+      return "array";
+  }
+  return "none";
+}
+
 [[nodiscard]] bool is_zset_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::zadd:
@@ -602,6 +620,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::hexists:
     case CommandType::hstrlen:
     case CommandType::hincrby:
+    case CommandType::hscan:
     case CommandType::goblin_hcad:    // deletes a field; non-hash is WRONGTYPE
     case CommandType::goblin_hsetgt:  // sets a field; non-hash is WRONGTYPE
       return true;
@@ -1603,6 +1622,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::hincrby;
       return {.command = std::move(command)};
+    case CommandType::hscan:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("hscan"));
+      }
+      command.type = CommandType::hscan;
+      return {.command = std::move(command)};
     case CommandType::sadd:
       if (command.args.size() < 2) {
         return parse_error(wrong_arity("sadd"));
@@ -1950,6 +1975,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("exists"));
       }
       command.type = CommandType::exists;
+      return {.command = std::move(command)};
+    case CommandType::scan:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("scan"));
+      }
+      command.type = CommandType::scan;
       return {.command = std::move(command)};
     case CommandType::key_type:
       if (command.args.size() != 1) {
@@ -2350,6 +2381,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::mget:
     case CommandType::del:
     case CommandType::exists:
+    case CommandType::scan:
     case CommandType::goblin_optimize:
     case CommandType::goblin_save:
       return -2;
@@ -2368,6 +2400,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::zrem:
     case CommandType::zmscore:
     case CommandType::zscan:
+    case CommandType::hscan:
     case CommandType::hmget:
     case CommandType::hdel:
     case CommandType::sadd:
@@ -3394,6 +3427,67 @@ void execute_command_into(Store& store,
       return;
     }
 
+    case CommandType::hscan: {
+      const auto cursor = parse_u64(command.args[1]);
+      if (!cursor) {
+        resp::append_error(out, "ERR invalid cursor");
+        return;
+      }
+      std::string_view pattern;
+      bool has_pattern = false;
+      bool no_values = false;
+      std::size_t count = 10;
+      for (std::size_t i = 2; i < command.args.size();) {
+        if (equals_ci(command.args[i], "MATCH") &&
+            i + 1 < command.args.size()) {
+          pattern = command.args[i + 1];
+          has_pattern = true;
+          i += 2;
+          continue;
+        }
+        if (equals_ci(command.args[i], "COUNT") &&
+            i + 1 < command.args.size()) {
+          const auto parsed = parse_u64(command.args[i + 1]);
+          if (!parsed || *parsed == 0 ||
+              *parsed > std::numeric_limits<std::size_t>::max()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          count = static_cast<std::size_t>(*parsed);
+          i += 2;
+          continue;
+        }
+        if (equals_ci(command.args[i], "NOVALUES")) {
+          no_values = true;
+          ++i;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      std::string page;
+      std::size_t item_count = 0;
+      const auto next = store.hscan(
+          command.args[0], *cursor, count,
+          [&](std::string_view field) {
+            return !has_pattern || scan_glob_match(pattern, field);
+          },
+          [&](std::string_view field, EncodedStringView value) {
+            resp::append_bulk_string(page, field);
+            ++item_count;
+            if (!no_values) {
+              resp::append_bulk_string(page, value);
+              ++item_count;
+            }
+          });
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(next));
+      resp::append_array_header(out, item_count);
+      out.append(page);
+      return;
+    }
+
     case CommandType::sadd: {
       for (std::size_t index = 1; index < command.args.size(); ++index) {
         if (!store.value_fits(command.args[index])) {
@@ -4372,32 +4466,69 @@ void execute_command_into(Store& store,
       resp::append_integer(out, count);
       return;
     }
+    case CommandType::scan: {
+      const auto cursor = parse_u64(command.args[0]);
+      if (!cursor) {
+        resp::append_error(out, "ERR invalid cursor");
+        return;
+      }
+      std::string_view pattern;
+      std::string_view type_filter;
+      bool has_pattern = false;
+      bool has_type = false;
+      std::size_t count = 10;
+      for (std::size_t i = 1; i < command.args.size();) {
+        if (equals_ci(command.args[i], "MATCH") &&
+            i + 1 < command.args.size()) {
+          pattern = command.args[i + 1];
+          has_pattern = true;
+          i += 2;
+          continue;
+        }
+        if (equals_ci(command.args[i], "COUNT") &&
+            i + 1 < command.args.size()) {
+          const auto parsed = parse_u64(command.args[i + 1]);
+          if (!parsed || *parsed == 0 ||
+              *parsed > std::numeric_limits<std::size_t>::max()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          count = static_cast<std::size_t>(*parsed);
+          i += 2;
+          continue;
+        }
+        if (equals_ci(command.args[i], "TYPE") &&
+            i + 1 < command.args.size()) {
+          type_filter = command.args[i + 1];
+          has_type = true;
+          i += 2;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      std::vector<std::string_view> keys;
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      const auto next = store.scan(
+          *cursor, count, now,
+          [&](std::string_view key, KeyType type) {
+            if ((!has_pattern || scan_glob_match(pattern, key)) &&
+                (!has_type || equals_ci(type_filter, key_type_name(type)))) {
+              keys.push_back(key);
+            }
+          });
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(next));
+      resp::append_array_header(out, keys.size());
+      for (const auto key : keys) {
+        resp::append_bulk_string(out, key);
+      }
+      return;
+    }
     case CommandType::key_type: {
       const auto type = store.key_type(command.args[0]);
-      std::string_view name = "none";
-      if (type) {
-        switch (*type) {
-          case KeyType::String:
-            name = "string";
-            break;
-          case KeyType::Zset:
-            name = "zset";
-            break;
-          case KeyType::Hash:
-            name = "hash";
-            break;
-          case KeyType::List:
-            name = "list";
-            break;
-          case KeyType::Set:
-            name = "set";
-            break;
-          case KeyType::Array:
-            name = "array";
-            break;
-        }
-      }
-      resp::append_simple_string(out, name);
+      resp::append_simple_string(out, type ? key_type_name(*type) : "none");
       return;
     }
     case CommandType::expire:

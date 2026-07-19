@@ -905,6 +905,25 @@ class Keyspace {
     return storage_.view(id);
   }
 
+  // SCAN walks dense key ids directly. Deletion uses swap-remove, so mutation
+  // during a complete iteration may duplicate or omit entries.
+  template <class Fn>
+  std::uint64_t scan(std::uint64_t cursor, std::size_t count, Fn&& fn) const {
+    const auto n = types_.size();
+    if (n == 0 || cursor >= n) {
+      return 0;
+    }
+    const auto budget = count == 0 ? std::size_t{10} : count;
+    const auto first = static_cast<std::size_t>(cursor);
+    const auto take = std::min(budget, n - first);
+    for (std::size_t id = first; id < first + take; ++id) {
+      fn(static_cast<std::uint64_t>(id), storage_.view(id),
+         static_cast<KeyType>(types_[id]));
+    }
+    const auto next = first + take;
+    return next == n ? 0 : static_cast<std::uint64_t>(next);
+  }
+
   // Erase the key at `id`, returning the swap-remove it caused (the last key slid
   // into `id`), or nullopt if `id` was the last key. The caller fixes up any
   // external id-keyed index (the TTL set) using the returned move.
@@ -1818,6 +1837,17 @@ class Store {
       hash->for_each(std::forward<Fn>(fn));
     }
   }
+  template <class MatchFn, class EmitFn>
+  std::uint64_t hscan(std::string_view key, std::uint64_t cursor,
+                      std::size_t count, MatchFn&& match,
+                      EmitFn&& emit) const {
+    const auto* hash = find_hash(key);
+    if (hash == nullptr) {
+      return 0;
+    }
+    return hash->scan(cursor, count, std::forward<MatchFn>(match),
+                      std::forward<EmitFn>(emit));
+  }
   // One keyspace probe: emit `header(size)` then each (field, value). Missing
   // keys call header(0) and skip the body. Used by HGETALL / HKEYS / HVALS so
   // the reply header and iteration share a single lookup.
@@ -2120,6 +2150,24 @@ class Store {
   [[nodiscard]] std::optional<KeyType> key_type(
       std::string_view key) const noexcept {
     return keyspace_.type_of(key);
+  }
+  // Whole-keyspace SCAN. Expired entries consume the page's work budget but are
+  // not emitted; filtering avoids turning one scan call into an unbounded purge.
+  template <class Fn>
+  std::uint64_t scan(std::uint64_t cursor, std::size_t count,
+                     std::uint64_t now, Fn&& fn) const {
+    const bool has_ttl = !ttl_.empty();
+    return keyspace_.scan(
+        cursor, count,
+        [&](std::uint64_t id, std::string_view key, KeyType type) {
+          if (has_ttl) {
+            const auto expiry = ttl_.expiry(id);
+            if (expiry && *expiry <= now) {
+              return;
+            }
+          }
+          fn(key, type);
+        });
   }
   [[nodiscard]] bool key_is_string(std::string_view key) const noexcept {
     return keyspace_.is_type(key, KeyType::String);

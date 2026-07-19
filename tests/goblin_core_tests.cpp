@@ -194,6 +194,8 @@ void test_command_perfect_hash() {
   assert(type_of({"zcount", "k", "-inf", "+inf"}) == CT::zcount);
   assert(type_of({"zscan", "k", "0"}) == CT::zscan);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
+  assert(type_of({"hscan", "h", "0"}) == CT::hscan);
+  assert(type_of({"scan", "0"}) == CT::scan);
   assert(type_of({"goblin.rt.hset", "h", "f", "v"}) == CT::hset);
   assert(type_of({"GoBlIn.EfFiCeNt.HgEt", "h", "f"}) == CT::hget);
   assert(type_of({"goblin.pma.lpush", "l", "v"}) == CT::pma_lpush);
@@ -5354,6 +5356,83 @@ void test_hash_commands() {
   assert(execute_fields(store, {"HEXISTS", "h", "f2"}) == ":0\r\n");
 }
 
+void test_scan_commands() {
+  using goblin::core::HashImplementation;
+  using goblin::core::KeyType;
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  Store store;
+  assert(execute_fields(store, {"SET", "key:string", "v"}) == "+OK\r\n");
+  assert(execute_fields(store, {"ZADD", "key:zset", "1", "m"}) == ":1\r\n");
+  assert(execute_fields(store,
+                        {"HSET", "key:hash", "alpha", "1", "beta", "2",
+                         "gamma", "3", "127", "4"}) == ":4\r\n");
+  assert(execute_fields(store, {"SADD", "key:set", "m"}) == ":1\r\n");
+  assert(execute_fields(store, {"LPUSH", "key:list", "v"}) == ":1\r\n");
+  assert(execute_fields(store, {"ARSET", "key:array", "0", "v"}) ==
+         ":1\r\n");
+
+  // Dense key ids make pages deterministic without materializing the keyspace.
+  assert(execute_fields(store, {"SCAN", "0", "COUNT", "2"}) ==
+         "*2\r\n$1\r\n2\r\n*2\r\n$10\r\nkey:string\r\n$8\r\nkey:zset\r\n");
+  assert(execute_fields(store, {"SCAN", "0", "TYPE", "HASH", "COUNT", "20"}) ==
+         "*2\r\n$1\r\n0\r\n*1\r\n$8\r\nkey:hash\r\n");
+  const auto matched =
+      execute_fields(store, {"SCAN", "0", "MATCH", "key:s*", "COUNT", "20"});
+  assert(matched.find("$10\r\nkey:string\r\n") != std::string::npos);
+  assert(matched.find("$7\r\nkey:set\r\n") != std::string::npos);
+  assert(matched.find("*2\r\n$1\r\n0\r\n*2\r\n") == 0);
+  assert(execute_fields(store, {"SCAN", "0", "TYPE", "not-a-type"}) ==
+         "*2\r\n$1\r\n0\r\n*0\r\n");
+
+  // Compact hashes seek through their offset directory and decode encoded
+  // fields back to their exact logical text.
+  assert(execute_fields(store, {"HSCAN", "key:hash", "0", "COUNT", "2"}) ==
+         "*2\r\n$1\r\n2\r\n*4\r\n$5\r\nalpha\r\n$1\r\n1\r\n$4\r\nbeta\r\n$1\r\n2\r\n");
+  assert(execute_fields(store,
+                        {"HSCAN", "key:hash", "0", "MATCH", "b*", "COUNT", "20"}) ==
+         "*2\r\n$1\r\n0\r\n*2\r\n$4\r\nbeta\r\n$1\r\n2\r\n");
+  assert(execute_fields(store,
+                        {"HSCAN", "key:hash", "0", "COUNT", "20", "NOVALUES"}) ==
+         "*2\r\n$1\r\n0\r\n*4\r\n$5\r\nalpha\r\n$4\r\nbeta\r\n$5\r\ngamma\r\n$3\r\n127\r\n");
+  assert(execute_fields(store, {"HSCAN", "missing", "0"}) ==
+         "*2\r\n$1\r\n0\r\n*0\r\n");
+  assert(execute_fields(store, {"HSCAN", "key:string", "0"}).find(
+             "WRONGTYPE") != std::string::npos);
+  assert(execute_fields(store, {"SCAN", "-1"}) ==
+         "-ERR invalid cursor\r\n");
+  assert(execute_fields(store, {"HSCAN", "key:hash", "0", "COUNT", "0"}) ==
+         "-ERR syntax error\r\n");
+
+  Store full(StoreOptions{.hash_listpack_max_entries = 0});
+  assert(execute_fields(full,
+                        {"HSET", "h", "a", "1", "b", "2", "c", "3"}) ==
+         ":3\r\n");
+  assert(execute_fields(full, {"HSCAN", "h", "1", "COUNT", "1"}) ==
+         "*2\r\n$1\r\n2\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n");
+
+  Store realtime(StoreOptions{.hash_listpack_max_entries = 0,
+                              .hash_implementation =
+                                  HashImplementation::Realtime});
+  assert(execute_fields(realtime,
+                        {"GOBLIN.RT.HSET", "h", "a", "1", "b", "2"}) ==
+         ":2\r\n");
+  assert(execute_fields(realtime, {"GOBLIN.RT.HSCAN", "h", "0", "COUNT", "1"}) ==
+         "*2\r\n$1\r\n1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n");
+
+  Store expiry;
+  expiry.set("live", "1");
+  expiry.set("expired", "2");
+  assert(expiry.expire_at_ms("expired", 100, 0));
+  std::vector<std::string> visible;
+  assert(expiry.scan(0, 10, 100, [&](std::string_view key, KeyType) {
+           visible.emplace_back(key);
+         }) == 0);
+  assert((visible == std::vector<std::string>{"live"}));
+  assert(expiry.exists("expired"));  // SCAN filters; it does not run a full purge.
+}
+
 // A key holds one type; the cross-type command is a WRONGTYPE error.
 void test_wrongtype() {
   goblin::core::Store store;
@@ -6892,6 +6971,7 @@ int main() {
   test_set_full_command_surface();
   test_set_snapshot_roundtrip();
   test_hash_commands();
+  test_scan_commands();
   test_wrongtype();
   test_hash_snapshot_persistence();
   test_score_index_merge_after_erase();

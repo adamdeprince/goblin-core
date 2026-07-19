@@ -78,6 +78,7 @@ HLEN, goblin::core::CommandType::hlen
 HEXISTS, goblin::core::CommandType::hexists
 HSTRLEN, goblin::core::CommandType::hstrlen
 HINCRBY, goblin::core::CommandType::hincrby
+HSCAN, goblin::core::CommandType::hscan
 GOBLIN.RT.HSET, goblin::core::CommandType::hset
 GOBLIN.RT.HSETNX, goblin::core::CommandType::hsetnx
 GOBLIN.RT.HGET, goblin::core::CommandType::hget
@@ -90,6 +91,7 @@ GOBLIN.RT.HLEN, goblin::core::CommandType::hlen
 GOBLIN.RT.HEXISTS, goblin::core::CommandType::hexists
 GOBLIN.RT.HSTRLEN, goblin::core::CommandType::hstrlen
 GOBLIN.RT.HINCRBY, goblin::core::CommandType::hincrby
+GOBLIN.RT.HSCAN, goblin::core::CommandType::hscan
 GOBLIN.EFFICENT.HSET, goblin::core::CommandType::hset
 GOBLIN.EFFICENT.HSETNX, goblin::core::CommandType::hsetnx
 GOBLIN.EFFICENT.HGET, goblin::core::CommandType::hget
@@ -102,6 +104,7 @@ GOBLIN.EFFICENT.HLEN, goblin::core::CommandType::hlen
 GOBLIN.EFFICENT.HEXISTS, goblin::core::CommandType::hexists
 GOBLIN.EFFICENT.HSTRLEN, goblin::core::CommandType::hstrlen
 GOBLIN.EFFICENT.HINCRBY, goblin::core::CommandType::hincrby
+GOBLIN.EFFICENT.HSCAN, goblin::core::CommandType::hscan
 SADD, goblin::core::CommandType::sadd
 SREM, goblin::core::CommandType::srem
 SCARD, goblin::core::CommandType::scard
@@ -207,6 +210,7 @@ MSET, goblin::core::CommandType::mset
 MGET, goblin::core::CommandType::mget
 DEL, goblin::core::CommandType::del
 EXISTS, goblin::core::CommandType::exists
+SCAN, goblin::core::CommandType::scan
 TYPE, goblin::core::CommandType::key_type
 EXPIRE, goblin::core::CommandType::expire
 PEXPIRE, goblin::core::CommandType::pexpire

@@ -320,6 +320,22 @@ class HashListpack {
         });
   }
 
+  // Visit a bounded insertion-order range. The entry-offset directory makes
+  // the first seek O(1); callers such as HSCAN do not reparse earlier entries.
+  template <class Fn>
+  void for_range(std::size_t first, std::size_t count, Fn&& fn,
+                 StringEncodingOptions encoding = {}) const {
+    const Header hdr = unpack();
+    const auto end = std::min<std::size_t>(hdr.count, first + count);
+    for (std::size_t index = first; index < end; ++index) {
+      const auto entry = entry_at(hdr.entries + offset_at(hdr, index));
+      auto logical_field =
+          EncodedStringView(entry.field, encoding.encoding_enabled()).to_string();
+      fn(std::string_view(logical_field),
+         EncodedStringView(entry.value, encoding.encoding_enabled()));
+    }
+  }
+
  private:
   static constexpr std::size_t kNotFound = static_cast<std::size_t>(-1);
 

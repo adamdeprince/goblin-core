@@ -451,6 +451,39 @@ class Hash {
     }
   }
 
+  // HSCAN cursor is a dense field id in either representation. MATCH filters
+  // after consuming work, so COUNT remains a bounded work hint even when a page
+  // returns no fields.
+  template <class MatchFn, class EmitFn>
+  std::uint64_t scan(std::uint64_t cursor, std::size_t count, MatchFn&& match,
+                     EmitFn&& emit) const {
+    const auto n = size();
+    if (n == 0 || cursor >= n) {
+      return 0;
+    }
+    const auto budget = count == 0 ? std::size_t{10} : count;
+    const auto first = static_cast<std::size_t>(cursor);
+    const auto take = std::min(budget, n - first);
+    const auto visit = [&](std::string_view field, EncodedStringView value) {
+      if (match(field)) {
+        emit(field, value);
+      }
+    };
+    if (is_small()) {
+      read_small([&](const HashListpack& lp) {
+        lp.for_range(first, take, visit, options().string_encoding);
+      });
+    } else {
+      const auto& storage = *full().storage;
+      for (std::size_t id = first; id < first + take; ++id) {
+        visit(storage.view(static_cast<std::uint32_t>(id)),
+              storage.value(static_cast<std::uint32_t>(id)));
+      }
+    }
+    const auto next = first + take;
+    return next == n ? 0 : static_cast<std::uint64_t>(next);
+  }
+
   // Compact the arena in place so frozen HugeTLB-backed blocks survive, then
   // rebuild only the field index at the requested density. The full form may
   // demote back to listpack when small enough.
