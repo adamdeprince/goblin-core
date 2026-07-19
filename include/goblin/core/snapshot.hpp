@@ -49,8 +49,9 @@ inline constexpr char kMagic[4] = {'G', 'C', 'S', 'N'};
 // Bump when the canonical layer layout changes. v2 records each zset's score
 // width and writes scores at it (i16/i32/f64) instead of always f64. v3 records
 // each hash's selected efficient/RT representation. The loader retains the v2
-// hash reader and applies the configured default to those older snapshots.
-inline constexpr std::uint32_t kFormatVersion = 3;
+// hash reader and applies the configured default to those older snapshots. v4
+// adds the replication lineage, logical offset, and inclusive Kafka cursor.
+inline constexpr std::uint32_t kFormatVersion = 4;
 inline constexpr std::uint32_t kOldestReadableFormatVersion = 2;
 
 // The snapshot body is a sequence of typed sections so each Redis value type
@@ -65,6 +66,7 @@ enum class SectionType : std::uint32_t {
   Set = 5,
   Ttl = 6,
   Array = 7,
+  Replication = 8,
 };
 
 // Each section body is a stream of instructions -- a tiny per-family bytecode --
@@ -132,6 +134,11 @@ inline constexpr std::uint32_t kArrayAcceleratorVersion = 0;
 enum class TtlOpcode : std::uint8_t {
   End = kOpEnd,
   Ttl = 0x01,  // operands: key, absolute expiry ms (u64)
+};
+
+enum class ReplicationOpcode : std::uint8_t {
+  End = kOpEnd,
+  State = 0x01,  // operands: valid, replication id, offset, Kafka cursor
 };
 
 // CRC32C (Castagnoli), for corruption detection. The result is standard

@@ -1019,7 +1019,27 @@ Store::Store(StoreOptions options)
                                   : MemberIndexImplementation::Efficient,
                 options.real_time ||
                     options.hash_implementation ==
-                        HashImplementation::Realtime) {}
+                        HashImplementation::Realtime) {
+  reset_replication_identity();
+}
+
+void Store::reset_replication_identity() {
+  replication_state_ = ReplicationState{
+      .id = make_replication_id(),
+      .offset = 0,
+      .kafka_acknowledged_offset = -1,
+      .valid = true};
+}
+
+std::uint64_t Store::next_replication_offset() {
+  if (!replication_state_.valid) {
+    reset_replication_identity();
+  }
+  if (replication_state_.offset == std::numeric_limits<std::uint64_t>::max()) {
+    throw std::overflow_error("replication offset exhausted");
+  }
+  return ++replication_state_.offset;
+}
 
 void Store::erase_if_empty(std::string_view key, const ZSet& zset) {
   if (!zset.empty()) {
@@ -3053,7 +3073,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(7);  // section count (ZSET, HASH, LIST, SET, ARRAY, STRING, TTL)
+  writer.u32(8);  // data families plus replication metadata
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -3275,6 +3295,42 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   });
   out.write(&end, 1);
 
+  // Replication lineage is part of the logical snapshot. A restored server
+  // resumes the same stream and ignores Kafka/firehose records it already saw.
+  std::string replication_header;
+  snapshot::Writer replication_writer(replication_header);
+  replication_writer.u32(
+      static_cast<std::uint32_t>(snapshot::SectionType::Replication));
+  replication_writer.u32(1);
+  replication_writer.u64(0);
+  out.write(replication_header.data(),
+            static_cast<std::streamsize>(replication_header.size()));
+
+  operands.clear();
+  snapshot::Writer replication_operands(operands);
+  replication_operands.u8(replication_state_.valid ? 1 : 0);
+  replication_operands.bytes(
+      reinterpret_cast<const char*>(replication_state_.id.bytes.data()),
+      replication_state_.id.bytes.size());
+  replication_operands.u64(replication_state_.offset);
+  replication_operands.u64(
+      replication_state_.kafka_acknowledged_offset < 0
+          ? 0
+          : static_cast<std::uint64_t>(
+                replication_state_.kafka_acknowledged_offset) +
+                1);
+
+  std::string replication_instruction;
+  snapshot::Writer replication_instruction_writer(replication_instruction);
+  replication_instruction_writer.u8(
+      static_cast<std::uint8_t>(snapshot::ReplicationOpcode::State));
+  replication_instruction_writer.u64(operands.size());
+  replication_instruction_writer.u32(snapshot::checksum(operands));
+  out.write(replication_instruction.data(),
+            static_cast<std::streamsize>(replication_instruction.size()));
+  out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  out.write(&end, 1);
+
   if (!out) {
     throw snapshot::snapshot_error("snapshot write failed");
   }
@@ -3400,6 +3456,7 @@ void Store::clear() noexcept {
 SnapshotLoadStats Store::load_native(std::istream& in) {
   keyspace_.clear();
   ttl_.clear_all();
+  ReplicationState restored_replication = replication_state_;
 
   // A corrupt length field must fail cleanly, not attempt a wild allocation.
   constexpr std::uint64_t kMaxOperandBytes = std::uint64_t{1} << 40;
@@ -3454,6 +3511,9 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
           static_cast<std::uint32_t>(snapshot::SectionType::Array);
       const bool is_ttl =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Ttl);
+      const bool is_replication =
+          section_type ==
+          static_cast<std::uint32_t>(snapshot::SectionType::Replication);
       const bool zset_use_accelerator =
           is_zset && section_version == snapshot::kZsetAcceleratorVersion &&
           hash_identity == ZSetMemberIndex::hash_identity();
@@ -3594,10 +3654,35 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
               ttl_.set(*id, expiry_ms);
             }
           }
+        } else if (is_replication &&
+                   opcode == static_cast<std::uint8_t>(
+                                 snapshot::ReplicationOpcode::State)) {
+          snapshot::Reader reader(operands);
+          ReplicationState restored;
+          restored.valid = reader.u8() != 0;
+          const auto id_bytes = reader.bytes(restored.id.bytes.size());
+          std::memcpy(restored.id.bytes.data(), id_bytes.data(), id_bytes.size());
+          restored.offset = reader.u64();
+          const auto encoded_kafka_offset = reader.u64();
+          if (encoded_kafka_offset >
+              static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max()) +
+                  1) {
+            throw snapshot::snapshot_error("snapshot Kafka offset out of range");
+          }
+          restored.kafka_acknowledged_offset =
+              encoded_kafka_offset == 0
+                  ? -1
+                  : static_cast<std::int64_t>(encoded_kafka_offset - 1);
+          if (restored.valid && restored.id.empty()) {
+            throw snapshot::snapshot_error("snapshot replication id is empty");
+          }
+          restored_replication = restored;
         }
         // else: unknown opcode or section -- already consumed, skip.
       }
     }
+    replication_state_ = restored_replication;
     return stats;
   } catch (...) {
     keyspace_.clear();

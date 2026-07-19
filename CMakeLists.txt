@@ -334,6 +334,7 @@ add_library(goblin_core
   src/upython_script.cpp
   src/wren_script.cpp
   src/quickjs_script.cpp
+  src/replication.cpp
   ${GOBLIN_RDMA_SOURCES})
 
 if(GOBLIN_HAS_KAFKA_BUILD)
@@ -785,7 +786,8 @@ if(GOBLIN_CORE_BUILD_TESTS)
       CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     add_test(NAME goblin_core_kafka_ingest COMMAND goblin_core_kafka_ingest_test)
 
-    # Manual end-to-end test: it needs a broker and an empty pre-created topic.
+    # Manual end-to-end test: it needs a broker and an empty pre-created
+    # one-partition topic.
     # Usage: goblin_core_kafka_server_test <goblin-core> <brokers> <topic>
     add_executable(goblin_core_kafka_server_test tests/kafka_server_test.cpp)
     target_link_libraries(goblin_core_kafka_server_test PRIVATE goblin_core rdkafka)

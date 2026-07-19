@@ -350,7 +350,10 @@ const std::string& QuickJsEngine::invoke(
   call_reply_.clear();
   handle_command_into(
       store_, call_args, call_reply_,
-      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
+      CommandExecutionOptions{
+          .replication_context = nested_dispatch_.replication_context,
+          .replicate_write = nested_dispatch_.replicate_write,
+          .nested_dispatch = nested_dispatch_});
   return call_reply_;
 }
 

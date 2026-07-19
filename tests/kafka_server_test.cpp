@@ -1,3 +1,4 @@
+#include "goblin/core/kafka_ingest.hpp"
 #include "goblin/core/ring_client.hpp"
 #include "goblin/core/store.hpp"
 #include "socket_test_utils.hpp"
@@ -10,9 +11,11 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
+#include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <poll.h>
 #include <span>
 #include <string>
@@ -35,12 +38,17 @@ using goblin::core::ring::reply_end;
 struct DeliveryState {
   std::atomic_size_t complete{0};
   std::atomic_bool failed{false};
+  std::atomic<std::int64_t> last_offset{-1};
 };
 
 void delivery_report(rd_kafka_t*, const rd_kafka_message_t* message,
                      void* opaque) {
   auto& state = *static_cast<DeliveryState*>(opaque);
-  if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) state.failed = true;
+  if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+    state.failed = true;
+  } else {
+    state.last_offset = message->offset;
+  }
   ++state.complete;
 }
 
@@ -63,23 +71,59 @@ class Producer {
     if (producer_ != nullptr) rd_kafka_destroy(producer_);
   }
 
-  void send(std::initializer_list<std::string_view> fields,
-            std::int32_t partition = RD_KAFKA_PARTITION_UA) {
+  std::int64_t send(std::initializer_list<std::string_view> fields,
+                    std::int32_t partition = 0) {
     const auto payload = encode_command(
         std::span<const std::string_view>(fields.begin(), fields.size()));
-    const auto expected = delivery_.complete.load() + 1;
-    const auto error = rd_kafka_producev(
-        producer_, RD_KAFKA_V_TOPIC(topic_.c_str()),
-        RD_KAFKA_V_PARTITION(partition),
-        RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
-        RD_KAFKA_V_VALUE(const_cast<char*>(payload.data()), payload.size()),
-        RD_KAFKA_V_END);
-    assert(error == RD_KAFKA_RESP_ERR_NO_ERROR);
-    while (delivery_.complete.load() < expected) rd_kafka_poll(producer_, 100);
-    assert(!delivery_.failed.load());
+    return send_payload(payload, partition, nullptr, 0);
+  }
+
+  std::int64_t send_replication(
+      std::initializer_list<std::string_view> fields,
+      const goblin::core::ReplicationId& id, std::uint64_t logical_offset) {
+    const auto payload = encode_command(
+        std::span<const std::string_view>(fields.begin(), fields.size()));
+    return send_payload(payload, 0, &id, logical_offset);
   }
 
  private:
+  std::int64_t send_payload(std::string_view payload, std::int32_t partition,
+                            const goblin::core::ReplicationId* id,
+                            std::uint64_t logical_offset) {
+    const auto expected = delivery_.complete.load() + 1;
+    rd_kafka_resp_err_t error = RD_KAFKA_RESP_ERR_NO_ERROR;
+    if (id == nullptr) {
+      error = rd_kafka_producev(
+          producer_, RD_KAFKA_V_TOPIC(topic_.c_str()),
+          RD_KAFKA_V_PARTITION(partition),
+          RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+          RD_KAFKA_V_VALUE(const_cast<char*>(payload.data()), payload.size()),
+          RD_KAFKA_V_END);
+    } else {
+      const std::string version =
+          std::to_string(goblin::core::kReplicationProtocolVersion);
+      const std::string id_text = id->hex();
+      const std::string offset_text = std::to_string(logical_offset);
+      error = rd_kafka_producev(
+          producer_, RD_KAFKA_V_TOPIC(topic_.c_str()),
+          RD_KAFKA_V_PARTITION(partition),
+          RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+          RD_KAFKA_V_VALUE(const_cast<char*>(payload.data()), payload.size()),
+          RD_KAFKA_V_HEADER(
+              goblin::core::kKafkaReplicationVersionHeader.data(),
+              version.data(), version.size()),
+          RD_KAFKA_V_HEADER(goblin::core::kKafkaReplicationIdHeader.data(),
+                            id_text.data(), id_text.size()),
+          RD_KAFKA_V_HEADER(goblin::core::kKafkaReplicationOffsetHeader.data(),
+                            offset_text.data(), offset_text.size()),
+          RD_KAFKA_V_END);
+    }
+    assert(error == RD_KAFKA_RESP_ERR_NO_ERROR);
+    while (delivery_.complete.load() < expected) rd_kafka_poll(producer_, 100);
+    assert(!delivery_.failed.load());
+    return delivery_.last_offset.load();
+  }
+
   rd_kafka_t* producer_{nullptr};
   std::string topic_;
   DeliveryState delivery_;
@@ -178,12 +222,14 @@ int main(int argc, char** argv) {
       "/tmp/goblin-kafka-test-" + std::to_string(::getpid()) + ".sock";
   const std::string snapshot =
       "/tmp/goblin-kafka-test-" + std::to_string(::getpid()) + ".gcsn";
+  const std::string recovery_snapshot = snapshot + ".recovery";
   (void)::unlink(socket.c_str());
   (void)::unlink(snapshot.c_str());
+  (void)::unlink(recovery_snapshot.c_str());
   Producer producer(argv[2], argv[3]);
   producer.send({"SET", "startup-key", "from-backlog"}, 0);
-  producer.send({"GET", "startup-key"}, 1);
-  producer.send({"HSET", "startup-hash", "field", "value"}, 2);
+  producer.send({"GET", "startup-key"}, 0);
+  producer.send({"HSET", "startup-hash", "field", "value"}, 0);
 
   const std::string connection =
       "kafka://" + std::string(argv[2]) + '/' + argv[3];
@@ -202,7 +248,7 @@ int main(int argc, char** argv) {
     send_command(client, {"HGET", "startup-hash", "field"});
     assert(read_reply(client, pending) == "$5\r\nvalue\r\n");
 
-    producer.send({"SET", "runtime-key", "streamed"}, 1);
+    producer.send({"SET", "runtime-key", "streamed"}, 0);
     bool observed = false;
     for (int attempt = 0; attempt < 500 && !observed; ++attempt) {
       send_command(client, {"GET", "runtime-key"});
@@ -210,41 +256,91 @@ int main(int argc, char** argv) {
       if (!observed) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     assert(observed);
+
+    send_command(client, {"SET", "journaled-key", "from-client"});
+    assert(read_reply(client, pending) == "+OK\r\n");
+
+    // Force at least one later event-loop pass so the producer delivery callback
+    // has published its broker offset into the Store before the forked save.
+    bool acknowledged = false;
+    for (int attempt = 0; attempt < 500 && !acknowledged; ++attempt) {
+      send_command(client, {"INFO"});
+      const auto info = read_reply(client, pending);
+      acknowledged =
+          info.find("kafka_acknowledged_offset:-1\r\n") == std::string::npos;
+      if (!acknowledged) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(acknowledged);
+
+    send_command(client, {"GOBLIN.SAVE", snapshot, "NOACCEL"});
+    assert(read_reply(client, pending) == "+Background saving started\r\n");
+    for (int attempt = 0; attempt < 500 && !std::filesystem::exists(snapshot);
+         ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(std::filesystem::exists(snapshot));
     ::close(client);
   }
 
   (void)::unlink(socket.c_str());
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  goblin::core::Store snapshot_store;
   {
-    goblin::core::Store snapshot_store;
-    snapshot_store.set("cutoff-key", "from-snapshot");
-    std::ofstream output(snapshot, std::ios::binary);
+    std::ifstream input(snapshot, std::ios::binary);
+    assert(input);
+    (void)snapshot_store.load(input);
+  }
+  const auto saved_state = snapshot_store.replication_state();
+  assert(saved_state.valid);
+  assert(saved_state.offset > 0);
+  assert(saved_state.kafka_acknowledged_offset >= 0);
+  assert(snapshot_store.get("journaled-key") ==
+         std::optional<std::string_view>{"from-client"});
+
+  // Make the saved broker cursor deliberately conservative. Recovery starts on
+  // an older lineage, skips a matching duplicate, then applies the first later
+  // record from the snapshot's lineage.
+  const auto old_lineage = goblin::core::make_replication_id();
+  const auto foreign_offset = producer.send_replication(
+      {"SET", "foreign-prefix", "discard-me"}, old_lineage, 1);
+  snapshot_store.set_kafka_acknowledged_offset(foreign_offset);
+  {
+    std::ofstream output(recovery_snapshot, std::ios::binary);
     assert(output);
-    snapshot_store.save(output);
+    snapshot_store.save(output, false);
     output.close();
     assert(output);
   }
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  producer.send({"SET", "cutoff-key", "after-snapshot"}, 2);
+  producer.send_replication({"SET", "foreign-prefix-2", "discard-me"},
+                            old_lineage, 2);
+  producer.send_replication({"INCR", "journaled-key"}, saved_state.id,
+                            saved_state.offset);
+  producer.send_replication({"SET", "cutoff-key", "after-snapshot"},
+                            saved_state.id, saved_state.offset + 1);
 
   {
     const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
     assert(tcp_port != 0);
     auto server = spawn_server(
         argv[1], {"--uds-listen", socket, "--port", std::to_string(tcp_port),
-                  "--load", snapshot,
+                  "--load", recovery_snapshot,
                   "--kafka-time-buffer", "0", "--kafka", connection});
     const int client = wait_for_server(socket);
     assert(client >= 0);
     std::string pending;
     send_command(client, {"GET", "cutoff-key"});
     assert(read_reply(client, pending) == "$14\r\nafter-snapshot\r\n");
-    send_command(client, {"GET", "startup-key"});
+    send_command(client, {"GET", "foreign-prefix"});
     assert(read_reply(client, pending) == "$-1\r\n");
+    send_command(client, {"GET", "foreign-prefix-2"});
+    assert(read_reply(client, pending) == "$-1\r\n");
+    send_command(client, {"GET", "journaled-key"});
+    assert(read_reply(client, pending) == "$11\r\nfrom-client\r\n");
     ::close(client);
   }
 
   (void)::unlink(socket.c_str());
   (void)::unlink(snapshot.c_str());
-  std::cout << "Kafka backlog, snapshot cutoff, and live RESP2 ingestion OK\n";
+  (void)::unlink(recovery_snapshot.c_str());
+  std::cout << "Kafka journal, lineage filtering, inclusive snapshot recovery, "
+               "and live RESP2 ingestion OK\n";
 }

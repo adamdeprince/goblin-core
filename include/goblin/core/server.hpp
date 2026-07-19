@@ -97,12 +97,14 @@ struct TlsConfig {
   std::string private_key_file;
 };
 
-// One Kafka topic carrying exactly one RESP2 command array per record. A
-// timestamp is present when startup also loaded a snapshot; otherwise every
-// retained record is replayed.
+// One Kafka topic carrying exactly one RESP2 command array per record. An exact
+// acknowledged broker offset from a native snapshot takes precedence over the
+// legacy timestamp fallback and is always resumed inclusively.
 struct KafkaConfig {
   std::string connection;
   std::optional<std::int64_t> start_timestamp_ms;
+  std::optional<std::int64_t> acknowledged_offset;
+  bool require_replication_metadata{false};
 };
 
 struct ServerConfig {

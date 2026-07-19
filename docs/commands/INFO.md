@@ -7,7 +7,7 @@ INFO [section]
 Returns a bulk string of server and memory statistics in the standard Redis
 `# Section` / `field:value` (CRLF-separated) format, so `redis-cli`, monitoring
 agents, and benchmark harnesses read it unchanged. Goblin Core emits a deliberately
-small subset — a `# Server` section and a `# Memory` section. The optional
+small subset: `# Server`, `# Replication`, and `# Memory`. The optional
 `section` argument is accepted but ignored: `INFO` and `INFO memory` both return
 the full payload.
 
@@ -20,6 +20,15 @@ the full payload.
 | `list_implementation` | concrete backend selected for standard list commands (`pma` or `segmented`; default `segmented`) |
 | `hash_implementation` | representation selected for hashes created by standard commands (`efficient` or `rt`) |
 | `keyspace_index` | top-level key index (`swiss`, or incremental `linear` under `--real-time`) |
+
+## `# Replication`
+
+| field | meaning |
+|---|---|
+| `role` | `master` until an upstream firehose is configured |
+| `master_replid` | the 128-bit replication lineage ID, rendered as 32 hexadecimal digits |
+| `master_repl_offset` | highest logical mutation offset represented by this server |
+| `kafka_acknowledged_offset` | last broker offset acknowledged by Kafka and eligible for inclusive snapshot recovery; `-1` until one is known |
 
 ## `# Memory`
 

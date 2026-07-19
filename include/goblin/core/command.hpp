@@ -38,6 +38,7 @@ enum class CommandType {
   unwatch,
   time,
   role,
+  goblin_firehose,
   subscribe,
   unsubscribe,
   psubscribe,
@@ -304,6 +305,13 @@ struct CommandExecutionOptions {
   std::string* client_library_name{nullptr};
   std::string* client_library_version{nullptr};
   bool* quit_requested{nullptr};
+  // Server-owned replication hooks. Direct/unit-test callers leave these null.
+  // The write callback runs after a successful logical mutation and receives
+  // only the reply bytes produced by that command.
+  void* replication_context{nullptr};
+  void (*replicate_write)(void*, Store&, const Command&, std::string_view) noexcept{
+      nullptr};
+  void (*render_role)(void*, std::string&, resp::Version){nullptr};
   BlockingListDispatch blocking_lists{};
   // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers

@@ -123,6 +123,14 @@ namespace {
   s += "exasock_support:0\r\n";
   s += "exasock_loaded:0\r\n";
 #endif
+  s += "# Replication\r\n";
+  s += "role:master\r\n";
+  s += "master_replid:" + store.replication_state().id.hex() + "\r\n";
+  s += "master_repl_offset:" +
+       std::to_string(store.replication_state().offset) + "\r\n";
+  s += "kafka_acknowledged_offset:" +
+       std::to_string(store.replication_state().kafka_acknowledged_offset) +
+       "\r\n";
   s += "# Memory\r\n";
   s += "used_memory:" + std::to_string(used) + "\r\n";
   s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
@@ -1415,6 +1423,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       return {.command = std::move(command)};
     case CommandType::time:
     case CommandType::role:
+    case CommandType::goblin_firehose:
       if (!command.args.empty()) {
         return parse_error(wrong_arity(command.name));
       }
@@ -2674,6 +2683,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::unwatch:
     case CommandType::time:
     case CommandType::role:
+    case CommandType::goblin_firehose:
     case CommandType::dbsize:
     case CommandType::randomkey:
       return 1;
@@ -3136,6 +3146,23 @@ void execute_command_into(Store& store,
   const auto type =
       resolve_list_command(command.type, store.list_implementation());
   const auto version = response_version(options);
+  struct ReplicationGuard {
+    Store& store;
+    const Command& command;
+    CommandType type;
+    std::string& out;
+    std::size_t begin;
+    CommandExecutionOptions& options;
+
+    ~ReplicationGuard() noexcept {
+      if (options.replicate_write == nullptr ||
+          !command_mutates_store(type)) {
+        return;
+      }
+      options.replicate_write(options.replication_context, store, command,
+                              std::string_view(out).substr(begin));
+    }
+  } replication_guard{store, command, type, out, out.size(), options};
   // Prefer the parse-time tag (L); fall back to name scan for hand-built Commands.
   // GOBLIN.RT.* / GOBLIN.EFFICENT.* select hash implementation (not CLASSIC).
   const std::optional<HashImplementation> hash_implementation =
@@ -3396,10 +3423,22 @@ void execute_command_into(Store& store,
       return;
     }
     case CommandType::role:
-      resp::append_array_header(out, 3);
-      resp::append_bulk_string(out, "master");
-      resp::append_integer(out, 0);
-      resp::append_array_header(out, 0);
+      if (options.render_role != nullptr) {
+        options.render_role(options.replication_context, out, version);
+      } else {
+        resp::append_array_header(out, 3);
+        resp::append_bulk_string(out, "master");
+        resp::append_integer(
+            out, static_cast<long long>(std::min<std::uint64_t>(
+                     store.replication_state().offset,
+                     static_cast<std::uint64_t>(
+                         std::numeric_limits<long long>::max()))));
+        resp::append_array_header(out, 0);
+      }
+      return;
+    case CommandType::goblin_firehose:
+      resp::append_error(out,
+                         "ERR GOBLIN.FIREHOSE requires a live connection");
       return;
     case CommandType::subscribe:
     case CommandType::unsubscribe:

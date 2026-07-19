@@ -634,7 +634,8 @@ void print_usage(std::string_view program) {
             << "--unixsocket is a repeatable alias for --uds-listen.\n";
   std::cerr
       << "Kafka CONNECTION is kafka://BROKER[,BROKER...]/TOPIC or\n"
-      << "bootstrap.servers=BROKERS;topic=TOPIC[;PROPERTY=VALUE...].\n"
+      << "bootstrap.servers=BROKERS;topic=TOPIC[;PROPERTY=VALUE...]. The topic\n"
+      << "must have one partition. Goblin replays it and journals RESP writes.\n"
       << "--auth-file protects RESP. SBE requires --enable-sbe and never\n"
       << "authenticates; --no-auth-ring/--no-auth-rdma explicitly trust RESP\n"
       << "on those fabrics.\n";
@@ -1648,8 +1649,23 @@ int main(int argc, char** argv) {
   }
 
   if (kafka_connection) {
+    if (!load_path) {
+      // With no snapshot there is no trusted lineage. The first Goblin-authored
+      // Kafka record establishes it; an empty/legacy topic gets a fresh identity
+      // after startup replay.
+      store.clear_replication_identity();
+    }
     std::optional<std::int64_t> start_timestamp_ms;
-    if (load_path) {
+    std::optional<std::int64_t> acknowledged_offset;
+    if (load_path &&
+        store.replication_state().kafka_acknowledged_offset >= 0) {
+      acknowledged_offset =
+          store.replication_state().kafka_acknowledged_offset;
+      if (kafka_time_buffer_set) {
+        std::cout << "goblin-core: ignoring --kafka-time-buffer because the "
+                     "snapshot contains an exact Kafka offset\n";
+      }
+    } else if (load_path) {
       std::string timestamp_error;
       const auto timestamp =
           snapshot_file_timestamp(*load_path, timestamp_error);
@@ -1671,7 +1687,9 @@ int main(int argc, char** argv) {
     }
     config.kafka = goblin::core::KafkaConfig{
         .connection = std::move(*kafka_connection),
-        .start_timestamp_ms = start_timestamp_ms};
+        .start_timestamp_ms = start_timestamp_ms,
+        .acknowledged_offset = acknowledged_offset,
+        .require_replication_metadata = acknowledged_offset.has_value()};
   }
 
   goblin::core::Server server(config, store);

@@ -294,7 +294,10 @@ void WrenEngine::foreign_call(WrenVM* vm, bool raise_on_error) {
   call_reply_.clear();
   handle_command_into(
       store_, call_args_, call_reply_,
-      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
+      CommandExecutionOptions{
+          .replication_context = nested_dispatch_.replication_context,
+          .replicate_write = nested_dispatch_.replicate_write,
+          .nested_dispatch = nested_dispatch_});
 
   if (!call_reply_.empty() && call_reply_.front() == '-') {
     const std::string_view msg = resp_error_message(call_reply_);

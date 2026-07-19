@@ -23,6 +23,7 @@
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/list.hpp"
+#include "goblin/core/replication.hpp"
 #include "goblin/core/set.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/string_value.hpp"
@@ -1487,6 +1488,22 @@ class Store {
   }
   [[nodiscard]] bool real_time() const noexcept { return options_.real_time; }
 
+  [[nodiscard]] const ReplicationState& replication_state() const noexcept {
+    return replication_state_;
+  }
+  void set_replication_state(ReplicationState state) noexcept {
+    replication_state_ = state;
+  }
+  void reset_replication_identity();
+  void clear_replication_identity() noexcept { replication_state_ = {}; }
+  [[nodiscard]] std::uint64_t next_replication_offset();
+  void set_replication_offset(std::uint64_t offset) noexcept {
+    replication_state_.offset = offset;
+  }
+  void set_kafka_acknowledged_offset(std::int64_t offset) noexcept {
+    replication_state_.kafka_acknowledged_offset = offset;
+  }
+
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
   [[nodiscard]] ZAddResult zadd(std::string_view key,
                                 std::span<const ZAddItem> items,
@@ -2460,6 +2477,7 @@ class Store {
   // The one keyspace-wide expiry set (sparse: only keys with a TTL). See TtlSet.
   TtlSet ttl_;
   StoreMutationObserver mutation_observer_{};
+  ReplicationState replication_state_{};
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
   // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so

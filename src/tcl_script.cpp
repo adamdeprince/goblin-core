@@ -205,7 +205,10 @@ int TclEngine::redis_command(Jim_Interp* interp, int argc, Jim_Obj* const* argv)
     call_reply_.clear();
     handle_command_into(
         store_, call_args_, call_reply_,
-        CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
+        CommandExecutionOptions{
+            .replication_context = nested_dispatch_.replication_context,
+            .replicate_write = nested_dispatch_.replicate_write,
+            .nested_dispatch = nested_dispatch_});
 
     if (!call_reply_.empty() && call_reply_.front() == '-') {
       std::string_view msg = call_reply_;

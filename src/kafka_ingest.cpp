@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -74,7 +75,9 @@ constexpr auto kCatchUpStallTimeout = std::chrono::seconds(30);
          name == "group.id" || name == "enable.auto.commit" ||
          name == "enable.auto.offset.store" ||
          name == "enable.partition.eof" || name == "auto.offset.reset" ||
-         name == "allow.auto.create.topics";
+         name == "allow.auto.create.topics" || name == "enable.idempotence" ||
+         name == "acks" ||
+         name == "max.in.flight.requests.per.connection";
 }
 
 [[nodiscard]] bool add_property(KafkaConnectionOptions& options,
@@ -173,6 +176,84 @@ void close_fd(int& fd) noexcept {
     response = response.substr(0, crlf);
   }
   return std::string(response);
+}
+
+enum class ReplicationHeadersResult { absent, foreign_lineage, present, error };
+
+[[nodiscard]] ReplicationHeadersResult parse_replication_headers(
+    const rd_kafka_message_t& message, const ReplicationId* expected_id,
+    ReplicationId& id,
+    std::uint64_t& logical_offset, std::string& error) {
+  rd_kafka_headers_t* headers = nullptr;
+  const auto headers_error = rd_kafka_message_headers(&message, &headers);
+  if (headers_error == RD_KAFKA_RESP_ERR__NOENT) {
+    return ReplicationHeadersResult::absent;
+  }
+  if (headers_error != RD_KAFKA_RESP_ERR_NO_ERROR || headers == nullptr) {
+    error = "cannot decode Kafka record headers: " +
+            std::string(rd_kafka_err2str(headers_error));
+    return ReplicationHeadersResult::error;
+  }
+
+  const auto get = [headers](std::string_view name,
+                             std::string_view& value) noexcept {
+    const void* data = nullptr;
+    std::size_t size = 0;
+    if (rd_kafka_header_get_last(headers, name.data(), &data, &size) !=
+            RD_KAFKA_RESP_ERR_NO_ERROR ||
+        data == nullptr) {
+      return false;
+    }
+    value = std::string_view(static_cast<const char*>(data), size);
+    return true;
+  };
+
+  std::string_view version_text;
+  std::string_view id_text;
+  std::string_view offset_text;
+  const bool has_version = get(kKafkaReplicationVersionHeader, version_text);
+  const bool has_id = get(kKafkaReplicationIdHeader, id_text);
+  const bool has_offset = get(kKafkaReplicationOffsetHeader, offset_text);
+  if (!has_version && !has_id && !has_offset) {
+    return ReplicationHeadersResult::absent;
+  }
+  if (!has_id) {
+    error = "Kafka record has incomplete Goblin replication headers";
+    return ReplicationHeadersResult::error;
+  }
+
+  const auto parsed_id = parse_replication_id(id_text);
+  if (!parsed_id) {
+    error = "invalid Kafka replication id";
+    return ReplicationHeadersResult::error;
+  }
+  id = *parsed_id;
+  if (expected_id != nullptr && id != *expected_id) {
+    return ReplicationHeadersResult::foreign_lineage;
+  }
+  if (!has_version || !has_offset) {
+    error = "Kafka record has incomplete Goblin replication headers";
+    return ReplicationHeadersResult::error;
+  }
+
+  std::uint32_t version = 0;
+  const auto version_result = std::from_chars(
+      version_text.data(), version_text.data() + version_text.size(), version);
+  if (version_result.ec != std::errc{} ||
+      version_result.ptr != version_text.data() + version_text.size() ||
+      version != kReplicationProtocolVersion) {
+    error = "unsupported Kafka replication record version";
+    return ReplicationHeadersResult::error;
+  }
+  const auto offset_result = std::from_chars(
+      offset_text.data(), offset_text.data() + offset_text.size(), logical_offset);
+  if (offset_result.ec != std::errc{} ||
+      offset_result.ptr != offset_text.data() + offset_text.size() ||
+      logical_offset == 0) {
+    error = "invalid Kafka logical replication offset";
+    return ReplicationHeadersResult::error;
+  }
+  return ReplicationHeadersResult::present;
 }
 
 }  // namespace
@@ -292,9 +373,41 @@ KafkaRecordResult apply_kafka_resp2_record(Store& store,
   return KafkaRecordResult::applied;
 }
 
+KafkaRecordResult apply_kafka_replication_record(
+    Store& store, const ReplicationId& id, std::uint64_t logical_offset,
+    std::string_view payload, std::string& error) {
+  error.clear();
+  const auto& state = store.replication_state();
+  if (state.valid && state.id != id) {
+    return KafkaRecordResult::filtered;
+  }
+  if (state.valid && logical_offset <= state.offset) {
+    return KafkaRecordResult::filtered;
+  }
+  const bool adopt_lineage = !state.valid;
+  const auto result = apply_kafka_resp2_record(store, payload, error);
+  if (result == KafkaRecordResult::filtered) {
+    error = "Goblin replication record contains a read-only command";
+    return KafkaRecordResult::error;
+  }
+  if (result == KafkaRecordResult::applied) {
+    if (adopt_lineage) {
+      store.set_replication_state(ReplicationState{
+          .id = id,
+          .offset = logical_offset,
+          .kafka_acknowledged_offset = -1,
+          .valid = true});
+    } else {
+      store.set_replication_offset(logical_offset);
+    }
+  }
+  return result;
+}
+
 struct KafkaIngestor::Impl {
   struct PartitionProgress {
     std::int32_t partition{0};
+    std::int64_t low_watermark{0};
     std::int64_t next_offset{0};
     std::int64_t startup_high_watermark{0};
   };
@@ -306,6 +419,8 @@ struct KafkaIngestor::Impl {
   std::string topic;
   std::string description;
   std::vector<PartitionProgress> partitions;
+  bool require_replication_metadata{false};
+  bool matched_replication_lineage{false};
 
   ~Impl() {
     if (consumer_queue != nullptr) {
@@ -368,7 +483,45 @@ struct KafkaIngestor::Impl {
     }
     const std::string_view payload(static_cast<const char*>(message.payload),
                                    message.len);
-    switch (apply_kafka_resp2_record(store, payload, error)) {
+    ReplicationId record_id;
+    std::uint64_t logical_offset = 0;
+    const auto& current_state = store.replication_state();
+    const ReplicationId* expected_id =
+        current_state.valid ? &current_state.id : nullptr;
+    const auto header_result = parse_replication_headers(
+        message, expected_id, record_id, logical_offset, error);
+    if (header_result == ReplicationHeadersResult::error) {
+      error = "Kafka " + topic + '[' + std::to_string(message.partition) +
+              "] offset " + std::to_string(message.offset) + ": " + error;
+      return false;
+    }
+
+    KafkaRecordResult record_result = KafkaRecordResult::filtered;
+    if (header_result == ReplicationHeadersResult::foreign_lineage) {
+      if (require_replication_metadata && matched_replication_lineage) {
+        error = "Kafka " + topic + '[' + std::to_string(message.partition) +
+                "] offset " + std::to_string(message.offset) +
+                ": replication id changed after the snapshot lineage was found";
+        return false;
+      }
+    } else if (header_result == ReplicationHeadersResult::absent) {
+      if (require_replication_metadata && matched_replication_lineage) {
+        error = "Kafka " + topic + '[' + std::to_string(message.partition) +
+                "] offset " + std::to_string(message.offset) +
+                ": replication metadata disappeared after the snapshot lineage "
+                "was found";
+        return false;
+      }
+      if (!require_replication_metadata) {
+        record_result = apply_kafka_resp2_record(store, payload, error);
+      }
+    } else {
+      record_result = apply_kafka_replication_record(
+          store, record_id, logical_offset, payload, error);
+      matched_replication_lineage = true;
+    }
+
+    switch (record_result) {
       case KafkaRecordResult::applied:
         ++stats.writes;
         break;
@@ -384,6 +537,9 @@ struct KafkaIngestor::Impl {
       progress->next_offset =
           std::max(progress->next_offset, message.offset + 1);
     }
+    if (partitions.size() == 1) {
+      store.set_kafka_acknowledged_offset(message.offset);
+    }
     return true;
   }
 };
@@ -396,6 +552,8 @@ KafkaIngestor::~KafkaIngestor() = default;
 std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
     std::string_view connection,
     std::optional<std::int64_t> start_timestamp_ms,
+    std::optional<std::int64_t> acknowledged_offset,
+    bool require_replication_metadata,
     std::string& error) {
   auto options = parse_kafka_connection_string(connection, error);
   if (!options) return nullptr;
@@ -434,6 +592,7 @@ std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
   impl->consumer = consumer;
   impl->topic = options->topic;
   impl->description = options->brokers + '/' + options->topic;
+  impl->require_replication_metadata = require_replication_metadata;
 
   if (const auto poll_error = rd_kafka_poll_set_consumer(consumer);
       poll_error != RD_KAFKA_RESP_ERR_NO_ERROR) {
@@ -470,6 +629,10 @@ std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
   }
 
   const auto& topic_metadata = metadata->topics[0];
+  if (topic_metadata.partition_cnt != 1) {
+    error = "Kafka replication requires a topic with exactly one partition";
+    return nullptr;
+  }
   rd_kafka_topic_partition_list_t* assignment =
       rd_kafka_topic_partition_list_new(topic_metadata.partition_cnt);
   if (assignment == nullptr) {
@@ -496,14 +659,15 @@ std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
     }
     auto* item = rd_kafka_topic_partition_list_add(
         assignment, options->topic.c_str(), partition);
-    item->offset = start_timestamp_ms.value_or(low);
+    item->offset = acknowledged_offset.value_or(start_timestamp_ms.value_or(low));
     impl->partitions.push_back(Impl::PartitionProgress{
         .partition = partition,
+        .low_watermark = low,
         .next_offset = low,
         .startup_high_watermark = high});
   }
 
-  if (start_timestamp_ms) {
+  if (start_timestamp_ms && !acknowledged_offset) {
     const auto offset_error =
         rd_kafka_offsets_for_times(consumer, assignment, kBrokerTimeoutMs);
     if (offset_error != RD_KAFKA_RESP_ERR_NO_ERROR) {
@@ -522,6 +686,15 @@ std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
       return nullptr;
     }
     if (item.offset < 0) item.offset = progress.startup_high_watermark;
+    if (acknowledged_offset &&
+        (item.offset < progress.low_watermark ||
+         item.offset >= progress.startup_high_watermark)) {
+      error = "saved Kafka offset " + std::to_string(item.offset) +
+              " is outside the retained range [" +
+              std::to_string(progress.low_watermark) + ", " +
+              std::to_string(progress.startup_high_watermark) + ")";
+      return nullptr;
+    }
     item.offset = std::min(item.offset, progress.startup_high_watermark);
     progress.next_offset = item.offset;
   }
@@ -617,6 +790,226 @@ bool KafkaIngestor::has_pending() const noexcept {
 
 std::string_view KafkaIngestor::description() const noexcept {
   return impl_->description;
+}
+
+struct KafkaJournal::Impl {
+  rd_kafka_t* producer{nullptr};
+  rd_kafka_queue_t* producer_queue{nullptr};
+  int notify_read_fd{-1};
+  int notify_write_fd{-1};
+  std::string topic;
+  std::int64_t acknowledged_offset{-1};
+  std::array<char, 512> delivery_error{};
+
+  static void delivery_report(rd_kafka_t*, const rd_kafka_message_t* message,
+                              void* opaque) noexcept {
+    auto& self = *static_cast<Impl*>(opaque);
+    if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+      if (self.delivery_error.front() == '\0') {
+        const auto* text = rd_kafka_message_errstr(message);
+        std::strncpy(self.delivery_error.data(), text,
+                     self.delivery_error.size() - 1);
+      }
+      return;
+    }
+    self.acknowledged_offset =
+        std::max(self.acknowledged_offset, message->offset);
+  }
+
+  ~Impl() {
+    if (producer != nullptr) {
+      (void)rd_kafka_flush(producer, kBrokerTimeoutMs);
+    }
+    if (producer_queue != nullptr) {
+      rd_kafka_queue_io_event_enable(producer_queue, -1, nullptr, 0);
+      rd_kafka_queue_destroy(producer_queue);
+      producer_queue = nullptr;
+    }
+    close_fd(notify_read_fd);
+    close_fd(notify_write_fd);
+    if (producer != nullptr) {
+      rd_kafka_destroy(producer);
+      producer = nullptr;
+    }
+  }
+
+  void drain_notification() noexcept {
+    std::array<char, 256> bytes{};
+    while (::read(notify_read_fd, bytes.data(), bytes.size()) > 0) {
+    }
+  }
+};
+
+KafkaJournal::KafkaJournal(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+KafkaJournal::~KafkaJournal() = default;
+
+std::unique_ptr<KafkaJournal> KafkaJournal::connect(
+    std::string_view connection, std::string& error) {
+  auto options = parse_kafka_connection_string(connection, error);
+  if (!options) return nullptr;
+
+  auto impl = std::make_unique<Impl>();
+  impl->topic = options->topic;
+  rd_kafka_conf_t* conf = rd_kafka_conf_new();
+  rd_kafka_conf_set_opaque(conf, impl.get());
+  rd_kafka_conf_set_dr_msg_cb(conf, &Impl::delivery_report);
+  if (!set_conf(conf, "bootstrap.servers", options->brokers, error) ||
+      !set_conf(conf, "enable.idempotence", "true", error) ||
+      !set_conf(conf, "acks", "all", error) ||
+      !set_conf(conf, "max.in.flight.requests.per.connection", "1", error) ||
+      !set_conf(conf, "allow.auto.create.topics", "false", error)) {
+    rd_kafka_conf_destroy(conf);
+    return nullptr;
+  }
+  for (const auto& [name, value] : options->properties) {
+    if (!set_conf(conf, name, value, error)) {
+      rd_kafka_conf_destroy(conf);
+      return nullptr;
+    }
+  }
+
+  std::array<char, 512> kafka_error{};
+  impl->producer = rd_kafka_new(RD_KAFKA_PRODUCER, conf, kafka_error.data(),
+                                kafka_error.size());
+  if (impl->producer == nullptr) {
+    error = "cannot create Kafka producer: " + std::string(kafka_error.data());
+    return nullptr;
+  }
+
+  rd_kafka_topic_t* topic =
+      rd_kafka_topic_new(impl->producer, options->topic.c_str(), nullptr);
+  if (topic == nullptr) {
+    error = "cannot create Kafka journal topic handle: " +
+            std::string(rd_kafka_err2str(rd_kafka_last_error()));
+    return nullptr;
+  }
+  const rd_kafka_metadata_t* metadata = nullptr;
+  const auto metadata_error =
+      rd_kafka_metadata(impl->producer, 0, topic, &metadata, kBrokerTimeoutMs);
+  rd_kafka_topic_destroy(topic);
+  if (metadata_error != RD_KAFKA_RESP_ERR_NO_ERROR || metadata == nullptr) {
+    error = "cannot read Kafka journal topic metadata: " +
+            std::string(rd_kafka_err2str(metadata_error));
+    return nullptr;
+  }
+  std::unique_ptr<const rd_kafka_metadata_t, decltype(&rd_kafka_metadata_destroy)>
+      metadata_guard(metadata, &rd_kafka_metadata_destroy);
+  if (metadata->topic_cnt != 1 || metadata->topics[0].err != 0 ||
+      metadata->topics[0].partition_cnt != 1) {
+    error = "Kafka replication requires a topic with exactly one partition";
+    return nullptr;
+  }
+
+  int pipe_fds[2] = {-1, -1};
+  if (::pipe(pipe_fds) != 0 || !set_nonblocking_cloexec(pipe_fds[0]) ||
+      !set_nonblocking_cloexec(pipe_fds[1])) {
+    if (pipe_fds[0] >= 0) (void)::close(pipe_fds[0]);
+    if (pipe_fds[1] >= 0) (void)::close(pipe_fds[1]);
+    error = "cannot create Kafka producer notification pipe: " +
+            std::string(std::strerror(errno));
+    return nullptr;
+  }
+  impl->notify_read_fd = pipe_fds[0];
+  impl->notify_write_fd = pipe_fds[1];
+  impl->producer_queue = rd_kafka_queue_get_main(impl->producer);
+  if (impl->producer_queue == nullptr) {
+    error = "cannot acquire Kafka producer queue";
+    return nullptr;
+  }
+  constexpr char notification = 'P';
+  rd_kafka_queue_io_event_enable(impl->producer_queue, impl->notify_write_fd,
+                                 &notification, sizeof(notification));
+  return std::unique_ptr<KafkaJournal>(new KafkaJournal(std::move(impl)));
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-statement-expression-from-macro-expansion"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+bool KafkaJournal::publish(const ReplicationId& id,
+                           std::uint64_t logical_offset,
+                           const ReplicationMutation& mutation,
+                           std::string& error) {
+  error.clear();
+  const std::string version = std::to_string(kReplicationProtocolVersion);
+  const std::string id_text = id.hex();
+  const std::string offset_text = std::to_string(logical_offset);
+
+  const auto produce = [&](bool include_key) {
+    if (include_key) {
+      return rd_kafka_producev(
+          impl_->producer, RD_KAFKA_V_TOPIC(impl_->topic.c_str()),
+          RD_KAFKA_V_PARTITION(0),
+          RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+          RD_KAFKA_V_KEY(const_cast<char*>(mutation.kafka_key.data()),
+                         mutation.kafka_key.size()),
+          RD_KAFKA_V_VALUE(const_cast<char*>(mutation.payload.data()),
+                           mutation.payload.size()),
+          RD_KAFKA_V_HEADER(kKafkaReplicationVersionHeader.data(),
+                            version.data(), version.size()),
+          RD_KAFKA_V_HEADER(kKafkaReplicationIdHeader.data(), id_text.data(),
+                            id_text.size()),
+          RD_KAFKA_V_HEADER(kKafkaReplicationOffsetHeader.data(),
+                            offset_text.data(), offset_text.size()),
+          RD_KAFKA_V_END);
+    }
+    return rd_kafka_producev(
+        impl_->producer, RD_KAFKA_V_TOPIC(impl_->topic.c_str()),
+        RD_KAFKA_V_PARTITION(0), RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+        RD_KAFKA_V_VALUE(const_cast<char*>(mutation.payload.data()),
+                         mutation.payload.size()),
+        RD_KAFKA_V_HEADER(kKafkaReplicationVersionHeader.data(), version.data(),
+                          version.size()),
+        RD_KAFKA_V_HEADER(kKafkaReplicationIdHeader.data(), id_text.data(),
+                          id_text.size()),
+        RD_KAFKA_V_HEADER(kKafkaReplicationOffsetHeader.data(),
+                          offset_text.data(), offset_text.size()),
+        RD_KAFKA_V_END);
+  };
+
+  auto result = produce(!mutation.kafka_key.empty());
+  if (result == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+    (void)rd_kafka_poll(impl_->producer, 0);
+    result = produce(!mutation.kafka_key.empty());
+  }
+  if (result != RD_KAFKA_RESP_ERR_NO_ERROR) {
+    error = "cannot enqueue Kafka replication record: " +
+            std::string(rd_kafka_err2str(result));
+    return false;
+  }
+  return true;
+}
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+bool KafkaJournal::poll(Store& store, std::string& error) {
+  error.clear();
+  impl_->drain_notification();
+  (void)rd_kafka_poll(impl_->producer, 0);
+  if (impl_->delivery_error.front() != '\0') {
+    error = "Kafka delivery failed: " +
+            std::string(impl_->delivery_error.data());
+    impl_->delivery_error.fill('\0');
+    return false;
+  }
+  if (impl_->acknowledged_offset >= 0 &&
+      impl_->acknowledged_offset >
+          store.replication_state().kafka_acknowledged_offset) {
+    store.set_kafka_acknowledged_offset(impl_->acknowledged_offset);
+  }
+  return true;
+}
+
+int KafkaJournal::notification_fd() const noexcept {
+  return impl_->notify_read_fd;
 }
 
 }  // namespace goblin::core

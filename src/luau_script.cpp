@@ -298,7 +298,10 @@ int LuauEngine::redis_call_impl(lua_State* L, bool raise_on_error) {
   call_reply_.clear();
   handle_command_into(
       store_, call_args_, call_reply_,
-      CommandExecutionOptions{.nested_dispatch = nested_dispatch_});
+      CommandExecutionOptions{
+          .replication_context = nested_dispatch_.replication_context,
+          .replicate_write = nested_dispatch_.replicate_write,
+          .nested_dispatch = nested_dispatch_});
 
   bool is_error = false;
   const char* p = call_reply_.data();
