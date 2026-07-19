@@ -370,6 +370,15 @@ inside the trust boundary; those bypasses make AUTH optional rather than
 unavailable. See [Authentication](docs/authentication.md),
 including the plaintext-wire warning and credential rotation rules.
 
+**Transactions.** RESP clients can use `MULTI`, `EXEC`, `DISCARD`, `WATCH`, and
+`UNWATCH`. Queued commands execute as one atomic block; `WATCH` is invalidated by
+actual key writes and expiration without adding revision metadata to every key.
+Each connection receives a fixed, anonymous transaction mapping. It defaults to
+one native page and can be changed with `--transaction-buffer-bytes <bytes>`;
+positive values round up to a whole page and the mapping never grows. An
+overflowed transaction is drained and discarded instead of growing the heap.
+See the [transaction command reference](docs/commands/transactions.md).
+
 **Socket listeners.** Repeat `--tcp-listen <address>:<port>` and
 `--uds-listen <path>` to serve the same store through multiple TCP, IPv6, and
 Unix-domain endpoints at once. IPv6 addresses use brackets:
@@ -440,10 +449,16 @@ value is rounded up to a whole number of pages. A client whose next complete
 message cannot fit is removed from all subscriptions and disconnected, so slow
 consumers cannot grow the heap or cause silent message loss.
 
+`--transaction-buffer-bytes <bytes>` similarly sizes the anonymous queue used by
+`MULTI`. It defaults to one native page and rounds up to pages. If a queued
+command cannot fit, the server keeps draining the transaction, reports the
+limit, and rejects the complete block at `EXEC`; `DISCARD` resets it immediately.
+
 At startup the `goblin-core` executable calls
 `mlockall(MCL_CURRENT | MCL_FUTURE)` so the heap and later allocations remain
-resident. Arena blocks, ring regions, and Pub/Sub FIFOs also call `mlock`
-explicitly; rings and Pub/Sub FIFOs are prefaulted before they enter service.
+resident. Arena blocks, ring regions, Pub/Sub FIFOs, and transaction mappings
+also call `mlock` explicitly; rings, Pub/Sub FIFOs, and transaction mappings are
+prefaulted before they enter service.
 Linux deployments must raise `RLIMIT_MEMLOCK` or grant the process permission to
 lock memory. A rejected or unimplemented process-wide lock emits a startup
 warning; the explicit core-mapping locks are still attempted.

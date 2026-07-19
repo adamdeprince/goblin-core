@@ -1092,6 +1092,9 @@ ZAddResult Store::zadd(std::string_view key, std::span<const ZAddItem> items,
       result.increment_score = mutation.score;
     }
   }
+  if (result.changed != 0) {
+    signal_key_modified(key);
+  }
   return result;
 }
 
@@ -1111,6 +1114,9 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
   (void)zset->compact_after_removal_if_needed(static_cast<std::size_t>(removed));
   (void)zset->cleanup_member_index_after_removal_if_needed(
       static_cast<std::size_t>(removed));
+  if (removed != 0 && !zset->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *zset);
 
   return removed;
@@ -1140,6 +1146,9 @@ std::vector<ZSetOwnedEntry> Store::zpop(std::string_view key,
   }
   (void)zset->compact_after_removal_if_needed(popped.size());
   (void)zset->cleanup_member_index_after_removal_if_needed(popped.size());
+  if (!popped.empty() && !zset->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *zset);
   return popped;
 }
@@ -1155,6 +1164,9 @@ long long Store::zremrangebyscore(std::string_view key, double min,
       zset->remove_by_score_range(min, min_exclusive, max, max_exclusive);
   (void)zset->compact_after_removal_if_needed(removed);
   (void)zset->cleanup_member_index_after_removal_if_needed(removed);
+  if (removed != 0 && !zset->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *zset);
   return static_cast<long long>(removed);
 }
@@ -1173,6 +1185,9 @@ bool Store::zwindow(std::string_view key, double now, double cutoff,
     (void)zset->compact_after_removal_if_needed(removed);
     (void)zset->cleanup_member_index_after_removal_if_needed(removed);
     if (static_cast<long long>(zset->size()) >= limit) {
+      if (removed != 0 && !zset->empty()) {
+        signal_key_modified(key);
+      }
       erase_if_empty(key, *zset);  // only reachable empty when limit <= 0
       return false;                // window already full -> reject
     }
@@ -1223,7 +1238,11 @@ long long Store::sadd(std::string_view key,
   if (members.empty()) {
     return 0;
   }
-  return get_or_create_set(key).add_many(members);
+  const auto added = get_or_create_set(key).add_many(members);
+  if (added != 0) {
+    signal_key_modified(key);
+  }
+  return added;
 }
 
 long long Store::srem(std::string_view key,
@@ -1233,6 +1252,9 @@ long long Store::srem(std::string_view key,
     return 0;
   }
   const auto removed = static_cast<long long>(set->erase_many(members));
+  if (removed != 0 && !set->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *set);
   return removed;
 }
@@ -1262,6 +1284,9 @@ std::optional<std::string> Store::spop(std::string_view key) {
     return std::nullopt;
   }
   auto member = set->pop();
+  if (member && !set->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *set);
   return member;
 }
@@ -1272,6 +1297,9 @@ std::vector<std::string> Store::spop(std::string_view key, std::size_t count) {
     return {};
   }
   auto members = set->pop_many(count);
+  if (!members.empty() && !set->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *set);
   return members;
 }
@@ -1310,8 +1338,12 @@ int Store::smove(std::string_view source, std::string_view destination,
   if (!src->erase(owned)) {
     return 0;
   }
+  if (!src->empty()) {
+    signal_key_modified(source);
+  }
   erase_if_empty(source, *src);
   (void)get_or_create_set(destination).add(owned);
+  signal_key_modified(destination);
   return 1;
 }
 
@@ -1495,7 +1527,9 @@ void Store::place_loaded_hash(std::string key, Hash&& hash) {
 int Store::hset(std::string_view key, std::string_view field,
                 std::string_view value,
                 std::optional<HashImplementation> implementation) {
-  return get_or_create_hash(key, implementation).set(field, value);
+  const int added = get_or_create_hash(key, implementation).set(field, value);
+  signal_key_modified(key);
+  return added;
 }
 
 long long Store::hset_many(
@@ -1505,13 +1539,19 @@ long long Store::hset_many(
   if (fields.empty()) {
     return 0;
   }
-  return get_or_create_hash(key, implementation).set_many(fields);
+  const auto added = get_or_create_hash(key, implementation).set_many(fields);
+  signal_key_modified(key);
+  return added;
 }
 
 int Store::hsetnx(std::string_view key, std::string_view field,
                   std::string_view value,
                   std::optional<HashImplementation> implementation) {
-  return get_or_create_hash(key, implementation).set_nx(field, value);
+  const int added = get_or_create_hash(key, implementation).set_nx(field, value);
+  if (added != 0) {
+    signal_key_modified(key);
+  }
+  return added;
 }
 
 std::optional<EncodedStringView> Store::hget(std::string_view key,
@@ -1534,6 +1574,9 @@ bool Store::hdel(std::string_view key, std::string_view field) {
     return false;
   }
   const bool removed = hash->erase(field);
+  if (removed && !hash->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *hash);
   return removed;
 }
@@ -1545,6 +1588,9 @@ std::size_t Store::hdel_many(
     return 0;
   }
   const auto removed = hash->erase_many(fields);
+  if (removed != 0 && !hash->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *hash);
   return removed;
 }
@@ -1591,6 +1637,7 @@ std::optional<long long> Store::hincrby(std::string_view key,
   const long long next = current + delta;
   char encode_buf[32];
   hash.set(field, format_i64(next, encode_buf));
+  signal_key_modified(key);
   return next;
 }
 
@@ -1605,6 +1652,9 @@ bool Store::hash_compare_and_delete(std::string_view key, std::string_view field
     return false;  // field absent or value mismatch -> nothing deleted (0)
   }
   const bool removed = hash->erase(field);
+  if (removed && !hash->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *hash);  // drop the key if that was its last field
   return removed;
 }
@@ -1637,6 +1687,7 @@ std::optional<bool> Store::hash_set_if_greater(std::string_view key,
   } else {
     (void)get_or_create_hash(key).set(field, value_text);
   }
+  signal_key_modified(key);
   return true;
 }
 
@@ -1674,7 +1725,9 @@ long long Store::lpush(std::string_view key,
     list = &get_or_create_list(
         key, implementation.value_or(options_.list_implementation));
   }
-  return static_cast<long long>(list->push_front(values));
+  const auto size = static_cast<long long>(list->push_front(values));
+  signal_key_modified(key);
+  return size;
 }
 
 long long Store::rpush(std::string_view key,
@@ -1689,7 +1742,9 @@ long long Store::rpush(std::string_view key,
     list = &get_or_create_list(
         key, implementation.value_or(options_.list_implementation));
   }
-  return static_cast<long long>(list->push_back(values));
+  const auto size = static_cast<long long>(list->push_back(values));
+  signal_key_modified(key);
+  return size;
 }
 
 std::optional<std::string> Store::lpop(std::string_view key) {
@@ -1698,6 +1753,9 @@ std::optional<std::string> Store::lpop(std::string_view key) {
     return std::nullopt;
   }
   auto value = list->pop_front();
+  if (value && !list->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *list);
   return value;
 }
@@ -1708,6 +1766,9 @@ std::optional<std::string> Store::rpop(std::string_view key) {
     return std::nullopt;
   }
   auto value = list->pop_back();
+  if (value && !list->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *list);
   return value;
 }
@@ -1723,6 +1784,9 @@ std::vector<std::string> Store::lpop(std::string_view key, std::size_t count) {
   for (std::size_t i = 0; i < take; ++i) {
     values.push_back(*list->pop_front());
   }
+  if (!values.empty() && !list->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *list);
   return values;
 }
@@ -1737,6 +1801,9 @@ std::vector<std::string> Store::rpop(std::string_view key, std::size_t count) {
   values.reserve(take);
   for (std::size_t i = 0; i < take; ++i) {
     values.push_back(*list->pop_back());
+  }
+  if (!values.empty() && !list->empty()) {
+    signal_key_modified(key);
   }
   erase_if_empty(key, *list);
   return values;
@@ -1791,6 +1858,7 @@ Store::ListSetResult Store::lset(std::string_view key, long long index,
     return ListSetResult::OutOfRange;
   }
   list->set(static_cast<std::size_t>(index), value);
+  signal_key_modified(key);
   return ListSetResult::Stored;
 }
 
@@ -1805,6 +1873,7 @@ void Store::ltrim(std::string_view key, long long start, long long stop) {
     return;
   }
   list->trim(range->first, range->count);
+  signal_key_modified(key);
 }
 
 std::size_t Store::lrem(std::string_view key, long long count,
@@ -1814,6 +1883,9 @@ std::size_t Store::lrem(std::string_view key, long long count,
     return 0;
   }
   const auto removed = list->remove(value, count);
+  if (removed != 0 && !list->empty()) {
+    signal_key_modified(key);
+  }
   erase_if_empty(key, *list);
   return removed;
 }
@@ -1827,6 +1899,7 @@ long long Store::linsert(std::string_view key, bool before,
   const auto index = list->find_first(pivot);
   if (index) {
     list->insert(before ? *index : *index + 1, value);
+    signal_key_modified(key);
     return static_cast<long long>(list->size());
   }
   return -1;
@@ -1851,14 +1924,20 @@ void Store::set(std::string_view key, std::string_view value) {
   if (!ttl_.empty()) {
     ttl_.clear(id);
   }
+  signal_key_modified(key);
 }
 
 void Store::set_keep_ttl(std::string_view key, std::string_view value) {
   keyspace_.set_string(key, value);
+  signal_key_modified(key);
 }
 
 bool Store::set_nx(std::string_view key, std::string_view value) {
-  return keyspace_.set_string_if_absent(key, value);
+  const bool stored = keyspace_.set_string_if_absent(key, value);
+  if (stored) {
+    signal_key_modified(key);
+  }
+  return stored;
 }
 
 std::optional<StringValueView> Store::get(std::string_view key) const noexcept {
@@ -1884,6 +1963,7 @@ std::optional<std::string> Store::get_set(std::string_view key,
     previous = join_value(*current);
   }
   keyspace_.set_string(key, value);
+  signal_key_modified(key);
   return previous;
 }
 
@@ -1969,6 +2049,7 @@ std::optional<std::size_t> Store::append(std::string_view key,
       return std::nullopt;
     }
     keyspace_.set_string(key, value);
+    signal_key_modified(key);
     return value.size();
   }
   std::string combined = join_value(*current);
@@ -1980,6 +2061,7 @@ std::optional<std::size_t> Store::append(std::string_view key,
     return std::nullopt;
   }
   keyspace_.set_string(key, combined);
+  signal_key_modified(key);
   return combined.size();
 }
 
@@ -1998,6 +2080,7 @@ std::optional<long long> Store::incr_by(std::string_view key, long long delta) {
   }
   const long long result = current + delta;
   keyspace_.set_string(key, std::to_string(result));
+  signal_key_modified(key);
   return result;
 }
 
@@ -2024,6 +2107,7 @@ std::optional<long long> Store::incr_bound(std::string_view key, long long delta
   }
   const long long result = static_cast<long long>(sum);
   keyspace_.set_string(key, std::to_string(result));  // preserves any TTL
+  signal_key_modified(key);
   return result;
 }
 
@@ -2041,6 +2125,7 @@ std::optional<long long> Store::decr_positive(std::string_view key) {
   }
   const long long result = current - 1;  // current >= 1, so no underflow
   keyspace_.set_string(key, std::to_string(result));  // preserves any TTL
+  signal_key_modified(key);
   return result;
 }
 
@@ -2075,6 +2160,7 @@ std::optional<std::string> Store::incr_by_float(std::string_view key,
   }
   std::string text = format_incrbyfloat(result);
   keyspace_.set_string(key, text);
+  signal_key_modified(key);
   return text;
 }
 
@@ -2137,6 +2223,7 @@ std::optional<std::size_t> Store::setrange(std::string_view key,
     return std::nullopt;
   }
   keyspace_.set_string(key, buffer);
+  signal_key_modified(key);
   return result_len;
 }
 
@@ -2176,6 +2263,7 @@ bool Store::expire_at_ms(std::string_view key, std::uint64_t when_ms,
     return true;
   }
   ttl_.set(*id, when_ms);
+  signal_key_modified(key);
   return true;
 }
 
@@ -2211,7 +2299,11 @@ bool Store::persist(std::string_view key) {
   if (!id) {
     return false;
   }
-  return ttl_.clear(*id);
+  const bool removed = ttl_.clear(*id);
+  if (removed) {
+    signal_key_modified(key);
+  }
+  return removed;
 }
 
 bool Store::purge_if_expired(std::string_view key, std::uint64_t now) {
@@ -2868,6 +2960,9 @@ std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
 }
 
 SnapshotLoadStats Store::load(std::istream& in) {
+  // A load replaces the complete keyspace. Active WATCH clients must abort even
+  // when a watched key is absent from both the old and new snapshots.
+  signal_all_modified();
   // Auto-detect the format by magic (requires a seekable stream).
   char magic[5] = {};
   in.read(magic, sizeof(magic));
@@ -2882,6 +2977,7 @@ SnapshotLoadStats Store::load(std::istream& in) {
 }
 
 void Store::clear() noexcept {
+  signal_all_modified();
   keyspace_.clear();
   ttl_.clear_all();
 }

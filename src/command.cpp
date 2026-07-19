@@ -1292,6 +1292,36 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::quit;
       return {.command = std::move(command)};
+    case CommandType::multi:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity("multi"));
+      }
+      command.type = CommandType::multi;
+      return {.command = std::move(command)};
+    case CommandType::exec:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity("exec"));
+      }
+      command.type = CommandType::exec;
+      return {.command = std::move(command)};
+    case CommandType::discard:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity("discard"));
+      }
+      command.type = CommandType::discard;
+      return {.command = std::move(command)};
+    case CommandType::watch:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("watch"));
+      }
+      command.type = CommandType::watch;
+      return {.command = std::move(command)};
+    case CommandType::unwatch:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity("unwatch"));
+      }
+      command.type = CommandType::unwatch;
+      return {.command = std::move(command)};
     case CommandType::subscribe:
       if (command.args.empty()) {
         return parse_error(wrong_arity("subscribe"));
@@ -2128,6 +2158,7 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::armset:
     case CommandType::ardel:
     case CommandType::arinsert:
+    case CommandType::arseek:
     case CommandType::lpush:
     case CommandType::rpush:
     case CommandType::lpushx:
@@ -2269,6 +2300,10 @@ constexpr std::string_view kCommandNames[] = {
 [[nodiscard]] int command_arity(CommandType type) noexcept {
   switch (type) {
     case CommandType::quit:
+    case CommandType::multi:
+    case CommandType::exec:
+    case CommandType::discard:
+    case CommandType::unwatch:
       return 1;
     case CommandType::select:
     case CommandType::echo:
@@ -2370,6 +2405,7 @@ constexpr std::string_view kCommandNames[] = {
       return -1;
     case CommandType::auth:
     case CommandType::client:
+    case CommandType::watch:
     case CommandType::subscribe:
     case CommandType::psubscribe:
     case CommandType::pubsub:
@@ -2498,6 +2534,8 @@ struct CommandKeyRange {
       return {1, -1, 1};
     case CommandType::smove:
       return {1, 2, 1};
+    case CommandType::watch:
+      return {1, -1, 1};
     default:
       return command_has_key_arg(type) ? CommandKeyRange{1, 1, 1}
                                        : CommandKeyRange{};
@@ -2546,6 +2584,12 @@ struct CommandKeyRange {
   }
 }
 
+[[nodiscard]] bool transaction_command(CommandType type) noexcept {
+  return type == CommandType::multi || type == CommandType::exec ||
+         type == CommandType::discard || type == CommandType::watch ||
+         type == CommandType::unwatch;
+}
+
 [[nodiscard]] bool command_may_write(CommandType type) noexcept {
   if (command_mutates_store(type) || type == CommandType::goblin_load) {
     return true;
@@ -2587,6 +2631,9 @@ void append_command_descriptor(std::string& out, std::string_view name,
   } else if (scripting_command(type)) {
     command_flag = writes ? "write" : "readonly";
     acl_category = "@scripting";
+  } else if (transaction_command(type)) {
+    command_flag = "fast";
+    acl_category = "@transaction";
   } else if (connection_command(type)) {
     command_flag = "fast";
     acl_category = "@connection";
@@ -2847,6 +2894,14 @@ void execute_command_into(Store& store,
       if (options.quit_requested != nullptr) {
         *options.quit_requested = true;
       }
+      return;
+    case CommandType::multi:
+    case CommandType::exec:
+    case CommandType::discard:
+    case CommandType::watch:
+    case CommandType::unwatch:
+      resp::append_error(out,
+                         "ERR transaction command requires a live client connection");
       return;
     case CommandType::subscribe:
     case CommandType::unsubscribe:
@@ -3787,6 +3842,7 @@ void execute_command_into(Store& store,
             static_cast<std::uint64_t>(*max_index),
             static_cast<std::size_t>(*value_capacity),
             static_cast<std::size_t>(*value_bytes));
+        store.signal_key_modified(command.args[0]);
         resp::append_integer(out, 1);
       } catch (const std::length_error& ex) {
         if (created) {
@@ -3819,6 +3875,9 @@ void execute_command_into(Store& store,
           (void)array.set(static_cast<std::uint64_t>(*index) + written,
                           command.args[i]);
           ++written;
+        }
+        if (written != 0) {
+          store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, static_cast<long long>(written));
       } catch (const std::length_error& ex) {
@@ -3865,6 +3924,7 @@ void execute_command_into(Store& store,
           (void)array.set(static_cast<std::uint64_t>(*index),
                           command.args[i + 1]);
           ++applied;
+          store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, applied);
       } catch (const std::length_error& ex) {
@@ -3928,6 +3988,10 @@ void execute_command_into(Store& store,
         removed +=
             array->del(static_cast<std::uint64_t>(*index)) ? 1 : 0;
       }
+      if (removed != 0 &&
+          (array->count() != 0 || array->realtime_reserved())) {
+        store.signal_key_modified(command.args[0]);
+      }
       store.erase_if_empty(command.args[0], *array);
       resp::append_integer(out, removed);
       return;
@@ -3949,6 +4013,9 @@ void execute_command_into(Store& store,
           if (first < 0) {
             first = static_cast<long long>(index);
           }
+        }
+        if (first >= 0) {
+          store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, first < 0 ? 0 : first);
       } catch (const std::length_error& ex) {
@@ -3976,6 +4043,7 @@ void execute_command_into(Store& store,
         auto& array =
             store.get_or_create_array(command.args[0], array_implementation);
         (void)array.seek(static_cast<std::uint64_t>(*index));
+        store.signal_key_modified(command.args[0]);
         resp::append_integer(out, 1);
       } catch (const std::length_error& ex) {
         resp::append_error(out, ex.what());

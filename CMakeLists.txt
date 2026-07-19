@@ -319,6 +319,7 @@ add_library(goblin_core
   src/simd.cpp
   src/string_encoding.cpp
   src/store.cpp
+  src/transaction.cpp
   src/tcl_script.cpp
   src/upython_script.cpp
   src/wren_script.cpp
@@ -713,6 +714,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
   add_test(NAME goblin_core_auth_socket
     COMMAND goblin_core_auth_socket_test $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_auth_socket PROPERTIES TIMEOUT 60)
+
+  add_executable(goblin_core_transaction_socket_test
+    tests/transaction_socket_test.cpp)
+  target_link_libraries(goblin_core_transaction_socket_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_transaction_socket_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_transaction_socket
+    COMMAND goblin_core_transaction_socket_test
+            $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_transaction_socket PROPERTIES TIMEOUT 60)
 
   add_executable(goblin_core_array_test tests/array_test.cpp)
   target_link_libraries(goblin_core_array_test PRIVATE goblin_core)

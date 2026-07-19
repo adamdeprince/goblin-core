@@ -1396,9 +1396,34 @@ struct MemoryReport {
   std::size_t realtime_keyspace_index_pool_bytes{0};
 };
 
+// Optional server-owned hook used by WATCH. Store objects pay only a null
+// function-pointer branch on successful mutations; no revision word is added to
+// every key.
+struct StoreMutationObserver {
+  using KeyModified = void (*)(void*, std::string_view) noexcept;
+  using AllModified = void (*)(void*) noexcept;
+
+  void* context{nullptr};
+  KeyModified key_modified{nullptr};
+  AllModified all_modified{nullptr};
+};
+
 class Store {
  public:
   explicit Store(StoreOptions options = {});
+
+  void set_mutation_observer(StoreMutationObserver observer) noexcept {
+    mutation_observer_ = observer;
+  }
+
+  // Array commands mutate through a direct Array reference. They call this
+  // after a successful logical change so WATCH shares the same observer path as
+  // the Store-owned types.
+  void signal_key_modified(std::string_view key) noexcept {
+    if (mutation_observer_.key_modified != nullptr) {
+      mutation_observer_.key_modified(mutation_observer_.context, key);
+    }
+  }
 
   [[nodiscard]] ListImplementation list_implementation() const noexcept {
     return options_.list_implementation;
@@ -2323,8 +2348,15 @@ class Store {
   // touch id's own TTL entry -- callers reached from the TtlSet (active
   // expiration) already removed it.
   void erase_keyspace_at(std::uint64_t id) {
+    signal_key_modified(keyspace_.key_for_id(id));
     if (const auto moved = keyspace_.erase_at(id)) {
       ttl_.rekey(moved->from, moved->to);
+    }
+  }
+
+  void signal_all_modified() noexcept {
+    if (mutation_observer_.all_modified != nullptr) {
+      mutation_observer_.all_modified(mutation_observer_.context);
     }
   }
 
@@ -2337,6 +2369,7 @@ class Store {
   Keyspace keyspace_;
   // The one keyspace-wide expiry set (sparse: only keys with a TTL). See TtlSet.
   TtlSet ttl_;
+  StoreMutationObserver mutation_observer_{};
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
   // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so

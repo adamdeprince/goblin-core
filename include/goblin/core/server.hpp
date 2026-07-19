@@ -111,6 +111,9 @@ struct ServerConfig {
   // Per-client anonymous mapping used only for unsolicited Pub/Sub delivery.
   // Zero selects one native page; non-zero values round up to a whole-page mapping.
   std::size_t unsolicited_output_buffer_bytes{0};
+  // Fixed anonymous mapping that holds queued MULTI commands. Zero selects one
+  // native page; non-zero values round up to a whole-page mapping.
+  std::size_t transaction_buffer_bytes{0};
   // Per-connection socket read buffer (the chunk each recv() fills). Configurable so
   // an operator can trade memory for fewer syscalls on large-message workloads.
   std::size_t client_read_buffer_bytes{16U * 1024U};

@@ -282,6 +282,22 @@ class SwissTable {
     return true;
   }
 
+  template <class Predicate>
+  size_type erase_if(Predicate&& predicate) {
+    size_type erased = 0;
+    for (size_type index = 0; index < capacity_; ++index) {
+      if (!is_full(index) || !predicate(*slot_ptr(index))) {
+        continue;
+      }
+      std::destroy_at(slot_ptr(index));
+      set_control(index, kDeleted);
+      --size_;
+      ++tombstones_;
+      ++erased;
+    }
+    return erased;
+  }
+
   void clear() noexcept {
     destroy_slots();
     if (!control_.empty()) {

@@ -53,12 +53,21 @@ pages.
 - [`SELECT`](commands/SELECT.md), [`QUIT`](commands/QUIT.md),
   [`PING`](../README.md#current-commands), [`ECHO`](../README.md#current-commands)
 - [`INFO`](commands/INFO.md)
+- [`MULTI`](commands/transactions.md#multi-and-exec),
+  [`EXEC`](commands/transactions.md#multi-and-exec),
+  [`DISCARD`](commands/transactions.md#discard),
+  [`WATCH`](commands/transactions.md#watch-and-unwatch),
+  [`UNWATCH`](commands/transactions.md#watch-and-unwatch)
 - [`DEL`](commands/keys.md#del), [`EXISTS`](commands/keys.md#exists),
   [`TYPE`](commands/keys.md#type), [`SCAN`](commands/iteration.md#scan)
 
 The [bounded-iteration reference](commands/iteration.md) documents the shared
 cursor, filtering, and mutation contract for `SCAN`, `HSCAN`, `SSCAN`, and
 `ZSCAN`.
+
+The [transaction reference](commands/transactions.md) documents atomic queued
+execution, optimistic `WATCH`, runtime versus queue-time errors, and the fixed
+page-backed per-client queue.
 
 ### Strings and counters
 

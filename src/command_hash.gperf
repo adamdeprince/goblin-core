@@ -23,6 +23,11 @@ COMMAND, goblin::core::CommandType::command
 CLIENT, goblin::core::CommandType::client
 SELECT, goblin::core::CommandType::select
 QUIT, goblin::core::CommandType::quit
+MULTI, goblin::core::CommandType::multi
+EXEC, goblin::core::CommandType::exec
+DISCARD, goblin::core::CommandType::discard
+WATCH, goblin::core::CommandType::watch
+UNWATCH, goblin::core::CommandType::unwatch
 SUBSCRIBE, goblin::core::CommandType::subscribe
 UNSUBSCRIBE, goblin::core::CommandType::unsubscribe
 PSUBSCRIBE, goblin::core::CommandType::psubscribe

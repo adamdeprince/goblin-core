@@ -550,6 +550,7 @@ void print_usage(std::string_view program) {
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
+            << "       [--transaction-buffer-bytes BYTES]\n"
             << "       [--client-read-buffer-kib KIB]\n"
             << "       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)\n"
             << "       [--exasock ADDRESS PORT]..."
@@ -1406,6 +1407,20 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.unsolicited_output_buffer_bytes = *bytes;
+      continue;
+    }
+
+    if (arg == "--transaction-buffer-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_positive_size(argv[++i]);
+      if (!bytes) {
+        std::cerr << "goblin-core: invalid transaction buffer byte count\n";
+        return 2;
+      }
+      config.transaction_buffer_bytes = *bytes;
       continue;
     }
 

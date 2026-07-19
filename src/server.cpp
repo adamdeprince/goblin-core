@@ -32,6 +32,7 @@
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "pubsub.hpp"
+#include "transaction.hpp"
 #ifdef GOBLIN_HAS_SBE
 #include "pubsub_listener.hpp"
 #endif
@@ -68,14 +69,17 @@ struct ReplyBoundary {
 
 struct EndpointSession : detail::PubSubSession {
   EndpointSession(std::size_t unsolicited_output_bytes,
+                  std::size_t transaction_buffer_bytes,
                   std::uint64_t assigned_connection_id,
                   bool require_authentication)
       : PubSubSession(unsolicited_output_bytes),
+        transaction(transaction_buffer_bytes),
         connection_id(assigned_connection_id),
         default_authentication_required(require_authentication),
         authentication_required(require_authentication),
         authenticated(!require_authentication) {}
 
+  detail::TransactionState transaction;
   resp::Version resp_version{resp::Version::resp2};
   std::uint64_t connection_id{0};
   bool default_authentication_required{false};
@@ -122,14 +126,16 @@ struct EndpointSession : detail::PubSubSession {
     clear_unsolicited_front_cache();
     next_output_sequence = 1;
     close_requested = false;
+    transaction.reset();
   }
 };
 
 struct Client : EndpointSession {
   Client(int client_fd, std::size_t unsolicited_output_bytes,
+         std::size_t transaction_buffer_bytes,
          std::uint64_t assigned_connection_id, bool require_authentication)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
-                        require_authentication),
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
         fd(client_fd) {}
 
   int fd{-1};
@@ -143,10 +149,11 @@ struct Client : EndpointSession {
 struct RingEndpoint : EndpointSession {
   RingEndpoint(ring::Mapping&& ring_mapping,
                std::size_t unsolicited_output_bytes,
+               std::size_t transaction_buffer_bytes,
                std::uint64_t assigned_connection_id,
                bool require_authentication)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
-                        require_authentication),
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
         mapping(std::move(ring_mapping)),
         sq(mapping.sq_consumer()),
         cq(mapping.cq_producer()) {}
@@ -171,10 +178,11 @@ struct RingEndpoint : EndpointSession {
 struct RdmaEndpoint : EndpointSession {
   RdmaEndpoint(std::unique_ptr<rdma::Connection> rdma_connection,
                std::size_t unsolicited_output_bytes,
+               std::size_t transaction_buffer_bytes,
                std::uint64_t assigned_connection_id,
                bool require_authentication)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
-                        require_authentication),
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
         connection(std::move(rdma_connection)) {}
 
   std::unique_ptr<rdma::Connection> connection;
@@ -543,14 +551,15 @@ void accept_clients(int listener_fd, bool tcp,
 
     try {
       auto client = std::make_unique<Client>(
-          client_fd, config.unsolicited_output_buffer_bytes, next_connection_id(),
+          client_fd, config.unsolicited_output_buffer_bytes,
+          config.transaction_buffer_bytes, next_connection_id(),
           config.auth_file.has_value());
       if (config.initial_output_buffer_bytes > 0) {
         client->output.reserve(config.initial_output_buffer_bytes);
       }
       clients.push_back(std::move(client));
     } catch (const std::bad_alloc&) {
-      std::cerr << "goblin-core: unable to map client output buffer\n";
+      std::cerr << "goblin-core: unable to map client buffers\n";
       close_fd(client_fd);
     }
   }
@@ -611,13 +620,161 @@ void scrub_auth_request(std::span<const std::string_view> fields) noexcept {
   }
 }
 
+void append_transaction_limit_error(std::string& out,
+                                    std::size_t mapped_bytes) {
+  resp::append_error(
+      out, "ERR transaction exceeds the configured " +
+               std::to_string(mapped_bytes) + "-byte buffer limit");
+}
+
+void execute_queued_transaction(EndpointSession& session, Store& store,
+                                detail::PubSubRegistry& pubsub,
+                                detail::WatchRegistry& watches,
+                                const CommandExecutionOptions& exec_options) {
+  auto& transaction = session.transaction;
+  if (!transaction.in_multi) {
+    resp::append_error(session.output, "ERR EXEC without MULTI");
+    return;
+  }
+
+  const bool watch_dirty = transaction.watch_dirty;
+  watches.remove(transaction);
+  if (watch_dirty) {
+    transaction.finish();
+    if (session.resp_version == resp::Version::resp3) {
+      resp::append_null(session.output, session.resp_version);
+    } else {
+      session.output.append("*-1\r\n");
+    }
+    return;
+  }
+
+  const auto failure = transaction.failure;
+  if (failure != detail::TransactionFailure::none) {
+    const auto capacity = transaction.commands.mapped_bytes();
+    transaction.finish();
+    if (failure == detail::TransactionFailure::buffer_limit) {
+      resp::append_error(
+          session.output,
+          "EXECABORT Transaction discarded because its " +
+              std::to_string(capacity) + "-byte buffer limit was exceeded.");
+    } else {
+      resp::append_error(
+          session.output,
+          "EXECABORT Transaction discarded because of previous errors.");
+    }
+    return;
+  }
+
+  const std::size_t count = transaction.commands.command_count();
+  resp::append_array_header(session.output, count);
+  transaction.in_multi = false;
+  std::size_t offset = 0;
+  for (std::size_t index = 0; index < count; ++index) {
+    if (!transaction.commands.decode(offset, session.fields)) {
+      resp::append_error(session.output, "ERR corrupt transaction buffer");
+      break;
+    }
+    auto parsed = parse_command(session.fields);
+    if (!parsed.ok()) {
+      resp::append_error(session.output, parsed.error);
+    } else if (parsed.command->type == CommandType::unwatch) {
+      // UNWATCH is queueable. EXEC has already removed the transaction's watch
+      // registrations, so its ordered result is simply OK.
+      resp::append_simple_string(session.output, "OK");
+    } else if (is_pubsub_command(parsed.command->type)) {
+      pubsub.execute(session, *parsed.command, session.output);
+    } else {
+      execute_command_into(store, *parsed.command, session.output, exec_options);
+    }
+    scrub_auth_request(session.fields);
+  }
+  transaction.finish();
+}
+
+[[nodiscard]] bool execute_transaction_control(
+    EndpointSession& session, Store& store, detail::PubSubRegistry& pubsub,
+    detail::WatchRegistry& watches, const Command& command,
+    std::span<const std::string_view> fields,
+    const CommandExecutionOptions& exec_options) {
+  auto& transaction = session.transaction;
+  switch (command.type) {
+    case CommandType::multi:
+      if (transaction.in_multi) {
+        resp::append_error(session.output, "ERR MULTI calls can not be nested");
+      } else {
+        transaction.begin();
+        resp::append_simple_string(session.output, "OK");
+      }
+      return true;
+    case CommandType::exec:
+      execute_queued_transaction(session, store, pubsub, watches, exec_options);
+      return true;
+    case CommandType::discard:
+      if (!transaction.in_multi) {
+        resp::append_error(session.output, "ERR DISCARD without MULTI");
+      } else {
+        watches.remove(transaction);
+        transaction.finish();
+        resp::append_simple_string(session.output, "OK");
+      }
+      return true;
+    case CommandType::watch:
+      if (transaction.in_multi) {
+        resp::append_error(session.output, "ERR WATCH inside MULTI is not allowed");
+        return true;
+      }
+      for (const auto key : command.args) {
+        (void)store.purge_if_expired(key, store.now_ms());
+      }
+      try {
+        watches.watch(transaction, command.args);
+        resp::append_simple_string(session.output, "OK");
+      } catch (const std::bad_alloc&) {
+        resp::append_error(session.output, "ERR unable to register watched keys");
+      }
+      return true;
+    case CommandType::unwatch:
+      if (!transaction.in_multi) {
+        watches.remove(transaction);
+        resp::append_simple_string(session.output, "OK");
+        return true;
+      }
+      break;  // UNWATCH is queued inside MULTI.
+    default:
+      break;
+  }
+
+  if (!transaction.in_multi) {
+    return false;
+  }
+  if (transaction.failure == detail::TransactionFailure::buffer_limit) {
+    append_transaction_limit_error(session.output,
+                                   transaction.commands.mapped_bytes());
+    return true;
+  }
+  if (!transaction.commands.append(fields)) {
+    transaction.failure = detail::TransactionFailure::buffer_limit;
+    append_transaction_limit_error(session.output,
+                                   transaction.commands.mapped_bytes());
+  } else {
+    resp::append_simple_string(session.output, "QUEUED");
+  }
+  return true;
+}
+
 void dispatch_resp_command(EndpointSession& session, Store& store,
                            detail::PubSubRegistry& pubsub,
+                           detail::WatchRegistry& watches,
                            std::span<const std::string_view> fields,
                            const CommandExecutionOptions& exec_options) {
   const std::size_t prior_size = session.output.size();
   auto parsed = parse_command(fields);
   if (!parsed.ok()) {
+    if (session.transaction.in_multi &&
+        session.transaction.failure != detail::TransactionFailure::buffer_limit) {
+      session.transaction.failure = detail::TransactionFailure::command_error;
+    }
     resp::append_error(session.output, parsed.error);
     session.record_reply(prior_size);
     scrub_auth_request(fields);
@@ -625,6 +782,15 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   }
 
   const auto& command = *parsed.command;
+  if (session.transaction.in_multi && command.type == CommandType::unknown) {
+    if (session.transaction.failure != detail::TransactionFailure::buffer_limit) {
+      session.transaction.failure = detail::TransactionFailure::command_error;
+    }
+    execute_command_into(store, command, session.output, exec_options);
+    scrub_auth_request(fields);
+    session.record_reply(prior_size);
+    return;
+  }
   if (session.authentication_required && !session.authenticated &&
       !allowed_before_authentication(command.type)) {
     resp::append_error(session.output, "NOAUTH Authentication required.");
@@ -642,6 +808,20 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     resp::append_bulk_string(session.output,
                              command.args.empty() ? std::string_view{}
                                                   : command.args.front());
+  } else if (execute_transaction_control(session, store, pubsub, watches,
+                                         command, fields, exec_options)) {
+    if (command.type == CommandType::exec) {
+      // EXEC reuses session.fields to decode mmap records, invalidating the
+      // caller's span. EXEC has no credentials of its own, so skip the common
+      // input scrub and finish the reply here.
+      if (session.wire_mode != detail::WireMode::sbe) {
+        session.wire_mode = session.resp_version == resp::Version::resp3
+                                ? detail::WireMode::resp3
+                                : detail::WireMode::resp2;
+      }
+      session.record_reply(prior_size);
+      return;
+    }
   } else if (is_pubsub_command(command.type)) {
     pubsub.execute(session, command, session.output);
   } else {
@@ -775,6 +955,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 [[nodiscard]] bool process_buffered_commands(Client& client,
                                              Store& store,
                                              detail::PubSubRegistry& pubsub,
+                                             detail::WatchRegistry& watches,
                                              ScriptEngine& script_engine,
                                              LuauEngine& luau_engine,
                                              WrenEngine& wren_engine,
@@ -865,7 +1046,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     if (!client.parser.pop_into(client.fields)) {
       break;
     }
-    dispatch_resp_command(client, store, pubsub, client.fields, exec_options);
+    dispatch_resp_command(client, store, pubsub, watches, client.fields,
+                          exec_options);
     if (client.close_after_write) {
       break;
     }
@@ -906,6 +1088,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 
 [[nodiscard]] bool read_client(Client& client, Store& store,
                                detail::PubSubRegistry& pubsub,
+                               detail::WatchRegistry& watches,
                                ScriptEngine& script_engine,
                                LuauEngine& luau_engine,
                                WrenEngine& wren_engine,
@@ -927,9 +1110,10 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     if (received > 0) {
       client.inbuf.append(buffer.data(), static_cast<std::size_t>(received));
 
-      if (!process_buffered_commands(client, store, pubsub, script_engine, luau_engine,
-                                     wren_engine, tcl_engine, upython_engine,
-                                     quickjs_engine, config, auth_database)) {
+      if (!process_buffered_commands(client, store, pubsub, watches,
+                                     script_engine, luau_engine, wren_engine,
+                                     tcl_engine, upython_engine, quickjs_engine,
+                                     config, auth_database)) {
         return false;
       }
       if (client.close_after_write) {
@@ -1076,7 +1260,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 template <class NetFn>
 [[nodiscard]] bool run_polled_targets(
     const ServerConfig& config, Store& store, std::atomic_bool& running,
-    detail::PubSubRegistry& pubsub, ScriptEngine& script_engine,
+    detail::PubSubRegistry& pubsub, detail::WatchRegistry& watches,
+    ScriptEngine& script_engine,
     LuauEngine& luau_engine, WrenEngine& wren_engine, TclEngine& tcl_engine,
     UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
     const AuthDatabase* auth_database,
@@ -1132,11 +1317,11 @@ template <class NetFn>
         PolledRuntimeTarget target;
         target.ring_endpoint = std::make_unique<RingEndpoint>(
             std::move(*mapping), config.unsolicited_output_buffer_bytes,
-            next_connection_id(),
+            config.transaction_buffer_bytes, next_connection_id(),
             auth_database != nullptr && !config.no_auth_ring);
         targets.push_back(std::move(target));
       } catch (const std::bad_alloc&) {
-        std::cerr << "goblin-core: unable to map ring client output buffer\n";
+        std::cerr << "goblin-core: unable to map ring client buffers\n";
         return false;
       }
       continue;
@@ -1403,7 +1588,8 @@ template <class NetFn>
       secure_zero_memory(ep.inbuf.data(), ep.inbuf.size());
       ep.inbuf.clear();
       while (ep.parser.pop_into(ep.fields)) {
-        dispatch_resp_command(ep, store, pubsub, ep.fields, exec_options);
+        dispatch_resp_command(ep, store, pubsub, watches, ep.fields,
+                              exec_options);
         if (ep.quit_after_write) {
           break;
         }
@@ -1426,6 +1612,7 @@ template <class NetFn>
     if (const std::uint64_t epoch = ep.mapping.requested_epoch();
         epoch != ep.acked_epoch) {
       pubsub.remove(ep);
+      watches.remove(ep.transaction);
       ep.mapping.drain_for_reconnect();
       ep.reset_connection(next_connection_id());
       ep.mapping.ack_epoch(epoch);
@@ -1451,7 +1638,7 @@ template <class NetFn>
       try {
         target.endpoints.push_back(std::make_unique<RdmaEndpoint>(
             std::move(event.connection), config.unsolicited_output_buffer_bytes,
-            next_connection_id(),
+            config.transaction_buffer_bytes, next_connection_id(),
             auth_database != nullptr && !config.no_auth_rdma));
       } catch (const std::bad_alloc&) {
         std::cerr << "goblin-core: unable to allocate RDMA endpoint state\n";
@@ -1472,6 +1659,7 @@ template <class NetFn>
                   << endpoint.connection->error() << '\n';
       }
       pubsub.remove(endpoint);
+      watches.remove(endpoint.transaction);
       target.endpoints.erase(target.endpoints.begin() +
                              static_cast<std::ptrdiff_t>(index));
       if (target.next_endpoint > index) {
@@ -1528,6 +1716,7 @@ template <class NetFn>
       auto& client = *target.clients[index];
       if (client.close_requested && !has_pending_output(client)) {
         pubsub.remove(client);
+        watches.remove(client.transaction);
         close_fd(client.fd);
         target.clients.erase(target.clients.begin() +
                              static_cast<std::ptrdiff_t>(index));
@@ -1561,10 +1750,10 @@ template <class NetFn>
       }
 
       if (keep && !client.read_backpressured && has_buffered_work(client)) {
-        keep = process_buffered_commands(client, store, pubsub, script_engine,
-                                         luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config,
-                                         auth_database);
+        keep = process_buffered_commands(
+            client, store, pubsub, watches, script_engine, luau_engine,
+            wren_engine, tcl_engine, upython_engine, quickjs_engine, config,
+            auth_database);
         did_work = true;
       }
 
@@ -1582,8 +1771,8 @@ template <class NetFn>
       }
 
       if (keep && (pfd.revents & POLLIN) != 0 && !client.read_backpressured) {
-        keep = read_client(client, store, pubsub, script_engine, luau_engine,
-                           wren_engine, tcl_engine, upython_engine,
+        keep = read_client(client, store, pubsub, watches, script_engine,
+                           luau_engine, wren_engine, tcl_engine, upython_engine,
                            quickjs_engine, config, auth_database);
         did_work = true;
       }
@@ -1594,6 +1783,7 @@ template <class NetFn>
 
       if (!keep || client.close_requested) {
         pubsub.remove(client);
+        watches.remove(client.transaction);
         close_fd(client.fd);
         target.clients.erase(target.clients.begin() +
                              static_cast<std::ptrdiff_t>(index));
@@ -1685,11 +1875,13 @@ template <class NetFn>
   for (auto& target : targets) {
     if (target.ring_endpoint) {
       pubsub.remove(*target.ring_endpoint);
+      watches.remove(target.ring_endpoint->transaction);
     }
 #ifdef GOBLIN_HAS_EXASOCK
     if (target.exasock_target) {
       for (auto& client : target.exasock_target->clients) {
         pubsub.remove(*client);
+        watches.remove(client->transaction);
         close_fd(client->fd);
         client->fd = -1;
       }
@@ -1701,6 +1893,7 @@ template <class NetFn>
     if (target.rdma_target) {
       for (auto& endpoint : target.rdma_target->endpoints) {
         pubsub.remove(*endpoint);
+        watches.remove(endpoint->transaction);
       }
     }
 #endif
@@ -1722,16 +1915,19 @@ Server::Server(ServerConfig config, Store& store)
     }
   }
   const std::size_t page = static_cast<std::size_t>(ring::page_size());
-  if (config_.unsolicited_output_buffer_bytes == 0) {
-    config_.unsolicited_output_buffer_bytes = page;
-  } else if (config_.unsolicited_output_buffer_bytes <=
-             std::numeric_limits<std::size_t>::max() - (page - 1)) {
-    config_.unsolicited_output_buffer_bytes =
-        ((config_.unsolicited_output_buffer_bytes + page - 1) / page) * page;
-  } else {
-    config_.unsolicited_output_buffer_bytes =
-        std::numeric_limits<std::size_t>::max() & ~(page - 1);
-  }
+  const auto page_round = [page](std::size_t requested) {
+    if (requested == 0) {
+      return page;
+    }
+    if (requested <= std::numeric_limits<std::size_t>::max() - (page - 1)) {
+      return ((requested + page - 1) / page) * page;
+    }
+    return (std::numeric_limits<std::size_t>::max() / page) * page;
+  };
+  config_.unsolicited_output_buffer_bytes =
+      page_round(config_.unsolicited_output_buffer_bytes);
+  config_.transaction_buffer_bytes =
+      page_round(config_.transaction_buffer_bytes);
   if (config_.max_output_buffer_bytes == 0) {
     config_.resume_output_buffer_bytes = 0;
   } else if (config_.resume_output_buffer_bytes >= config_.max_output_buffer_bytes) {
@@ -1813,6 +2009,19 @@ int Server::run() {
   auto listeners = std::move(*listeners_result);
 
   detail::PubSubRegistry pubsub;
+  detail::WatchRegistry watches;
+  store_.set_mutation_observer(StoreMutationObserver{
+      .context = &watches,
+      .key_modified = [](void* context, std::string_view key) noexcept {
+        static_cast<detail::WatchRegistry*>(context)->modified(key);
+      },
+      .all_modified = [](void* context) noexcept {
+        static_cast<detail::WatchRegistry*>(context)->modified_all();
+      }});
+  struct MutationObserverReset {
+    Store* store;
+    ~MutationObserverReset() { store->set_mutation_observer({}); }
+  } mutation_observer_reset{&store_};
   std::vector<std::unique_ptr<Client>> clients;
   running_ = true;
 
@@ -1953,16 +2162,16 @@ int Server::run() {
       }
 
       if (keep && !client.read_backpressured) {
-        keep = process_buffered_commands(client, store_, pubsub, script_engine,
-                                         luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config_,
-                                         auth);
+        keep = process_buffered_commands(
+            client, store_, pubsub, watches, script_engine, luau_engine,
+            wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
+            auth);
       }
 
       if (keep && (revents & POLLIN) != 0 && !client.read_backpressured) {
-        keep = read_client(client, store_, pubsub, script_engine, luau_engine,
-                           wren_engine, tcl_engine, upython_engine, quickjs_engine,
-                           config_, auth);
+        keep = read_client(client, store_, pubsub, watches, script_engine,
+                           luau_engine, wren_engine, tcl_engine, upython_engine,
+                           quickjs_engine, config_, auth);
       }
 
       if (keep && has_pending_output(client)) {
@@ -1971,10 +2180,10 @@ int Server::run() {
 
       while (keep && !client.read_backpressured &&
              has_buffered_work(client)) {
-        keep = process_buffered_commands(client, store_, pubsub, script_engine,
-                                         luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config_,
-                                         auth);
+        keep = process_buffered_commands(
+            client, store_, pubsub, watches, script_engine, luau_engine,
+            wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
+            auth);
         if (keep && has_pending_output(client)) {
           keep = write_client(client, config_);
         }
@@ -1994,6 +2203,7 @@ int Server::run() {
       const auto index = i - 1;
       if (close_client[index] != 0) {
         pubsub.remove(*clients[index]);
+        watches.remove(clients[index]->transaction);
         close_fd(clients[index]->fd);
         clients.erase(clients.begin() + static_cast<long>(index));
       }
@@ -2012,16 +2222,17 @@ int Server::run() {
     while (running_) {
       network_iteration(1000);
     }
-  } else if (!run_polled_targets(config_, store_, running_, pubsub, script_engine,
-                                 luau_engine, wren_engine, tcl_engine,
-                                 upython_engine, quickjs_engine, auth,
-                                 network_iteration)) {
+  } else if (!run_polled_targets(config_, store_, running_, pubsub, watches,
+                                 script_engine, luau_engine, wren_engine,
+                                 tcl_engine, upython_engine, quickjs_engine,
+                                 auth, network_iteration)) {
     close_socket_listeners(listeners);
     return 1;
   }
 
   for (const auto& client : clients) {
     pubsub.remove(*client);
+    watches.remove(client->transaction);
     close_fd(client->fd);
   }
   close_socket_listeners(listeners);
