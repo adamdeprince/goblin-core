@@ -43,8 +43,8 @@ int main(int argc, char** argv) {
     // A deliberately constrained ring exercises pipeline backpressure. Production
     // rings are normally sized to their HugeTLB geometry; 4 KiB is useful when a
     // deployment owns thousands of per-client rings.
-    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring.c_str(), "4kb",
-            static_cast<char*>(nullptr));
+    ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
+            "--ring", ring.c_str(), "4kb", static_cast<char*>(nullptr));
     _exit(127);
   }
 

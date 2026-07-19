@@ -91,6 +91,9 @@ auto sbe = goblin::core::SbeExasockClient::open(
 double score = sbe->zscore("prices", "IBM").value();
 ```
 
+Start the server with `--enable-sbe` before using the typed client. SBE carries
+no authentication exchange; keep that ExaSock listener on a trusted fabric.
+
 CLI (interactive / pipe share the ring redis-cli clone):
 
 ```bash

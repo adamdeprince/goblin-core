@@ -38,6 +38,18 @@ uses the vendored header-only fast_float library:
                            third_party/fast_float/LICENSE-MIT
                            third_party/fast_float/LICENSE-APACHE
 
+Kafka command-log ingestion uses the vendored librdkafka C client:
+
+  librdkafka 2.15.0         Copyright (c) 2012-2022 Magnus Edenhill
+                            Copyright (c) 2023 Confluent Inc. (BSD-2-Clause)
+                            https://github.com/confluentinc/librdkafka
+                            third_party/librdkafka/LICENSE
+
+RESP credential files use the system-linked libsodium password-hashing API:
+
+  libsodium                  Copyright (c) 2013-2026 Frank Denis (ISC)
+                             https://libsodium.org
+
 --------------------------------------------------------------------------------
 
 Scripting (EVAL / EVALSHA / SCRIPT)

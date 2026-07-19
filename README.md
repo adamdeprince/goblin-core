@@ -58,6 +58,9 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Persistence is fast too: `GOBLIN.SAVE`/`--load` snapshots dump and restore the
   packed indexes, so at 9.5M members they save about `5x` and load about `5.7x`
   faster than a Redis RDB (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
+- Durable replay belongs to Kafka: [`--kafka`](docs/kafka.md) consumes one RESP2
+  write per record, catches up before any listener opens, and starts from either
+  the earliest retained offset or a loaded snapshot's creation-time cutoff.
 - Hardware intrinsics, selected at compile time (no runtime CPU dispatch): the
   swiss-table member-index probe is a SIMD group scan (SSE2 on x86, NEON on
   AArch64); snapshot checksums use the CRC32C instruction (SSE4.2 on x86 —
@@ -80,7 +83,13 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 ## Current Commands
 
 - `PING [message]`
-- `HELLO [2|3]`
+- `AUTH [username] password`
+- `HELLO [2|3 [AUTH username password] [SETNAME client-name]]`
+- `COMMAND [INFO [command-name ...]]`
+- `CLIENT SETINFO LIB-NAME|LIB-VER value`
+- `CLIENT SETNAME name`, `CLIENT GETNAME`, `CLIENT ID`
+- `SELECT 0`
+- `QUIT`
 - `ECHO message`
 - `ZCARD key`
 - `ZADD key score member [score member ...]`
@@ -142,7 +151,7 @@ format for local testing. Connections start in RESP2; `HELLO 3` selects RESP3 fo
 that connection and `HELLO 2` switches it back. See
 [the HELLO command](docs/commands/HELLO.md) for native RESP3 reply shapes.
 
-Pub/Sub is available over RESP2, RESP3, and SBE on every transport. RESP2 uses
+Pub/Sub is available over RESP2, RESP3, and opt-in SBE on every transport. RESP2 uses
 the traditional subscribed mode; RESP3 uses push frames and keeps ordinary
 commands available while subscribed. Literal channels use direct lookup and
 patterns use Redis-compatible glob matching. See the
@@ -190,9 +199,10 @@ another runtime fits the job.
 
 The deliberate boundary is infrastructure policy. Goblin Core does not provide
 an append-only write log, replication, or cluster mode. Point-in-time
-`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts; durable replay belongs
-in Kafka, where logging is the product. A Redis `dump.rdb` can be imported to
-migrate sorted sets and lists (see "Migrating from Redis" below).
+`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts; [`--kafka`](docs/kafka.md)
+consumes the durable RESP2 write log from Kafka, where logging is the product. A
+Redis `dump.rdb` can be imported to migrate sorted sets and lists (see
+"Migrating from Redis" below).
 
 Following Redis's single-namespace keyspace, a key holds at most one type. A
 type-specific command against a key of another type returns the standard
@@ -288,6 +298,7 @@ Prerequisites:
 - CMake 3.25 or newer
 - A C++23 compiler such as recent Clang, GCC, or MSVC
 - LZ4 headers and library (`liblz4-dev` or `lz4` from Homebrew)
+- libsodium headers and library (`libsodium-dev` or `libsodium` from Homebrew)
 - Python 3 for tests and generated HTML docs
 - Redis only when running Redis differential tests or Redis comparison benchmarks
 
@@ -327,6 +338,21 @@ cmake --install build-release --prefix /usr/local
 ```sh
 ./build-release/goblin-core --port 6379
 ```
+
+**Authentication.** Create an owner-only libsodium password file with the
+installed editor, then require it for RESP clients:
+
+```sh
+goblin-core-auth --file /etc/goblin/core.auth add default 'long-secret'
+./build-release/goblin-core --port 6379 --auth-file /etc/goblin/core.auth
+```
+
+Use `AUTH [username] password` or `HELLO 3 AUTH username password`. RESP over
+TCP/UDS/ExaSock authenticates whenever `--auth-file` is set. RESP rings and RDMA
+do too unless `--no-auth-ring` or `--no-auth-rdma` explicitly places that fabric
+inside the trust boundary; those bypasses make AUTH optional rather than
+unavailable. See [Authentication](docs/authentication.md),
+including the plaintext-wire warning and credential rotation rules.
 
 **Socket listeners.** Repeat `--tcp-listen <address>:<port>` and
 `--uds-listen <path>` to serve the same store through multiple TCP, IPv6, and
@@ -380,9 +406,11 @@ or the exact-core form `--cpu 77`. Unknown device locality on a multi-node host
 also requires an explicit choice.
 
 Transport and protocol are independent: ordinary sockets, shared-memory rings,
-and RDMA rings support RESP and the SBE binary wire. An endpoint selects SBE
-with the one-time `GOBLINS!` handshake; otherwise it speaks RESP2 by default and
-may select RESP3 with `HELLO 3`.
+and RDMA rings support RESP and the SBE binary wire. SBE is disabled by default;
+start the server with `--enable-sbe` to accept the one-time `GOBLINS!` handshake.
+SBE is deliberately unauthenticated and belongs only on a trusted fabric.
+Otherwise an endpoint speaks RESP2 by default and may select RESP3 with
+`HELLO 3`.
 
 With polled targets the server checks them in command-line order (the first can
 starve the second, by design) and pegs a core at 100%; without one it stays

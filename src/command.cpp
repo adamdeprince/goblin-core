@@ -1,5 +1,6 @@
 #include "goblin/core/command.hpp"
 
+#include "goblin/core/auth.hpp"
 #include "goblin/core/exasock.hpp"
 #include "goblin/core/luau_script.hpp"
 #include "goblin/core/parse_int.hpp"
@@ -1049,6 +1050,18 @@ void append_range_response(Store& store,
 
 }  // namespace
 
+CommandType lookup_command_type(std::string_view name) noexcept {
+  if (name.size() > 31) {
+    return CommandType::unknown;
+  }
+  std::array<char, 32> upper{};
+  for (std::size_t k = 0; k < name.size(); ++k) {
+    upper[k] = ascii_upper_char(name[k]);
+  }
+  const CommandEntry* entry = CommandDispatch::lookup(upper.data(), name.size());
+  return entry == nullptr ? CommandType::unknown : entry->type;
+}
+
 CommandParseResult parse_command(std::span<const std::string_view> fields) {
   if (fields.empty()) {
     return parse_error("ERR empty command");
@@ -1095,10 +1108,11 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     command.type = CommandType::unknown;
     return {.command = std::move(command)};
   }
+  const CommandType looked_up_type = entry->type;
 
   // Arity/setup bodies are identical to the former equals_ci chain; only the
   // selection changed. equals_ci is still used for in-handler argument checks.
-  switch (entry->type) {
+  switch (looked_up_type) {
     case CommandType::ping:
       if (command.args.size() > 1) {
         return parse_error(wrong_arity("ping"));
@@ -1106,10 +1120,34 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       command.type = CommandType::ping;
       return {.command = std::move(command)};
     case CommandType::hello:
-      if (command.args.size() > 1) {
-        return parse_error(wrong_arity("hello"));
-      }
       command.type = CommandType::hello;
+      return {.command = std::move(command)};
+    case CommandType::auth:
+      if (command.args.size() < 1 || command.args.size() > 2) {
+        return parse_error(wrong_arity("auth"));
+      }
+      command.type = CommandType::auth;
+      return {.command = std::move(command)};
+    case CommandType::command:
+      command.type = CommandType::command;
+      return {.command = std::move(command)};
+    case CommandType::client:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("client"));
+      }
+      command.type = CommandType::client;
+      return {.command = std::move(command)};
+    case CommandType::select:
+      if (command.args.size() != 1) {
+        return parse_error(wrong_arity("select"));
+      }
+      command.type = CommandType::select;
+      return {.command = std::move(command)};
+    case CommandType::quit:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity("quit"));
+      }
+      command.type = CommandType::quit;
       return {.command = std::move(command)};
     case CommandType::subscribe:
       if (command.args.empty()) {
@@ -1550,7 +1588,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 1) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::ardel:
       if (command.args.size() < 2) {
@@ -1585,7 +1623,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() < 2) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::lpop:
     case CommandType::rpop:
@@ -1596,7 +1634,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 1 && command.args.size() != 2) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::llen:
     case CommandType::pma_llen:
@@ -1604,7 +1642,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 1) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::lindex:
     case CommandType::pma_lindex:
@@ -1612,7 +1650,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 2) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::lrange:
     case CommandType::ltrim:
@@ -1626,7 +1664,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (!parse_range_indexes(command)) {
         return parse_error(integer_range_error());
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::lset:
     case CommandType::lrem:
@@ -1637,7 +1675,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 3) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::linsert:
     case CommandType::pma_linsert:
@@ -1645,7 +1683,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 4) {
         return parse_error(wrong_arity(command.name));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::set:
       if (command.args.size() < 2) {  // options (NX) validated in the handler
@@ -1768,7 +1806,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() < 2) {  // key, amount, then optional NX/XX/GT/LT
         return parse_error(wrong_arity("expire"));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::ttl:
     case CommandType::pttl:
@@ -1778,7 +1816,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() != 1) {
         return parse_error(wrong_arity("ttl"));
       }
-      command.type = entry->type;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::goblin_memory:
       if (command.args.size() != 1) {
@@ -1877,6 +1915,92 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   return {.command = std::move(command)};
 }
 
+bool command_mutates_store(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::zadd:
+    case CommandType::zrem:
+    case CommandType::zremrangebyscore:
+    case CommandType::hset:
+    case CommandType::hsetnx:
+    case CommandType::hdel:
+    case CommandType::hincrby:
+    case CommandType::sadd:
+    case CommandType::srem:
+    case CommandType::spop:
+    case CommandType::smove:
+    case CommandType::sinterstore:
+    case CommandType::sunionstore:
+    case CommandType::sdiffstore:
+    case CommandType::arreserve:
+    case CommandType::arset:
+    case CommandType::armset:
+    case CommandType::ardel:
+    case CommandType::arinsert:
+    case CommandType::lpush:
+    case CommandType::rpush:
+    case CommandType::lpushx:
+    case CommandType::rpushx:
+    case CommandType::lpop:
+    case CommandType::rpop:
+    case CommandType::lset:
+    case CommandType::ltrim:
+    case CommandType::lrem:
+    case CommandType::linsert:
+    case CommandType::pma_lpush:
+    case CommandType::pma_rpush:
+    case CommandType::pma_lpushx:
+    case CommandType::pma_rpushx:
+    case CommandType::pma_lpop:
+    case CommandType::pma_rpop:
+    case CommandType::pma_lset:
+    case CommandType::pma_ltrim:
+    case CommandType::pma_lrem:
+    case CommandType::pma_linsert:
+    case CommandType::segmented_lpush:
+    case CommandType::segmented_rpush:
+    case CommandType::segmented_lpushx:
+    case CommandType::segmented_rpushx:
+    case CommandType::segmented_lpop:
+    case CommandType::segmented_rpop:
+    case CommandType::segmented_lset:
+    case CommandType::segmented_ltrim:
+    case CommandType::segmented_lrem:
+    case CommandType::segmented_linsert:
+    case CommandType::set:
+    case CommandType::getset:
+    case CommandType::setnx:
+    case CommandType::getdel:
+    case CommandType::append:
+    case CommandType::incr:
+    case CommandType::decr:
+    case CommandType::incrby:
+    case CommandType::decrby:
+    case CommandType::incrbyfloat:
+    case CommandType::setrange:
+    case CommandType::mset:
+    case CommandType::del:
+    case CommandType::expire:
+    case CommandType::pexpire:
+    case CommandType::expireat:
+    case CommandType::pexpireat:
+    case CommandType::persist:
+    case CommandType::goblin_cad:
+    case CommandType::goblin_caexpire:
+    case CommandType::goblin_cas:
+    case CommandType::goblin_td_leaderboard_rescore:
+    case CommandType::goblin_increx:
+    case CommandType::goblin_zwindow:
+    case CommandType::goblin_incrbound:
+    case CommandType::goblin_decrpos:
+    case CommandType::goblin_hcad:
+    case CommandType::goblin_hsetgt:
+    case CommandType::goblin_claim:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Public accessor for the INFO text so the SBE dispatch can reply it without
 // duplicating build_info_string (which stays an internal helper here).
 std::string render_server_info(const Store& store) { return build_info_string(store); }
@@ -1895,6 +2019,423 @@ std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
   }
   return std::nullopt;
 }
+
+namespace {
+
+constexpr std::string_view kCommandNames[] = {
+#include "command_catalog.inc"
+};
+
+[[nodiscard]] bool valid_client_token(std::string_view value,
+                                      bool allow_empty = true) noexcept {
+  if (value.empty()) {
+    return allow_empty;
+  }
+  if (value.size() > 256) {
+    return false;
+  }
+  return std::all_of(value.begin(), value.end(), [](unsigned char byte) {
+    return byte >= 0x21 && byte <= 0x7e;
+  });
+}
+
+[[nodiscard]] bool authenticate(const CommandExecutionOptions& options,
+                                std::string_view username,
+                                std::string_view password,
+                                std::string& out) {
+  if (options.auth_database == nullptr) {
+    resp::append_error(
+        out,
+        "ERR AUTH called without any password configured for this server");
+    return false;
+  }
+  if (!options.auth_database->verify(username, password)) {
+    resp::append_error(
+        out,
+        "WRONGPASS invalid username-password pair or user is disabled.");
+    return false;
+  }
+  if (options.authenticated != nullptr) {
+    *options.authenticated = true;
+  }
+  if (options.authenticated_username != nullptr) {
+    options.authenticated_username->assign(username);
+  }
+  return true;
+}
+
+[[nodiscard]] std::string lowercase_ascii(std::string_view value) {
+  std::string result(value);
+  for (char& byte : result) {
+    if (byte >= 'A' && byte <= 'Z') {
+      byte = static_cast<char>(byte + ('a' - 'A'));
+    }
+  }
+  return result;
+}
+
+[[nodiscard]] int command_arity(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::quit:
+      return 1;
+    case CommandType::select:
+    case CommandType::echo:
+    case CommandType::get:
+    case CommandType::getdel:
+    case CommandType::strlen:
+    case CommandType::incr:
+    case CommandType::decr:
+    case CommandType::key_type:
+    case CommandType::ttl:
+    case CommandType::pttl:
+    case CommandType::persist:
+    case CommandType::expiretime:
+    case CommandType::pexpiretime:
+    case CommandType::zcard:
+    case CommandType::hlen:
+    case CommandType::hgetall:
+    case CommandType::hkeys:
+    case CommandType::hvals:
+    case CommandType::scard:
+    case CommandType::smembers:
+    case CommandType::llen:
+    case CommandType::pma_llen:
+    case CommandType::segmented_llen:
+    case CommandType::arlen:
+    case CommandType::arcount:
+    case CommandType::arnext:
+    case CommandType::goblin_memory:
+    case CommandType::goblin_load:
+    case CommandType::goblin_decrpos:
+      return 2;
+    case CommandType::setnx:
+    case CommandType::getset:
+    case CommandType::append:
+    case CommandType::incrby:
+    case CommandType::decrby:
+    case CommandType::incrbyfloat:
+    case CommandType::hget:
+    case CommandType::hexists:
+    case CommandType::hstrlen:
+    case CommandType::sismember:
+    case CommandType::lindex:
+    case CommandType::pma_lindex:
+    case CommandType::segmented_lindex:
+    case CommandType::zscore:
+    case CommandType::zrank:
+    case CommandType::zrevrank:
+    case CommandType::publish:
+    case CommandType::arget:
+    case CommandType::arseek:
+    case CommandType::goblin_cad:
+    case CommandType::goblin_increx:
+      return 3;
+    case CommandType::getrange:
+    case CommandType::setrange:
+    case CommandType::hincrby:
+    case CommandType::hsetnx:
+    case CommandType::lset:
+    case CommandType::lrem:
+    case CommandType::pma_lset:
+    case CommandType::pma_lrem:
+    case CommandType::segmented_lset:
+    case CommandType::segmented_lrem:
+    case CommandType::lrange:
+    case CommandType::pma_lrange:
+    case CommandType::segmented_lrange:
+    case CommandType::ltrim:
+    case CommandType::pma_ltrim:
+    case CommandType::segmented_ltrim:
+    case CommandType::smove:
+    case CommandType::zremrangebyscore:
+    case CommandType::expire:
+    case CommandType::pexpire:
+    case CommandType::expireat:
+    case CommandType::pexpireat:
+    case CommandType::goblin_caexpire:
+    case CommandType::goblin_cas:
+    case CommandType::goblin_incrbound:
+    case CommandType::goblin_hcad:
+    case CommandType::goblin_hsetgt:
+      return 4;
+    case CommandType::arreserve:
+    case CommandType::linsert:
+    case CommandType::pma_linsert:
+    case CommandType::segmented_linsert:
+    case CommandType::goblin_claim:
+      return 5;
+    case CommandType::goblin_td_leaderboard_rescore:
+    case CommandType::goblin_zwindow:
+      return 6;
+    case CommandType::ping:
+    case CommandType::info:
+    case CommandType::command:
+    case CommandType::hello:
+    case CommandType::unsubscribe:
+    case CommandType::punsubscribe:
+      return -1;
+    case CommandType::auth:
+    case CommandType::client:
+    case CommandType::subscribe:
+    case CommandType::psubscribe:
+    case CommandType::pubsub:
+    case CommandType::spop:
+    case CommandType::srandmember:
+    case CommandType::sinter:
+    case CommandType::sunion:
+    case CommandType::sdiff:
+    case CommandType::mget:
+    case CommandType::del:
+    case CommandType::exists:
+    case CommandType::goblin_optimize:
+    case CommandType::goblin_save:
+      return -2;
+    case CommandType::eval:
+    case CommandType::evalsha:
+    case CommandType::luau_eval:
+    case CommandType::luau_evalsha:
+    case CommandType::wren_eval:
+    case CommandType::wren_evalsha:
+    case CommandType::tcl_eval:
+    case CommandType::tcl_evalsha:
+    case CommandType::upython_eval:
+    case CommandType::upython_evalsha:
+    case CommandType::quickjs_eval:
+    case CommandType::quickjs_evalsha:
+    case CommandType::zrem:
+    case CommandType::hmget:
+    case CommandType::hdel:
+    case CommandType::sadd:
+    case CommandType::srem:
+    case CommandType::smismember:
+    case CommandType::sinterstore:
+    case CommandType::sintercard:
+    case CommandType::sunionstore:
+    case CommandType::sdiffstore:
+    case CommandType::sscan:
+    case CommandType::armget:
+    case CommandType::ardel:
+    case CommandType::arinsert:
+    case CommandType::lpush:
+    case CommandType::rpush:
+    case CommandType::lpushx:
+    case CommandType::rpushx:
+    case CommandType::pma_lpush:
+    case CommandType::pma_rpush:
+    case CommandType::pma_lpushx:
+    case CommandType::pma_rpushx:
+    case CommandType::segmented_lpush:
+    case CommandType::segmented_rpush:
+    case CommandType::segmented_lpushx:
+    case CommandType::segmented_rpushx:
+    case CommandType::set:
+    case CommandType::mset:
+      return -3;
+    case CommandType::script:
+    case CommandType::luau_script:
+    case CommandType::wren_script:
+    case CommandType::tcl_script:
+    case CommandType::upython_script:
+    case CommandType::quickjs_script:
+      return -2;
+    case CommandType::zadd:
+    case CommandType::hset:
+    case CommandType::arset:
+    case CommandType::armset:
+      return -4;
+    case CommandType::zrange:
+    case CommandType::zrevrange:
+      return -4;
+    case CommandType::lpop:
+    case CommandType::rpop:
+    case CommandType::pma_lpop:
+    case CommandType::pma_rpop:
+    case CommandType::segmented_lpop:
+    case CommandType::segmented_rpop:
+      return -2;
+    case CommandType::unknown:
+      return 0;
+  }
+  return 0;
+}
+
+struct CommandKeyRange {
+  int first{0};
+  int last{0};
+  int step{0};
+};
+
+[[nodiscard]] CommandKeyRange command_key_range(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::eval:
+    case CommandType::evalsha:
+    case CommandType::luau_eval:
+    case CommandType::luau_evalsha:
+    case CommandType::wren_eval:
+    case CommandType::wren_evalsha:
+    case CommandType::tcl_eval:
+    case CommandType::tcl_evalsha:
+    case CommandType::upython_eval:
+    case CommandType::upython_evalsha:
+    case CommandType::quickjs_eval:
+    case CommandType::quickjs_evalsha:
+      return {3, -1, 1};
+    case CommandType::sintercard:
+      return {2, -1, 1};
+    case CommandType::mset:
+      return {1, -1, 2};
+    case CommandType::mget:
+    case CommandType::del:
+    case CommandType::exists:
+    case CommandType::sinter:
+    case CommandType::sunion:
+    case CommandType::sdiff:
+    case CommandType::sinterstore:
+    case CommandType::sunionstore:
+    case CommandType::sdiffstore:
+      return {1, -1, 1};
+    case CommandType::smove:
+      return {1, 2, 1};
+    default:
+      return command_has_key_arg(type) ? CommandKeyRange{1, 1, 1}
+                                       : CommandKeyRange{};
+  }
+}
+
+[[nodiscard]] bool connection_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::auth:
+    case CommandType::hello:
+    case CommandType::command:
+    case CommandType::client:
+    case CommandType::select:
+    case CommandType::quit:
+    case CommandType::ping:
+    case CommandType::echo:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool scripting_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::eval:
+    case CommandType::evalsha:
+    case CommandType::script:
+    case CommandType::luau_eval:
+    case CommandType::luau_evalsha:
+    case CommandType::luau_script:
+    case CommandType::wren_eval:
+    case CommandType::wren_evalsha:
+    case CommandType::wren_script:
+    case CommandType::tcl_eval:
+    case CommandType::tcl_evalsha:
+    case CommandType::tcl_script:
+    case CommandType::upython_eval:
+    case CommandType::upython_evalsha:
+    case CommandType::upython_script:
+    case CommandType::quickjs_eval:
+    case CommandType::quickjs_evalsha:
+    case CommandType::quickjs_script:
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool command_may_write(CommandType type) noexcept {
+  if (command_mutates_store(type) || type == CommandType::goblin_load) {
+    return true;
+  }
+  switch (type) {
+    case CommandType::eval:
+    case CommandType::evalsha:
+    case CommandType::luau_eval:
+    case CommandType::luau_evalsha:
+    case CommandType::wren_eval:
+    case CommandType::wren_evalsha:
+    case CommandType::tcl_eval:
+    case CommandType::tcl_evalsha:
+    case CommandType::upython_eval:
+    case CommandType::upython_evalsha:
+    case CommandType::quickjs_eval:
+    case CommandType::quickjs_evalsha:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void append_command_descriptor(std::string& out, std::string_view name,
+                               CommandType type) {
+  const auto keys = command_key_range(type);
+  const bool writes = command_may_write(type);
+  const bool pubsub = type == CommandType::subscribe ||
+                      type == CommandType::unsubscribe ||
+                      type == CommandType::psubscribe ||
+                      type == CommandType::punsubscribe ||
+                      type == CommandType::publish ||
+                      type == CommandType::pubsub;
+  std::string_view command_flag = "readonly";
+  std::string_view acl_category = "@read";
+  if (pubsub) {
+    command_flag = "pubsub";
+    acl_category = "@pubsub";
+  } else if (scripting_command(type)) {
+    command_flag = writes ? "write" : "readonly";
+    acl_category = "@scripting";
+  } else if (connection_command(type)) {
+    command_flag = "fast";
+    acl_category = "@connection";
+  } else if (writes) {
+    command_flag = "write";
+    acl_category = "@write";
+  }
+
+  // Redis 7+ descriptor shape: legacy first-key metadata followed by ACL
+  // categories, tips, key specs, and subcommands. Key specs remain empty because
+  // the legacy fields fully describe Goblin's current command set.
+  resp::append_array_header(out, 10);
+  resp::append_bulk_string(out, lowercase_ascii(name));
+  resp::append_integer(out, command_arity(type));
+  resp::append_array_header(out, 1);
+  resp::append_bulk_string(out, command_flag);
+  resp::append_integer(out, keys.first);
+  resp::append_integer(out, keys.last);
+  resp::append_integer(out, keys.step);
+  resp::append_array_header(out, 1);
+  resp::append_bulk_string(out, acl_category);
+  resp::append_array_header(out, 0);  // tips
+  resp::append_array_header(out, 0);  // key specifications
+  resp::append_array_header(out, 0);  // subcommands
+}
+
+void execute_command_introspection(const Command& command, std::string& out,
+                                   resp::Version version) {
+  if (command.args.empty()) {
+    resp::append_array_header(out, std::size(kCommandNames));
+    for (const auto name : kCommandNames) {
+      append_command_descriptor(out, name, lookup_command_type(name));
+    }
+    return;
+  }
+  if (!equals_ci(command.args.front(), "INFO")) {
+    resp::append_error(out, "ERR unknown subcommand for COMMAND");
+    return;
+  }
+  resp::append_array_header(out, command.args.size() - 1);
+  for (const auto name : command.args.subspan(1)) {
+    const auto type = lookup_command_type(name);
+    if (type == CommandType::unknown) {
+      resp::append_null(out, version);
+    } else {
+      append_command_descriptor(out, name, type);
+    }
+  }
+}
+
+}  // namespace
 
 void execute_command_into(Store& store,
                           const Command& command,
@@ -1950,23 +2491,161 @@ void execute_command_into(Store& store,
         resp::append_bulk_string(out, command.args.front());
       }
       return;
+    case CommandType::auth: {
+      const std::string_view username =
+          command.args.size() == 1 ? std::string_view("default")
+                                   : command.args[0];
+      const std::string_view password = command.args.back();
+      if (authenticate(options, username, password, out)) {
+        resp::append_simple_string(out, "OK");
+      }
+      return;
+    }
     case CommandType::hello: {
       auto selected = version;
-      if (!command.args.empty()) {
-        const auto requested = parse_i64(command.args.front());
-        if (!requested || (*requested != 2 && *requested != 3)) {
-          resp::append_error(out, "NOPROTO unsupported protocol version");
-          return;
+      if (command.args.empty()) {
+        append_hello_response(out, selected, options.connection_id);
+        return;
+      }
+
+      const auto requested = parse_i64(command.args.front());
+      if (!requested || (*requested != 2 && *requested != 3)) {
+        resp::append_error(out, "NOPROTO unsupported protocol version");
+        return;
+      }
+      selected = *requested == 3 ? resp::Version::resp3
+                                 : resp::Version::resp2;
+
+      bool saw_auth = false;
+      bool saw_setname = false;
+      std::string_view auth_username;
+      std::string_view auth_password;
+      std::string_view requested_name;
+      std::size_t index = 1;
+      while (index < command.args.size()) {
+        if (equals_ci(command.args[index], "AUTH") && !saw_auth &&
+            index + 2 < command.args.size()) {
+          saw_auth = true;
+          auth_username = command.args[index + 1];
+          auth_password = command.args[index + 2];
+          index += 3;
+          continue;
         }
-        selected = *requested == 3 ? resp::Version::resp3
-                                   : resp::Version::resp2;
+        if (equals_ci(command.args[index], "SETNAME") && !saw_setname &&
+            index + 1 < command.args.size()) {
+          saw_setname = true;
+          requested_name = command.args[index + 1];
+          index += 2;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      if (saw_setname && !valid_client_token(requested_name)) {
+        resp::append_error(
+            out,
+            "ERR Client names cannot contain spaces, newlines or special characters.");
+        return;
+      }
+      if (saw_auth &&
+          !authenticate(options, auth_username, auth_password, out)) {
+        return;
       }
       if (options.resp_version != nullptr) {
         *options.resp_version = selected;
       }
+      if (saw_setname && options.client_name != nullptr) {
+        options.client_name->assign(requested_name);
+      }
       append_hello_response(out, selected, options.connection_id);
       return;
     }
+    case CommandType::command:
+      execute_command_introspection(command, out, version);
+      return;
+    case CommandType::client: {
+      const auto subcommand = command.args.front();
+      if (equals_ci(subcommand, "SETNAME")) {
+        if (command.args.size() != 2) {
+          resp::append_error(out, wrong_arity("client|setname"));
+          return;
+        }
+        if (!valid_client_token(command.args[1])) {
+          resp::append_error(
+              out,
+              "ERR Client names cannot contain spaces, newlines or special characters.");
+          return;
+        }
+        if (options.client_name != nullptr) {
+          options.client_name->assign(command.args[1]);
+        }
+        resp::append_simple_string(out, "OK");
+        return;
+      }
+      if (equals_ci(subcommand, "GETNAME")) {
+        if (command.args.size() != 1) {
+          resp::append_error(out, wrong_arity("client|getname"));
+          return;
+        }
+        if (options.client_name == nullptr || options.client_name->empty()) {
+          resp::append_null(out, version);
+        } else {
+          resp::append_bulk_string(out, *options.client_name);
+        }
+        return;
+      }
+      if (equals_ci(subcommand, "ID")) {
+        if (command.args.size() != 1) {
+          resp::append_error(out, wrong_arity("client|id"));
+          return;
+        }
+        resp::append_integer(out, static_cast<long long>(options.connection_id));
+        return;
+      }
+      if (equals_ci(subcommand, "SETINFO")) {
+        if (command.args.size() != 3) {
+          resp::append_error(out, wrong_arity("client|setinfo"));
+          return;
+        }
+        if (!valid_client_token(command.args[2], false)) {
+          resp::append_error(out, "ERR invalid client library information");
+          return;
+        }
+        if (equals_ci(command.args[1], "LIB-NAME")) {
+          if (options.client_library_name != nullptr) {
+            options.client_library_name->assign(command.args[2]);
+          }
+        } else if (equals_ci(command.args[1], "LIB-VER")) {
+          if (options.client_library_version != nullptr) {
+            options.client_library_version->assign(command.args[2]);
+          }
+        } else {
+          resp::append_error(out, "ERR unknown CLIENT SETINFO option");
+          return;
+        }
+        resp::append_simple_string(out, "OK");
+        return;
+      }
+      resp::append_error(out, "ERR unknown subcommand for CLIENT");
+      return;
+    }
+    case CommandType::select: {
+      const auto database = parse_i64(command.args.front());
+      if (!database) {
+        resp::append_error(out, integer_range_error());
+      } else if (*database != 0) {
+        resp::append_error(out, "ERR DB index is out of range");
+      } else {
+        resp::append_simple_string(out, "OK");
+      }
+      return;
+    }
+    case CommandType::quit:
+      resp::append_simple_string(out, "OK");
+      if (options.quit_requested != nullptr) {
+        *options.quit_requested = true;
+      }
+      return;
     case CommandType::subscribe:
     case CommandType::unsubscribe:
     case CommandType::psubscribe:

@@ -40,12 +40,12 @@
 #line 17 "/Users/adam/dev/packrat/src/command_hash.gperf"
 struct CommandEntry { const char* name; goblin::core::CommandType type; };
 
-#define TOTAL_KEYWORDS 203
+#define TOTAL_KEYWORDS 208
 #define MIN_WORD_LENGTH 3
 #define MAX_WORD_LENGTH 29
-#define MIN_HASH_VALUE 36
-#define MAX_HASH_VALUE 854
-/* maximum key range = 819, duplicates = 0 */
+#define MIN_HASH_VALUE 15
+#define MAX_HASH_VALUE 901
+/* maximum key range = 887, duplicates = 0 */
 
 class CommandDispatch
 {
@@ -60,32 +60,32 @@ CommandDispatch::hash (const char *str, size_t len)
 {
   static const unsigned short asso_values[] =
     {
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 155, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855,   0,   0, 140, 250,  45,
-       90,   5, 254,  40, 855,  25,  10, 215,  60,   0,
-       30,   0,   5,   0,  20, 175,  65,  15,  45,   0,
-       84, 855, 855, 855, 855,   5, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855, 855, 855, 855, 855,
-      855, 855, 855, 855, 855, 855
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 195, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902,   0,  15,  40,  99,   5,
+      205,   5, 256,  80, 902,  75,  10,  65,  75,   0,
+       30,   0,   5,   0,  20, 195, 110,  15,  65,   0,
+      254, 902, 902, 902, 902,   0, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902, 902, 902, 902, 902,
+      902, 902, 902, 902, 902, 902
     };
   unsigned int hval = len;
 
@@ -192,59 +192,55 @@ CommandDispatch::lookup (const char *str, size_t len)
   static const unsigned char lengthtable[] =
     {
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0, 11,  0,  0,  0,  0,  6,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  3,  0,  5,
-       6,  0,  0,  0,  5,  0,  0,  0,  4,  5,  0,  0,  3,  4,
-       0,  0,  0,  3,  4,  0,  6, 17,  0,  4,  5,  6,  0,  0,
-       4,  0,  0,  7,  0,  0,  0, 11,  0,  0,  0, 15, 16,  0,
-       0,  4, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  6,
-       0,  0,  0, 15,  6,  7,  0,  0, 15,  0,  0,  8,  4, 15,
-       6,  7,  8,  4,  5,  0,  0,  8,  9,  0,  6, 12,  0,  4,
-       0,  0,  0,  0,  0,  5,  0,  0,  0,  0,  5,  0,  7,  0,
-       5,  6, 11,  7,  0,  9,  0,  0,  0,  0,  0, 10,  6,  0,
-       0,  0,  0, 11, 17,  0,  0,  0, 21,  0,  0,  0,  0, 21,
-       0, 23,  9,  0, 21,  0,  8,  0,  0,  6,  0, 18,  4,  0,
-       0, 22,  0,  0,  0, 21, 22, 23,  0,  0, 21, 22, 23,  0,
-       0,  6,  0,  9,  0,  5,  6, 17, 23, 24,  5,  6,  7,  0,
-       0,  0,  6,  0,  0,  0,  6,  6,  8,  0,  5,  0,  0,  0,
-       0,  0, 15, 16,  0,  0,  0, 15,  0,  0,  0,  4, 15,  6,
-       0,  0, 14, 10, 16,  0,  0, 14, 15,  0, 17,  0,  0, 15,
-      11,  0,  0,  4, 10, 16, 17,  0,  0,  0, 16, 17,  0,  4,
-      11,  6,  0,  0,  4,  5,  7,  0,  0,  4, 15,  0,  0,  0,
-       0,  0,  0,  0, 13,  0, 10, 16,  0,  0, 14,  5,  0,  0,
-       3,  9,  0, 11,  0,  0,  0,  0,  0,  0, 18,  0,  0,  0,
-      17,  4,  5,  6,  6,  0,  4,  5,  0,  7,  0,  0,  5,  0,
-      11, 17,  0,  0,  0,  0,  0,  8,  0,  0,  0,  0,  0,  0,
-       0,  0, 13,  4,  0,  0,  0,  0,  0, 19,  0,  0,  0,  0,
-      29,  0,  6,  0,  0,  9,  0,  0, 12,  4,  0,  0,  0,  0,
-       0,  0, 10,  0, 12,  0,  0,  5, 16,  0,  0, 15,  0,  7,
-       0,  0,  0, 10, 11,  0,  0,  0, 20, 21,  0,  0,  0, 20,
-      11,  0,  0,  0, 20, 16,  0,  0,  0, 10, 16,  0, 14,  0,
-       0,  0,  0,  0,  0,  0, 11,  0,  0,  0,  0,  0, 17,  0,
-       0, 10,  0,  0, 23,  0,  0,  0,  0,  4,  4,  0,  6,  0,
-       0, 14,  0,  0,  0,  0,  0, 15,  0,  0, 23,  0, 20, 21,
-      22, 13,  0, 20,  0, 12, 23,  0, 20,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0, 21,  0,  8,  0,  0, 21,  0,  0,  0,
-      15,  0,  0,  0, 14,  0,  0, 22,  0,  0,  0,  7, 12,  0,
-       4,  0,  0,  0, 23,  0, 16,  0,  0,  0,  0,  0,  0,  0,
-      23,  0,  0,  0,  0,  0,  5,  0,  0,  0,  0,  0,  0,  0,
+       0,  5,  6,  0,  0,  0,  5,  0,  0,  0,  0,  5,  6,  0,
+       3,  0,  0,  0,  0,  3,  0,  0,  6,  0,  0,  4,  0,  6,
+       0,  8,  0,  5,  0,  7,  8,  0,  5, 11,  7,  3,  0,  0,
+       0,  0,  0,  4,  0,  0,  0,  0,  4,  0,  0,  0,  0,  4,
+       0,  6,  0,  0,  4,  0,  6,  0,  0,  4, 10,  6,  0,  0,
+       4,  0,  0,  0,  0,  4, 15,  6, 17,  0,  4, 15,  6,  0,
+       0,  4, 15,  0,  0,  0,  4,  5,  0,  0,  0,  9, 15, 16,
+      12,  0,  5, 15,  0,  3,  0,  0,  5,  0,  0,  0,  0,  0,
+       0,  0,  0,  4,  0,  6,  7,  0,  0,  6,  0,  7,  0,  9,
+       0,  6,  0,  8,  0,  0, 11, 12,  0,  0,  0, 11,  0,  4,
+       0,  6,  6,  0,  0,  9,  0, 11,  0,  0,  0,  0, 21,  0,
+       0,  0,  0, 21,  7, 23,  0, 10, 21,  7, 13, 10,  5,  6,
+       0, 29,  0,  0,  6, 22,  8,  0,  0, 21, 22, 23,  4,  0,
+      21, 22, 23,  0,  0,  0,  4,  0,  4, 15,  6,  0,  8,  0,
+       0, 11,  0, 14,  0, 20, 21,  0,  0,  0, 20, 11,  0,  0,
+       0, 20, 11,  0,  0,  0,  0,  0,  0, 13,  9,  5,  6,  0,
+       0,  0,  5,  6, 17,  0,  0,  0,  6,  0, 23, 24,  0,  0,
+      22,  0,  0, 15, 16,  7,  0,  0, 15,  0,  0, 18,  0, 15,
+       0,  0,  0, 14,  6, 16, 17,  0, 14, 10, 21, 17,  0,  0,
+       0, 21,  0,  8, 10,  4,  5,  6,  7,  0,  4, 21, 17,  7,
+       0,  0,  0, 11,  0,  4,  6,  0,  0,  0,  5,  4, 16, 17,
+       0,  0,  0, 16, 17,  0, 20,  0, 16,  0,  0,  0, 15, 16,
+       0,  0,  0, 15,  0,  0,  0, 13,  0, 16,  0,  4, 14, 10,
+       5,  0,  0,  5,  6,  5,  0,  0,  0,  0,  0,  0,  0,  0,
+       4,  0,  0,  0, 15,  0,  6,  0, 14,  0,  0,  0,  0,  0,
+       4, 15,  0,  0, 23,  0,  0,  0,  0,  0,  4, 10, 16,  0,
+       0, 19,  0,  5,  0,  0,  0, 20, 11, 22,  9,  5, 20,  0,
+       0, 23,  0, 20,  0, 17,  0, 10,  0,  0,  0, 23,  0, 16,
+       0,  0,  0,  9,  0,  0, 12,  7,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0, 18,  0,  0,  0,  0,  0,
+       0,  0,  0, 12,  0,  0,  0,  0, 17,  0,  0,  0, 11,  0,
+       0,  0,  0, 21,  0, 23,  0,  0,  4,  8,  7,  0,  0, 21,
+       0,  0, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  4,
+       0,  0,  0,  0,  0,  0,  0,  0, 20,  0,  0,  0,  0,  0,
+       0, 21, 14,  0,  0,  0, 11,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  4,  0,  0,  0,  0,  0,  0,  0, 21,  0,  0,
-       0,  0, 21,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       4,  0,  0,  0,  0,  0,  0,  0,  0, 12,  0,  0, 11,  0,
+       0,  0,  0,  0,  0,  0, 23,  0,  0,  0, 11,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 12,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0, 14,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0, 21,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0, 20,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 12,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 20,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 15,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0, 14,  0,
+       0,  0,  0,  0,  0,  0,  0,  0, 14,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -252,7 +248,14 @@ CommandDispatch::lookup (const char *str, size_t len)
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
        0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-      15
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0, 15,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+       0,  0,  0,  0,  0, 15
     };
   static const struct CommandEntry wordlist[] =
     {
@@ -271,471 +274,316 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 115 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARSET", goblin::core::CommandType::arset},
+#line 124 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARSEEK", goblin::core::CommandType::arseek},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 116 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARGET", goblin::core::CommandType::arget},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 210 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.LOAD", goblin::core::CommandType::goblin_load},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 119 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARLEN", goblin::core::CommandType::arlen},
+#line 24 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SELECT", goblin::core::CommandType::select},
       {"",goblin::core::CommandType::unknown},
 #line 184 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SET", goblin::core::CommandType::set},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 185 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GET", goblin::core::CommandType::get},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 186 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GETSET", goblin::core::CommandType::getset},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 154 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LSET", goblin::core::CommandType::lset},
+      {"",goblin::core::CommandType::unknown},
+#line 189 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"STRLEN", goblin::core::CommandType::strlen},
       {"",goblin::core::CommandType::unknown},
+#line 197 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SETRANGE", goblin::core::CommandType::setrange},
       {"",goblin::core::CommandType::unknown},
+#line 113 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SSCAN", goblin::core::CommandType::sscan},
       {"",goblin::core::CommandType::unknown},
+#line 209 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PERSIST", goblin::core::CommandType::persist},
+#line 196 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GETRANGE", goblin::core::CommandType::getrange},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 99 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SCARD", goblin::core::CommandType::scard},
+#line 215 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.LOAD", goblin::core::CommandType::goblin_load},
+#line 120 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARCOUNT", goblin::core::CommandType::arcount},
+#line 207 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"TTL", goblin::core::CommandType::ttl},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 202 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"TTL", goblin::core::CommandType::ttl},
-      {"",goblin::core::CommandType::unknown},
-#line 110 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARSET", goblin::core::CommandType::arset},
-#line 119 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARSEEK", goblin::core::CommandType::arseek},
+      {"TYPE", goblin::core::CommandType::key_type},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 111 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARGET", goblin::core::CommandType::arget},
       {"",goblin::core::CommandType::unknown},
+#line 103 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SPOP", goblin::core::CommandType::spop},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 150 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"RPOP", goblin::core::CommandType::rpop},
+      {"",goblin::core::CommandType::unknown},
+#line 190 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"APPEND", goblin::core::CommandType::append},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 149 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LPOP", goblin::core::CommandType::lpop},
+      {"",goblin::core::CommandType::unknown},
+#line 117 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARMSET", goblin::core::CommandType::armset},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 98 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SPOP", goblin::core::CommandType::spop},
-#line 114 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARLEN", goblin::core::CommandType::arlen},
+      {"SREM", goblin::core::CommandType::srem},
+#line 218 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
+#line 118 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARMGET", goblin::core::CommandType::armget},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 179 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SET", goblin::core::CommandType::set},
-#line 145 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"RPOP", goblin::core::CommandType::rpop},
+#line 208 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PTTL", goblin::core::CommandType::pttl},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 156 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LREM", goblin::core::CommandType::lrem},
+#line 167 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LSET", goblin::core::CommandType::pma_lset},
+#line 123 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARNEXT", goblin::core::CommandType::arnext},
+#line 166 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LRANGE", goblin::core::CommandType::pma_lrange},
+      {"",goblin::core::CommandType::unknown},
+#line 198 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"MSET", goblin::core::CommandType::mset},
+#line 169 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LREM", goblin::core::CommandType::pma_lrem},
+#line 153 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LRANGE", goblin::core::CommandType::lrange},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 199 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"MGET", goblin::core::CommandType::mget},
+#line 164 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LLEN", goblin::core::CommandType::pma_llen},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 151 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LLEN", goblin::core::CommandType::llen},
+#line 187 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SETNX", goblin::core::CommandType::setnx},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 40 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"WREN.EVAL", goblin::core::CommandType::wren_eval},
+#line 163 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.RPOP", goblin::core::CommandType::pma_rpop},
+#line 168 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LTRIM", goblin::core::CommandType::pma_ltrim},
+#line 41 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"WREN.EVALSHA", goblin::core::CommandType::wren_evalsha},
+      {"",goblin::core::CommandType::unknown},
+#line 121 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARDEL", goblin::core::CommandType::ardel},
+#line 162 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LPOP", goblin::core::CommandType::pma_lpop},
+      {"",goblin::core::CommandType::unknown},
+#line 200 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"DEL", goblin::core::CommandType::del},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 155 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LTRIM", goblin::core::CommandType::ltrim},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 34 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"EVAL", goblin::core::CommandType::eval},
+      {"",goblin::core::CommandType::unknown},
+#line 36 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SCRIPT", goblin::core::CommandType::script},
+#line 35 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"EVALSHA", goblin::core::CommandType::evalsha},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 188 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GETDEL", goblin::core::CommandType::getdel},
+      {"",goblin::core::CommandType::unknown},
+#line 204 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PEXPIRE", goblin::core::CommandType::pexpire},
+      {"",goblin::core::CommandType::unknown},
+#line 206 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PEXPIREAT", goblin::core::CommandType::pexpireat},
+      {"",goblin::core::CommandType::unknown},
+#line 23 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"CLIENT", goblin::core::CommandType::client},
+      {"",goblin::core::CommandType::unknown},
+#line 102 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SMEMBERS", goblin::core::CommandType::smembers},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 42 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"WREN.SCRIPT", goblin::core::CommandType::wren_script},
+#line 226 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLAIM", goblin::core::CommandType::goblin_claim},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 214 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.SAVE", goblin::core::CommandType::goblin_save},
+      {"",goblin::core::CommandType::unknown},
+#line 192 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"DECR", goblin::core::CommandType::decr},
+      {"",goblin::core::CommandType::unknown},
+#line 194 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"DECRBY", goblin::core::CommandType::decrby},
+#line 201 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"EXISTS", goblin::core::CommandType::exists},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 100 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SISMEMBER", goblin::core::CommandType::sismember},
+      {"",goblin::core::CommandType::unknown},
+#line 104 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SRANDMEMBER", goblin::core::CommandType::srandmember},
+      {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 180 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GET", goblin::core::CommandType::get},
-#line 144 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LPOP", goblin::core::CommandType::lpop},
-      {"",goblin::core::CommandType::unknown},
-#line 181 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GETSET", goblin::core::CommandType::getset},
-#line 161 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LRANGE", goblin::core::CommandType::pma_lrange},
-      {"",goblin::core::CommandType::unknown},
-#line 149 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LSET", goblin::core::CommandType::lset},
-#line 150 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LTRIM", goblin::core::CommandType::ltrim},
-#line 148 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LRANGE", goblin::core::CommandType::lrange},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 203 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PTTL", goblin::core::CommandType::pttl},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 204 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PERSIST", goblin::core::CommandType::persist},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 209 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.SAVE", goblin::core::CommandType::goblin_save},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 158 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.RPOP", goblin::core::CommandType::pma_rpop},
-#line 163 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LTRIM", goblin::core::CommandType::pma_ltrim},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 197 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"TYPE", goblin::core::CommandType::key_type},
-#line 157 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LPOP", goblin::core::CommandType::pma_lpop},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 185 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"APPEND", goblin::core::CommandType::append},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 162 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LSET", goblin::core::CommandType::pma_lset},
-#line 118 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARNEXT", goblin::core::CommandType::arnext},
-#line 152 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LINSERT", goblin::core::CommandType::linsert},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 164 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LREM", goblin::core::CommandType::pma_lrem},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 192 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SETRANGE", goblin::core::CommandType::setrange},
-#line 29 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EVAL", goblin::core::CommandType::eval},
-#line 159 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LLEN", goblin::core::CommandType::pma_llen},
-#line 101 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SINTER", goblin::core::CommandType::sinter},
-#line 30 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EVALSHA", goblin::core::CommandType::evalsha},
-#line 191 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GETRANGE", goblin::core::CommandType::getrange},
-#line 146 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LLEN", goblin::core::CommandType::llen},
-#line 182 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SETNX", goblin::core::CommandType::setnx},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 117 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARINSERT", goblin::core::CommandType::arinsert},
-#line 35 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"WREN.EVAL", goblin::core::CommandType::wren_eval},
-      {"",goblin::core::CommandType::unknown},
-#line 196 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EXISTS", goblin::core::CommandType::exists},
-#line 36 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"WREN.EVALSHA", goblin::core::CommandType::wren_evalsha},
-      {"",goblin::core::CommandType::unknown},
-#line 19 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PING", goblin::core::CommandType::ping},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 108 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SSCAN", goblin::core::CommandType::sscan},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 94 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SCARD", goblin::core::CommandType::scard},
-      {"",goblin::core::CommandType::unknown},
-#line 115 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARCOUNT", goblin::core::CommandType::arcount},
-      {"",goblin::core::CommandType::unknown},
-#line 50 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZRANK", goblin::core::CommandType::zrank},
-#line 49 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZRANGE", goblin::core::CommandType::zrange},
-#line 102 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SINTERSTORE", goblin::core::CommandType::sinterstore},
-#line 199 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PEXPIRE", goblin::core::CommandType::pexpire},
-      {"",goblin::core::CommandType::unknown},
-#line 201 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PEXPIREAT", goblin::core::CommandType::pexpireat},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 213 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CAS", goblin::core::CommandType::goblin_cas},
-#line 198 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EXPIRE", goblin::core::CommandType::expire},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 37 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"WREN.SCRIPT", goblin::core::CommandType::wren_script},
-#line 160 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LINDEX", goblin::core::CommandType::pma_lindex},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 175 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LSET", goblin::core::CommandType::segmented_lset},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 177 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 182 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LREM", goblin::core::CommandType::segmented_lrem},
-      {"",goblin::core::CommandType::unknown},
-#line 174 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 157 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LINSERT", goblin::core::CommandType::linsert},
+#line 179 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LRANGE", goblin::core::CommandType::segmented_lrange},
-#line 21 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SUBSCRIBE", goblin::core::CommandType::subscribe},
       {"",goblin::core::CommandType::unknown},
-#line 172 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 101 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SMISMEMBER", goblin::core::CommandType::smismember},
+#line 177 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LLEN", goblin::core::CommandType::segmented_llen},
+#line 22 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"COMMAND", goblin::core::CommandType::command},
+#line 212 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.MEMORY", goblin::core::CommandType::goblin_memory},
+#line 216 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CAD", goblin::core::CommandType::goblin_cad},
+#line 105 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SMOVE", goblin::core::CommandType::smove},
+#line 106 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SINTER", goblin::core::CommandType::sinter},
       {"",goblin::core::CommandType::unknown},
-#line 200 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EXPIREAT", goblin::core::CommandType::expireat},
+#line 219 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.TD_LEADERBOARD_RESCORE", goblin::core::CommandType::goblin_td_leaderboard_rescore},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 31 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SCRIPT", goblin::core::CommandType::script},
-      {"",goblin::core::CommandType::unknown},
-#line 165 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LINSERT", goblin::core::CommandType::pma_linsert},
-#line 28 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"INFO", goblin::core::CommandType::info},
+#line 203 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"EXPIRE", goblin::core::CommandType::expire},
+#line 181 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.SEGMENTED.LTRIM", goblin::core::CommandType::segmented_ltrim},
+#line 122 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ARINSERT", goblin::core::CommandType::arinsert},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 176 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.SEGMENTED.LTRIM", goblin::core::CommandType::segmented_ltrim},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 171 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.RPOP", goblin::core::CommandType::segmented_rpop},
-#line 167 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 172 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.RPUSH", goblin::core::CommandType::segmented_rpush},
-#line 169 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 174 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.RPUSHX", goblin::core::CommandType::segmented_rpushx},
+#line 19 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PING", goblin::core::CommandType::ping},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 170 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 175 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LPOP", goblin::core::CommandType::segmented_lpop},
-#line 166 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 171 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LPUSH", goblin::core::CommandType::segmented_lpush},
-#line 168 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 173 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.SEGMENTED.LPUSHX", goblin::core::CommandType::segmented_lpushx},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 26 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PUBSUB", goblin::core::CommandType::pubsub},
       {"",goblin::core::CommandType::unknown},
-#line 51 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZREVRANGE", goblin::core::CommandType::zrevrange},
+#line 97 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SADD", goblin::core::CommandType::sadd},
       {"",goblin::core::CommandType::unknown},
-#line 141 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"RPUSH", goblin::core::CommandType::rpush},
-#line 143 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"RPUSHX", goblin::core::CommandType::rpushx},
-#line 78 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HSTRLEN", goblin::core::CommandType::hstrlen},
-#line 173 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.SEGMENTED.LINDEX", goblin::core::CommandType::segmented_lindex},
-#line 178 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.SEGMENTED.LINSERT", goblin::core::CommandType::segmented_linsert},
-#line 140 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LPUSH", goblin::core::CommandType::lpush},
-#line 142 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LPUSHX", goblin::core::CommandType::lpushx},
-#line 25 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PUBLISH", goblin::core::CommandType::publish},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 112 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARMSET", goblin::core::CommandType::armset},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 55 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZSCORE", goblin::core::CommandType::zscore},
-#line 113 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARMGET", goblin::core::CommandType::armget},
-#line 52 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZREVRANK", goblin::core::CommandType::zrevrank},
-      {"",goblin::core::CommandType::unknown},
-#line 48 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZCARD", goblin::core::CommandType::zcard},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 120 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARSET", goblin::core::CommandType::arset},
-#line 129 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARSEEK", goblin::core::CommandType::arseek},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 121 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARGET", goblin::core::CommandType::arget},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 186 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 191 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"INCR", goblin::core::CommandType::incr},
-#line 124 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARLEN", goblin::core::CommandType::arlen},
-#line 188 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 217 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CAEXPIRE", goblin::core::CommandType::goblin_caexpire},
+#line 193 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"INCRBY", goblin::core::CommandType::incrby},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 68 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HSET", goblin::core::CommandType::hset},
 #line 205 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"EXPIRETIME", goblin::core::CommandType::expiretime},
-#line 69 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HSETNX", goblin::core::CommandType::hsetnx},
+      {"EXPIREAT", goblin::core::CommandType::expireat},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 70 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HGET", goblin::core::CommandType::hget},
-#line 74 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HKEYS", goblin::core::CommandType::hkeys},
+#line 107 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SINTERSTORE", goblin::core::CommandType::sinterstore},
       {"",goblin::core::CommandType::unknown},
-#line 73 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HGETALL", goblin::core::CommandType::hgetall},
+#line 223 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.DECRPOS", goblin::core::CommandType::goblin_decrpos},
+      {"",goblin::core::CommandType::unknown},
+#line 135 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARSET", goblin::core::CommandType::arset},
+#line 144 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARSEEK", goblin::core::CommandType::arseek},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 75 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HVALS", goblin::core::CommandType::hvals},
-#line 190 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"",goblin::core::CommandType::unknown},
+#line 136 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARGET", goblin::core::CommandType::arget},
+#line 195 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"INCRBYFLOAT", goblin::core::CommandType::incrbyfloat},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 93 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SREM", goblin::core::CommandType::srem},
-#line 96 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SMISMEMBER", goblin::core::CommandType::smismember},
-#line 154 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.RPUSH", goblin::core::CommandType::pma_rpush},
-#line 156 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.RPUSHX", goblin::core::CommandType::pma_rpushx},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 153 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LPUSH", goblin::core::CommandType::pma_lpush},
-#line 155 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.PMA.LPUSHX", goblin::core::CommandType::pma_lpushx},
-      {"",goblin::core::CommandType::unknown},
-#line 151 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LREM", goblin::core::CommandType::lrem},
-#line 219 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.HCAD", goblin::core::CommandType::goblin_hcad},
-#line 104 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SUNION", goblin::core::CommandType::sunion},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 193 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"MSET", goblin::core::CommandType::mset},
-#line 100 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SMOVE", goblin::core::CommandType::smove},
-#line 66 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HSTRLEN", goblin::core::CommandType::hstrlen},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 194 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"MGET", goblin::core::CommandType::mget},
-#line 212 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CAEXPIRE", goblin::core::CommandType::goblin_caexpire},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 215 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.INCREX", goblin::core::CommandType::goblin_increx},
-      {"",goblin::core::CommandType::unknown},
-#line 23 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PSUBSCRIBE", goblin::core::CommandType::psubscribe},
-#line 128 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARNEXT", goblin::core::CommandType::arnext},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 76 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HLEN", goblin::core::CommandType::hlen},
-#line 116 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ARDEL", goblin::core::CommandType::ardel},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 195 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"DEL", goblin::core::CommandType::del},
-#line 95 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SISMEMBER", goblin::core::CommandType::sismember},
-      {"",goblin::core::CommandType::unknown},
-#line 105 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SUNIONSTORE", goblin::core::CommandType::sunionstore},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 127 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARINSERT", goblin::core::CommandType::arinsert},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 77 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HEXISTS", goblin::core::CommandType::hexists},
-#line 56 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HSET", goblin::core::CommandType::hset},
-#line 20 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HELLO", goblin::core::CommandType::hello},
-#line 57 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HSETNX", goblin::core::CommandType::hsetnx},
-#line 183 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GETDEL", goblin::core::CommandType::getdel},
-      {"",goblin::core::CommandType::unknown},
-#line 58 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HGET", goblin::core::CommandType::hget},
-#line 62 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HKEYS", goblin::core::CommandType::hkeys},
-      {"",goblin::core::CommandType::unknown},
-#line 61 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HGETALL", goblin::core::CommandType::hgetall},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 63 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HVALS", goblin::core::CommandType::hvals},
-      {"",goblin::core::CommandType::unknown},
-#line 99 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SRANDMEMBER", goblin::core::CommandType::srandmember},
-#line 125 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARCOUNT", goblin::core::CommandType::arcount},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 38 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"TCL.EVAL", goblin::core::CommandType::tcl_eval},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 139 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARLEN", goblin::core::CommandType::arlen},
+#line 211 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PEXPIRETIME", goblin::core::CommandType::pexpiretime},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -743,168 +591,173 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 220 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.HSETGT", goblin::core::CommandType::goblin_hsetgt},
-#line 53 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZREM", goblin::core::CommandType::zrem},
+      {"GOBLIN.INCREX", goblin::core::CommandType::goblin_increx},
+#line 26 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SUBSCRIBE", goblin::core::CommandType::subscribe},
+#line 146 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"RPUSH", goblin::core::CommandType::rpush},
+#line 148 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"RPUSHX", goblin::core::CommandType::rpushx},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 109 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.ARRESERVE", goblin::core::CommandType::arreserve},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 214 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.TD_LEADERBOARD_RESCORE", goblin::core::CommandType::goblin_td_leaderboard_rescore},
-      {"",goblin::core::CommandType::unknown},
+#line 145 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LPUSH", goblin::core::CommandType::lpush},
 #line 147 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LINDEX", goblin::core::CommandType::lindex},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 32 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LUAU.EVAL", goblin::core::CommandType::luau_eval},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 33 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LUAU.EVALSHA", goblin::core::CommandType::luau_evalsha},
-#line 64 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HLEN", goblin::core::CommandType::hlen},
+      {"LPUSHX", goblin::core::CommandType::lpushx},
+#line 165 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LINDEX", goblin::core::CommandType::pma_lindex},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 31 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PUBSUB", goblin::core::CommandType::pubsub},
+      {"",goblin::core::CommandType::unknown},
+#line 178 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.SEGMENTED.LINDEX", goblin::core::CommandType::segmented_lindex},
+#line 183 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.SEGMENTED.LINSERT", goblin::core::CommandType::segmented_linsert},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 103 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SINTERCARD", goblin::core::CommandType::sintercard},
-      {"",goblin::core::CommandType::unknown},
-#line 221 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLAIM", goblin::core::CommandType::goblin_claim},
+#line 140 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARCOUNT", goblin::core::CommandType::arcount},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 106 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SDIFF", goblin::core::CommandType::sdiff},
-#line 217 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.INCRBOUND", goblin::core::CommandType::goblin_incrbound},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 208 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.OPTIMIZE", goblin::core::CommandType::goblin_optimize},
-      {"",goblin::core::CommandType::unknown},
-#line 65 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HEXISTS", goblin::core::CommandType::hexists},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 40 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"TCL.SCRIPT", goblin::core::CommandType::tcl_script},
-#line 206 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PEXPIRETIME", goblin::core::CommandType::pexpiretime},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 130 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARSET", goblin::core::CommandType::arset},
-#line 139 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARSEEK", goblin::core::CommandType::arseek},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 131 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARGET", goblin::core::CommandType::arget},
-#line 34 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"LUAU.SCRIPT", goblin::core::CommandType::luau_script},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 125 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARSET", goblin::core::CommandType::arset},
 #line 134 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARLEN", goblin::core::CommandType::arlen},
-#line 122 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARSEEK", goblin::core::CommandType::arseek},
+#line 30 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PUBLISH", goblin::core::CommandType::publish},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 126 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARGET", goblin::core::CommandType::arget},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 170 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LINSERT", goblin::core::CommandType::pma_linsert},
+      {"",goblin::core::CommandType::unknown},
+#line 129 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARLEN", goblin::core::CommandType::arlen},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 73 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HSET", goblin::core::CommandType::hset},
+#line 152 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LINDEX", goblin::core::CommandType::lindex},
+#line 74 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HSETNX", goblin::core::CommandType::hsetnx},
+#line 83 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HSTRLEN", goblin::core::CommandType::hstrlen},
+      {"",goblin::core::CommandType::unknown},
+#line 75 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HGET", goblin::core::CommandType::hget},
+#line 210 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"EXPIRETIME", goblin::core::CommandType::expiretime},
+#line 137 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARMSET", goblin::core::CommandType::armset},
+#line 78 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HGETALL", goblin::core::CommandType::hgetall},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 138 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARMGET", goblin::core::CommandType::armget},
+      {"",goblin::core::CommandType::unknown},
+#line 43 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"TCL.EVAL", goblin::core::CommandType::tcl_eval},
+#line 108 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SINTERCARD", goblin::core::CommandType::sintercard},
+#line 61 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HSET", goblin::core::CommandType::hset},
+#line 20 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HELLO", goblin::core::CommandType::hello},
+#line 62 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HSETNX", goblin::core::CommandType::hsetnx},
+#line 71 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HSTRLEN", goblin::core::CommandType::hstrlen},
+      {"",goblin::core::CommandType::unknown},
+#line 63 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HGET", goblin::core::CommandType::hget},
+#line 143 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARNEXT", goblin::core::CommandType::arnext},
+#line 130 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARCOUNT", goblin::core::CommandType::arcount},
+#line 66 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HGETALL", goblin::core::CommandType::hgetall},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 224 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.HCAD", goblin::core::CommandType::goblin_hcad},
+      {"",goblin::core::CommandType::unknown},
+#line 25 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"QUIT", goblin::core::CommandType::quit},
+#line 60 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZSCORE", goblin::core::CommandType::zscore},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 53 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZCARD", goblin::core::CommandType::zcard},
+#line 32 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ECHO", goblin::core::CommandType::echo},
+#line 159 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.RPUSH", goblin::core::CommandType::pma_rpush},
+#line 161 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.RPUSHX", goblin::core::CommandType::pma_rpushx},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 158 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LPUSH", goblin::core::CommandType::pma_lpush},
+#line 160 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.PMA.LPUSHX", goblin::core::CommandType::pma_lpushx},
+      {"",goblin::core::CommandType::unknown},
+#line 141 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARDEL", goblin::core::CommandType::ardel},
+      {"",goblin::core::CommandType::unknown},
+#line 127 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.RT.ARMSET", goblin::core::CommandType::armset},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 211 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CAD", goblin::core::CommandType::goblin_cad},
-#line 123 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 76 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HMGET", goblin::core::CommandType::hmget},
+#line 128 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.RT.ARMGET", goblin::core::CommandType::armget},
-      {"",goblin::core::CommandType::unknown},
-#line 216 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.ZWINDOW", goblin::core::CommandType::goblin_zwindow},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 22 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"UNSUBSCRIBE", goblin::core::CommandType::unsubscribe},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 79 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HINCRBY", goblin::core::CommandType::hincrby},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 107 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SDIFFSTORE", goblin::core::CommandType::sdiffstore},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 90 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HSTRLEN", goblin::core::CommandType::hstrlen},
+      {"GOBLIN.RT.HKEYS", goblin::core::CommandType::hkeys},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 225 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.HSETGT", goblin::core::CommandType::goblin_hsetgt},
       {"",goblin::core::CommandType::unknown},
-#line 27 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ECHO", goblin::core::CommandType::echo},
-#line 187 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"DECR", goblin::core::CommandType::decr},
+#line 133 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARNEXT", goblin::core::CommandType::arnext},
       {"",goblin::core::CommandType::unknown},
-#line 189 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"DECRBY", goblin::core::CommandType::decrby},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 218 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.DECRPOS", goblin::core::CommandType::goblin_decrpos},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 71 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.RT.HMGET", goblin::core::CommandType::hmget},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 137 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARINSERT", goblin::core::CommandType::arinsert},
-      {"",goblin::core::CommandType::unknown},
-#line 80 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HSET", goblin::core::CommandType::hset},
-#line 138 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARNEXT", goblin::core::CommandType::arnext},
+#line 58 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZREM", goblin::core::CommandType::zrem},
 #line 81 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HSETNX", goblin::core::CommandType::hsetnx},
-#line 207 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.MEMORY", goblin::core::CommandType::goblin_memory},
+      {"GOBLIN.RT.HLEN", goblin::core::CommandType::hlen},
+#line 28 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PSUBSCRIBE", goblin::core::CommandType::psubscribe},
+#line 64 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HMGET", goblin::core::CommandType::hmget},
       {"",goblin::core::CommandType::unknown},
-#line 82 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HGET", goblin::core::CommandType::hget},
       {"",goblin::core::CommandType::unknown},
-#line 41 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"UPYTHON.EVAL", goblin::core::CommandType::upython_eval},
-#line 85 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HGETALL", goblin::core::CommandType::hgetall},
-      {"",goblin::core::CommandType::unknown},
-#line 88 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HLEN", goblin::core::CommandType::hlen},
-      {"",goblin::core::CommandType::unknown},
+#line 55 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZRANK", goblin::core::CommandType::zrank},
+#line 54 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZRANGE", goblin::core::CommandType::zrange},
+#line 67 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HKEYS", goblin::core::CommandType::hkeys},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -913,64 +766,97 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 87 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HVALS", goblin::core::CommandType::hvals},
-      {"",goblin::core::CommandType::unknown},
-#line 97 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SMEMBERS", goblin::core::CommandType::smembers},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 86 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HKEYS", goblin::core::CommandType::hkeys},
+#line 69 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HLEN", goblin::core::CommandType::hlen},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 126 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 131 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.RT.ARDEL", goblin::core::CommandType::ardel},
       {"",goblin::core::CommandType::unknown},
+#line 109 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SUNION", goblin::core::CommandType::sunion},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 72 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 77 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.RT.HDEL", goblin::core::CommandType::hdel},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 135 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARCOUNT", goblin::core::CommandType::arcount},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 67 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HINCRBY", goblin::core::CommandType::hincrby},
-#line 24 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"PUNSUBSCRIBE", goblin::core::CommandType::punsubscribe},
-      {"",goblin::core::CommandType::unknown},
-#line 92 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"SADD", goblin::core::CommandType::sadd},
+#line 33 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"INFO", goblin::core::CommandType::info},
+#line 80 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HVALS", goblin::core::CommandType::hvals},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 142 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.CLASSIC.ARINSERT", goblin::core::CommandType::arinsert},
       {"",goblin::core::CommandType::unknown},
-#line 89 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HEXISTS", goblin::core::CommandType::hexists},
       {"",goblin::core::CommandType::unknown},
-#line 54 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 65 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HDEL", goblin::core::CommandType::hdel},
+#line 45 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"TCL.SCRIPT", goblin::core::CommandType::tcl_script},
+#line 222 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.INCRBOUND", goblin::core::CommandType::goblin_incrbound},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 114 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.ARRESERVE", goblin::core::CommandType::arreserve},
+      {"",goblin::core::CommandType::unknown},
+#line 68 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HVALS", goblin::core::CommandType::hvals},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 85 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HSET", goblin::core::CommandType::hset},
+#line 110 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SUNIONSTORE", goblin::core::CommandType::sunionstore},
+#line 86 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HSETNX", goblin::core::CommandType::hsetnx},
+#line 56 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZREVRANGE", goblin::core::CommandType::zrevrange},
+#line 111 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SDIFF", goblin::core::CommandType::sdiff},
+#line 87 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HGET", goblin::core::CommandType::hget},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 90 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HGETALL", goblin::core::CommandType::hgetall},
+      {"",goblin::core::CommandType::unknown},
+#line 93 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HLEN", goblin::core::CommandType::hlen},
+      {"",goblin::core::CommandType::unknown},
+#line 82 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HEXISTS", goblin::core::CommandType::hexists},
+      {"",goblin::core::CommandType::unknown},
+#line 112 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"SDIFFSTORE", goblin::core::CommandType::sdiffstore},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 95 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HSTRLEN", goblin::core::CommandType::hstrlen},
+      {"",goblin::core::CommandType::unknown},
+#line 59 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"ZREMRANGEBYSCORE", goblin::core::CommandType::zremrangebyscore},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 37 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LUAU.EVAL", goblin::core::CommandType::luau_eval},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 91 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HINCRBY", goblin::core::CommandType::hincrby},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 59 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HMGET", goblin::core::CommandType::hmget},
+#line 38 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LUAU.EVALSHA", goblin::core::CommandType::luau_evalsha},
+#line 70 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HEXISTS", goblin::core::CommandType::hexists},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -978,39 +864,6 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 60 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"HDEL", goblin::core::CommandType::hdel},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -1019,153 +872,74 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 132 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARMSET", goblin::core::CommandType::armset},
+      {"GOBLIN.RT.ARINSERT", goblin::core::CommandType::arinsert},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 133 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARMGET", goblin::core::CommandType::armget},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 47 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"ZADD", goblin::core::CommandType::zadd},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 44 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"QUICKJS.EVAL", goblin::core::CommandType::quickjs_eval},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 39 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"TCL.EVALSHA", goblin::core::CommandType::tcl_evalsha},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 43 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"UPYTHON.SCRIPT", goblin::core::CommandType::upython_script},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 83 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.EFFICENT.HMGET", goblin::core::CommandType::hmget},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-#line 136 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"GOBLIN.CLASSIC.ARDEL", goblin::core::CommandType::ardel},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
-      {"",goblin::core::CommandType::unknown},
+#line 29 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"PUNSUBSCRIBE", goblin::core::CommandType::punsubscribe},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 84 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.RT.HINCRBY", goblin::core::CommandType::hincrby},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 39 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"LUAU.SCRIPT", goblin::core::CommandType::luau_script},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 88 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HMGET", goblin::core::CommandType::hmget},
+      {"",goblin::core::CommandType::unknown},
+#line 94 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HEXISTS", goblin::core::CommandType::hexists},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 52 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZADD", goblin::core::CommandType::zadd},
+#line 57 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"ZREVRANK", goblin::core::CommandType::zrevrank},
+#line 72 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"HINCRBY", goblin::core::CommandType::hincrby},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 91 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HKEYS", goblin::core::CommandType::hkeys},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 213 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.OPTIMIZE", goblin::core::CommandType::goblin_optimize},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 21 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"AUTH", goblin::core::CommandType::auth},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 89 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"GOBLIN.EFFICENT.HDEL", goblin::core::CommandType::hdel},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -1173,6 +947,15 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
+#line 92 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HVALS", goblin::core::CommandType::hvals},
+#line 221 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.ZWINDOW", goblin::core::CommandType::goblin_zwindow},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 27 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"UNSUBSCRIBE", goblin::core::CommandType::unsubscribe},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -1180,8 +963,47 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 42 "/Users/adam/dev/packrat/src/command_hash.gperf"
-      {"UPYTHON.EVALSHA", goblin::core::CommandType::upython_evalsha},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 96 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"GOBLIN.EFFICENT.HINCRBY", goblin::core::CommandType::hincrby},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 44 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"TCL.EVALSHA", goblin::core::CommandType::tcl_evalsha},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -1212,6 +1034,131 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
 #line 46 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"UPYTHON.EVAL", goblin::core::CommandType::upython_eval},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 48 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"UPYTHON.SCRIPT", goblin::core::CommandType::upython_script},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 49 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"QUICKJS.EVAL", goblin::core::CommandType::quickjs_eval},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 51 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"QUICKJS.SCRIPT", goblin::core::CommandType::quickjs_script},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
@@ -1312,7 +1259,115 @@ CommandDispatch::lookup (const char *str, size_t len)
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
       {"",goblin::core::CommandType::unknown},
-#line 45 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 47 "/Users/adam/dev/packrat/src/command_hash.gperf"
+      {"UPYTHON.EVALSHA", goblin::core::CommandType::upython_evalsha},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+      {"",goblin::core::CommandType::unknown},
+#line 50 "/Users/adam/dev/packrat/src/command_hash.gperf"
       {"QUICKJS.EVALSHA", goblin::core::CommandType::quickjs_evalsha}
     };
 
@@ -1331,5 +1386,5 @@ CommandDispatch::lookup (const char *str, size_t len)
     }
   return static_cast<struct CommandEntry *> (0);
 }
-#line 222 "/Users/adam/dev/packrat/src/command_hash.gperf"
+#line 227 "/Users/adam/dev/packrat/src/command_hash.gperf"
 

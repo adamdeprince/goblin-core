@@ -15,6 +15,13 @@ remain isolated from `goblin_core`'s strict warning flags.
 | `unordered_dense/` | unordered_dense | 4.8.1 | MIT | https://github.com/martinus/unordered_dense |
 | `xxhash/`          | xxHash (XXH3) | 0.8.3 | BSD-2-Clause | https://github.com/Cyan4973/xxHash |
 | `fast_float/`      | fast_float (header-only) | 8.0.2 | MIT OR Apache-2.0 | https://github.com/fastfloat/fast_float |
+| `librdkafka/`      | librdkafka | 2.15.0 | BSD-2-Clause | https://github.com/confluentinc/librdkafka |
+
+`librdkafka/` contains the upstream C client, its CMake support, license files,
+and the small C++ wrapper directory expected by upstream CMake. Examples, tests,
+packaging, and repository metadata are omitted. Goblin Core links only the C
+static library and disables optional system-dependent TLS/SASL, curl, zlib, and
+zstd integrations; librdkafka's bundled Snappy and LZ4 support remains enabled.
 
 Lua 5.1 was chosen deliberately: it is the language dialect Redis scripts target
 (so existing scripts port unchanged), it is pure ANSI C that builds on every ISA
@@ -118,6 +125,9 @@ KEYS/ARGV are **0-based** arrays. The runtime is sandboxed with a memory limit a
 a maximum stack size, and is created lazily on the first script.
 
 ## What is *not* vendored
+
+libsodium is a required system dependency used for Argon2id credential hashing;
+it is discovered and linked by CMake and is not copied into `third_party/`.
 
 The `EVAL` / `EVALSHA` / `SCRIPT` commands, the `redis` / `server` Lua API table
 (`redis.call`, `redis.pcall`, `redis.error_reply`, `redis.status_reply`,

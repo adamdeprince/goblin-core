@@ -86,6 +86,14 @@ struct UdsListenerConfig {
 using SocketListenerConfig =
     std::variant<TcpListenerConfig, UdsListenerConfig>;
 
+// One Kafka topic carrying exactly one RESP2 command array per record. A
+// timestamp is present when startup also loaded a snapshot; otherwise every
+// retained record is replayed.
+struct KafkaConfig {
+  std::string connection;
+  std::optional<std::int64_t> start_timestamp_ms;
+};
+
 struct ServerConfig {
   // Legacy single-listener fields used by --bind/--port/--unixsocket and by
   // callers constructing ServerConfig directly. socket_listeners takes
@@ -115,6 +123,17 @@ struct ServerConfig {
   // client and therefore requires the exact same Goblin Core version.
   std::optional<PubSubListenerConfig> pubsub_listener{};
   std::string pubsub_listener_pattern{"*"};
+  std::optional<KafkaConfig> kafka{};
+  // Optional RESP credential database created by goblin-core-auth. When set,
+  // TCP and UDS connections authenticate before accessing data commands.
+  std::optional<std::string> auth_file{};
+  // SBE is a trusted-fabric protocol and intentionally has no AUTH exchange.
+  // It is disabled unless explicitly requested at startup.
+  bool enable_sbe{false};
+  // RESP still authenticates on rings/RDMA by default. These switches mark a
+  // whole transport class as inside the operator's trusted boundary.
+  bool no_auth_ring{false};
+  bool no_auth_rdma{false};
   // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.

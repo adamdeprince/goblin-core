@@ -48,6 +48,7 @@ class RespParser {
   // frame's field views and pops it. Returns false when no frame is ready.
   [[nodiscard]] bool pop_into(std::vector<std::string_view>& out);
   [[nodiscard]] bool has_queued_frames() const noexcept;
+  [[nodiscard]] bool has_unparsed_input() const noexcept;
   [[nodiscard]] bool has_error() const noexcept;
   [[nodiscard]] const std::string& error() const noexcept;
 

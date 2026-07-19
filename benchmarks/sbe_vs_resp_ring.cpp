@@ -110,11 +110,12 @@ int main(int argc, char** argv) {
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
 #ifdef __linux__
     // Pin the busy-polling server to core 2 (falls through if taskset is absent).
-    ::execl("/usr/bin/taskset", "taskset", "-c", "2", server, "--unixsocket", sock.c_str(),
+    ::execl("/usr/bin/taskset", "taskset", "-c", "2", server, "--enable-sbe",
+            "--unixsocket", sock.c_str(),
             "--ring", resp_ring.c_str(), "1mb", "--ring", sbe_ring.c_str(), "1mb",
             static_cast<char*>(nullptr));
 #endif
-    ::execl(server, server, "--unixsocket", sock.c_str(),
+    ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
             "--ring", resp_ring.c_str(), "1mb",
             "--ring", sbe_ring.c_str(), "1mb", static_cast<char*>(nullptr));
     _exit(127);

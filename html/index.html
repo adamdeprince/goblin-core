@@ -551,7 +551,7 @@
         <p class="release-note">
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
-          <span><strong>Coming July 27, 2026:</strong> native Kafka replay.</span>
+          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 27, 2026:</strong> native <a href="docs/kafka.html">Kafka replay</a></s><strong class="delivery-stamp">Delivered 9 days early</strong></span>
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
@@ -566,7 +566,7 @@
           </a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP + SBE</span><span>TCP + UDS + Ringbuffer + RDMA</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP + UDS + Ringbuffer + RDMA</span>
         </div>
       </div>
     </section>
@@ -584,14 +584,14 @@
       <div class="section-inner">
         <p class="section-label">Two roads into the same engine</p>
         <h2 class="section-title">Choose the overhead you are done paying.</h2>
-        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. Both RESP and SBE work over TCP, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over TCP, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
         <div class="path-grid">
           <article class="path">
             <span class="path-num">01 / GROWING PRODUCTS</span>
             <h3>Your leaderboard should not become a fundraising event.</h3>
             <p class="path-lede">When sorted sets and hashes are scaling faster than the budget, packed layouts turn infrastructure growth back into a product problem instead of a RAM bill.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or SBE over TCP, UDS, or rings</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, or rings</dd></div>
               <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
               <div><dt>Measured</dt><dd>763.8 vs 1,486.7 MB: 48.6% less RSS than Redis 8.8 on Lichess</dd></div>
             </dl>
@@ -600,9 +600,9 @@
           <article class="path">
             <span class="path-num">02 / LATENCY-SENSITIVE SYSTEMS</span>
             <h3>Assemble real infrastructure before you invent a protocol.</h3>
-            <p class="path-lede">Use the same Redis-shaped operations over any transport, then choose SBE over a shared-memory ring for the lowest latency. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
+            <p class="path-lede">Use the same Redis-shaped operations over any transport, then enable SBE over a trusted shared-memory ring for the lowest latency. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or SBE over TCP, UDS, or rings</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, or rings</dd></div>
               <div><dt>Best at</dt><dd>Market data and execution-adjacent state</dd></div>
               <div><dt>Measured</dt><dd>~220 ns HSET/ZADD round trip</dd></div>
             </dl>
@@ -635,7 +635,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">RESP and SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. The same sequence-word design extends between hosts through <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a>.</p>
+        <p class="section-intro">RESP and opt-in SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. The same sequence-word design extends between hosts through <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a>.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -738,11 +738,11 @@
           <p class="section-label">Direction, stated plainly</p>
           <h2>Redis semantics, without the old overhead.</h2>
           <p class="section-intro">Goblin Core is growing toward the full Redis command surface, implemented with tighter memory layouts and faster execution paths. Today it already covers the core data and scripting workflows. <a href="LISTS.html">Adaptive-PMA and segmented-listpack lists</a> shipped July 13, one week ahead of schedule; in the current <a href="LIST-BENCHMARK.html">100k benchmark</a>, both list engines lead all eight fixed-command probes, while the default segmented implementation reaches 1.99× the fastest incumbent at middle-list indexing and accounts for 17.16 bytes per item. <a href="docs/commands/pubsub.html">Pub/Sub over RESP2, RESP3, and SBE</a> shipped July 15, five days ahead of schedule.</p>
-          <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. Native Kafka consumption for durable <code>ZADD</code>/<code>ZREM</code> replay arrives July 27, 2026. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
+          <p class="section-intro">The deliberate boundary is infrastructure policy: durable write logs belong in Kafka, where logging is the product. <a href="docs/kafka.html">Native Kafka consumption</a> now replays RESP2 writes from the earliest retained offset or a snapshot creation-time cutoff, catches up before listeners open, and continues streaming on the server thread. Use <code>GOBLIN.SAVE</code>/<code>GOBLIN.LOAD</code> for fast point-in-time restarts.</p>
           <p class="section-intro">Keys and encoded values use compact 16-bit lengths. Raw values hold up to 65,534 bytes; optional LZ4 admits larger compressible values while the encoded form fits. Everything larger belongs in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Available now</h3><ul><li>Strings, sets, sorted sets, and hashes</li><li>Segmented and Adaptive-PMA lists</li><li>Classic and real-time sparse arrays</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li>TTL keys, counters, and atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Strings, sets, sorted sets, and hashes</li><li>Segmented and Adaptive-PMA lists</li><li>Classic and real-time sparse arrays</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li><a href="docs/authentication.html">Libsodium-backed RESP authentication</a></li><li>Kafka RESP2 write-log replay</li><li>TTL keys, counters, and atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
           <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No built-in replication</li><li>No cluster mode</li><li>Kafka for durable replay</li><li>Save/load for fast restarts</li></ul></div>
         </div>
       </div>
@@ -753,7 +753,7 @@
         <div>
           <p class="section-label">Source-only release</p>
           <h2>Build it. Measure it.</h2>
-          <p>Goblin Core is Apache 2.0 licensed C++23. Choose RESP or SBE over TCP or a Unix-domain socket, then opt into shared-memory rings wherever owning the core makes sense. The protocol choice stays independent of the transport.</p>
+          <p>Goblin Core is Apache 2.0 licensed C++23. Choose authenticated RESP or trusted-fabric SBE over TCP or a Unix-domain socket, then opt into shared-memory rings wherever owning the core makes sense. The protocol choice stays independent of the transport.</p>
         </div>
         <div>
           <div class="terminal" aria-label="Build commands">

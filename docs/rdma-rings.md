@@ -73,8 +73,11 @@ r = RdmaRedis("10.88.88.1", 6380, 64 * 1024, decode_responses=True)
 r.ping()
 ```
 
-RESP starts in RESP2 mode and accepts `HELLO 3`. SBE begins with the existing
-`GOBLINS!` handshake. No protocol behavior is specific to RDMA.
+RESP starts in RESP2 mode and accepts `HELLO 3`. When the server has
+`--enable-sbe`, SBE begins with the existing `GOBLINS!` handshake. With an auth
+file, RESP authenticates on RDMA unless `--no-auth-rdma` marks that fabric
+trusted; SBE is always unauthenticated. No other protocol behavior is specific
+to RDMA.
 
 ## Connection setup
 

@@ -15,6 +15,8 @@ rings, and polled one-sided RDMA rings.
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
 - [List storage algorithms](../LISTS.md)
 - [Real-time and memory-efficient hash indexes](real-time-hashes.md)
+- [Kafka write-log ingestion](kafka.md)
+- [Authentication and trusted transports](authentication.md)
 
 ## Protocols and transports
 
@@ -26,9 +28,17 @@ rings, and polled one-sided RDMA rings.
 | [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
 | [SBE protocol](sbe-protocol.md) | Handshake, framing, schema generation, message and reply types, compatibility rules, and typed-client usage. |
 
-Protocol and transport are independent. RESP and SBE can each run over TCP
+Protocol and transport are independent. RESP and opt-in SBE can each run over TCP
 (plain or ExaSock-accelerated), Unix-domain sockets, a shared-memory ring, or a
-polled RDMA ring.
+polled RDMA ring. SBE requires `--enable-sbe` and is intentionally
+unauthenticated; see [Authentication](authentication.md) before exposing it.
+
+## Durability and replay
+
+[`--kafka`](kafka.md) consumes one RESP2 write per Kafka record, restores from
+the earliest retained offset or a loaded snapshot's creation-time cutoff, and
+catches up before opening client listeners. Kafka owns the durable log; Goblin
+Core remains the compact serving layer.
 
 ## Command reference
 
@@ -38,7 +48,9 @@ pages.
 
 ### Server and keyspace
 
-- [`HELLO`](commands/HELLO.md),
+- [`AUTH`](commands/AUTH.md), [`HELLO`](commands/HELLO.md),
+  [`CLIENT`](commands/CLIENT.md), [`COMMAND`](commands/COMMAND.md)
+- [`SELECT`](commands/SELECT.md), [`QUIT`](commands/QUIT.md),
   [`PING`](../README.md#current-commands), [`ECHO`](../README.md#current-commands)
 - [`INFO`](commands/INFO.md)
 - [`DEL`](commands/keys.md#del), [`EXISTS`](commands/keys.md#exists),

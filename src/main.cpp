@@ -23,6 +23,14 @@
 #include <vector>
 
 #include <sys/mman.h>
+#include <sys/stat.h>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <linux/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -176,6 +184,70 @@ void materialize_legacy_listener(goblin::core::ServerConfig& config) {
     return std::nullopt;
   }
   return static_cast<std::size_t>(value);
+}
+
+[[nodiscard]] std::optional<std::uint64_t> parse_nonnegative_seconds(
+    std::string_view text) {
+  std::uint64_t value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end ||
+      value > static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max() / 1000)) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+struct FileTimestamp {
+  std::int64_t milliseconds{0};
+  bool creation_time{false};
+};
+
+[[nodiscard]] std::optional<FileTimestamp> snapshot_file_timestamp(
+    const std::string& path, std::string& error) {
+  struct stat status {};
+  if (::stat(path.c_str(), &status) != 0) {
+    error = std::strerror(errno);
+    return std::nullopt;
+  }
+
+  std::int64_t seconds = 0;
+  long nanoseconds = 0;
+  bool creation_time = false;
+#if defined(__APPLE__)
+  seconds = status.st_birthtimespec.tv_sec;
+  nanoseconds = status.st_birthtimespec.tv_nsec;
+  creation_time = true;
+#elif defined(__FreeBSD__)
+  seconds = status.st_birthtim.tv_sec;
+  nanoseconds = status.st_birthtim.tv_nsec;
+  creation_time = true;
+#elif defined(__linux__) && defined(SYS_statx) && defined(STATX_BTIME)
+  struct statx extended {};
+  if (::syscall(SYS_statx, AT_FDCWD, path.c_str(), AT_STATX_SYNC_AS_STAT,
+                STATX_BTIME, &extended) == 0 &&
+      (extended.stx_mask & STATX_BTIME) != 0) {
+    seconds = extended.stx_btime.tv_sec;
+    nanoseconds = static_cast<long>(extended.stx_btime.tv_nsec);
+    creation_time = true;
+  } else {
+    seconds = status.st_mtim.tv_sec;
+    nanoseconds = status.st_mtim.tv_nsec;
+  }
+#else
+  seconds = status.st_mtime;
+#endif
+
+  if (seconds < 0 ||
+      seconds > std::numeric_limits<std::int64_t>::max() / 1000) {
+    error = "file timestamp is outside the supported range";
+    return std::nullopt;
+  }
+  return FileTimestamp{
+      .milliseconds = seconds * 1000 + nanoseconds / 1'000'000,
+      .creation_time = creation_time};
 }
 
 [[nodiscard]] std::optional<std::size_t> parse_nonnegative_size(
@@ -472,6 +544,9 @@ void print_usage(std::string_view program) {
             << "       [--disable-encoding]\n"
             << "       [--use-lz4 BYTES] [--lz4-compress-level LEVEL]\n"
             << "       [--load SNAPSHOT]\n"
+            << "       [--kafka CONNECTION] [--kafka-time-buffer SECONDS]\n"
+            << "       [--auth-file FILE]\n"
+            << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
@@ -505,6 +580,12 @@ void print_usage(std::string_view program) {
             << "--tcp-listen [ADDRESS]:PORT. Legacy --bind/--port selects one TCP\n"
             << "listener only when no explicit socket listener is configured; legacy\n"
             << "--unixsocket is a repeatable alias for --uds-listen.\n";
+  std::cerr
+      << "Kafka CONNECTION is kafka://BROKER[,BROKER...]/TOPIC or\n"
+      << "bootstrap.servers=BROKERS;topic=TOPIC[;PROPERTY=VALUE...].\n"
+      << "--auth-file protects RESP. SBE requires --enable-sbe and never\n"
+      << "authenticates; --no-auth-ring/--no-auth-rdma explicitly trust RESP\n"
+      << "on those fabrics.\n";
 }
 
 }  // namespace
@@ -513,6 +594,9 @@ int main(int argc, char** argv) {
   goblin::core::ServerConfig config;
   goblin::core::StoreOptions store_options;
   std::optional<std::string> load_path;
+  std::optional<std::string> kafka_connection;
+  std::uint64_t kafka_time_buffer_seconds = 0;
+  bool kafka_time_buffer_set = false;
   std::optional<std::string> numa_selector;
   bool pubsub_listener_pattern_set = false;
 
@@ -521,6 +605,34 @@ int main(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") {
       print_usage(argv[0]);
       return 0;
+    }
+
+    if (arg == "--auth-file") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --auth-file requires a path\n";
+        return 2;
+      }
+      if (config.auth_file) {
+        std::cerr << "goblin-core: configure only one --auth-file\n";
+        return 2;
+      }
+      config.auth_file = argv[++i];
+      continue;
+    }
+
+    if (arg == "--enable-sbe") {
+      config.enable_sbe = true;
+      continue;
+    }
+
+    if (arg == "--no-auth-ring") {
+      config.no_auth_ring = true;
+      continue;
+    }
+
+    if (arg == "--no-auth-rdma") {
+      config.no_auth_rdma = true;
+      continue;
     }
 
     if (arg == "--bind") {
@@ -1201,6 +1313,35 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--kafka") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --kafka requires a connection string\n";
+        return 2;
+      }
+      if (kafka_connection) {
+        std::cerr << "goblin-core: configure only one --kafka source\n";
+        return 2;
+      }
+      kafka_connection = argv[++i];
+      continue;
+    }
+
+    if (arg == "--kafka-time-buffer") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --kafka-time-buffer requires seconds\n";
+        return 2;
+      }
+      const auto seconds = parse_nonnegative_seconds(argv[++i]);
+      if (!seconds) {
+        std::cerr << "goblin-core: --kafka-time-buffer must be a non-negative "
+                     "integer number of seconds\n";
+        return 2;
+      }
+      kafka_time_buffer_seconds = *seconds;
+      kafka_time_buffer_set = true;
+      continue;
+    }
+
     if (arg == "--score-string-cache") {
       store_options.score_string_cache = true;
       continue;
@@ -1274,6 +1415,23 @@ int main(int argc, char** argv) {
   }
 
   materialize_legacy_listener(config);
+
+  if (kafka_time_buffer_set && !kafka_connection) {
+    std::cerr << "goblin-core: --kafka-time-buffer requires --kafka\n";
+    return 2;
+  }
+  if (kafka_time_buffer_set && !load_path) {
+    std::cerr << "goblin-core: --kafka-time-buffer requires --load; without a "
+                 "snapshot Kafka starts at the earliest retained record\n";
+    return 2;
+  }
+#ifndef GOBLIN_HAS_KAFKA
+  if (kafka_connection) {
+    std::cerr << "goblin-core: --kafka requires a build with "
+                 "-DGOBLIN_CORE_ENABLE_KAFKA=ON\n";
+    return 2;
+  }
+#endif
 
   if (pubsub_listener_pattern_set && !config.pubsub_listener) {
     std::cerr << "goblin-core: --pubsub-listener-pattern requires "
@@ -1364,6 +1522,33 @@ int main(int argc, char** argv) {
       std::cerr << "goblin-core: failed to load snapshot: " << error.what() << '\n';
       return 1;
     }
+  }
+
+  if (kafka_connection) {
+    std::optional<std::int64_t> start_timestamp_ms;
+    if (load_path) {
+      std::string timestamp_error;
+      const auto timestamp =
+          snapshot_file_timestamp(*load_path, timestamp_error);
+      if (!timestamp) {
+        std::cerr << "goblin-core: cannot determine snapshot timestamp: "
+                  << timestamp_error << '\n';
+        return 1;
+      }
+      if (!timestamp->creation_time) {
+        std::cerr << "goblin-core: snapshot creation time is unavailable; "
+                     "using modification time for Kafka replay\n";
+      }
+      const auto buffer_ms = static_cast<std::int64_t>(
+          kafka_time_buffer_seconds * 1000);
+      start_timestamp_ms =
+          timestamp->milliseconds > buffer_ms
+              ? timestamp->milliseconds - buffer_ms
+              : 0;
+    }
+    config.kafka = goblin::core::KafkaConfig{
+        .connection = std::move(*kafka_connection),
+        .start_timestamp_ms = start_timestamp_ms};
   }
 
   goblin::core::Server server(config, store);

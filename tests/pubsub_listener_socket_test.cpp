@@ -164,12 +164,15 @@ void run_case(const char* binary, std::string_view name,
   (void)::unlink(downstream_socket.c_str());
 
   {
-    auto upstream = spawn_server(binary, upstream_args);
+    std::vector<std::string> trusted_upstream_args{"--enable-sbe"};
+    trusted_upstream_args.insert(trusted_upstream_args.end(),
+                                 upstream_args.begin(), upstream_args.end());
+    auto upstream = spawn_server(binary, trusted_upstream_args);
     const int publisher = wait_for_connection(publisher_connect);
     assert(publisher >= 0 && "upstream server failed to start");
 
     std::vector<std::string> downstream_args = {
-        "--unixsocket", downstream_socket};
+        "--enable-sbe", "--unixsocket", downstream_socket};
     downstream_args.insert(downstream_args.end(), listener_args.begin(),
                            listener_args.end());
     auto downstream = spawn_server(binary, downstream_args);

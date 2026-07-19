@@ -274,11 +274,12 @@ int run_ring(const char* server, const char* label) {
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
 #ifdef __linux__
     const std::string core = std::to_string(kServerCore);
-    ::execl("/usr/bin/taskset", "taskset", "-c", core.c_str(), server, "--unixsocket",
+    ::execl("/usr/bin/taskset", "taskset", "-c", core.c_str(), server,
+            "--enable-sbe", "--unixsocket",
             sock.c_str(), "--ring", ring.c_str(), "1mb", static_cast<char*>(nullptr));
 #endif
-    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring.c_str(), "1mb",
-            static_cast<char*>(nullptr));
+    ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
+            "--ring", ring.c_str(), "1mb", static_cast<char*>(nullptr));
     _exit(127);
   }
 

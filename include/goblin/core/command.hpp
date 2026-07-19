@@ -14,6 +14,7 @@
 namespace goblin::core {
 
 class Store;
+class AuthDatabase;
 class ScriptEngine;
 class LuauEngine;
 class WrenEngine;
@@ -24,6 +25,11 @@ class QuickJsEngine;
 enum class CommandType {
   ping,
   hello,
+  auth,
+  command,
+  client,
+  select,
+  quit,
   subscribe,
   unsubscribe,
   psubscribe,
@@ -212,6 +218,16 @@ struct CommandExecutionOptions {
   // A null pointer means RESP2 and is used by direct command/unit-test callers.
   resp::Version* resp_version{nullptr};
   std::uint64_t connection_id{0};
+  // Null means the server has no auth file. Otherwise AUTH and HELLO AUTH verify
+  // against this immutable startup snapshot, even on a trusted transport that
+  // does not require clients to authenticate.
+  const AuthDatabase* auth_database{nullptr};
+  bool* authenticated{nullptr};
+  std::string* authenticated_username{nullptr};
+  std::string* client_name{nullptr};
+  std::string* client_library_name{nullptr};
+  std::string* client_library_version{nullptr};
+  bool* quit_requested{nullptr};
   // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
   // that do not enable scripting; those see the "not available" error instead.
@@ -233,6 +249,14 @@ struct CommandExecutionOptions {
 };
 
 [[nodiscard]] CommandParseResult parse_command(std::span<const std::string_view> fields);
+
+// Perfect-hash lookup without arity validation, used by COMMAND INFO.
+[[nodiscard]] CommandType lookup_command_type(std::string_view name) noexcept;
+
+// True only for commands that mutate logical keyspace state. Administrative,
+// connection, Pub/Sub, scripting, and read-only commands are deliberately
+// excluded. Kafka replay uses this as a strict allowlist.
+[[nodiscard]] bool command_mutates_store(CommandType type) noexcept;
 
 // The INFO text (server/memory fields), for callers that reply it directly (e.g. the
 // SBE dispatch) rather than through a Command.

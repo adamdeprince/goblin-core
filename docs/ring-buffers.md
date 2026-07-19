@@ -74,12 +74,17 @@ works — just at lower priority than the rings.
 
 ## Wire protocols
 
-The ring and socket transports both support **RESP and SBE**. They use the same
-one-time protocol selection: an endpoint whose first eight bytes are `GOBLINS!`
+The ring and socket transports both support **RESP and SBE**. Start Goblin Core
+with `--enable-sbe` to permit the binary wire. They then use the same one-time
+protocol selection: an endpoint whose first eight bytes are `GOBLINS!`
 switches to the SBE binary wire; any other prefix is RESP. Protocol and transport
 are independent choices — RESP works over a socket or a ring, and SBE works over a
 socket or a ring. See the [SBE wire protocol](sbe-protocol.md) for the handshake,
 framing, and command schema.
+
+With `--auth-file`, RESP ring connections authenticate by default. Use
+`--no-auth-ring` only when every configured shared-memory ring is already inside
+the process boundary you trust. SBE never authenticates.
 
 With RESP, a ring client writes the same array-of-bulk-string bytes a socket client
 sends into the SQ, and the server writes the RESP reply into the CQ. The server

@@ -21,6 +21,9 @@ option(GOBLIN_CORE_ENABLE_RDMA
 option(GOBLIN_CORE_ENABLE_EXASOCK
   "Enable Cisco ExaSock / Nexus SmartNIC sockets support (requires installed ExaSock SDK; not vendored)"
   OFF)
+option(GOBLIN_CORE_ENABLE_KAFKA
+  "Enable RESP2 write ingestion from Kafka using vendored librdkafka"
+  ON)
 option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   "Enable Redis-backed differential tests for Goblin Core's Redis-compatible subset"
   OFF)
@@ -231,6 +234,32 @@ target_link_libraries(goblin_qjs PUBLIC m Threads::Threads)
 
 find_path(LZ4_INCLUDE_DIR NAMES lz4.h REQUIRED)
 find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
+find_path(SODIUM_INCLUDE_DIR NAMES sodium.h REQUIRED)
+find_library(SODIUM_LIBRARY NAMES sodium REQUIRED)
+
+set(GOBLIN_HAS_KAFKA_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_KAFKA)
+  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/librdkafka/CMakeLists.txt)
+    message(FATAL_ERROR
+      "goblin-core: GOBLIN_CORE_ENABLE_KAFKA=ON but vendored librdkafka is missing")
+  endif()
+
+  # Keep the embedded client reproducible and dependency-light. librdkafka's
+  # bundled Snappy and LZ4 codecs remain enabled; TLS/SASL and extra codecs can
+  # be added deliberately without making them accidental host dependencies.
+  set(RDKAFKA_BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(RDKAFKA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(RDKAFKA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(WITH_SSL OFF CACHE BOOL "" FORCE)
+  set(WITH_SASL OFF CACHE BOOL "" FORCE)
+  set(WITH_CURL OFF CACHE BOOL "" FORCE)
+  set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
+  set(WITH_ZSTD OFF CACHE BOOL "" FORCE)
+  set(WITH_PLUGINS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_LZ4_EXT OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/librdkafka EXCLUDE_FROM_ALL SYSTEM)
+  set(GOBLIN_HAS_KAFKA_BUILD ON)
+endif()
 
 set(GOBLIN_RDMA_SOURCES)
 set(GOBLIN_HAS_RDMA_BUILD OFF)
@@ -277,6 +306,7 @@ if(GOBLIN_CORE_ENABLE_EXASOCK)
 endif()
 
 add_library(goblin_core
+  src/auth.cpp
   src/command.cpp
   src/pubsub.cpp
   src/luau_script.cpp
@@ -294,6 +324,14 @@ add_library(goblin_core
   src/wren_script.cpp
   src/quickjs_script.cpp
   ${GOBLIN_RDMA_SOURCES})
+
+if(GOBLIN_HAS_KAFKA_BUILD)
+  target_sources(goblin_core PRIVATE src/kafka_ingest.cpp)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_KAFKA=1)
+  target_link_libraries(goblin_core PRIVATE rdkafka)
+  message(STATUS
+    "goblin-core: Kafka RESP2 write ingestion enabled (vendored librdkafka 2.15.0)")
+endif()
 
 target_compile_features(goblin_core PUBLIC cxx_std_23)
 target_compile_definitions(goblin_core PRIVATE
@@ -313,12 +351,13 @@ target_include_directories(goblin_core
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/fast_float/include>
   PRIVATE
     ${LZ4_INCLUDE_DIR}
+    ${SODIUM_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unordered_dense/include)
 
 # src/script.cpp embeds the vendored Lua runtime. PRIVATE: the Lua headers are an
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
-target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs ${LZ4_LIBRARY})
+target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs ${LZ4_LIBRARY} ${SODIUM_LIBRARY})
 
 if(GOBLIN_HAS_RDMA_BUILD)
   target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_RDMA=1)
@@ -388,6 +427,27 @@ endif()
 # hash after editing src/command_hash.gperf. The checked-in src/command_hash.hpp is
 # authoritative, so builds without gperf are unaffected.
 find_program(GPERF_EXECUTABLE gperf)
+
+# COMMAND and COMMAND INFO enumerate the same keywords that feed gperf. Generate
+# a C++ initializer at configure time so command discovery cannot drift from
+# dispatch when a maintainer adds another keyword.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/command_hash.gperf)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/src/command_hash.gperf
+  GOBLIN_COMMAND_CATALOG_LINES REGEX "^[A-Z0-9_.]+,")
+set(GOBLIN_COMMAND_CATALOG_CONTENT "")
+foreach(GOBLIN_COMMAND_CATALOG_LINE IN LISTS GOBLIN_COMMAND_CATALOG_LINES)
+  string(REGEX REPLACE "^([^,]+),.*$" "\\1"
+    GOBLIN_COMMAND_CATALOG_NAME "${GOBLIN_COMMAND_CATALOG_LINE}")
+  string(APPEND GOBLIN_COMMAND_CATALOG_CONTENT
+    "std::string_view{\"${GOBLIN_COMMAND_CATALOG_NAME}\"},\n")
+endforeach()
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/command_catalog.inc
+  "${GOBLIN_COMMAND_CATALOG_CONTENT}")
+target_include_directories(goblin_core PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
 if(GPERF_EXECUTABLE)
   add_custom_target(goblin_core_regen_command_hash
     COMMAND ${GPERF_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/src/command_hash.gperf
@@ -446,6 +506,14 @@ if(TARGET goblin_sbe_headers)
 endif()
 set_target_properties(goblin_core_server PROPERTIES
   OUTPUT_NAME goblin-core
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+
+add_executable(goblin_core_auth src/auth_cli.cpp)
+target_link_libraries(goblin_core_auth PRIVATE goblin_core)
+set_target_properties(goblin_core_auth PROPERTIES
+  OUTPUT_NAME goblin-core-auth
   CXX_STANDARD 23
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
@@ -632,6 +700,20 @@ if(GOBLIN_CORE_BUILD_TESTS)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
 
+  add_executable(goblin_core_auth_test tests/auth_test.cpp)
+  target_link_libraries(goblin_core_auth_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_auth_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_auth COMMAND goblin_core_auth_test)
+
+  add_executable(goblin_core_auth_socket_test tests/auth_socket_test.cpp)
+  target_link_libraries(goblin_core_auth_socket_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_auth_socket_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_auth_socket
+    COMMAND goblin_core_auth_socket_test $<TARGET_FILE:goblin_core_server>)
+  set_tests_properties(goblin_core_auth_socket PROPERTIES TIMEOUT 60)
+
   add_executable(goblin_core_array_test tests/array_test.cpp)
   target_link_libraries(goblin_core_array_test PRIVATE goblin_core)
   set_target_properties(goblin_core_array_test PROPERTIES
@@ -649,6 +731,21 @@ if(GOBLIN_CORE_BUILD_TESTS)
   set_target_properties(goblin_core_pubsub_test PROPERTIES
     CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   add_test(NAME goblin_core_pubsub COMMAND goblin_core_pubsub_test)
+
+  if(GOBLIN_HAS_KAFKA_BUILD)
+    add_executable(goblin_core_kafka_ingest_test tests/kafka_ingest_test.cpp)
+    target_link_libraries(goblin_core_kafka_ingest_test PRIVATE goblin_core)
+    set_target_properties(goblin_core_kafka_ingest_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_kafka_ingest COMMAND goblin_core_kafka_ingest_test)
+
+    # Manual end-to-end test: it needs a broker and an empty pre-created topic.
+    # Usage: goblin_core_kafka_server_test <goblin-core> <brokers> <topic>
+    add_executable(goblin_core_kafka_server_test tests/kafka_server_test.cpp)
+    target_link_libraries(goblin_core_kafka_server_test PRIVATE goblin_core rdkafka)
+    set_target_properties(goblin_core_kafka_server_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  endif()
 
   add_executable(goblin_core_resp3_socket_test tests/resp3_socket_test.cpp)
   target_link_libraries(goblin_core_resp3_socket_test PRIVATE goblin_core)
@@ -945,8 +1042,15 @@ endif()
 
 include(CMakePackageConfigHelpers)
 
+set(GOBLIN_CORE_INSTALL_TARGETS
+  goblin_core goblin_core_server goblin_core_auth goblin_lua goblin_luau_vm goblin_wren
+  goblin_jim goblin_upy goblin_qjs)
+if(GOBLIN_HAS_KAFKA_BUILD)
+  list(APPEND GOBLIN_CORE_INSTALL_TARGETS rdkafka)
+endif()
+
 install(
-  TARGETS goblin_core goblin_core_server goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs
+  TARGETS ${GOBLIN_CORE_INSTALL_TARGETS}
   EXPORT goblinCoreTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -980,6 +1084,14 @@ install(
     LICENSE
     NOTICE
   DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+if(GOBLIN_HAS_KAFKA_BUILD)
+  install(
+    FILES
+      third_party/librdkafka/LICENSE
+      third_party/librdkafka/LICENSES.txt
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/librdkafka)
+endif()
 
 if(GOBLIN_CORE_BUILD_HTML_DOCS)
   install(

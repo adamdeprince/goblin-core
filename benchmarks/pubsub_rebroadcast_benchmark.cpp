@@ -321,14 +321,15 @@ int main(int argc, char** argv) {
 
     ServerProcess controller(
         config, "controller",
-        {"--ring", listener_ring, config.ring_bytes, "--ring", publisher_ring,
+        {"--enable-sbe", "--ring", listener_ring, config.ring_bytes,
+         "--ring", publisher_ring,
          config.ring_bytes},
         config.controller_cpu);
     auto publisher = open_ring(publisher_ring, controller);
 
     ServerProcess relay(
         config, "relay",
-        {"--ring", subscriber_ring, config.ring_bytes,
+        {"--enable-sbe", "--ring", subscriber_ring, config.ring_bytes,
          "--pubsub-listener-ring", listener_ring},
         config.relay_cpu);
     auto subscriber = open_ring(subscriber_ring, relay);

@@ -5,6 +5,7 @@
 //
 //   sbe_socket_test <path-to-goblin-core>
 
+#include "goblin/core/auth.hpp"
 #include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/sbe_frame.hpp"
 
@@ -64,15 +65,22 @@ std::uint16_t read_frame(int fd, std::string& acc, std::string& frame) {
 int main(int argc, char** argv) {
   if (argc < 2) { std::fprintf(stderr, "usage: sbe_socket_test <goblin-core>\n"); return 2; }
   const char* server = argv[1];
-  const std::string sock = "/tmp/gcsbe-sock-" + std::to_string(::getpid()) + ".sock";
+  const std::string suffix = std::to_string(::getpid());
+  const std::string sock = "/tmp/gcsbe-sock-" + suffix + ".sock";
+  const std::string auth = "/tmp/gcsbe-auth-" + suffix + ".conf";
   ::unlink(sock.c_str());
+  ::unlink(auth.c_str());
+  ::unlink((auth + ".lock").c_str());
+  assert(goblin::core::upsert_auth_user(auth, "default", "secret") ==
+         goblin::core::AuthUserUpdate::added);
 
   const pid_t pid = ::fork();
   assert(pid >= 0);
   if (pid == 0) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
-    ::execl(server, server, "--unixsocket", sock.c_str(), static_cast<char*>(nullptr));
+    ::execl(server, server, "--enable-sbe", "--auth-file", auth.c_str(),
+            "--unixsocket", sock.c_str(), static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -192,6 +200,8 @@ int main(int argc, char** argv) {
   ::kill(pid, SIGTERM);
   ::waitpid(pid, nullptr, 0);
   ::unlink(sock.c_str());
+  ::unlink(auth.c_str());
+  ::unlink((auth + ".lock").c_str());
   std::puts("sbe socket OK: GOBLINS! magic over a UNIX socket -> SBE dispatch and Pub/Sub");
   return 0;
 }

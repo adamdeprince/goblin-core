@@ -796,6 +796,9 @@ class ServerProcess {
       case EngineKind::goblin_uds: {
         server = {engine_.binary.string(), "--unixsocket", socket_path_,
                   "--unsolicited-output-buffer-bytes", "8192"};
+        if (engine_.kind == EngineKind::goblin_ring) {
+          server.push_back("--enable-sbe");
+        }
         for (const auto& ring : ring_paths_) {
           server.insert(server.end(), {"--ring", ring, "4kb"});
         }

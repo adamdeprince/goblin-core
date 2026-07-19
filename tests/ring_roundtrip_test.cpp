@@ -5,6 +5,7 @@
 //
 //   ring_roundtrip_test <path-to-goblin-core>
 
+#include "goblin/core/auth.hpp"
 #include "goblin/core/ring_client.hpp"
 
 #undef NDEBUG
@@ -51,8 +52,13 @@ int main(int argc, char** argv) {
   const std::string tag = std::to_string(::getpid());
   const std::string ring_path = "/tmp/goblin-ring-rt-" + tag + ".ring";
   const std::string sock_path = "/tmp/goblin-ring-rt-" + tag + ".sock";
+  const std::string auth_path = "/tmp/goblin-ring-rt-" + tag + ".auth";
   ::unlink(ring_path.c_str());
   ::unlink(sock_path.c_str());
+  ::unlink(auth_path.c_str());
+  ::unlink((auth_path + ".lock").c_str());
+  assert(goblin::core::upsert_auth_user(auth_path, "default", "secret") ==
+         goblin::core::AuthUserUpdate::added);
 
   const pid_t pid = ::fork();
   assert(pid >= 0);
@@ -64,7 +70,8 @@ int main(int argc, char** argv) {
       ::dup2(devnull, STDOUT_FILENO);
       ::dup2(devnull, STDERR_FILENO);
     }
-    ::execl(server_bin, server_bin, "--unixsocket", sock_path.c_str(), "--ring",
+    ::execl(server_bin, server_bin, "--auth-file", auth_path.c_str(),
+            "--no-auth-ring", "--unixsocket", sock_path.c_str(), "--ring",
             ring_path.c_str(), "64kb", static_cast<char*>(nullptr));
     _exit(127);
   }
@@ -76,6 +83,8 @@ int main(int argc, char** argv) {
 
     // Basic request/response across the ring.
     expect(*client, {"PING"}, "+PONG\r\n");
+    // The trusted-transport bypass makes AUTH optional, not unavailable.
+    expect(*client, {"AUTH", "secret"}, "+OK\r\n");
     expect(*client, {"SET", "foo", "bar"}, "+OK\r\n");
     expect(*client, {"GET", "foo"}, "$3\r\nbar\r\n");
     expect(*client, {"GET", "missing"}, "$-1\r\n");
@@ -134,6 +143,8 @@ int main(int argc, char** argv) {
   ::waitpid(pid, &status, 0);
   ::unlink(ring_path.c_str());
   ::unlink(sock_path.c_str());
+  ::unlink(auth_path.c_str());
+  ::unlink((auth_path + ".lock").c_str());
   std::puts("ring roundtrip OK");
   return rc;
 }

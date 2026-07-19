@@ -47,7 +47,8 @@ int main(int argc, char** argv) {
     }
     const std::string port_text = std::to_string(port);
     // Prefer the ordered poll-target path so --exasock is exercised.
-    ::execl(server, server, "--exasock", host.c_str(), port_text.c_str(),
+    ::execl(server, server, "--enable-sbe", "--exasock", host.c_str(),
+            port_text.c_str(),
             static_cast<char*>(nullptr));
     _exit(127);
   }

@@ -3,12 +3,18 @@
 Select the RESP protocol version for this connection and return server metadata.
 
 ```text
-HELLO [2|3]
+HELLO [2|3 [AUTH username password] [SETNAME client-name]]
 ```
 
 Every socket and RESP-over-ring connection starts in RESP2. `HELLO 3` switches that
 connection to RESP3; `HELLO 2` switches it back. A bare `HELLO` reports metadata
 using the connection's current version without changing it.
+
+When an auth file is configured, `AUTH` verifies the connection as part of the
+same exchange. `SETNAME` assigns the client name returned by `CLIENT GETNAME`.
+The options may appear in either order, but the protocol version is required
+when either option is present. Goblin validates the complete request before
+changing protocol, identity, or name.
 
 `HELLO` may be sent after other commands. The HELLO reply itself uses the selected
 version, and the selection applies immediately to commands already queued behind it
@@ -20,9 +26,7 @@ An unsupported version returns:
 -NOPROTO unsupported protocol version
 ```
 
-and leaves the current version unchanged. Goblin Core does not implement Redis
-authentication or client names, so the optional Redis `AUTH` and `SETNAME` HELLO
-arguments are not accepted.
+and leaves the current version unchanged.
 
 ## Reply
 
@@ -46,6 +50,7 @@ both versions and retain their existing wire forms.
 
 ## SBE
 
-RESP negotiation does not affect SBE. An endpoint whose initial bytes are
-`GOBLINS!` still selects the SBE wire for that connection; SBE framing and message
-types are unchanged.
+RESP negotiation does not affect SBE. When the server is started with
+`--enable-sbe`, an endpoint whose initial bytes are `GOBLINS!` selects the SBE
+wire for that connection. SBE is a trusted-fabric protocol and does not use
+RESP authentication.

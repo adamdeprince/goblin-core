@@ -110,8 +110,9 @@ int main(int argc, char** argv) {
   Child upstream{.pid = ::fork()};
   assert(upstream.pid >= 0);
   if (upstream.pid == 0) {
-    ::execl(argv[1], argv[1], "--unixsocket", upstream_socket.c_str(), "--ring",
-            upstream_ring.c_str(), "64kb", static_cast<char*>(nullptr));
+    ::execl(argv[1], argv[1], "--enable-sbe", "--unixsocket",
+            upstream_socket.c_str(), "--ring", upstream_ring.c_str(), "64kb",
+            static_cast<char*>(nullptr));
     _exit(127);
   }
 
@@ -121,7 +122,8 @@ int main(int argc, char** argv) {
   Child downstream{.pid = ::fork()};
   assert(downstream.pid >= 0);
   if (downstream.pid == 0) {
-    ::execl(argv[1], argv[1], "--unixsocket", downstream_socket.c_str(),
+    ::execl(argv[1], argv[1], "--enable-sbe", "--unixsocket",
+            downstream_socket.c_str(),
             "--pubsub-listener-ring", upstream_ring.c_str(),
             "--pubsub-listener-pattern", "orders:*", static_cast<char*>(nullptr));
     _exit(127);

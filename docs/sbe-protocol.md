@@ -1,6 +1,7 @@
 # Goblin SBE wire protocol
 
-Goblin speaks two wire protocols on the same server, chosen per connection by the
+Goblin can speak two wire protocols on the same server. SBE must first be enabled
+with `--enable-sbe`; it is then chosen per connection by the
 **first 8 bytes** an endpoint writes over TCP, a Unix-domain socket, a
 shared-memory ring, or a [polled RDMA ring](rdma-rings.md):
 
@@ -8,6 +9,9 @@ shared-memory ring, or a [polled RDMA ring](rdma-rings.md):
 |---|---|
 | `GOBLINS!` | the **SBE binary wire** described here |
 | anything else | **RESP** (RESP2 initially; `HELLO 3` selects RESP3) |
+
+Without `--enable-sbe`, every connection remains RESP and `GOBLINS!` is treated
+as an ordinary unknown RESP command.
 
 The magic is a **one-time connection handshake**: it is written once as the very first
 bytes on the transport and consumed, and it does **not** prefix each command. After
@@ -35,6 +39,12 @@ path.
 exactly the same Goblin Core version; behavior is undefined when their versions
 differ. Use RESP2 or RESP3 when compatibility across independent upgrades is a
 priority.**
+
+**SBE has no authentication exchange.** It is a trusted-fabric protocol for
+ring, RDMA, and otherwise isolated cluster links. Enabling it also permits SBE
+negotiation on configured TCP and UDS listeners, so those listeners must remain
+inside the same security boundary. Use RESP with `--auth-file` at an untrusted
+edge.
 
 ### Latency over the ring
 
@@ -194,6 +204,7 @@ need rolling upgrades or long-lived clients that upgrade independently.
 
 ## Building
 
-The SBE wire is enabled automatically whenever `sbe/generated/` is present (it always
-is — the codecs are checked in). There is no external dependency to find; a build
-without the generated headers is simply RESP-only.
+The SBE wire is compiled whenever `sbe/generated/` is present (it normally is --
+the codecs are checked in). There is no external dependency to find; a build
+without the generated headers is RESP-only. A compiled server still requires the
+runtime `--enable-sbe` flag before it accepts the magic handshake.

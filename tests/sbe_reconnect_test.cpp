@@ -84,8 +84,8 @@ int main(int argc, char** argv) {
   if (srv == 0) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
-    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring_path.c_str(), "1mb",
-            static_cast<char*>(nullptr));
+    ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
+            "--ring", ring_path.c_str(), "1mb", static_cast<char*>(nullptr));
     _exit(127);
   }
 

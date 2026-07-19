@@ -103,6 +103,9 @@ int main(int argc, char** argv) {
   const int first = connect_socket(socket_path);
   assert(first >= 0);
   std::string pending;
+  send_command(first, {"AUTH", "not-configured"});
+  assert(read_reply(first, pending) ==
+         "-ERR AUTH called without any password configured for this server\r\n");
   send_command(first, {"PING"});
   assert(read_reply(first, pending) == "+PONG\r\n");
 
@@ -135,6 +138,16 @@ int main(int argc, char** argv) {
   send_command(first, {"GET", "missing"});
   assert(read_reply(first, pending) == "$-1\r\n");
 
+  // SBE is not negotiated unless the server was explicitly started with
+  // --enable-sbe. The old magic is therefore an ordinary unknown RESP command.
+  const int third = connect_socket(socket_path);
+  assert(third >= 0);
+  std::string third_pending;
+  send_all(third, "GOBLINS!\r\n");
+  assert(read_reply(third, third_pending) ==
+         "-ERR unknown command 'GOBLINS!'\r\n");
+
+  ::close(third);
   ::close(second);
   ::close(first);
   ::kill(server, SIGTERM);

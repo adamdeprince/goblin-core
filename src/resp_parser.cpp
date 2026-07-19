@@ -94,6 +94,10 @@ bool RespParser::has_queued_frames() const noexcept {
   return !frames_.empty();
 }
 
+bool RespParser::has_unparsed_input() const noexcept {
+  return parse_offset_ != buffer_.size();
+}
+
 bool RespParser::has_error() const noexcept {
   return !error_.empty();
 }

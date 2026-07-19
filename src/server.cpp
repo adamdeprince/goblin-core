@@ -1,7 +1,11 @@
 #include "goblin/core/server.hpp"
 
+#include "goblin/core/auth.hpp"
 #include "goblin/core/command.hpp"
 #include "goblin/core/goblin_protocol.hpp"
+#ifdef GOBLIN_HAS_KAFKA
+#include "goblin/core/kafka_ingest.hpp"
+#endif
 #include "goblin/core/luau_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
@@ -64,12 +68,24 @@ struct ReplyBoundary {
 
 struct EndpointSession : detail::PubSubSession {
   EndpointSession(std::size_t unsolicited_output_bytes,
-                  std::uint64_t assigned_connection_id)
+                  std::uint64_t assigned_connection_id,
+                  bool require_authentication)
       : PubSubSession(unsolicited_output_bytes),
-        connection_id(assigned_connection_id) {}
+        connection_id(assigned_connection_id),
+        default_authentication_required(require_authentication),
+        authentication_required(require_authentication),
+        authenticated(!require_authentication) {}
 
   resp::Version resp_version{resp::Version::resp2};
   std::uint64_t connection_id{0};
+  bool default_authentication_required{false};
+  bool authentication_required{false};
+  bool authenticated{true};
+  std::string authenticated_username;
+  std::string client_name;
+  std::string client_library_name;
+  std::string client_library_version;
+  bool quit_after_write{false};
   RespParser parser;
   std::string inbuf;   // raw accumulator: pre-decision bytes, then the SBE stream
   std::string output;
@@ -89,6 +105,13 @@ struct EndpointSession : detail::PubSubSession {
     wire_mode = detail::WireMode::undecided;
     resp_version = resp::Version::resp2;
     connection_id = assigned_connection_id;
+    authentication_required = default_authentication_required;
+    authenticated = !authentication_required;
+    authenticated_username.clear();
+    client_name.clear();
+    client_library_name.clear();
+    client_library_version.clear();
+    quit_after_write = false;
     parser.clear();
     inbuf.clear();
     output.clear();
@@ -104,8 +127,9 @@ struct EndpointSession : detail::PubSubSession {
 
 struct Client : EndpointSession {
   Client(int client_fd, std::size_t unsolicited_output_bytes,
-         std::uint64_t assigned_connection_id)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+         std::uint64_t assigned_connection_id, bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
+                        require_authentication),
         fd(client_fd) {}
 
   int fd{-1};
@@ -119,8 +143,10 @@ struct Client : EndpointSession {
 struct RingEndpoint : EndpointSession {
   RingEndpoint(ring::Mapping&& ring_mapping,
                std::size_t unsolicited_output_bytes,
-               std::uint64_t assigned_connection_id)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+               std::uint64_t assigned_connection_id,
+               bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
+                        require_authentication),
         mapping(std::move(ring_mapping)),
         sq(mapping.sq_consumer()),
         cq(mapping.cq_producer()) {}
@@ -145,8 +171,10 @@ struct RingEndpoint : EndpointSession {
 struct RdmaEndpoint : EndpointSession {
   RdmaEndpoint(std::unique_ptr<rdma::Connection> rdma_connection,
                std::size_t unsolicited_output_bytes,
-               std::uint64_t assigned_connection_id)
-      : EndpointSession(unsolicited_output_bytes, assigned_connection_id),
+               std::uint64_t assigned_connection_id,
+               bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, assigned_connection_id,
+                        require_authentication),
         connection(std::move(rdma_connection)) {}
 
   std::unique_ptr<rdma::Connection> connection;
@@ -515,7 +543,8 @@ void accept_clients(int listener_fd, bool tcp,
 
     try {
       auto client = std::make_unique<Client>(
-          client_fd, config.unsolicited_output_buffer_bytes, next_connection_id());
+          client_fd, config.unsolicited_output_buffer_bytes, next_connection_id(),
+          config.auth_file.has_value());
       if (config.initial_output_buffer_bytes > 0) {
         client->output.reserve(config.initial_output_buffer_bytes);
       }
@@ -544,7 +573,42 @@ void accept_clients(int listener_fd, bool tcp,
 [[nodiscard]] bool allowed_while_resp2_subscribed(CommandType type) noexcept {
   return type == CommandType::subscribe || type == CommandType::unsubscribe ||
          type == CommandType::psubscribe || type == CommandType::punsubscribe ||
-         type == CommandType::ping;
+         type == CommandType::ping || type == CommandType::quit;
+}
+
+[[nodiscard]] bool allowed_before_authentication(CommandType type) noexcept {
+  return type == CommandType::auth || type == CommandType::hello ||
+         type == CommandType::quit;
+}
+
+[[nodiscard]] bool equals_ascii_ci(std::string_view lhs,
+                                   std::string_view rhs) noexcept {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    const auto upper = [](unsigned char byte) {
+      return byte >= 'a' && byte <= 'z'
+                 ? static_cast<unsigned char>(byte - ('a' - 'A'))
+                 : byte;
+    };
+    if (upper(static_cast<unsigned char>(lhs[i])) !=
+        upper(static_cast<unsigned char>(rhs[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void scrub_auth_request(std::span<const std::string_view> fields) noexcept {
+  if (fields.empty() ||
+      (!equals_ascii_ci(fields.front(), "AUTH") &&
+       !equals_ascii_ci(fields.front(), "HELLO"))) {
+    return;
+  }
+  for (const auto field : fields.subspan(1)) {
+    secure_zero_memory(const_cast<char*>(field.data()), field.size());
+  }
 }
 
 void dispatch_resp_command(EndpointSession& session, Store& store,
@@ -556,11 +620,15 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   if (!parsed.ok()) {
     resp::append_error(session.output, parsed.error);
     session.record_reply(prior_size);
+    scrub_auth_request(fields);
     return;
   }
 
   const auto& command = *parsed.command;
-  if (session.wire_mode == detail::WireMode::resp2 &&
+  if (session.authentication_required && !session.authenticated &&
+      !allowed_before_authentication(command.type)) {
+    resp::append_error(session.output, "NOAUTH Authentication required.");
+  } else if (session.wire_mode == detail::WireMode::resp2 &&
       session.subscription_count() != 0 &&
       !allowed_while_resp2_subscribed(command.type)) {
     resp::append_error(
@@ -579,6 +647,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   } else {
     execute_command_into(store, command, session.output, exec_options);
   }
+  scrub_auth_request(fields);
 
   if (session.wire_mode != detail::WireMode::sbe) {
     session.wire_mode = session.resp_version == resp::Version::resp3
@@ -712,7 +781,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                              TclEngine& tcl_engine,
                                              UPythonEngine& upython_engine,
                                              QuickJsEngine& quickjs_engine,
-                                             const ServerConfig& config) {
+                                             const ServerConfig& config,
+                                             const AuthDatabase* auth_database) {
   compact_output_if_needed(client);
   update_read_backpressure(client, config);
 
@@ -720,6 +790,13 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       .output_reserve_limit = config.max_output_buffer_bytes,
       .resp_version = &client.resp_version,
       .connection_id = client.connection_id,
+      .auth_database = auth_database,
+      .authenticated = &client.authenticated,
+      .authenticated_username = &client.authenticated_username,
+      .client_name = &client.client_name,
+      .client_library_name = &client.client_library_name,
+      .client_library_version = &client.client_library_version,
+      .quit_requested = &client.close_after_write,
       .script_engine = &script_engine,
       .luau_engine = &luau_engine,
       .wren_engine = &wren_engine,
@@ -732,16 +809,23 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   // command is never stalled waiting for a full magic.
   if (client.wire_mode == detail::WireMode::undecided) {
 #ifdef GOBLIN_HAS_SBE
-    switch (match_goblin_magic(client.inbuf)) {
-      case MagicMatch::need_more:
-        return true;  // wait for the next read before deciding
-      case MagicMatch::yes:
-        client.wire_mode = detail::WireMode::sbe;
-        client.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
-        break;
-      case MagicMatch::no:
-        client.wire_mode = detail::WireMode::resp2;
-        break;
+    if (config.enable_sbe) {
+      switch (match_goblin_magic(client.inbuf)) {
+        case MagicMatch::need_more:
+          return true;  // wait for the next read before deciding
+        case MagicMatch::yes:
+          client.wire_mode = detail::WireMode::sbe;
+          client.authentication_required = false;
+          client.authenticated = true;
+          client.authenticated_username.clear();
+          client.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
+          break;
+        case MagicMatch::no:
+          client.wire_mode = detail::WireMode::resp2;
+          break;
+      }
+    } else {
+      client.wire_mode = detail::WireMode::resp2;
     }
 #else
     client.wire_mode = detail::WireMode::resp2;
@@ -775,12 +859,16 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 
   // RESP: move the accumulated bytes into the parser, then pop and dispatch.
   client.parser.append(client.inbuf);
+  secure_zero_memory(client.inbuf.data(), client.inbuf.size());
   client.inbuf.clear();
   while (!client.read_backpressured) {
     if (!client.parser.pop_into(client.fields)) {
       break;
     }
     dispatch_resp_command(client, store, pubsub, client.fields, exec_options);
+    if (client.close_after_write) {
+      break;
+    }
     compact_output_if_needed(client);
     update_read_backpressure(client, config);
   }
@@ -824,7 +912,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                TclEngine& tcl_engine,
                                UPythonEngine& upython_engine,
                                QuickJsEngine& quickjs_engine,
-                               const ServerConfig& config) {
+                               const ServerConfig& config,
+                               const AuthDatabase* auth_database) {
   const std::size_t bufsize = config.client_read_buffer_bytes != 0 ? config.client_read_buffer_bytes : 16 * 1024;
   static thread_local std::vector<char> buffer;
   if (buffer.size() < bufsize) buffer.resize(bufsize);
@@ -840,8 +929,11 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 
       if (!process_buffered_commands(client, store, pubsub, script_engine, luau_engine,
                                      wren_engine, tcl_engine, upython_engine,
-                                     quickjs_engine, config)) {
+                                     quickjs_engine, config, auth_database)) {
         return false;
+      }
+      if (client.close_after_write) {
+        return true;
       }
       continue;
     }
@@ -987,6 +1079,7 @@ template <class NetFn>
     detail::PubSubRegistry& pubsub, ScriptEngine& script_engine,
     LuauEngine& luau_engine, WrenEngine& wren_engine, TclEngine& tcl_engine,
     UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
+    const AuthDatabase* auth_database,
     NetFn&& network_iteration) {
   // macOS: same QoS as the client so both busy-pollers stay on P-cores. No-op
   // on Linux (pinning is done by the bench via taskset).
@@ -1039,7 +1132,8 @@ template <class NetFn>
         PolledRuntimeTarget target;
         target.ring_endpoint = std::make_unique<RingEndpoint>(
             std::move(*mapping), config.unsolicited_output_buffer_bytes,
-            next_connection_id());
+            next_connection_id(),
+            auth_database != nullptr && !config.no_auth_ring);
         targets.push_back(std::move(target));
       } catch (const std::bad_alloc&) {
         std::cerr << "goblin-core: unable to map ring client output buffer\n";
@@ -1183,6 +1277,10 @@ template <class NetFn>
                                            Consumer& consumer,
                                            Producer& producer) -> bool {
     const bool output_progress = flush_polled_output(ep, producer);
+    if (ep.quit_after_write && !has_pending_output(ep)) {
+      ep.close_requested = true;
+      return true;
+    }
     if (ep.close_requested || has_pending_output(ep)) {
       return output_progress;
     }
@@ -1191,6 +1289,13 @@ template <class NetFn>
         .output_reserve_limit = config.max_output_buffer_bytes,
         .resp_version = &ep.resp_version,
         .connection_id = ep.connection_id,
+        .auth_database = auth_database,
+        .authenticated = &ep.authenticated,
+        .authenticated_username = &ep.authenticated_username,
+        .client_name = &ep.client_name,
+        .client_library_name = &ep.client_library_name,
+        .client_library_version = &ep.client_library_version,
+        .quit_requested = &ep.quit_after_write,
         .script_engine = &script_engine,
         .luau_engine = &luau_engine,
         .wren_engine = &wren_engine,
@@ -1210,16 +1315,23 @@ template <class NetFn>
       ep.inbuf.append(*record);
       consumer.pop();
 #ifdef GOBLIN_HAS_SBE
-      switch (match_goblin_magic(ep.inbuf)) {
-        case MagicMatch::need_more:
-          return true;  // matches so far but incomplete -> wait for the next record
-        case MagicMatch::yes:
-          ep.wire_mode = detail::WireMode::sbe;
-          ep.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
-          break;
-        case MagicMatch::no:
-          ep.wire_mode = detail::WireMode::resp2;
-          break;
+      if (config.enable_sbe) {
+        switch (match_goblin_magic(ep.inbuf)) {
+          case MagicMatch::need_more:
+            return true;  // matches so far but incomplete -> wait for the next record
+          case MagicMatch::yes:
+            ep.wire_mode = detail::WireMode::sbe;
+            ep.authentication_required = false;
+            ep.authenticated = true;
+            ep.authenticated_username.clear();
+            ep.inbuf.erase(0, sizeof(kGoblinMagicBytes));  // consume the magic once
+            break;
+          case MagicMatch::no:
+            ep.wire_mode = detail::WireMode::resp2;
+            break;
+        }
+      } else {
+        ep.wire_mode = detail::WireMode::resp2;
       }
 #else
       ep.wire_mode = detail::WireMode::resp2;
@@ -1288,9 +1400,13 @@ template <class NetFn>
     if (ep.wire_mode == detail::WireMode::resp2 ||
         ep.wire_mode == detail::WireMode::resp3) {
       ep.parser.append(ep.inbuf);
+      secure_zero_memory(ep.inbuf.data(), ep.inbuf.size());
       ep.inbuf.clear();
       while (ep.parser.pop_into(ep.fields)) {
         dispatch_resp_command(ep, store, pubsub, ep.fields, exec_options);
+        if (ep.quit_after_write) {
+          break;
+        }
       }
       if (ep.parser.has_error()) {
         const std::size_t prior_size = ep.output.size();
@@ -1335,7 +1451,8 @@ template <class NetFn>
       try {
         target.endpoints.push_back(std::make_unique<RdmaEndpoint>(
             std::move(event.connection), config.unsolicited_output_buffer_bytes,
-            next_connection_id()));
+            next_connection_id(),
+            auth_database != nullptr && !config.no_auth_rdma));
       } catch (const std::bad_alloc&) {
         std::cerr << "goblin-core: unable to allocate RDMA endpoint state\n";
         running = false;
@@ -1446,7 +1563,8 @@ template <class NetFn>
       if (keep && !client.read_backpressured && has_buffered_work(client)) {
         keep = process_buffered_commands(client, store, pubsub, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config);
+                                         upython_engine, quickjs_engine, config,
+                                         auth_database);
         did_work = true;
       }
 
@@ -1466,7 +1584,7 @@ template <class NetFn>
       if (keep && (pfd.revents & POLLIN) != 0 && !client.read_backpressured) {
         keep = read_client(client, store, pubsub, script_engine, luau_engine,
                            wren_engine, tcl_engine, upython_engine,
-                           quickjs_engine, config);
+                           quickjs_engine, config, auth_database);
         did_work = true;
       }
       if (keep && (pfd.revents & POLLOUT) != 0 && has_pending_output(client)) {
@@ -1631,6 +1749,62 @@ void Server::stop() noexcept {
 
 int Server::run() {
   std::signal(SIGPIPE, SIG_IGN);
+  bool kafka_failed = false;
+
+#ifndef GOBLIN_HAS_SBE
+  if (config_.enable_sbe) {
+    std::cerr << "goblin-core: --enable-sbe requires an SBE-enabled build\n";
+    return 1;
+  }
+#endif
+  if (config_.pubsub_listener && !config_.enable_sbe) {
+    std::cerr << "goblin-core: Pub/Sub listener transports require --enable-sbe\n";
+    return 1;
+  }
+
+  std::optional<AuthDatabase> auth_database;
+  if (config_.auth_file) {
+    try {
+      auth_database.emplace(AuthDatabase::load(*config_.auth_file));
+    } catch (const std::exception& error) {
+      std::cerr << "goblin-core: cannot load auth file: " << error.what() << '\n';
+      return 1;
+    }
+    std::cout << "goblin-core: RESP authentication enabled ("
+              << auth_database->size() << " user(s))\n";
+  }
+  if (config_.enable_sbe) {
+    std::cout << "goblin-core: SBE enabled as a trusted, unauthenticated fabric\n";
+  }
+  const AuthDatabase* auth = auth_database ? &*auth_database : nullptr;
+
+#ifdef GOBLIN_HAS_KAFKA
+  std::unique_ptr<KafkaIngestor> kafka;
+  if (config_.kafka) {
+    std::string error;
+    kafka = KafkaIngestor::connect(config_.kafka->connection,
+                                   config_.kafka->start_timestamp_ms, error);
+    if (!kafka) {
+      std::cerr << "goblin-core: Kafka setup failed: " << error << '\n';
+      return 1;
+    }
+    KafkaReplayStats replay;
+    std::cout << "goblin-core: replaying Kafka " << kafka->description()
+              << " before opening listeners\n" << std::flush;
+    if (!kafka->catch_up(store_, replay, error)) {
+      std::cerr << "goblin-core: Kafka startup replay failed: " << error << '\n';
+      return 1;
+    }
+    std::cout << "goblin-core: Kafka startup replay complete: "
+              << replay.records << " record(s), " << replay.writes
+              << " write(s), " << replay.filtered << " filtered\n";
+  }
+#else
+  if (config_.kafka) {
+    std::cerr << "goblin-core: this build has no Kafka support\n";
+    return 1;
+  }
+#endif
 
   auto listeners_result = create_socket_listeners(config_);
   if (!listeners_result) {
@@ -1668,12 +1842,33 @@ int Server::run() {
   // expiry from stalling the loop; when a sweep fills the batch more are likely
   // due, so the poll below returns immediately to sweep again.
   constexpr std::size_t kActiveExpireBudget = 1000;
+#ifdef GOBLIN_HAS_KAFKA
+  constexpr std::size_t kKafkaDrainBudget = 1024;
+  bool kafka_may_have_more = kafka && kafka->has_pending();
+  const auto drain_kafka = [&]() -> bool {
+    auto result = kafka->poll(store_, kKafkaDrainBudget);
+    if (!result.ok()) {
+      std::cerr << "goblin-core: Kafka ingestion failed: " << result.error
+                << '\n';
+      kafka_failed = true;
+      running_ = false;
+      return false;
+    }
+    kafka_may_have_more = result.may_have_more;
+    return true;
+  };
+#endif
 
   // One pass over the network: reap a finished background save, do a bounded
   // active-expiration sweep, then poll() (blocking up to max_timeout_ms) and
   // service ready clients and new connections. In polled mode this is invoked only
   // when every ring/RDMA target is empty, always with timeout 0 (never blocking).
   const auto network_iteration = [&](int max_timeout_ms) {
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka && kafka_may_have_more && !drain_kafka()) {
+      return;
+    }
+#endif
     if (auto outcome = store_.reap_background_save()) {
       if (outcome->ok) {
         std::cout << "goblin-core: background save of " << outcome->path
@@ -1686,6 +1881,9 @@ int Server::run() {
     }
 
     int poll_timeout = max_timeout_ms;
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka_may_have_more) poll_timeout = 0;
+#endif
     if (!store_.ttl_empty()) {
       if (store_.active_expire(store_.now_ms(), kActiveExpireBudget) ==
           kActiveExpireBudget) {
@@ -1695,11 +1893,24 @@ int Server::run() {
 
     std::vector<pollfd> pollfds;
     const std::size_t listener_count = listeners.size();
-    pollfds.reserve(clients.size() + listener_count);
+    const std::size_t kafka_fd_count =
+#ifdef GOBLIN_HAS_KAFKA
+        kafka ? 1U : 0U;
+#else
+        0U;
+#endif
+    pollfds.reserve(clients.size() + listener_count + kafka_fd_count);
     for (const auto& listener : listeners) {
       pollfds.push_back(
           pollfd{.fd = listener.fd, .events = POLLIN, .revents = 0});
     }
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka) {
+      pollfds.push_back(pollfd{.fd = kafka->notification_fd(),
+                              .events = POLLIN,
+                              .revents = 0});
+    }
+#endif
     for (auto& client_ptr : clients) {
       auto& client = *client_ptr;
       update_read_backpressure(client, config_);
@@ -1724,10 +1935,18 @@ int Server::run() {
     }
 
     std::vector<unsigned char> close_client(clients.size(), 0);
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka &&
+        (pollfds[listener_count].revents & (POLLIN | POLLERR | POLLHUP)) != 0 &&
+        !drain_kafka()) {
+      return;
+    }
+#endif
     for (std::size_t i = 0; i < clients.size(); ++i) {
       bool keep = !clients[i]->close_requested;
       auto& client = *clients[i];
-      const auto revents = pollfds[listener_count + i].revents;
+      const auto revents =
+          pollfds[listener_count + kafka_fd_count + i].revents;
 
       if (keep && (revents & POLLOUT) != 0 && has_pending_output(client)) {
         keep = write_client(client, config_);
@@ -1736,12 +1955,14 @@ int Server::run() {
       if (keep && !client.read_backpressured) {
         keep = process_buffered_commands(client, store_, pubsub, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config_);
+                                         upython_engine, quickjs_engine, config_,
+                                         auth);
       }
 
       if (keep && (revents & POLLIN) != 0 && !client.read_backpressured) {
         keep = read_client(client, store_, pubsub, script_engine, luau_engine,
-                           wren_engine, tcl_engine, upython_engine, quickjs_engine, config_);
+                           wren_engine, tcl_engine, upython_engine, quickjs_engine,
+                           config_, auth);
       }
 
       if (keep && has_pending_output(client)) {
@@ -1752,7 +1973,8 @@ int Server::run() {
              has_buffered_work(client)) {
         keep = process_buffered_commands(client, store_, pubsub, script_engine,
                                          luau_engine, wren_engine, tcl_engine,
-                                         upython_engine, quickjs_engine, config_);
+                                         upython_engine, quickjs_engine, config_,
+                                         auth);
         if (keep && has_pending_output(client)) {
           keep = write_client(client, config_);
         }
@@ -1792,7 +2014,7 @@ int Server::run() {
     }
   } else if (!run_polled_targets(config_, store_, running_, pubsub, script_engine,
                                  luau_engine, wren_engine, tcl_engine,
-                                 upython_engine, quickjs_engine,
+                                 upython_engine, quickjs_engine, auth,
                                  network_iteration)) {
     close_socket_listeners(listeners);
     return 1;
@@ -1804,7 +2026,7 @@ int Server::run() {
   }
   close_socket_listeners(listeners);
 
-  return 0;
+  return kafka_failed ? 1 : 0;
 }
 
 }  // namespace goblin::core

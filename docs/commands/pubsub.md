@@ -65,29 +65,34 @@ For a shared-memory ring:
 
 ```sh
 # The upstream server owns this ring.
-goblin-core --ring /run/goblin/upstream.ring 2mb
+goblin-core --enable-sbe --ring /run/goblin/upstream.ring 2mb
 
 # The downstream server connects as an SBE PSUBSCRIBE client.
-goblin-core --pubsub-listener-ring /run/goblin/upstream.ring
+goblin-core --enable-sbe \
+  --pubsub-listener-ring /run/goblin/upstream.ring
 ```
 
 The equivalent cross-host listener uses a polled RDMA ring:
 
 ```sh
-goblin-core --pubsub-listener-rdma 10.88.88.1 6380 2mb
+goblin-core --enable-sbe \
+  --pubsub-listener-rdma 10.88.88.1 6380 2mb
 ```
 
 SBE can also use an ordinary Unix-domain socket or TCP connection:
 
 ```sh
-goblin-core --pubsub-listener-uds /run/goblin/upstream.sock
-goblin-core --pubsub-listener-tcp goblin-upstream.internal 6379
+goblin-core --enable-sbe \
+  --pubsub-listener-uds /run/goblin/upstream.sock
+goblin-core --enable-sbe \
+  --pubsub-listener-tcp goblin-upstream.internal 6379
 ```
 
 All forms subscribe to `*` by default. Select a narrower Redis glob with:
 
 ```sh
-goblin-core --pubsub-listener-ring /run/goblin/upstream.ring \
+goblin-core --enable-sbe \
+  --pubsub-listener-ring /run/goblin/upstream.ring \
   --pubsub-listener-pattern 'orders:*'
 ```
 
@@ -98,6 +103,9 @@ sockets in that same loop. Rebroadcast is one-way: local publications are not
 sent upstream. The relay carries the original binary-safe channel and payload
 into the local registry, where ordinary literal/pattern matching, delivery
 counts, and slow-consumer limits apply.
+
+Because relays use SBE, they are intentionally unauthenticated and belong only
+on a trusted fabric.
 
 The upstream and downstream servers must be exactly the same Goblin Core version
 because this link uses SBE. A different-version pairing has undefined behavior.
