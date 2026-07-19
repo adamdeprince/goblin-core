@@ -13,6 +13,7 @@
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/sbe_frame.hpp"
 #include "goblin/core/sbe_ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/Ping.h"
@@ -76,7 +77,10 @@ int main(int argc, char** argv) {
   const char* server = argv[1];
   const std::string tag = std::to_string(::getpid());
   const std::string ring_path = "/tmp/gcreconnect-" + tag + ".ring";
-  const std::string sock = "/tmp/gcreconnect-" + tag + ".sock";  // avoids the default TCP bind
+  const std::string sock = "/tmp/gcreconnect-" + tag + ".sock";
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
   ::unlink(ring_path.c_str());
 
   const pid_t srv = ::fork();
@@ -85,7 +89,8 @@ int main(int argc, char** argv) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
     ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
-            "--ring", ring_path.c_str(), "1mb", static_cast<char*>(nullptr));
+            "--port", tcp_port_text.c_str(), "--ring", ring_path.c_str(),
+            "1mb", static_cast<char*>(nullptr));
     _exit(127);
   }
 

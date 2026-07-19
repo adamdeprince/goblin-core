@@ -198,20 +198,24 @@ int main(int argc, char** argv) {
   const auto tcp_a = reserve_port(AF_INET);
   const auto tcp_b = reserve_port(AF_INET);
   const auto tcp_v6 = reserve_port(AF_INET6);
+  const auto tcp_uds_only = reserve_port(AF_INET);
   const std::string suffix = std::to_string(::getpid());
   const std::string uds_a = "/tmp/goblin-listener-a-" + suffix + ".sock";
   const std::string uds_b = "/tmp/goblin-listener-b-" + suffix + ".sock";
   const std::string uds_legacy =
       "/tmp/goblin-listener-legacy-" + suffix + ".sock";
+  const std::string uds_only =
+      "/tmp/goblin-listener-only-" + suffix + ".sock";
   (void)::unlink(uds_a.c_str());
   (void)::unlink(uds_b.c_str());
   (void)::unlink(uds_legacy.c_str());
+  (void)::unlink(uds_only.c_str());
 
   {
     auto server = spawn_server(
         argv[1],
-        {"--tcp-listen", "127.0.0.1:" + std::to_string(tcp_a),
-         "--tcp-listen", "127.0.0.1:" + std::to_string(tcp_b),
+        {"--listen", ":" + std::to_string(tcp_a),
+         "--listen", "127.0.0.1:" + std::to_string(tcp_b),
          "--tcp-listen", "[::1]:" + std::to_string(tcp_v6), "--uds-listen",
          uds_a, "--uds-listen", uds_b, "--unixsocket", uds_legacy});
 
@@ -222,6 +226,8 @@ int main(int argc, char** argv) {
         wait_for_connection([&] { return connect_ipv4(tcp_b); }));
     clients.push_back(
         wait_for_connection([&] { return connect_ipv6(tcp_v6); }));
+    clients.push_back(
+        wait_for_connection([&] { return connect_ipv4(tcp_v6); }));
     clients.push_back(wait_for_connection([&] { return connect_uds(uds_a); }));
     clients.push_back(wait_for_connection([&] { return connect_uds(uds_b); }));
     clients.push_back(
@@ -245,9 +251,29 @@ int main(int argc, char** argv) {
     }
   }
 
+  {
+    auto server = spawn_server(
+        argv[1], {"--uds-listen", uds_only, "--port",
+                  std::to_string(tcp_uds_only)});
+    const int uds = wait_for_connection([&] { return connect_uds(uds_only); });
+    const int local =
+        wait_for_connection([&] { return connect_ipv4(tcp_uds_only); });
+    assert(uds >= 0 && local >= 0 &&
+           "UDS configuration did not retain its localhost listener");
+    std::string uds_pending;
+    std::string local_pending;
+    send_command(uds, {"PING"});
+    send_command(local, {"PING"});
+    assert(read_reply(uds, uds_pending) == "+PONG\r\n");
+    assert(read_reply(local, local_pending) == "+PONG\r\n");
+    ::close(uds);
+    ::close(local);
+  }
+
   (void)::unlink(uds_a.c_str());
   (void)::unlink(uds_b.c_str());
   (void)::unlink(uds_legacy.c_str());
-  std::cout << "simultaneous IPv4, IPv6, and UDS listeners OK\n";
+  (void)::unlink(uds_only.c_str());
+  std::cout << "simultaneous listeners and mandatory localhost OK\n";
   return 0;
 }

@@ -171,8 +171,10 @@ void run_case(const char* binary, std::string_view name,
     const int publisher = wait_for_connection(publisher_connect);
     assert(publisher >= 0 && "upstream server failed to start");
 
+    const auto downstream_port = reserve_tcp_port();
     std::vector<std::string> downstream_args = {
-        "--enable-sbe", "--unixsocket", downstream_socket};
+        "--enable-sbe", "--unixsocket", downstream_socket, "--port",
+        std::to_string(downstream_port)};
     downstream_args.insert(downstream_args.end(), listener_args.begin(),
                            listener_args.end());
     auto downstream = spawn_server(binary, downstream_args);
@@ -211,7 +213,10 @@ int main(int argc, char** argv) {
   const std::string upstream_socket =
       "/tmp/goblin-relay-socket-up-" + suffix + ".sock";
   (void)::unlink(upstream_socket.c_str());
-  run_case(argv[1], "uds", {"--unixsocket", upstream_socket},
+  const auto uds_tcp_port = reserve_tcp_port();
+  run_case(argv[1], "uds",
+           {"--unixsocket", upstream_socket, "--port",
+            std::to_string(uds_tcp_port)},
            {"--pubsub-listener-uds", upstream_socket},
            [&] { return connect_uds(upstream_socket); });
   (void)::unlink(upstream_socket.c_str());

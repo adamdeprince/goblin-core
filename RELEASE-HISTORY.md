@@ -10,6 +10,10 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
+- Added repeatable `--listen` IPv4/IPv6 endpoints and native nonblocking OpenSSL
+  TLS for non-loopback ordinary TCP. Every configured TCP port retains a
+  plaintext `127.0.0.1` companion; certificate/key configuration is shared by
+  all external listeners.
 - Added bounded `SCAN` and `HSCAN`, completing the cursor family alongside
   `SSCAN` and `ZSCAN`. Keyspace scans support `MATCH`, `COUNT`, and `TYPE`; hash
   scans support `MATCH`, `COUNT`, and `NOVALUES`, including qualified efficient

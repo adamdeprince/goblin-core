@@ -1,5 +1,6 @@
 #include "goblin/core/ring_client.hpp"
 #include "goblin/core/store.hpp"
+#include "socket_test_utils.hpp"
 
 #include <rdkafka.h>
 
@@ -187,8 +188,11 @@ int main(int argc, char** argv) {
   const std::string connection =
       "kafka://" + std::string(argv[2]) + '/' + argv[3];
   {
+    const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+    assert(tcp_port != 0);
     auto server = spawn_server(
-        argv[1], {"--uds-listen", socket, "--kafka", connection});
+        argv[1], {"--uds-listen", socket, "--port", std::to_string(tcp_port),
+                  "--kafka", connection});
     const int client = wait_for_server(socket);
     assert(client >= 0);
     std::string pending;
@@ -224,8 +228,11 @@ int main(int argc, char** argv) {
   producer.send({"SET", "cutoff-key", "after-snapshot"}, 2);
 
   {
+    const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+    assert(tcp_port != 0);
     auto server = spawn_server(
-        argv[1], {"--uds-listen", socket, "--load", snapshot,
+        argv[1], {"--uds-listen", socket, "--port", std::to_string(tcp_port),
+                  "--load", snapshot,
                   "--kafka-time-buffer", "0", "--kafka", connection});
     const int client = wait_for_server(socket);
     assert(client >= 0);

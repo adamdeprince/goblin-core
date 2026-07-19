@@ -17,11 +17,13 @@ rings, and polled one-sided RDMA rings.
 - [Real-time and memory-efficient hash indexes](real-time-hashes.md)
 - [Kafka write-log ingestion](kafka.md)
 - [Authentication and trusted transports](authentication.md)
+- [TCP listeners and native TLS](tls.md)
 
 ## Protocols and transports
 
 | Document | What it covers |
 |---|---|
+| [TCP listeners and TLS](tls.md) | Repeatable IPv4/IPv6 binds, the mandatory plaintext localhost companion, certificate configuration, and protocol/security boundaries. |
 | [Shared-memory ring buffers](ring-buffers.md) | Ring creation, SQ/CQ layout, busy polling, reconnect behavior, sizing, HugeTLB, NUMA placement, and the C++ clients. |
 | [Polled RDMA rings](rdma-rings.md) | RC queue-pair setup, sequence-word slots, cached credits, memory registration, mixed-target priority, and RESP/SBE clients. |
 | [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
@@ -29,9 +31,11 @@ rings, and polled one-sided RDMA rings.
 | [SBE protocol](sbe-protocol.md) | Handshake, framing, schema generation, message and reply types, compatibility rules, and typed-client usage. |
 
 Protocol and transport are independent. RESP and opt-in SBE can each run over TCP
-(plain or ExaSock-accelerated), Unix-domain sockets, a shared-memory ring, or a
-polled RDMA ring. SBE requires `--enable-sbe` and is intentionally
-unauthenticated; see [Authentication](authentication.md) before exposing it.
+(native TLS or ExaSock-accelerated), Unix-domain sockets, a shared-memory ring,
+or a polled RDMA ring. Ordinary TCP is always plaintext on `127.0.0.1` and
+requires TLS on non-loopback addresses. SBE requires `--enable-sbe` and is
+intentionally unauthenticated; see [Authentication](authentication.md) before
+exposing it.
 
 ## Durability and replay
 

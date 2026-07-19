@@ -5,6 +5,7 @@
 #include "goblin/core/simd.hpp"
 #include "goblin/core/store.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cerrno>
 #include <charconv>
@@ -22,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include <arpa/inet.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -76,7 +78,7 @@ parse_tcp_listener(std::string_view endpoint, std::string& error) {
     port_text = endpoint.substr(close + 2);
   } else {
     const auto separator = endpoint.rfind(':');
-    if (separator == std::string_view::npos || separator == 0 ||
+    if (separator == std::string_view::npos ||
         separator + 1 == endpoint.size()) {
       error = "expected ADDRESS:PORT";
       return std::nullopt;
@@ -95,7 +97,19 @@ parse_tcp_listener(std::string_view endpoint, std::string& error) {
     return std::nullopt;
   }
   return goblin::core::TcpListenerConfig{
-      .bind_address = std::string(address), .port = *port};
+      .bind_address = address.empty() ? "127.0.0.1" : std::string(address),
+      .port = *port};
+}
+
+[[nodiscard]] bool is_loopback_address(std::string_view address) {
+  const std::string text(address);
+  in_addr ipv4{};
+  if (::inet_pton(AF_INET, text.c_str(), &ipv4) == 1) {
+    return (ntohl(ipv4.s_addr) & 0xff000000U) == 0x7f000000U;
+  }
+  in6_addr ipv6{};
+  return ::inet_pton(AF_INET6, text.c_str(), &ipv6) == 1 &&
+         IN6_IS_ADDR_LOOPBACK(&ipv6);
 }
 
 [[nodiscard]] bool add_tcp_listener(
@@ -105,7 +119,7 @@ parse_tcp_listener(std::string_view endpoint, std::string& error) {
     const auto* tcp = std::get_if<goblin::core::TcpListenerConfig>(&configured);
     if (tcp != nullptr && tcp->bind_address == listener.bind_address &&
         tcp->port == listener.port) {
-      std::cerr << "goblin-core: duplicate --tcp-listen "
+      std::cerr << "goblin-core: duplicate TCP listener "
                 << format_tcp_endpoint(listener.bind_address, listener.port)
                 << '\n';
       return false;
@@ -135,15 +149,44 @@ parse_tcp_listener(std::string_view endpoint, std::string& error) {
 }
 
 void materialize_legacy_listener(goblin::core::ServerConfig& config) {
-  if (!config.socket_listeners.empty()) {
-    return;
-  }
-  if (!config.unix_socket_path.empty()) {
+  if (config.socket_listeners.empty() && !config.unix_socket_path.empty()) {
     config.socket_listeners.emplace_back(
         goblin::core::UdsListenerConfig{.path = config.unix_socket_path});
-  } else {
+  }
+  if (config.socket_listeners.empty() &&
+      config.bind_address != "127.0.0.1") {
     config.socket_listeners.emplace_back(goblin::core::TcpListenerConfig{
-        .bind_address = config.bind_address, .port = config.port});
+        .bind_address = config.bind_address,
+        .port = config.port,
+        .tls = !is_loopback_address(config.bind_address)});
+  }
+
+  std::vector<std::uint16_t> tcp_ports;
+  for (auto& configured : config.socket_listeners) {
+    if (auto* tcp = std::get_if<goblin::core::TcpListenerConfig>(&configured)) {
+      tcp->tls = tcp->tls || !is_loopback_address(tcp->bind_address);
+      if (std::find(tcp_ports.begin(), tcp_ports.end(), tcp->port) ==
+          tcp_ports.end()) {
+        tcp_ports.push_back(tcp->port);
+      }
+    }
+  }
+  if (tcp_ports.empty()) {
+    tcp_ports.push_back(config.port);
+  }
+  for (const auto port : tcp_ports) {
+    const bool already_present = std::any_of(
+        config.socket_listeners.begin(), config.socket_listeners.end(),
+        [port](const auto& configured) {
+          const auto* tcp =
+              std::get_if<goblin::core::TcpListenerConfig>(&configured);
+          return tcp != nullptr && tcp->port == port &&
+                 tcp->bind_address == "127.0.0.1" && !tcp->tls;
+        });
+    if (!already_present) {
+      config.socket_listeners.emplace_back(goblin::core::TcpListenerConfig{
+          .bind_address = "127.0.0.1", .port = port, .tls = false});
+    }
   }
 }
 
@@ -517,7 +560,9 @@ void lock_server_memory() noexcept {
 
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
-            << " [--tcp-listen ADDRESS:PORT]... [--uds-listen PATH]...\n"
+            << " [--listen ADDRESS:PORT]... [--uds-listen PATH]...\n"
+            << "       [--tls-cert-file FILE --tls-key-file FILE]\n"
+            << "       [--tcp-listen ADDRESS:PORT]... (compatibility alias)\n"
             << "       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...\n"
             << "       [--rank-cache|--no-rank-cache]\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
@@ -577,9 +622,15 @@ void print_usage(std::string_view program) {
             << "  --ring /tmp/b 1mb\n"
             << "scans A, ExaSock, RDMA, B, then the sparse plain-socket pass.\n"
             << "\n"
-            << "Socket listeners are repeatable and may be mixed. IPv6 uses\n"
-            << "--tcp-listen [ADDRESS]:PORT. Legacy --bind/--port selects one TCP\n"
-            << "listener only when no explicit socket listener is configured; legacy\n"
+            << "Every configured TCP port also has a plaintext 127.0.0.1 listener.\n"
+            << "With no explicit TCP endpoint, the default is 127.0.0.1:6379.\n"
+            << "Listeners are repeatable and may be mixed. :PORT means\n"
+            << "127.0.0.1:PORT; IPv6 uses\n"
+            << "[ADDRESS]:PORT. Non-loopback listeners require TLS. --tcp-listen\n"
+            << "is an alias for --listen.\n"
+            << "--tls-cert-file and --tls-key-file provide the shared identity.\n"
+            << "Legacy --bind/--port selects one TCP listener only when no explicit\n"
+            << "socket listener is configured; legacy\n"
             << "--unixsocket is a repeatable alias for --uds-listen.\n";
   std::cerr
       << "Kafka CONNECTION is kafka://BROKER[,BROKER...]/TOPIC or\n"
@@ -600,6 +651,8 @@ int main(int argc, char** argv) {
   bool kafka_time_buffer_set = false;
   std::optional<std::string> numa_selector;
   bool pubsub_listener_pattern_set = false;
+  std::optional<std::string> tls_certificate_chain;
+  std::optional<std::string> tls_private_key;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -618,6 +671,32 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.auth_file = argv[++i];
+      continue;
+    }
+
+    if (arg == "--tls-cert-file" || arg == "--tls-cert") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: " << arg << " requires a path\n";
+        return 2;
+      }
+      if (tls_certificate_chain) {
+        std::cerr << "goblin-core: configure only one TLS certificate file\n";
+        return 2;
+      }
+      tls_certificate_chain = argv[++i];
+      continue;
+    }
+
+    if (arg == "--tls-key-file" || arg == "--tls-key") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: " << arg << " requires a path\n";
+        return 2;
+      }
+      if (tls_private_key) {
+        std::cerr << "goblin-core: configure only one TLS private-key file\n";
+        return 2;
+      }
+      tls_private_key = argv[++i];
       continue;
     }
 
@@ -659,16 +738,16 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    if (arg == "--tcp-listen") {
+    if (arg == "--listen" || arg == "--tcp-listen") {
       if (i + 1 >= argc) {
-        std::cerr << "goblin-core: --tcp-listen requires ADDRESS:PORT\n";
+        std::cerr << "goblin-core: " << arg << " requires ADDRESS:PORT\n";
         return 2;
       }
       const std::string_view endpoint = argv[++i];
       std::string error;
       auto listener = parse_tcp_listener(endpoint, error);
       if (!listener) {
-        std::cerr << "goblin-core: invalid --tcp-listen '" << endpoint
+        std::cerr << "goblin-core: invalid " << arg << " '" << endpoint
                   << "': " << error << '\n';
         return 2;
       }
@@ -1431,6 +1510,35 @@ int main(int argc, char** argv) {
 
   materialize_legacy_listener(config);
 
+  if (tls_certificate_chain.has_value() != tls_private_key.has_value()) {
+    std::cerr << "goblin-core: TLS requires both --tls-cert-file and "
+                 "--tls-key-file\n";
+    return 2;
+  }
+  if (tls_certificate_chain) {
+#ifdef GOBLIN_HAS_TLS
+    config.tls = goblin::core::TlsConfig{
+        .certificate_chain_file = std::move(*tls_certificate_chain),
+        .private_key_file = std::move(*tls_private_key)};
+#else
+    std::cerr << "goblin-core: TLS requires a build configured with "
+                 "-DGOBLIN_CORE_ENABLE_TLS=ON\n";
+    return 2;
+#endif
+  }
+  const bool tls_listener_present =
+      std::any_of(config.socket_listeners.begin(), config.socket_listeners.end(),
+                  [](const auto& configured) {
+                    const auto* tcp =
+                        std::get_if<goblin::core::TcpListenerConfig>(&configured);
+                    return tcp != nullptr && tcp->tls;
+                  });
+  if (tls_listener_present && !config.tls) {
+    std::cerr << "goblin-core: non-loopback endpoints require "
+                 "--tls-cert-file and --tls-key-file\n";
+    return 2;
+  }
+
   if (kafka_time_buffer_set && !kafka_connection) {
     std::cerr << "goblin-core: --kafka-time-buffer requires --kafka\n";
     return 2;
@@ -1493,7 +1601,7 @@ int main(int argc, char** argv) {
       if (tcp != nullptr && tcp->bind_address == listener->address &&
           tcp->port == listener->port) {
         std::cerr << "goblin-core: Pub/Sub listener TCP endpoint must not be "
-                     "one of this server's --tcp-listen endpoints\n";
+                     "one of this server's --listen endpoints\n";
         return 2;
       }
     }

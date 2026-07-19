@@ -1,4 +1,5 @@
 #include "goblin/core/ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #undef NDEBUG
 #include <cassert>
@@ -90,6 +91,9 @@ int main(int argc, char** argv) {
   const std::string socket_path =
       "/tmp/goblin-transaction-" + std::to_string(::getpid()) + ".sock";
   (void)::unlink(socket_path.c_str());
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
 
   const pid_t server = ::fork();
   assert(server >= 0);
@@ -100,7 +104,8 @@ int main(int argc, char** argv) {
       (void)::dup2(devnull, STDERR_FILENO);
     }
     ::execl(argv[1], argv[1], "--unixsocket", socket_path.c_str(),
-            "--transaction-buffer-bytes", "1", static_cast<char*>(nullptr));
+            "--port", tcp_port_text.c_str(), "--transaction-buffer-bytes", "1",
+            static_cast<char*>(nullptr));
     _exit(127);
   }
 

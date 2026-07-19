@@ -7,6 +7,7 @@
 
 #include "goblin/core/auth.hpp"
 #include "goblin/core/ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #undef NDEBUG
 #include <cassert>
@@ -59,6 +60,9 @@ int main(int argc, char** argv) {
   ::unlink((auth_path + ".lock").c_str());
   assert(goblin::core::upsert_auth_user(auth_path, "default", "secret") ==
          goblin::core::AuthUserUpdate::added);
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
 
   const pid_t pid = ::fork();
   assert(pid >= 0);
@@ -71,8 +75,9 @@ int main(int argc, char** argv) {
       ::dup2(devnull, STDERR_FILENO);
     }
     ::execl(server_bin, server_bin, "--auth-file", auth_path.c_str(),
-            "--no-auth-ring", "--unixsocket", sock_path.c_str(), "--ring",
-            ring_path.c_str(), "64kb", static_cast<char*>(nullptr));
+            "--no-auth-ring", "--unixsocket", sock_path.c_str(), "--port",
+            tcp_port_text.c_str(), "--ring", ring_path.c_str(), "64kb",
+            static_cast<char*>(nullptr));
     _exit(127);
   }
 

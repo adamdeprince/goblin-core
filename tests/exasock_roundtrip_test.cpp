@@ -7,6 +7,7 @@
 
 #include "goblin/core/exasock_client.hpp"
 #include "goblin/core/sbe_ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #include <csignal>
 #include <fcntl.h>
@@ -36,6 +37,9 @@ int main(int argc, char** argv) {
   const std::string host = argc >= 3 ? argv[2] : "127.0.0.1";
   const auto port = static_cast<std::uint16_t>(
       argc >= 4 ? std::stoul(argv[3]) : 16379U + (static_cast<unsigned>(::getpid()) % 1000U));
+  const auto local_port = goblin::test::reserve_loopback_tcp_port();
+  assert(local_port != 0);
+  const std::string local_port_text = std::to_string(local_port);
 
   const pid_t pid = ::fork();
   assert(pid >= 0);
@@ -48,7 +52,7 @@ int main(int argc, char** argv) {
     const std::string port_text = std::to_string(port);
     // Prefer the ordered poll-target path so --exasock is exercised.
     ::execl(server, server, "--enable-sbe", "--exasock", host.c_str(),
-            port_text.c_str(),
+            port_text.c_str(), "--port", local_port_text.c_str(),
             static_cast<char*>(nullptr));
     _exit(127);
   }

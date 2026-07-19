@@ -37,6 +37,11 @@
 #include "pubsub_listener.hpp"
 #endif
 
+#ifdef GOBLIN_HAS_TLS
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif
+
 #include <cerrno>
 #include <algorithm>
 #include <chrono>
@@ -63,6 +68,13 @@ namespace goblin::core {
 namespace {
 
 constexpr std::size_t kOutputCompactThreshold = 64 * 1024;
+
+#ifdef GOBLIN_HAS_TLS
+enum class TlsWant : std::uint8_t {
+  Read,
+  Write,
+};
+#endif
 
 struct ReplyBoundary {
   std::uint64_t sequence{0};
@@ -329,9 +341,47 @@ struct Client : EndpointSession {
                         assigned_connection_id, require_authentication),
         fd(client_fd) {}
 
+  ~Client() {
+#ifdef GOBLIN_HAS_TLS
+    if (tls != nullptr) {
+      SSL_free(tls);
+    }
+#endif
+  }
+
+  Client(const Client&) = delete;
+  Client& operator=(const Client&) = delete;
+
+#ifdef GOBLIN_HAS_TLS
+  [[nodiscard]] bool enable_tls(SSL_CTX* context) {
+    SSL* connection = SSL_new(context);
+    if (connection == nullptr) {
+      return false;
+    }
+    if (SSL_set_fd(connection, fd) != 1) {
+      SSL_free(connection);
+      return false;
+    }
+    SSL_set_accept_state(connection);
+    tls = connection;
+    tls_handshake_complete = false;
+    tls_handshake_want = TlsWant::Read;
+    return true;
+  }
+#endif
+
   int fd{-1};
   bool read_backpressured{false};
   bool close_after_write{false};
+#ifdef GOBLIN_HAS_TLS
+  SSL* tls{nullptr};
+  bool tls_handshake_complete{false};
+  TlsWant tls_handshake_want{TlsWant::Read};
+  TlsWant tls_read_want{TlsWant::Read};
+  TlsWant tls_write_want{TlsWant::Write};
+  std::size_t tls_write_retry_bytes{0};
+  bool tls_write_retry_unsolicited{false};
+#endif
 };
 
 // Server-side state for one shared-memory ring: the mapping plus a RESP parser
@@ -423,6 +473,350 @@ void close_fd(int fd) noexcept {
 
 [[nodiscard]] bool would_block() noexcept {
   return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+#ifdef GOBLIN_HAS_TLS
+using TlsContextPtr = std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)>;
+
+[[nodiscard]] std::string tls_error_text(std::string_view operation) {
+  std::string result(operation);
+  unsigned long code = 0;
+  unsigned long last = 0;
+  while ((code = ERR_get_error()) != 0) {
+    last = code;
+  }
+  if (last != 0) {
+    char detail[256];
+    ERR_error_string_n(last, detail, sizeof(detail));
+    result.append(": ");
+    result.append(detail);
+  }
+  return result;
+}
+
+[[nodiscard]] TlsContextPtr create_tls_context(const TlsConfig& config,
+                                               std::string& error) {
+  ERR_clear_error();
+  SSL_CTX* raw = SSL_CTX_new(TLS_server_method());
+  TlsContextPtr context(raw, &SSL_CTX_free);
+  if (!context) {
+    error = tls_error_text("could not create TLS server context");
+    return context;
+  }
+  if (SSL_CTX_set_min_proto_version(context.get(), TLS1_2_VERSION) != 1) {
+    error = tls_error_text("could not require TLS 1.2 or newer");
+    return TlsContextPtr(nullptr, &SSL_CTX_free);
+  }
+  long tls_options = SSL_OP_NO_COMPRESSION;
+#ifdef SSL_OP_NO_RENEGOTIATION
+  tls_options |= SSL_OP_NO_RENEGOTIATION;
+#endif
+  SSL_CTX_set_options(context.get(), tls_options);
+  SSL_CTX_set_session_cache_mode(context.get(), SSL_SESS_CACHE_OFF);
+  SSL_CTX_set_mode(context.get(),
+                   SSL_MODE_ENABLE_PARTIAL_WRITE |
+                       SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
+                       SSL_MODE_RELEASE_BUFFERS);
+  ERR_clear_error();
+  if (SSL_CTX_use_certificate_chain_file(
+          context.get(), config.certificate_chain_file.c_str()) != 1) {
+    error = tls_error_text("could not load TLS certificate chain");
+    return TlsContextPtr(nullptr, &SSL_CTX_free);
+  }
+  ERR_clear_error();
+  if (SSL_CTX_use_PrivateKey_file(context.get(), config.private_key_file.c_str(),
+                                  SSL_FILETYPE_PEM) != 1) {
+    error = tls_error_text("could not load TLS private key");
+    return TlsContextPtr(nullptr, &SSL_CTX_free);
+  }
+  ERR_clear_error();
+  if (SSL_CTX_check_private_key(context.get()) != 1) {
+    error = tls_error_text("TLS private key does not match the certificate");
+    return TlsContextPtr(nullptr, &SSL_CTX_free);
+  }
+  return context;
+}
+#endif
+
+enum class TransportIoStatus : std::uint8_t {
+  Progress,
+  WouldBlock,
+  Interrupted,
+  Closed,
+  Error,
+};
+
+struct TransportIoResult {
+  TransportIoStatus status{TransportIoStatus::Error};
+  std::size_t bytes{0};
+};
+
+[[nodiscard]] TransportIoResult transport_read(Client& client, char* buffer,
+                                               std::size_t size) {
+#ifdef GOBLIN_HAS_TLS
+  if (client.tls != nullptr) {
+    std::size_t received = 0;
+    ERR_clear_error();
+    errno = 0;
+    const int result = SSL_read_ex(client.tls, buffer, size, &received);
+    if (result == 1) {
+      client.tls_read_want = TlsWant::Read;
+      return {.status = TransportIoStatus::Progress, .bytes = received};
+    }
+    switch (SSL_get_error(client.tls, result)) {
+      case SSL_ERROR_WANT_READ:
+        client.tls_read_want = TlsWant::Read;
+        return {.status = TransportIoStatus::WouldBlock};
+      case SSL_ERROR_WANT_WRITE:
+        client.tls_read_want = TlsWant::Write;
+        return {.status = TransportIoStatus::WouldBlock};
+      case SSL_ERROR_ZERO_RETURN:
+        return {.status = TransportIoStatus::Closed};
+      case SSL_ERROR_SYSCALL:
+        if (errno == EINTR) {
+          return {.status = TransportIoStatus::Interrupted};
+        }
+        if (would_block()) {
+          client.tls_read_want = TlsWant::Read;
+          return {.status = TransportIoStatus::WouldBlock};
+        }
+        return {.status = TransportIoStatus::Error};
+      default:
+        return {.status = TransportIoStatus::Error};
+    }
+  }
+#endif
+  const auto received = ::recv(client.fd, buffer, size, 0);
+  if (received > 0) {
+    return {.status = TransportIoStatus::Progress,
+            .bytes = static_cast<std::size_t>(received)};
+  }
+  if (received == 0) {
+    return {.status = TransportIoStatus::Closed};
+  }
+  if (would_block()) {
+    return {.status = TransportIoStatus::WouldBlock};
+  }
+  if (errno == EINTR) {
+    return {.status = TransportIoStatus::Interrupted};
+  }
+  return {.status = TransportIoStatus::Error};
+}
+
+[[nodiscard]] TransportIoResult transport_write(Client& client,
+                                                const char* bytes,
+                                                std::size_t size,
+                                                bool unsolicited) {
+#ifdef GOBLIN_HAS_TLS
+  if (client.tls != nullptr) {
+    std::size_t sent = 0;
+    ERR_clear_error();
+    errno = 0;
+    const int result = SSL_write_ex(client.tls, bytes, size, &sent);
+    if (result == 1) {
+      client.tls_write_want = TlsWant::Write;
+      client.tls_write_retry_bytes = 0;
+      return {.status = TransportIoStatus::Progress, .bytes = sent};
+    }
+    const auto remember_retry = [&] {
+      if (client.tls_write_retry_bytes == 0) {
+        client.tls_write_retry_bytes = size;
+        client.tls_write_retry_unsolicited = unsolicited;
+      }
+    };
+    switch (SSL_get_error(client.tls, result)) {
+      case SSL_ERROR_WANT_READ:
+        remember_retry();
+        client.tls_write_want = TlsWant::Read;
+        return {.status = TransportIoStatus::WouldBlock};
+      case SSL_ERROR_WANT_WRITE:
+        remember_retry();
+        client.tls_write_want = TlsWant::Write;
+        return {.status = TransportIoStatus::WouldBlock};
+      case SSL_ERROR_ZERO_RETURN:
+        return {.status = TransportIoStatus::Closed};
+      case SSL_ERROR_SYSCALL:
+        if (errno == EINTR) {
+          remember_retry();
+          return {.status = TransportIoStatus::Interrupted};
+        }
+        if (would_block()) {
+          remember_retry();
+          client.tls_write_want = TlsWant::Write;
+          return {.status = TransportIoStatus::WouldBlock};
+        }
+        return {.status = TransportIoStatus::Error};
+      default:
+        return {.status = TransportIoStatus::Error};
+    }
+  }
+#endif
+  (void)unsolicited;
+  const auto sent = ::send(client.fd, bytes, size, 0);
+  if (sent > 0) {
+    return {.status = TransportIoStatus::Progress,
+            .bytes = static_cast<std::size_t>(sent)};
+  }
+  if (sent < 0 && would_block()) {
+    return {.status = TransportIoStatus::WouldBlock};
+  }
+  if (sent < 0 && errno == EINTR) {
+    return {.status = TransportIoStatus::Interrupted};
+  }
+  return {.status = sent == 0 ? TransportIoStatus::Closed
+                              : TransportIoStatus::Error};
+}
+
+[[nodiscard]] bool tls_handshake_pending(const Client& client) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  return client.tls != nullptr && !client.tls_handshake_complete;
+#else
+  (void)client;
+  return false;
+#endif
+}
+
+[[nodiscard]] bool tls_write_retry_pending(const Client& client) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  return client.tls != nullptr && client.tls_write_retry_bytes != 0;
+#else
+  (void)client;
+  return false;
+#endif
+}
+
+[[nodiscard]] bool tls_read_retry_pending(const Client& client) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  return client.tls != nullptr && client.tls_handshake_complete &&
+         client.tls_read_want == TlsWant::Write;
+#else
+  (void)client;
+  return false;
+#endif
+}
+
+[[nodiscard]] bool tls_plaintext_pending(const Client& client) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  return client.tls != nullptr && client.tls_handshake_complete &&
+         !tls_write_retry_pending(client) && SSL_pending(client.tls) > 0;
+#else
+  (void)client;
+  return false;
+#endif
+}
+
+[[nodiscard]] bool has_pending_output(
+    const EndpointSession& session) noexcept;
+
+#ifdef GOBLIN_HAS_TLS
+[[nodiscard]] short tls_want_event(TlsWant want) noexcept {
+  return want == TlsWant::Read ? POLLIN : POLLOUT;
+}
+#endif
+
+[[nodiscard]] short client_poll_events(const Client& client) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  if (tls_handshake_pending(client)) {
+    return tls_want_event(client.tls_handshake_want);
+  }
+  if (tls_write_retry_pending(client)) {
+    return tls_want_event(client.tls_write_want);
+  }
+  if (tls_read_retry_pending(client)) {
+    return POLLOUT;
+  }
+#endif
+  short events = 0;
+  if (!client.read_backpressured) {
+#ifdef GOBLIN_HAS_TLS
+    events |= client.tls != nullptr ? tls_want_event(client.tls_read_want)
+                                    : POLLIN;
+#else
+    events |= POLLIN;
+#endif
+  }
+  if (has_pending_output(client)) {
+#ifdef GOBLIN_HAS_TLS
+    events |= client.tls != nullptr ? tls_want_event(client.tls_write_want)
+                                    : POLLOUT;
+#else
+    events |= POLLOUT;
+#endif
+  }
+  return events;
+}
+
+[[nodiscard]] bool client_read_ready(const Client& client,
+                                     short revents) noexcept {
+  if (tls_write_retry_pending(client)) {
+    return false;
+  }
+  if (tls_plaintext_pending(client)) {
+    return true;
+  }
+#ifdef GOBLIN_HAS_TLS
+  if (client.tls != nullptr) {
+    return (revents & tls_want_event(client.tls_read_want)) != 0;
+  }
+#endif
+  return (revents & POLLIN) != 0;
+}
+
+[[nodiscard]] bool client_write_ready(const Client& client,
+                                      short revents) noexcept {
+  if (tls_read_retry_pending(client)) {
+    return false;
+  }
+#ifdef GOBLIN_HAS_TLS
+  if (client.tls != nullptr) {
+    return (revents & tls_want_event(client.tls_write_want)) != 0;
+  }
+#else
+  (void)client;
+#endif
+  return (revents & POLLOUT) != 0;
+}
+
+[[nodiscard]] bool tls_handshake_ready(const Client& client,
+                                       short revents) noexcept {
+#ifdef GOBLIN_HAS_TLS
+  return tls_handshake_pending(client) &&
+         (revents & tls_want_event(client.tls_handshake_want)) != 0;
+#else
+  (void)client;
+  (void)revents;
+  return false;
+#endif
+}
+
+[[nodiscard]] bool advance_tls_handshake(Client& client) {
+#ifdef GOBLIN_HAS_TLS
+  if (!tls_handshake_pending(client)) {
+    return true;
+  }
+  ERR_clear_error();
+  errno = 0;
+  const int result = SSL_accept(client.tls);
+  if (result == 1) {
+    client.tls_handshake_complete = true;
+    client.tls_read_want = TlsWant::Read;
+    client.tls_write_want = TlsWant::Write;
+    return true;
+  }
+  switch (SSL_get_error(client.tls, result)) {
+    case SSL_ERROR_WANT_READ:
+      client.tls_handshake_want = TlsWant::Read;
+      return true;
+    case SSL_ERROR_WANT_WRITE:
+      client.tls_handshake_want = TlsWant::Write;
+      return true;
+    default:
+      return false;
+  }
+#else
+  (void)client;
+  return true;
+#endif
 }
 
 [[nodiscard]] bool has_pending_regular_output(
@@ -545,6 +939,7 @@ void set_tcp_nodelay(int fd) {
 struct SocketListenerRuntime {
   int fd{-1};
   bool tcp{false};
+  bool tls{false};
   std::string description;
   std::string uds_path;
 };
@@ -562,6 +957,58 @@ struct SocketListenerRuntime {
   result.push_back(':');
   result.append(std::to_string(port));
   return result;
+}
+
+[[nodiscard]] bool is_loopback_address(std::string_view address) {
+  const std::string text(address);
+  in_addr ipv4{};
+  if (::inet_pton(AF_INET, text.c_str(), &ipv4) == 1) {
+    return (ntohl(ipv4.s_addr) & 0xff000000U) == 0x7f000000U;
+  }
+  in6_addr ipv6{};
+  return ::inet_pton(AF_INET6, text.c_str(), &ipv6) == 1 &&
+         IN6_IS_ADDR_LOOPBACK(&ipv6);
+}
+
+void normalize_socket_listeners(ServerConfig& config) {
+  if (config.socket_listeners.empty() && !config.unix_socket_path.empty()) {
+    config.socket_listeners.emplace_back(
+        UdsListenerConfig{.path = config.unix_socket_path});
+  }
+  if (config.socket_listeners.empty() &&
+      config.bind_address != "127.0.0.1") {
+    config.socket_listeners.emplace_back(TcpListenerConfig{
+        .bind_address = config.bind_address,
+        .port = config.port,
+        .tls = !is_loopback_address(config.bind_address)});
+  }
+
+  std::vector<std::uint16_t> tcp_ports;
+  for (auto& configured : config.socket_listeners) {
+    if (auto* tcp = std::get_if<TcpListenerConfig>(&configured)) {
+      tcp->tls = tcp->tls || !is_loopback_address(tcp->bind_address);
+      if (std::find(tcp_ports.begin(), tcp_ports.end(), tcp->port) ==
+          tcp_ports.end()) {
+        tcp_ports.push_back(tcp->port);
+      }
+    }
+  }
+  if (tcp_ports.empty()) {
+    tcp_ports.push_back(config.port);
+  }
+  for (const auto port : tcp_ports) {
+    const bool already_present = std::any_of(
+        config.socket_listeners.begin(), config.socket_listeners.end(),
+        [port](const auto& configured) {
+          const auto* tcp = std::get_if<TcpListenerConfig>(&configured);
+          return tcp != nullptr && tcp->port == port &&
+                 tcp->bind_address == "127.0.0.1" && !tcp->tls;
+        });
+    if (!already_present) {
+      config.socket_listeners.emplace_back(TcpListenerConfig{
+          .bind_address = "127.0.0.1", .port = port, .tls = false});
+    }
+  }
 }
 
 [[nodiscard]] std::optional<SocketListenerRuntime> create_unix_listener(
@@ -606,6 +1053,7 @@ struct SocketListenerRuntime {
   }
   return SocketListenerRuntime{.fd = fd,
                                .tcp = false,
+                               .tls = false,
                                .description = "unix:" + config.path,
                                .uds_path = config.path};
 }
@@ -667,7 +1115,10 @@ struct SocketListenerRuntime {
     return SocketListenerRuntime{
         .fd = fd,
         .tcp = true,
-        .description = format_tcp_endpoint(config.bind_address, config.port),
+        .tls = config.tls,
+        .description =
+            std::string(config.tls ? "tls://" : "tcp://") +
+            format_tcp_endpoint(config.bind_address, config.port),
         .uds_path = {}};
   }
 
@@ -712,7 +1163,7 @@ create_socket_listeners(const ServerConfig& config) {
 
 void accept_clients(int listener_fd, bool tcp,
                     std::vector<std::unique_ptr<Client>>& clients,
-                    const ServerConfig& config) {
+                    const ServerConfig& config, void* tls_context = nullptr) {
   for (;;) {
     sockaddr_storage address{};
     socklen_t address_len = sizeof(address);
@@ -745,6 +1196,16 @@ void accept_clients(int listener_fd, bool tcp,
           client_fd, config.unsolicited_output_buffer_bytes,
           config.transaction_buffer_bytes, next_connection_id(),
           config.auth_file.has_value());
+#ifdef GOBLIN_HAS_TLS
+      if (tls_context != nullptr &&
+          !client->enable_tls(static_cast<SSL_CTX*>(tls_context))) {
+        std::cerr << "goblin-core: unable to create TLS client state\n";
+        close_fd(client_fd);
+        continue;
+      }
+#else
+      (void)tls_context;
+#endif
       if (config.initial_output_buffer_bytes > 0) {
         client->output.reserve(config.initial_output_buffer_bytes);
       }
@@ -1316,9 +1777,9 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       return true;
     }
 
-    const auto received = ::recv(client.fd, buffer.data(), bufsize, 0);
-    if (received > 0) {
-      client.inbuf.append(buffer.data(), static_cast<std::size_t>(received));
+    const auto received = transport_read(client, buffer.data(), bufsize);
+    if (received.status == TransportIoStatus::Progress && received.bytes > 0) {
+      client.inbuf.append(buffer.data(), received.bytes);
 
       if (!client.blocked_list) {
         if (!process_buffered_commands(client, store, pubsub, watches,
@@ -1334,19 +1795,16 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       }
       continue;
     }
-
-    if (received == 0) {
-      return false;
+    switch (received.status) {
+      case TransportIoStatus::WouldBlock:
+        return true;
+      case TransportIoStatus::Interrupted:
+        continue;
+      case TransportIoStatus::Progress:
+      case TransportIoStatus::Closed:
+      case TransportIoStatus::Error:
+        return false;
     }
-
-    if (would_block()) {
-      return true;
-    }
-    if (errno == EINTR) {
-      continue;
-    }
-
-    return false;
   }
 }
 
@@ -1358,10 +1816,18 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     detail::UnsolicitedOutputQueue::Front push{};
     const bool has_push = peek_unsolicited(client, push);
     const bool regular_pending = has_pending_regular_output(client);
-    const bool write_push = has_push &&
-                            (!regular_pending ||
-                             push.sequence <
-                                 client.replies[client.reply_index].sequence);
+    bool write_push = has_push &&
+                      (!regular_pending ||
+                       push.sequence <
+                           client.replies[client.reply_index].sequence);
+#ifdef GOBLIN_HAS_TLS
+    if (client.tls != nullptr && client.tls_write_retry_bytes != 0) {
+      write_push = client.tls_write_retry_unsolicited;
+      if ((write_push && !has_push) || (!write_push && !regular_pending)) {
+        return false;
+      }
+    }
+#endif
 
     std::string_view bytes;
     if (write_push) {
@@ -1381,9 +1847,18 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                                      end - client.output_offset);
     }
 
-    const auto sent = ::send(client.fd, bytes.data(), bytes.size(), 0);
-    if (sent > 0) {
-      const auto written = static_cast<std::size_t>(sent);
+#ifdef GOBLIN_HAS_TLS
+    if (client.tls != nullptr && client.tls_write_retry_bytes != 0) {
+      if (bytes.size() < client.tls_write_retry_bytes) {
+        return false;
+      }
+      bytes = bytes.substr(0, client.tls_write_retry_bytes);
+    }
+#endif
+    const auto sent =
+        transport_write(client, bytes.data(), bytes.size(), write_push);
+    if (sent.status == TransportIoStatus::Progress && sent.bytes > 0) {
+      const auto written = sent.bytes;
       if (write_push) {
         client.unsolicited_front_offset += written;
         if (client.unsolicited_front_offset == push.bytes.size()) {
@@ -1400,17 +1875,18 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       update_read_backpressure(client, config);
       continue;
     }
-
-    if (sent < 0 && would_block()) {
-      compact_output_if_needed(client);
-      update_read_backpressure(client, config);
-      return true;
+    switch (sent.status) {
+      case TransportIoStatus::WouldBlock:
+        compact_output_if_needed(client);
+        update_read_backpressure(client, config);
+        return true;
+      case TransportIoStatus::Interrupted:
+        continue;
+      case TransportIoStatus::Progress:
+      case TransportIoStatus::Closed:
+      case TransportIoStatus::Error:
+        return false;
     }
-    if (sent < 0 && errno == EINTR) {
-      continue;
-    }
-
-    return false;
   }
 
   compact_output_if_needed(client);
@@ -2137,15 +2613,7 @@ template <class NetFn>
 
 Server::Server(ServerConfig config, Store& store)
     : config_(std::move(config)), store_(store) {
-  if (config_.socket_listeners.empty()) {
-    if (!config_.unix_socket_path.empty()) {
-      config_.socket_listeners.emplace_back(
-          UdsListenerConfig{.path = config_.unix_socket_path});
-    } else {
-      config_.socket_listeners.emplace_back(TcpListenerConfig{
-          .bind_address = config_.bind_address, .port = config_.port});
-    }
-  }
+  normalize_socket_listeners(config_);
   const std::size_t page = static_cast<std::size_t>(ring::page_size());
   const auto page_round = [page](std::size_t requested) {
     if (requested == 0) {
@@ -2189,6 +2657,46 @@ int Server::run() {
     std::cerr << "goblin-core: Pub/Sub listener transports require --enable-sbe\n";
     return 1;
   }
+
+  bool has_tls_listener = false;
+  for (const auto& configured : config_.socket_listeners) {
+    const auto* tcp = std::get_if<TcpListenerConfig>(&configured);
+    if (tcp == nullptr) {
+      continue;
+    }
+    if (tcp->bind_address == "0.0.0.0") {
+      std::cerr << "goblin-core: 0.0.0.0 cannot preserve the mandatory "
+                   "plaintext 127.0.0.1 listener; specify concrete interface "
+                   "addresses instead\n";
+      return 1;
+    }
+    has_tls_listener = has_tls_listener || tcp->tls;
+  }
+  if (has_tls_listener && !config_.tls) {
+    std::cerr << "goblin-core: non-loopback TCP listeners require a TLS "
+                 "certificate and private key\n";
+    return 1;
+  }
+
+#ifdef GOBLIN_HAS_TLS
+  TlsContextPtr tls_context(nullptr, &SSL_CTX_free);
+  if (config_.tls) {
+    std::string error;
+    tls_context = create_tls_context(*config_.tls, error);
+    if (!tls_context) {
+      std::cerr << "goblin-core: TLS setup failed: " << error << '\n';
+      return 1;
+    }
+    std::cout << "goblin-core: TLS 1.2+ enabled for non-loopback TCP "
+                 "listeners\n";
+  }
+#else
+  if (config_.tls || has_tls_listener) {
+    std::cerr << "goblin-core: TLS requires a build configured with "
+                 "-DGOBLIN_CORE_ENABLE_TLS=ON\n";
+    return 1;
+  }
+#endif
 
   std::optional<AuthDatabase> auth_database;
   if (config_.auth_file) {
@@ -2366,14 +2874,12 @@ int Server::run() {
     for (auto& client_ptr : clients) {
       auto& client = *client_ptr;
       update_read_backpressure(client, config_);
-      short events = 0;
-      if (!client.read_backpressured) {
-        events |= POLLIN;
+      if (!client.read_backpressured && tls_plaintext_pending(client)) {
+        poll_timeout = 0;
       }
-      if (has_pending_output(client)) {
-        events |= POLLOUT;
-      }
-      pollfds.push_back(pollfd{.fd = client.fd, .events = events, .revents = 0});
+      pollfds.push_back(pollfd{.fd = client.fd,
+                              .events = client_poll_events(client),
+                              .revents = 0});
     }
 
     const int ready = ::poll(pollfds.data(), pollfds.size(), poll_timeout);
@@ -2400,11 +2906,17 @@ int Server::run() {
       const auto revents =
           pollfds[listener_count + kafka_fd_count + i].revents;
 
-      if (keep && (revents & POLLOUT) != 0 && has_pending_output(client)) {
+      if (keep && tls_handshake_ready(client, revents)) {
+        keep = advance_tls_handshake(client);
+      }
+      const bool application_ready = keep && !tls_handshake_pending(client);
+
+      if (application_ready && client_write_ready(client, revents) &&
+          has_pending_output(client)) {
         keep = write_client(client, config_);
       }
 
-      if (keep && !client.read_backpressured) {
+      if (application_ready && keep && !client.read_backpressured) {
         keep = process_buffered_commands(
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
@@ -2412,24 +2924,29 @@ int Server::run() {
             auth);
       }
 
-      if (keep && (revents & POLLIN) != 0 && !client.read_backpressured) {
+      if (application_ready && keep && client_read_ready(client, revents) &&
+          !client.read_backpressured) {
         keep = read_client(client, store_, pubsub, watches, blocking_lists,
                            script_engine, luau_engine, wren_engine, tcl_engine,
                            upython_engine, quickjs_engine, config_, auth);
       }
 
-      if (keep && has_pending_output(client)) {
+      if (application_ready && keep && has_pending_output(client) &&
+          !tls_read_retry_pending(client) &&
+          !tls_write_retry_pending(client)) {
         keep = write_client(client, config_);
       }
 
-      while (keep && !client.read_backpressured &&
+      while (application_ready && keep && !client.read_backpressured &&
              has_buffered_work(client)) {
         keep = process_buffered_commands(
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
             auth);
-        if (keep && has_pending_output(client)) {
+        if (keep && has_pending_output(client) &&
+            !tls_read_retry_pending(client) &&
+            !tls_write_retry_pending(client)) {
           keep = write_client(client, config_);
         }
       }
@@ -2457,7 +2974,14 @@ int Server::run() {
 
     for (std::size_t i = 0; i < listener_count; ++i) {
       if ((pollfds[i].revents & POLLIN) != 0) {
-        accept_clients(listeners[i].fd, listeners[i].tcp, clients, config_);
+        void* listener_tls_context = nullptr;
+#ifdef GOBLIN_HAS_TLS
+        if (listeners[i].tls) {
+          listener_tls_context = tls_context.get();
+        }
+#endif
+        accept_clients(listeners[i].fd, listeners[i].tcp, clients, config_,
+                       listener_tls_context);
       }
     }
   };

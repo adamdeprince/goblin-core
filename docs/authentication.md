@@ -72,7 +72,8 @@ Every authenticated user has the full command surface.
 
 | Connection | Behavior with `--auth-file` |
 |---|---|
-| RESP over TCP, UDS, or ExaSock | Authentication required. |
+| RESP over ordinary TCP | Authentication required. Non-loopback listeners also require native TLS; the mandatory `127.0.0.1` listener stays plaintext. |
+| RESP over UDS or ExaSock | Authentication required. |
 | RESP over a shared-memory ring | Required by default; `--no-auth-ring` marks every ring trusted. |
 | RESP over RDMA | Required by default; `--no-auth-rdma` marks every RDMA endpoint trusted. |
 | SBE over any transport | Never authenticated; SBE itself requires `--enable-sbe`. |
@@ -85,6 +86,9 @@ SBE-capable listener inside the trusted boundary, including TCP and UDS listener
 that accept the `GOBLINS!` negotiation. Restrict their network reachability.
 
 Authentication is not encryption. RESP carries the submitted password in clear
-protocol bytes, so use UDS, a private network, or a TLS proxy for untrusted links.
-The password file limits the damage of a file disclosure; it does not protect a
-password crossing an observable network.
+protocol bytes, so use UDS, a private network, or Goblin Core's
+[native TLS listener](tls.md) for untrusted links. TLS encrypts the connection
+and authenticates the server; it does not replace `--auth-file` or authenticate
+clients with certificates. The password file limits the damage of a file
+disclosure; it does not protect a password crossing an observable plaintext
+network.

@@ -1,4 +1,5 @@
 #include "goblin/core/ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -106,24 +107,31 @@ int main(int argc, char** argv) {
   ::unlink(upstream_socket.c_str());
   ::unlink(downstream_socket.c_str());
   ::unlink(upstream_ring.c_str());
+  const auto upstream_port = goblin::test::reserve_loopback_tcp_port();
+  assert(upstream_port != 0);
+  const std::string upstream_port_text = std::to_string(upstream_port);
 
   Child upstream{.pid = ::fork()};
   assert(upstream.pid >= 0);
   if (upstream.pid == 0) {
     ::execl(argv[1], argv[1], "--enable-sbe", "--unixsocket",
-            upstream_socket.c_str(), "--ring", upstream_ring.c_str(), "64kb",
+            upstream_socket.c_str(), "--port", upstream_port_text.c_str(),
+            "--ring", upstream_ring.c_str(), "64kb",
             static_cast<char*>(nullptr));
     _exit(127);
   }
 
   const int publisher = wait_for_socket(upstream_socket);
   assert(publisher >= 0 && "upstream server failed to start");
+  const auto downstream_port = goblin::test::reserve_loopback_tcp_port();
+  assert(downstream_port != 0);
+  const std::string downstream_port_text = std::to_string(downstream_port);
 
   Child downstream{.pid = ::fork()};
   assert(downstream.pid >= 0);
   if (downstream.pid == 0) {
     ::execl(argv[1], argv[1], "--enable-sbe", "--unixsocket",
-            downstream_socket.c_str(),
+            downstream_socket.c_str(), "--port", downstream_port_text.c_str(),
             "--pubsub-listener-ring", upstream_ring.c_str(),
             "--pubsub-listener-pattern", "orders:*", static_cast<char*>(nullptr));
     _exit(127);

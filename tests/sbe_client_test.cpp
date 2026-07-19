@@ -5,6 +5,7 @@
 //   sbe_client_test <path-to-goblin-core>
 
 #include "goblin/core/sbe_ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #include <csignal>  // kill / SIGTERM (not transitively included via <sys/wait.h> on macOS)
 #include <fcntl.h>
@@ -34,7 +35,10 @@ int main(int argc, char** argv) {
   const char* server = argv[1];
   const std::string tag = std::to_string(::getpid());
   const std::string ring = "/tmp/gcclient-" + tag + ".ring";
-  const std::string sock = "/tmp/gcclient-" + tag + ".sock";  // avoids the default TCP bind
+  const std::string sock = "/tmp/gcclient-" + tag + ".sock";
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
   ::unlink(ring.c_str());
 
   const pid_t pid = ::fork();
@@ -46,7 +50,8 @@ int main(int argc, char** argv) {
     // rings are normally sized to their HugeTLB geometry; 4 KiB is useful when a
     // deployment owns thousands of per-client rings.
     ::execl(server, server, "--enable-sbe", "--unixsocket", sock.c_str(),
-            "--ring", ring.c_str(), "4kb", static_cast<char*>(nullptr));
+            "--port", tcp_port_text.c_str(), "--ring", ring.c_str(), "4kb",
+            static_cast<char*>(nullptr));
     _exit(127);
   }
 

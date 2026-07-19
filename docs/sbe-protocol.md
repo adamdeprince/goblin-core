@@ -43,8 +43,8 @@ priority.**
 **SBE has no authentication exchange.** It is a trusted-fabric protocol for
 ring, RDMA, and otherwise isolated cluster links. Enabling it also permits SBE
 negotiation on configured TCP and UDS listeners, so those listeners must remain
-inside the same security boundary. Use RESP with `--auth-file` at an untrusted
-edge.
+inside the same security boundary. Use RESP with `--auth-file` and a
+[native TLS listener](tls.md) at an untrusted network edge.
 
 ### Latency over the ring
 

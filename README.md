@@ -335,6 +335,8 @@ Prerequisites:
 - A C++23 compiler such as recent Clang, GCC, or MSVC
 - LZ4 headers and library (`liblz4-dev` or `lz4` from Homebrew)
 - libsodium headers and library (`libsodium-dev` or `libsodium` from Homebrew)
+- OpenSSL development headers and libraries (`libssl-dev` or `openssl@3` from
+  Homebrew) for native TCP TLS; use `-DGOBLIN_CORE_ENABLE_TLS=OFF` to omit it
 - Python 3 for tests and generated HTML docs
 - Redis only when running Redis differential tests or Redis comparison benchmarks
 
@@ -387,8 +389,10 @@ Use `AUTH [username] password` or `HELLO 3 AUTH username password`. RESP over
 TCP/UDS/ExaSock authenticates whenever `--auth-file` is set. RESP rings and RDMA
 do too unless `--no-auth-ring` or `--no-auth-rdma` explicitly places that fabric
 inside the trust boundary; those bypasses make AUTH optional rather than
-unavailable. See [Authentication](docs/authentication.md),
-including the plaintext-wire warning and credential rotation rules.
+unavailable. Non-loopback ordinary TCP additionally requires native TLS, while
+the mandatory `127.0.0.1` endpoint stays plaintext. See
+[Authentication](docs/authentication.md), including transport boundaries and
+credential rotation rules.
 
 **Transactions.** RESP clients can use `MULTI`, `EXEC`, `DISCARD`, `WATCH`, and
 `UNWATCH`. Queued commands execute as one atomic block; `WATCH` is invalidated by
@@ -399,22 +403,29 @@ positive values round up to a whole page and the mapping never grows. An
 overflowed transaction is drained and discarded instead of growing the heap.
 See the [transaction command reference](docs/commands/transactions.md).
 
-**Socket listeners.** Repeat `--tcp-listen <address>:<port>` and
-`--uds-listen <path>` to serve the same store through multiple TCP, IPv6, and
-Unix-domain endpoints at once. IPv6 addresses use brackets:
+**TCP and TLS listeners.** Repeat `--listen <address>:<port>` and
+`--uds-listen <path>` to serve the same store through multiple IPv4, IPv6, and
+Unix-domain endpoints at once. IPv6 addresses use brackets. Every configured
+TCP port also listens on plaintext `127.0.0.1`; non-loopback ordinary TCP
+listeners require one shared TLS certificate identity:
 
 ```sh
 ./build-release/goblin-core \
-  --tcp-listen 127.0.0.1:6379 \
-  --tcp-listen '[::1]:6379' \
+  --listen 192.168.1.13:6379 \
+  --listen '[2001:db8::13]:6379' \
+  --tls-cert-file /etc/goblin/fullchain.pem \
+  --tls-key-file /etc/goblin/private-key.pem \
   --uds-listen /run/goblin/client.sock \
   --uds-listen /run/goblin/admin.sock
 ```
 
-The older `--bind <address> --port <port>` spelling still configures one TCP
-listener when no explicit socket listener is present. `--unixsocket <path>` is
-a repeatable alias for `--uds-listen`; as before, using it without an explicit
-`--tcp-listen` creates a UDS-only server.
+`:PORT` is shorthand for `127.0.0.1:PORT`. The older `--tcp-listen` spelling is
+an alias for `--listen`; `--bind <address> --port <port>` still configures one
+TCP endpoint when no explicit socket listener is present. `--unixsocket <path>`
+is a repeatable alias for `--uds-listen`. Even a transport-oriented deployment
+with only UDS, rings, RDMA, or ExaSock configured retains its plaintext
+localhost listener. See [TCP listeners and TLS](docs/tls.md) for wildcard rules,
+the OpenSSL build switch, and the protocol security boundary.
 
 **Shared-memory rings (the fast path).** Pass `--ring <path> <size>` (repeatable) to
 accept requests over io_uring-style SQ/CQ ring buffers in shared memory instead of

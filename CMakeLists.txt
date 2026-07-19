@@ -24,6 +24,9 @@ option(GOBLIN_CORE_ENABLE_EXASOCK
 option(GOBLIN_CORE_ENABLE_KAFKA
   "Enable RESP2 write ingestion from Kafka using vendored librdkafka"
   ON)
+option(GOBLIN_CORE_ENABLE_TLS
+  "Enable OpenSSL TLS on ordinary TCP listeners"
+  ON)
 option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   "Enable Redis-backed differential tests for Goblin Core's Redis-compatible subset"
   OFF)
@@ -238,6 +241,12 @@ find_library(LZ4_LIBRARY NAMES lz4 REQUIRED)
 find_path(SODIUM_INCLUDE_DIR NAMES sodium.h REQUIRED)
 find_library(SODIUM_LIBRARY NAMES sodium REQUIRED)
 
+set(GOBLIN_HAS_TLS_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_TLS)
+  find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
+  set(GOBLIN_HAS_TLS_BUILD ON)
+endif()
+
 set(GOBLIN_HAS_KAFKA_BUILD OFF)
 if(GOBLIN_CORE_ENABLE_KAFKA)
   if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/librdkafka/CMakeLists.txt)
@@ -360,6 +369,12 @@ target_include_directories(goblin_core
 # implementation detail (script.hpp forward-declares lua_State), so consumers of
 # goblin_core neither see nor link Lua directly.
 target_link_libraries(goblin_core PRIVATE goblin_lua goblin_luau_vm goblin_wren goblin_jim goblin_upy goblin_qjs ${LZ4_LIBRARY} ${SODIUM_LIBRARY})
+
+if(GOBLIN_HAS_TLS_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_TLS=1)
+  target_link_libraries(goblin_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  message(STATUS "goblin-core: OpenSSL TLS listeners enabled (GOBLIN_HAS_TLS)")
+endif()
 
 if(GOBLIN_HAS_RDMA_BUILD)
   target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_RDMA=1)
@@ -795,6 +810,18 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_socket_listeners_test
             $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_socket_listeners PROPERTIES TIMEOUT 60)
+
+  if(GOBLIN_HAS_TLS_BUILD)
+    add_executable(goblin_core_tls_socket_test tests/tls_socket_test.cpp)
+    target_link_libraries(goblin_core_tls_socket_test PRIVATE
+      goblin_core OpenSSL::SSL OpenSSL::Crypto)
+    set_target_properties(goblin_core_tls_socket_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_tls_socket
+      COMMAND goblin_core_tls_socket_test
+              $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_tls_socket PROPERTIES TIMEOUT 60)
+  endif()
 
   add_executable(goblin_core_pubsub_socket_test tests/pubsub_socket_test.cpp)
   target_link_libraries(goblin_core_pubsub_socket_test PRIVATE goblin_core)

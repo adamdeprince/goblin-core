@@ -8,6 +8,7 @@
 #include "goblin/core/auth.hpp"
 #include "goblin/core/goblin_protocol.hpp"
 #include "goblin/core/sbe_frame.hpp"
+#include "socket_test_utils.hpp"
 
 #include "goblin_sbe/IntReply.h"
 #include "goblin_sbe/MessageHeader.h"
@@ -73,6 +74,9 @@ int main(int argc, char** argv) {
   ::unlink((auth + ".lock").c_str());
   assert(goblin::core::upsert_auth_user(auth, "default", "secret") ==
          goblin::core::AuthUserUpdate::added);
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
 
   const pid_t pid = ::fork();
   assert(pid >= 0);
@@ -80,7 +84,8 @@ int main(int argc, char** argv) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
     ::execl(server, server, "--enable-sbe", "--auth-file", auth.c_str(),
-            "--unixsocket", sock.c_str(), static_cast<char*>(nullptr));
+            "--unixsocket", sock.c_str(), "--port", tcp_port_text.c_str(),
+            static_cast<char*>(nullptr));
     _exit(127);
   }
 

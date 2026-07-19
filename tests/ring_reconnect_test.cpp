@@ -9,6 +9,7 @@
 
 #include "goblin/core/ring_buffer.hpp"
 #include "goblin/core/ring_client.hpp"
+#include "socket_test_utils.hpp"
 
 #include <csignal>  // kill / SIGKILL / SIGTERM (not transitively via <sys/wait.h> on macOS)
 #include <fcntl.h>
@@ -63,7 +64,10 @@ int main(int argc, char** argv) {
   const char* server = argv[1];
   const std::string tag = std::to_string(::getpid());
   const std::string ring_path = "/tmp/gcrespreconnect-" + tag + ".ring";
-  const std::string sock = "/tmp/gcrespreconnect-" + tag + ".sock";  // avoids the default TCP bind
+  const std::string sock = "/tmp/gcrespreconnect-" + tag + ".sock";
+  const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
+  assert(tcp_port != 0);
+  const std::string tcp_port_text = std::to_string(tcp_port);
   ::unlink(ring_path.c_str());
 
   const pid_t srv = ::fork();
@@ -71,7 +75,8 @@ int main(int argc, char** argv) {
   if (srv == 0) {
     const int dn = ::open("/dev/null", O_WRONLY);
     if (dn >= 0) { ::dup2(dn, 1); ::dup2(dn, 2); }
-    ::execl(server, server, "--unixsocket", sock.c_str(), "--ring", ring_path.c_str(), "1mb",
+    ::execl(server, server, "--unixsocket", sock.c_str(), "--port",
+            tcp_port_text.c_str(), "--ring", ring_path.c_str(), "1mb",
             static_cast<char*>(nullptr));
     _exit(127);
   }

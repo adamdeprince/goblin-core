@@ -77,6 +77,8 @@ using PubSubListenerConfig =
 struct TcpListenerConfig {
   std::string bind_address;
   std::uint16_t port{0};
+  // Non-loopback listeners are normalized to TLS automatically.
+  bool tls{false};
 };
 
 struct UdsListenerConfig {
@@ -85,6 +87,15 @@ struct UdsListenerConfig {
 
 using SocketListenerConfig =
     std::variant<TcpListenerConfig, UdsListenerConfig>;
+
+// One certificate identity shared by TLS-enabled ordinary TCP listeners. The
+// certificate file may contain the leaf certificate followed by its chain.
+// UDS, ring, RDMA, and ExaSock transports remain inside the trusted transport
+// boundary and do not use this context.
+struct TlsConfig {
+  std::string certificate_chain_file;
+  std::string private_key_file;
+};
 
 // One Kafka topic carrying exactly one RESP2 command array per record. A
 // timestamp is present when startup also loaded a snapshot; otherwise every
@@ -101,9 +112,12 @@ struct ServerConfig {
   std::string bind_address{"127.0.0.1"};
   std::uint16_t port{6379};
   std::string unix_socket_path{};
-  // Repeatable --tcp-listen and --uds-listen endpoints. Multiple TCP and UDS
-  // listeners can coexist and all serve the same Store.
+  // Repeatable --listen/--tcp-listen and --uds-listen endpoints. Multiple TCP
+  // and UDS listeners can coexist and all serve the same Store.
   std::vector<SocketListenerConfig> socket_listeners{};
+  // Non-loopback ordinary TCP listeners require this identity. Automatically
+  // supplied 127.0.0.1 listeners stay plaintext.
+  std::optional<TlsConfig> tls{};
   int backlog{128};
   std::size_t max_output_buffer_bytes{1024U * 1024U};
   std::size_t resume_output_buffer_bytes{256U * 1024U};

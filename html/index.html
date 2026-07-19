@@ -566,7 +566,7 @@
           </a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP + UDS + Ringbuffer + RDMA</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP/TLS + UDS + Ringbuffer + RDMA</span>
         </div>
       </div>
     </section>
@@ -584,7 +584,7 @@
       <div class="section-inner">
         <p class="section-label">Two roads into the same engine</p>
         <h2 class="section-title">Choose the overhead you are done paying.</h2>
-        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over TCP, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over <a href="docs/tls.html">TLS-capable TCP</a>, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
         <div class="path-grid">
           <article class="path">
             <span class="path-num">01 / GROWING PRODUCTS</span>
