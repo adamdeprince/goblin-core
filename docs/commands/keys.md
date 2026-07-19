@@ -8,6 +8,7 @@ unified keyspace (sorted sets, hashes, and [strings](strings.md)).
 | [`DEL`](#del) | Delete one or more keys. |
 | [`EXISTS`](#exists) | Count how many of the given keys exist. |
 | [`TYPE`](#type) | The type stored at a key. |
+| [`SCAN`](iteration.md#scan) | Incrementally visit keys with optional glob and type filters. |
 
 ## DEL
 
@@ -49,8 +50,8 @@ TYPE key
 ```
 
 Reply with the type stored at `key` as a simple string: `string`, `zset`,
-`hash`, or `none` when the key does not exist. (Because a name maps to one
-object, exactly one of these applies.)
+`hash`, `list`, `set`, `array`, or `none` when the key does not exist. (Because
+a name maps to one object, exactly one of these applies.)
 
 ```
 > SET a 1
@@ -68,3 +69,4 @@ none
 ## See also
 
 - [strings.md](strings.md) — the string value type and its commands.
+- [iteration.md](iteration.md) — bounded keyspace and collection traversal.

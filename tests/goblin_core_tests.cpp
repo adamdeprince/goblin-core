@@ -5404,6 +5404,10 @@ void test_scan_commands() {
          "-ERR invalid cursor\r\n");
   assert(execute_fields(store, {"HSCAN", "key:hash", "0", "COUNT", "0"}) ==
          "-ERR syntax error\r\n");
+  const auto command_info =
+      execute_fields(store, {"COMMAND", "INFO", "SCAN", "HSCAN"});
+  assert(command_info.find("$4\r\nscan\r\n:-2\r\n") != std::string::npos);
+  assert(command_info.find("$5\r\nhscan\r\n:-3\r\n") != std::string::npos);
 
   Store full(StoreOptions{.hash_listpack_max_entries = 0});
   assert(execute_fields(full,

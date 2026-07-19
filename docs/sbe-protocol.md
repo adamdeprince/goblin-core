@@ -117,7 +117,7 @@ the store with no intermediate parse.
 
 ## Messages
 
-### Reply messages (server → client), ids 1–15
+### Reply messages (server → client), ids 1–15 and 125
 
 A small generic set, reused by every command. New commands almost never add a reply
 type — they pick one of these:
@@ -139,12 +139,13 @@ type — they pick one of these:
 | 13 | `PubSubNumSubReply` | channel/subscriber-count pairs |
 | 14 | `NullableDoubleArrayReply` | ordered present/null native doubles (`ZMSCORE`) |
 | 15 | `ScoredScanReply` | next cursor plus `(native double score, member)` entries (`ZSCAN`) |
+| 125 | `StringScanReply` | next cursor plus flat strings (`SCAN`, `HSCAN`) |
 
 SBE groups cap at 65535 elements
 (`numInGroup` is uint16); a larger array reply returns `ErrorReply` rather than
 truncating silently (huge ranges must paginate).
 
-### Request messages (client → server), ids 16+
+### Request messages (client → server), ids 16–124 and 126+
 
 One per command, appended densely (ids 16–124). **The entire command surface is on the
 wire** — strings, keyspace/TTL, hash, zset, the eleven `GOBLIN.*` natives, admin
@@ -154,13 +155,28 @@ foreign client never has to fall back to RESP. `EVAL`/`EVALSHA`/`SCRIPT` are thr
 selects the engine; a script's arbitrary, possibly nested RESP result comes back as
 the flattened `RespValueReply` (id 10). `GOBLIN.MEMORY` (82) replies a `MapReply` (id
 11) of stat pairs. List commands occupy ids 85–95, Pub/Sub occupies ids 96–101,
-sets occupy ids 102–118, and the expanded sorted-set requests occupy ids
-119–124. `ZREVRANGE` is `ZRange` with `rev=1`.
+sets occupy ids 102–118, the expanded sorted-set requests occupy ids 119–124,
+and bounded key/hash iteration occupies ids 126–127. `ZREVRANGE` is `ZRange`
+with `rev=1`.
 
-The reply set is fifteen: the eight core replies plus `NullableArrayReply` (id 9,
+The reply set is sixteen: the eight core replies plus `NullableArrayReply` (id 9,
 for `HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script
 results), `MapReply` (id 11, key/value pairs), the two Pub/Sub replies, nullable
-native scores (id 14), and scored scan pages (id 15).
+native scores (id 14), scored scan pages (id 15), and flat string scan pages
+(id 125).
+
+### Iteration messages
+
+`Scan` (126) carries an opaque cursor, work count, and optional glob and key-type
+filters. `HScan` (127) carries an opaque cursor, work count, key, optional field
+glob, and the `NOVALUES` selection. Both return `StringScanReply` (125), whose
+group is keys for `SCAN`, alternating fields and values for ordinary `HSCAN`,
+or fields for `HSCAN NOVALUES`.
+
+The pre-existing `SScan` (113) returns a flat cursor/member `ArrayReply`;
+`ZScan` (124) returns `ScoredScanReply`. The newer scan replies preserve native
+cursors and sorted-set scores; the older `SScan` shape carries its cursor as the
+first array string.
 
 ### Sorted-set messages
 

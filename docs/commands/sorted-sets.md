@@ -118,6 +118,9 @@ versions, or compare it with another Redis implementation. `COUNT` controls the
 amount of index work requested per call and is a hint for pagination; `MATCH`
 filters the visited members with Redis glob syntax.
 
+See the [bounded-iteration reference](iteration.md) for the reply contract shared
+with `SCAN`, `HSCAN`, and `SSCAN`.
+
 As with Redis scan commands, callers should tolerate duplicate results if the
 set is mutated during a traversal. A traversal over an unchanged set visits all
 members.

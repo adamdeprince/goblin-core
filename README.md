@@ -91,6 +91,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `SELECT 0`
 - `QUIT`
 - `ECHO message`
+- `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`
 - `ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]`
 - `ZINCRBY key increment member`
 - `ZCARD key`
@@ -122,10 +123,15 @@ compatibility, score-bound syntax, reply shapes, and storage behavior.
 - `HEXISTS key field`
 - `HSTRLEN key field`
 - `HINCRBY key field increment`
+- `HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]`
 
 Every hash command above is also available under `GOBLIN.RT.*` and
 `GOBLIN.EFFICENT.*`. The qualified family selects the representation for a new
 key; see [Real-time hash indexes](docs/real-time-hashes.md).
+
+`SCAN`, `HSCAN`, `SSCAN`, and `ZSCAN` provide bounded cursor iteration. See the
+[iteration command reference](docs/commands/iteration.md) for filtering, reply,
+and mutation semantics.
 
 - `LPUSH key value [value ...]`
 - `RPUSH key value [value ...]`

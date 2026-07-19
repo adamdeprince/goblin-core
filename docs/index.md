@@ -54,7 +54,11 @@ pages.
   [`PING`](../README.md#current-commands), [`ECHO`](../README.md#current-commands)
 - [`INFO`](commands/INFO.md)
 - [`DEL`](commands/keys.md#del), [`EXISTS`](commands/keys.md#exists),
-  [`TYPE`](commands/keys.md#type)
+  [`TYPE`](commands/keys.md#type), [`SCAN`](commands/iteration.md#scan)
+
+The [bounded-iteration reference](commands/iteration.md) documents the shared
+cursor, filtering, and mutation contract for `SCAN`, `HSCAN`, `SSCAN`, and
+`ZSCAN`.
 
 ### Strings and counters
 
@@ -120,7 +124,15 @@ incremental RT indexes, qualified command families, and `--real-time` mode.
 - [`HGETALL`](real-time-hashes.md#selecting-an-implementation),
   [`HKEYS`](real-time-hashes.md#selecting-an-implementation),
   [`HVALS`](real-time-hashes.md#selecting-an-implementation),
-  [`HINCRBY`](real-time-hashes.md#selecting-an-implementation)
+  [`HINCRBY`](real-time-hashes.md#selecting-an-implementation),
+  [`HSCAN`](commands/iteration.md#hscan)
+
+### Bounded iteration
+
+- [`SCAN`](commands/iteration.md#scan),
+  [`HSCAN`](commands/iteration.md#hscan),
+  [`SSCAN`](commands/iteration.md#sscan),
+  [`ZSCAN`](commands/iteration.md#zscan)
 
 ### Lists
 

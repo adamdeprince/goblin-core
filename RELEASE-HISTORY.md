@@ -10,6 +10,12 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
+- Added bounded `SCAN` and `HSCAN`, completing the cursor family alongside
+  `SSCAN` and `ZSCAN`. Keyspace scans support `MATCH`, `COUNT`, and `TYPE`; hash
+  scans support `MATCH`, `COUNT`, and `NOVALUES`, including qualified efficient
+  and real-time hash command families.
+- Added typed SBE scan requests and replies plus stable-traversal differential
+  coverage against Redis for all four cursor commands.
 - Completed the Redis leaderboard command surface with conditional and
   incrementing `ZADD`, `ZINCRBY`, indexed score ranges, `ZCOUNT`, `ZMSCORE`,
   `ZPOPMIN`/`ZPOPMAX`, and `ZSCAN` over RESP2, RESP3, and typed SBE.

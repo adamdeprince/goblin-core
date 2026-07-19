@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare Goblin Core's sorted-set and list behavior against Redis.
+"""Compare Goblin Core's collection behavior against Redis.
 
 The test starts one Goblin Core process and one Redis process, sends the same
 deterministic workload to both over RESP, and fails on the first semantic
-mismatch. It covers the implemented sorted-set surface plus LPUSH/RPUSH,
-LPUSHX/RPUSHX, LPOP/RPOP, LLEN, LINDEX, LRANGE, LSET, LTRIM, LREM, and LINSERT.
-Redis receives the standard list names; Goblin receives a qualified list family.
+mismatch. It covers sorted sets and lists plus stable full traversals through
+SCAN, HSCAN, SSCAN, and ZSCAN. Redis receives the standard list names; Goblin
+receives a qualified list family.
 """
 
 from __future__ import annotations
@@ -384,10 +384,34 @@ def fixed_list_commands() -> list[list[object]]:
     ]
 
 
+def fixed_iteration_commands() -> list[list[object]]:
+    small_hash: list[object] = ["HSET", "scan:hash:small"]
+    for index in range(5):
+        small_hash.extend([f"field-{index:03d}", f"value-{index:03d}"])
+
+    large_hash: list[object] = ["HSET", "scan:hash:large"]
+    for index in range(48):
+        large_hash.extend([f"field-{index:03d}", f"value-{index:03d}"])
+
+    return [
+        small_hash,
+        large_hash,
+        ["SADD", "scan:set", *[f"member-{index:03d}" for index in range(48)]],
+        ["HSCAN", "scan:missing", "0"],
+        ["SET", "scan:wrong-hash", "string"],
+        ["HSCAN", "scan:wrong-hash", "0"],
+        ["HSCAN", "scan:hash:small", "not-a-cursor"],
+        ["HSCAN", "scan:hash:small", "0", "COUNT", "0"],
+        ["SCAN", "not-a-cursor"],
+        ["SCAN", "0", "COUNT", "0"],
+    ]
+
+
 def command_stream(args: argparse.Namespace) -> list[list[object]]:
     return [
         *fixed_zset_commands(),
         *fixed_list_commands(),
+        *fixed_iteration_commands(),
         *random_zset_commands(args),
         *random_list_commands(args),
     ]
@@ -592,6 +616,107 @@ def collect_zscan(client: RespClient,
     return sorted(items.items())
 
 
+def collect_hscan(client: RespClient,
+                  key: str,
+                  count: int,
+                  match: str | None = None,
+                  no_values: bool = False) -> list[object]:
+    cursor = 0
+    items: dict[bytes, bytes] | set[bytes]
+    items = set() if no_values else {}
+    pages = 0
+    while True:
+        command: list[object] = ["HSCAN", key, str(cursor), "COUNT", str(count)]
+        if match is not None:
+            command.extend(["MATCH", match])
+        if no_values:
+            command.append("NOVALUES")
+        response = execute(client, command)
+        if isinstance(response, ErrorResponse):
+            raise AssertionError(f"HSCAN failed for {key!r}: {response.message}")
+        assert isinstance(response, list) and len(response) == 2
+        raw_cursor, raw_items = response
+        cursor = int(raw_cursor)
+        assert isinstance(raw_items, list)
+        if no_values:
+            assert isinstance(items, set)
+            for field in raw_items:
+                assert isinstance(field, bytes)
+                items.add(field)
+        else:
+            assert len(raw_items) % 2 == 0 and isinstance(items, dict)
+            for index in range(0, len(raw_items), 2):
+                field, value = raw_items[index:index + 2]
+                assert isinstance(field, bytes) and isinstance(value, bytes)
+                items[field] = value
+        pages += 1
+        if cursor == 0:
+            break
+        if pages > 1_000_000:
+            raise AssertionError(f"HSCAN cursor did not terminate for {key!r}")
+    return sorted(items.items()) if isinstance(items, dict) else sorted(items)
+
+
+def collect_sscan(client: RespClient,
+                  key: str,
+                  count: int,
+                  match: str | None = None) -> list[bytes]:
+    cursor = 0
+    items: set[bytes] = set()
+    pages = 0
+    while True:
+        command: list[object] = ["SSCAN", key, str(cursor), "COUNT", str(count)]
+        if match is not None:
+            command.extend(["MATCH", match])
+        response = execute(client, command)
+        if isinstance(response, ErrorResponse):
+            raise AssertionError(f"SSCAN failed for {key!r}: {response.message}")
+        assert isinstance(response, list) and len(response) == 2
+        raw_cursor, raw_items = response
+        cursor = int(raw_cursor)
+        assert isinstance(raw_items, list)
+        for item in raw_items:
+            assert isinstance(item, bytes)
+            items.add(item)
+        pages += 1
+        if cursor == 0:
+            break
+        if pages > 1_000_000:
+            raise AssertionError(f"SSCAN cursor did not terminate for {key!r}")
+    return sorted(items)
+
+
+def collect_scan(client: RespClient,
+                 count: int,
+                 match: str | None = None,
+                 key_type: str | None = None) -> list[bytes]:
+    cursor = 0
+    keys: set[bytes] = set()
+    pages = 0
+    while True:
+        command: list[object] = ["SCAN", str(cursor), "COUNT", str(count)]
+        if match is not None:
+            command.extend(["MATCH", match])
+        if key_type is not None:
+            command.extend(["TYPE", key_type])
+        response = execute(client, command)
+        if isinstance(response, ErrorResponse):
+            raise AssertionError(f"SCAN failed: {response.message}")
+        assert isinstance(response, list) and len(response) == 2
+        raw_cursor, raw_keys = response
+        cursor = int(raw_cursor)
+        assert isinstance(raw_keys, list)
+        for key in raw_keys:
+            assert isinstance(key, bytes)
+            keys.add(key)
+        pages += 1
+        if cursor == 0:
+            break
+        if pages > 1_000_000:
+            raise AssertionError("SCAN cursor did not terminate")
+    return sorted(keys)
+
+
 def compare_scans(goblin: RespClient, redis: RespClient,
                   keys: Sequence[str]) -> int:
     checks = 0
@@ -605,6 +730,49 @@ def compare_scans(goblin: RespClient, redis: RespClient,
                     f"match={match!r}\nredis={expected!r}\ngoblin={actual!r}"
                 )
             checks += 1
+
+    for key in ("scan:hash:small", "scan:hash:large"):
+        for match in (None, "field-00*"):
+            for no_values in (False, True):
+                expected = collect_hscan(redis, key, 7, match, no_values)
+                actual = collect_hscan(goblin, key, 7, match, no_values)
+                if expected != actual:
+                    raise AssertionError(
+                        f"Goblin Core/Redis HSCAN mismatch for key={key!r}, "
+                        f"match={match!r}, no_values={no_values}\n"
+                        f"redis={expected!r}\ngoblin={actual!r}"
+                    )
+                checks += 1
+
+    for match in (None, "member-00*"):
+        expected = collect_sscan(redis, "scan:set", 7, match)
+        actual = collect_sscan(goblin, "scan:set", 7, match)
+        if expected != actual:
+            raise AssertionError(
+                f"Goblin Core/Redis SSCAN mismatch for match={match!r}\n"
+                f"redis={expected!r}\ngoblin={actual!r}"
+            )
+        checks += 1
+
+    scan_filters = [
+        (None, None),
+        ("scan:*", None),
+        ("scan:*", "string"),
+        ("scan:*", "hash"),
+        ("scan:*", "set"),
+        (None, "zset"),
+        (None, "list"),
+        (None, "unknown-type"),
+    ]
+    for match, key_type in scan_filters:
+        expected = collect_scan(redis, 7, match, key_type)
+        actual = collect_scan(goblin, 7, match, key_type)
+        if expected != actual:
+            raise AssertionError(
+                f"Goblin Core/Redis SCAN mismatch for match={match!r}, "
+                f"type={key_type!r}\nredis={expected!r}\ngoblin={actual!r}"
+            )
+        checks += 1
     return checks
 
 
@@ -767,7 +935,7 @@ def run_differential(args: argparse.Namespace) -> None:
         f"redis differential passed: {count} commands, mode={mode}, "
         f"pipeline_depth={args.pipeline_depth}, seed={args.seed}, "
         f"rank_cache_mode={args.rank_cache_mode or ('exact' if args.rank_cache else 'off')}, "
-        f"zscan_checks={scan_checks}"
+        f"scan_family_checks={scan_checks}"
     )
 
 
