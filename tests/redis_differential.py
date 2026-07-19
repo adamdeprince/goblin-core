@@ -255,6 +255,12 @@ def fixed_zset_commands() -> list[list[object]]:
         ["ZRANGE", "missing", "0", "-1", "WITHSCORES"],
         ["ZREVRANGE", "missing", "0", "-1"],
         ["ZREVRANGE", "missing", "0", "-1", "WITHSCORES"],
+        ["ZRANGEBYSCORE", "missing", "-inf", "+inf"],
+        ["ZCOUNT", "missing", "-inf", "+inf"],
+        ["ZMSCORE", "missing", "member-1", "member-2"],
+        ["ZPOPMIN", "missing"],
+        ["ZPOPMAX", "missing", "3"],
+        ["ZSCAN", "missing", "0", "COUNT", "2"],
         ["ZREM", "missing", "member-1", "member-2"],
         ["ZADD", "bad", "not-a-float", "member-1"],
         ["ZADD", "bad", "nan", "member-1"],
@@ -264,6 +270,11 @@ def fixed_zset_commands() -> list[list[object]]:
         ["ZREVRANGE", "bad", "zero", "1"],
         ["ZREVRANGE", "bad", "0", "1", "BADSCORES"],
         ["ZREVRANK", "bad"],
+        ["ZINCRBY", "bad", "1"],
+        ["ZCOUNT", "bad", "0"],
+        ["ZMSCORE", "bad"],
+        ["ZPOPMIN", "bad", "-1"],
+        ["ZSCAN", "bad", "not-a-cursor"],
         ["ZCARD"],
         ["ZSCORE", "bad"],
         ["ZADD", "leaders", "2", "bravo", "1", "alpha", "2", "charlie"],
@@ -284,6 +295,59 @@ def fixed_zset_commands() -> list[list[object]]:
         ["ZRANGE", "leaders", "-2", "-1"],
         ["ZREVRANGE", "leaders", "2", "1"],
         ["ZREVRANGE", "leaders", "-2", "-1"],
+
+        # ZADD conditions, change counting, and increment mode.
+        ["ZADD", "options", "10", "ten", "20", "twenty", "30", "thirty"],
+        ["ZADD", "options", "NX", "99", "ten", "40", "forty"],
+        ["ZSCORE", "options", "ten"],
+        ["ZADD", "options", "XX", "11", "ten", "50", "fifty"],
+        ["ZSCORE", "options", "ten"],
+        ["ZADD", "options", "XX", "CH", "12", "ten", "60", "sixty"],
+        ["ZADD", "options", "GT", "CH", "11", "ten", "41", "forty"],
+        ["ZADD", "options", "LT", "CH", "13", "ten", "39", "forty"],
+        ["ZADD", "options", "INCR", "2", "ten"],
+        ["ZADD", "options", "XX", "INCR", "1", "absent"],
+        ["ZADD", "options", "NX", "INCR", "1", "absent"],
+        ["ZINCRBY", "options", "2.5", "absent"],
+        ["ZMSCORE", "options", "ten", "absent", "missing"],
+        ["ZADD", "bad-options", "NX", "XX", "1", "a"],
+        ["ZADD", "bad-options", "NX", "GT", "1", "a"],
+        ["ZADD", "bad-options", "GT", "LT", "1", "a"],
+        ["ZADD", "bad-options", "INCR", "1", "a", "2", "b"],
+
+        # Modern and legacy score ranges, including infinities and ties.
+        ["ZADD", "scores", "-inf", "neginf", "-1", "minus", "0", "zero",
+         "1", "one", "1", "one-b", "2", "two", "3", "three",
+         "+inf", "posinf"],
+        ["ZCOUNT", "scores", "(0", "+inf"],
+        ["ZRANGE", "scores", "-1", "2", "BYSCORE"],
+        ["ZRANGE", "scores", "(0", "+inf", "BYSCORE", "LIMIT", "1", "3",
+         "WITHSCORES"],
+        ["ZRANGE", "scores", "+inf", "(0", "BYSCORE", "REV", "LIMIT", "1", "3",
+         "WITHSCORES"],
+        ["ZRANGEBYSCORE", "scores", "(0", "+inf", "WITHSCORES", "LIMIT", "1", "2"],
+        ["ZREVRANGEBYSCORE", "scores", "+inf", "(0", "WITHSCORES", "LIMIT", "1", "2"],
+        ["ZRANGEBYSCORE", "scores", "0", "2", "REV"],
+        ["ZREVRANGEBYSCORE", "scores", "2", "0", "REV"],
+        ["ZREVRANGE", "scores", "2", "0", "BYSCORE"],
+        ["ZRANGE", "scores", "0", "2", "LIMIT", "0", "1"],
+
+        # Pop ordering is score first, then member lexical order for ties.
+        ["ZADD", "pops", "1", "a", "1", "b", "2", "c", "3", "d", "3", "e"],
+        ["ZPOPMIN", "pops", "2"],
+        ["ZPOPMAX", "pops", "2"],
+        ["ZRANGE", "pops", "0", "-1", "WITHSCORES"],
+
+        # Every newly supported operation must retain the unified key type rule.
+        ["SET", "wrong-zset", "string"],
+        ["ZADD", "wrong-zset", "1", "a"],
+        ["ZINCRBY", "wrong-zset", "1", "a"],
+        ["ZRANGE", "wrong-zset", "-inf", "+inf", "BYSCORE"],
+        ["ZRANGEBYSCORE", "wrong-zset", "-inf", "+inf"],
+        ["ZCOUNT", "wrong-zset", "-inf", "+inf"],
+        ["ZMSCORE", "wrong-zset", "a"],
+        ["ZPOPMIN", "wrong-zset"],
+        ["ZSCAN", "wrong-zset", "0"],
     ]
 
 
@@ -350,23 +414,32 @@ def random_zset_commands(args: argparse.Namespace) -> Iterable[list[object]]:
     for _ in range(args.ops):
         roll = rng.random()
         key = random_key(rng, args.keys)
-        if roll < 0.32:
+        if roll < 0.26:
             pairs = rng.randint(1, args.max_zadd_pairs)
             command: list[object] = ["ZADD", key]
+            if rng.random() < 0.35:
+                command.extend(rng.choice([
+                    ["NX"], ["XX"], ["GT"], ["LT"], ["CH"],
+                    ["NX", "CH"], ["XX", "CH"], ["GT", "CH"],
+                    ["LT", "CH"],
+                ]))
             duplicate_member = random_member(rng, args.members)
             for pair_index in range(pairs):
                 member = duplicate_member if pair_index > 0 and rng.random() < 0.2 else random_member(rng, args.members)
                 command.extend([random_score(rng), member])
             yield command
-        elif roll < 0.48:
+        elif roll < 0.34:
+            yield ["ZINCRBY", key, random_score(rng),
+                   random_member(rng, args.members)]
+        elif roll < 0.45:
             count = rng.randint(1, args.max_zrem_members)
             yield ["ZREM", key, *[random_member(rng, args.members) for _ in range(count)]]
-        elif roll < 0.58:
+        elif roll < 0.53:
             yield ["ZSCORE", key, random_member(rng, args.members)]
-        elif roll < 0.70:
+        elif roll < 0.62:
             command = "ZREVRANK" if rng.random() < 0.5 else "ZRANK"
             yield [command, key, random_member(rng, args.members)]
-        elif roll < 0.93:
+        elif roll < 0.76:
             size = args.members
             start = rng.randint(-size - 10, size + 10)
             stop = start + rng.randint(-5, args.max_range_span)
@@ -379,6 +452,36 @@ def random_zset_commands(args: argparse.Namespace) -> Iterable[list[object]]:
             if rng.random() < 0.5:
                 command.append("WITHSCORES")
             yield command
+        elif roll < 0.87:
+            low = rng.uniform(-10_000.0, 5_000.0)
+            high = rng.uniform(low, 10_000.0)
+            low_text = ("(" if rng.random() < 0.3 else "") + score_text(low)
+            high_text = ("(" if rng.random() < 0.3 else "") + score_text(high)
+            if rng.random() < 0.25:
+                yield ["ZCOUNT", key, low_text, high_text]
+            elif rng.random() < 0.5:
+                command = ["ZRANGEBYSCORE", key, low_text, high_text]
+                if rng.random() < 0.5:
+                    command.append("WITHSCORES")
+                if rng.random() < 0.5:
+                    command.extend(["LIMIT", str(rng.randint(0, 4)),
+                                    str(rng.randint(0, args.max_range_span))])
+                yield command
+            else:
+                command = ["ZRANGE", key, high_text, low_text, "BYSCORE", "REV"]
+                if rng.random() < 0.5:
+                    command.append("WITHSCORES")
+                if rng.random() < 0.5:
+                    command.extend(["LIMIT", str(rng.randint(0, 4)),
+                                    str(rng.randint(0, args.max_range_span))])
+                yield command
+        elif roll < 0.92:
+            yield ["ZMSCORE", key, *[
+                random_member(rng, args.members) for _ in range(rng.randint(1, 4))
+            ]]
+        elif roll < 0.96:
+            yield ["ZPOPMAX" if rng.random() < 0.5 else "ZPOPMIN", key,
+                   str(rng.randint(0, 3))]
         else:
             yield ["ZCARD", key]
 
@@ -427,7 +530,7 @@ def random_list_commands(args: argparse.Namespace) -> Iterable[list[object]]:
 
 
 def is_with_scores(command: Sequence[object]) -> bool:
-    return len(command) == 5 and str(command[4]).upper() == "WITHSCORES"
+    return any(str(part).upper() == "WITHSCORES" for part in command[1:])
 
 
 def as_float(value: object) -> float | None:
@@ -443,15 +546,66 @@ def normalize_response(command: Sequence[object], response: object) -> object:
         return ("error", error_category(response.message))
 
     name = str(command[0]).upper()
-    if name == "ZSCORE":
+    if name in ("ZSCORE", "ZINCRBY") or (
+            name == "ZADD" and any(str(part).upper() == "INCR" for part in command[2:])):
         return as_float(response)
-    if name in ("ZRANGE", "ZREVRANGE") and is_with_scores(command):
+    if name == "ZMSCORE":
+        assert isinstance(response, list)
+        return [as_float(item) for item in response]
+    if ((name in ("ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE")
+         and is_with_scores(command)) or name in ("ZPOPMIN", "ZPOPMAX")):
         assert isinstance(response, list)
         normalized: list[object] = []
         for index, item in enumerate(response):
             normalized.append(as_float(item) if index % 2 else item)
         return normalized
     return response
+
+
+def collect_zscan(client: RespClient,
+                  key: str,
+                  count: int,
+                  match: str | None = None) -> list[tuple[bytes, float]]:
+    cursor = 0
+    items: dict[bytes, float] = {}
+    pages = 0
+    while True:
+        command: list[object] = ["ZSCAN", key, str(cursor), "COUNT", str(count)]
+        if match is not None:
+            command.extend(["MATCH", match])
+        response = execute(client, command)
+        if isinstance(response, ErrorResponse):
+            raise AssertionError(f"ZSCAN failed for {key!r}: {response.message}")
+        assert isinstance(response, list) and len(response) == 2
+        raw_cursor, raw_items = response
+        cursor = int(raw_cursor)
+        assert isinstance(raw_items, list) and len(raw_items) % 2 == 0
+        for index in range(0, len(raw_items), 2):
+            member = raw_items[index]
+            assert isinstance(member, bytes)
+            items[member] = float(raw_items[index + 1])
+        pages += 1
+        if cursor == 0:
+            break
+        if pages > 1_000_000:
+            raise AssertionError(f"ZSCAN cursor did not terminate for {key!r}")
+    return sorted(items.items())
+
+
+def compare_scans(goblin: RespClient, redis: RespClient,
+                  keys: Sequence[str]) -> int:
+    checks = 0
+    for key in keys:
+        for match in (None, "member-00*"):
+            expected = collect_zscan(redis, key, 7, match)
+            actual = collect_zscan(goblin, key, 7, match)
+            if not responses_equal(expected, actual):
+                raise AssertionError(
+                    f"Goblin Core/Redis ZSCAN mismatch for key={key!r}, "
+                    f"match={match!r}\nredis={expected!r}\ngoblin={actual!r}"
+                )
+            checks += 1
+    return checks
 
 
 def error_category(message: str) -> str:
@@ -462,7 +616,8 @@ def error_category(message: str) -> str:
         return "float"
     if "not an integer" in text or "out of range" in text:
         return "integer"
-    if "syntax" in text:
+    if ("syntax" in text or "not compatible" in text or
+            "incr option supports" in text):
         return "syntax"
     return "other"
 
@@ -595,6 +750,12 @@ def run_differential(args: argparse.Namespace) -> None:
             count = run_commands(
                 goblin, redis, commands, args.pipeline_depth, args.goblin_list_prefix
             )
+            scan_checks = compare_scans(
+                goblin, redis,
+                ["leaders", "options", "scores", *[
+                    f"zset:{index}" for index in range(args.keys)
+                ]],
+            )
         finally:
             goblin.close()
             redis.close()
@@ -605,7 +766,8 @@ def run_differential(args: argparse.Namespace) -> None:
     print(
         f"redis differential passed: {count} commands, mode={mode}, "
         f"pipeline_depth={args.pipeline_depth}, seed={args.seed}, "
-        f"rank_cache_mode={args.rank_cache_mode or ('exact' if args.rank_cache else 'off')}"
+        f"rank_cache_mode={args.rank_cache_mode or ('exact' if args.rank_cache else 'off')}, "
+        f"zscan_checks={scan_checks}"
     )
 
 

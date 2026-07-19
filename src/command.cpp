@@ -304,7 +304,8 @@ void append_hello_response(std::string& out, resp::Version version,
 
 [[nodiscard]] std::string parse_zrange_options(Command& command,
                                                bool force_by_score,
-                                               bool force_reverse) {
+                                               bool force_reverse,
+                                               bool legacy_command) {
   command.range_by_score = force_by_score;
   command.range_reverse = force_reverse;
   bool seen_by_score = force_by_score;
@@ -314,7 +315,7 @@ void append_hello_response(std::string& out, resp::Version version,
   for (std::size_t i = 3; i < command.args.size(); ++i) {
     const auto option = command.args[i];
     if (equals_ci(option, "BYSCORE")) {
-      if (seen_by_score || force_by_score) {
+      if (legacy_command || seen_by_score || force_by_score) {
         return syntax_error();
       }
       seen_by_score = true;
@@ -322,7 +323,7 @@ void append_hello_response(std::string& out, resp::Version version,
       continue;
     }
     if (equals_ci(option, "REV")) {
-      if (seen_reverse || force_reverse) {
+      if (legacy_command || seen_reverse || force_reverse) {
         return syntax_error();
       }
       seen_reverse = true;
@@ -1450,7 +1451,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() < 3) {
         return parse_error(wrong_arity("zrange"));
       }
-      if (auto error = parse_zrange_options(command, false, false);
+      if (auto error = parse_zrange_options(command, false, false, false);
           !error.empty()) {
         return parse_error(std::move(error));
       }
@@ -1463,7 +1464,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity(command.name));
       }
       const bool reverse = looked_up_type == CommandType::zrevrangebyscore;
-      if (auto error = parse_zrange_options(command, true, reverse);
+      if (auto error = parse_zrange_options(command, true, reverse, true);
           !error.empty()) {
         return parse_error(std::move(error));
       }
@@ -1480,7 +1481,7 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       if (command.args.size() < 3) {
         return parse_error(wrong_arity("zrevrange"));
       }
-      if (auto error = parse_zrange_options(command, false, true);
+      if (auto error = parse_zrange_options(command, false, true, true);
           !error.empty()) {
         return parse_error(std::move(error));
       }
