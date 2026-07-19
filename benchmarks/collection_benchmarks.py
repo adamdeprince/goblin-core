@@ -566,6 +566,8 @@ def run_zset_suite(args: argparse.Namespace) -> dict[str, Any]:
         "score-hit": args.requests,
         "rank": args.requests,
         "range-16": args.requests,
+        "score-range-16": args.requests,
+        "count-all": args.requests,
         "card": args.requests,
         "update": args.requests,
         "churn": args.requests // 2,
@@ -1065,6 +1067,8 @@ def zset_report(data: dict[str, Any], generated: str) -> str:
         ("score-hit", "ZSCORE hit"),
         ("rank", "ZRANK"),
         ("range-16", "ZRANGE first 16"),
+        ("score-range-16", "ZRANGE BYSCORE, LIMIT 16"),
+        ("count-all", "ZCOUNT full bounds"),
         ("card", "ZCARD"),
         ("churn", "ZREM + ZADD"),
     ]

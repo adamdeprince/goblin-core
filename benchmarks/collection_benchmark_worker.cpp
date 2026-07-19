@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -492,6 +493,13 @@ std::vector<std::string> zset_command(const Config& config,
   if (config.action == "score-hit") return {"ZSCORE", config.key, member};
   if (config.action == "rank") return {"ZRANK", config.key, member};
   if (config.action == "range-16") return {"ZRANGE", config.key, "0", "15"};
+  if (config.action == "score-range-16") {
+    return {"ZRANGE", config.key, "0", "65535", "BYSCORE", "LIMIT", "0",
+            "16"};
+  }
+  if (config.action == "count-all") {
+    return {"ZCOUNT", config.key, "-inf", "+inf"};
+  }
   if (config.action == "card") return {"ZCARD", config.key};
   if (config.action == "update") {
     return {"ZADD", config.key, std::to_string(zset_score(item) + 0.5), member};
@@ -619,7 +627,8 @@ void enqueue_set_command(SbeRingClient& client, const Config& config,
       for (const auto& value : values) {
         entries.next().putMember(value.data(), static_cast<std::uint32_t>(value.size()));
       }
-      message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+      message.putKey(config.key.data(),
+                     static_cast<std::uint32_t>(config.key.size()));
     });
     return;
   }
@@ -630,7 +639,8 @@ void enqueue_set_command(SbeRingClient& client, const Config& config,
                                    config.value_bytes, hit ? 'm' : 'x');
     client.enqueue_sbe<goblin_sbe::SIsMember>(config.key.size() + value.size(),
                                               [&](auto& message) {
-      message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+      message.putKey(config.key.data(),
+                     static_cast<std::uint32_t>(config.key.size()));
       message.putMember(value.data(), static_cast<std::uint32_t>(value.size()));
     });
     return;
@@ -746,6 +756,32 @@ void enqueue_zset_command(SbeRingClient& client, const Config& config,
     });
     return;
   }
+  if (config.action == "score-range-16") {
+    client.enqueue_sbe<goblin_sbe::ZRangeByScore>(config.key.size(),
+                                                   [&](auto& message) {
+      message.min(0.0)
+          .max(65535.0)
+          .limitOffset(0)
+          .limitCount(16)
+          .minExclusive(0)
+          .maxExclusive(0)
+          .reverse(0)
+          .withScores(0);
+      message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+    });
+    return;
+  }
+  if (config.action == "count-all") {
+    client.enqueue_sbe<goblin_sbe::ZCount>(config.key.size(),
+                                            [&](auto& message) {
+      message.min(-std::numeric_limits<double>::infinity())
+          .max(std::numeric_limits<double>::infinity())
+          .minExclusive(0)
+          .maxExclusive(0);
+      message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
+    });
+    return;
+  }
   if (config.action == "card") {
     client.enqueue_sbe<goblin_sbe::ZCard>(config.key.size(), [&](auto& message) {
       message.putKey(config.key.data(), static_cast<std::uint32_t>(config.key.size()));
@@ -808,7 +844,8 @@ TimedResult run_sbe(const Config& config) {
         }
       },
       [&](std::size_t) {
-        if (config.action == "multi-member" || config.action == "range-16") {
+        if (config.action == "multi-member" || config.action == "range-16" ||
+            config.action == "score-range-16") {
           const auto values = client->read_pipeline_array();
           checksum += values.size() + 47U;
         } else if (config.action == "score-hit") {
