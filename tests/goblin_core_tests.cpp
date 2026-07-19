@@ -406,6 +406,14 @@ void test_zadd_updates_existing_members() {
 void test_sorted_set_command_surface() {
   goblin::core::Store store;
 
+  const std::array<goblin::core::ZAddItem, 2> invalid_batch{{
+      {.score = 1.0, .member = "a"},
+      {.score = std::numeric_limits<double>::quiet_NaN(), .member = "b"},
+  }};
+  const auto invalid_result = store.zadd("direct-atomic", invalid_batch);
+  assert(invalid_result.invalid_score);
+  assert(!store.exists("direct-atomic"));
+
   // Every score is validated before the first mutation.
   assert(execute_fields(store, {"ZADD", "atomic", "1", "a", "nope", "b"}) ==
          "-ERR value is not a valid float\r\n");

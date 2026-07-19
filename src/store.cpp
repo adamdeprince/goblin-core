@@ -1049,6 +1049,14 @@ ZAddResult Store::zadd(std::string_view key, std::span<const ZAddItem> items,
   if (items.empty()) {
     return result;
   }
+  // Keep the storage API atomic even when called below the RESP/SBE parsers.
+  // Validate the complete batch before creating a key or applying its first pair.
+  if (std::any_of(items.begin(), items.end(), [](const ZAddItem& item) {
+        return std::isnan(item.score);
+      })) {
+    result.invalid_score = true;
+    return result;
+  }
 
   auto* existing = find_zset(key);
   if (existing == nullptr && options.xx) {
