@@ -137,26 +137,44 @@ type — they pick one of these:
 | 11 | `MapReply` | string key/value pairs (`GOBLIN.MEMORY`) |
 | 12 | `PubSubPush` | asynchronous delivery or subscription acknowledgement |
 | 13 | `PubSubNumSubReply` | channel/subscriber-count pairs |
+| 14 | `NullableDoubleArrayReply` | ordered present/null native doubles (`ZMSCORE`) |
+| 15 | `ScoredScanReply` | next cursor plus `(native double score, member)` entries (`ZSCAN`) |
 
-Ids 14–15 are reserved for future reply types. SBE groups cap at 65535 elements
+SBE groups cap at 65535 elements
 (`numInGroup` is uint16); a larger array reply returns `ErrorReply` rather than
 truncating silently (huge ranges must paginate).
 
 ### Request messages (client → server), ids 16+
 
-One per command, appended densely (ids 16–101). **The entire command surface is on the
+One per command, appended densely (ids 16–124). **The entire command surface is on the
 wire** — strings, keyspace/TTL, hash, zset, the eleven `GOBLIN.*` natives, admin
 (`OPTIMIZE`, `INFO`, `MEMORY`, `SAVE`, `LOAD`), lists, Pub/Sub, and scripting — so a
 foreign client never has to fall back to RESP. `EVAL`/`EVALSHA`/`SCRIPT` are three messages (`Eval`
 79, `EvalSha` 80, `Script` 81) carrying a `language` byte (0 Lua … 5 QuickJS) that
 selects the engine; a script's arbitrary, possibly nested RESP result comes back as
 the flattened `RespValueReply` (id 10). `GOBLIN.MEMORY` (82) replies a `MapReply` (id
-11) of stat pairs. List commands occupy ids 85–95. Pub/Sub occupies ids 96–101.
-`ZREVRANGE` is `ZRange` with `rev=1`.
+11) of stat pairs. List commands occupy ids 85–95, Pub/Sub occupies ids 96–101,
+sets occupy ids 102–118, and the expanded sorted-set requests occupy ids
+119–124. `ZREVRANGE` is `ZRange` with `rev=1`.
 
-The reply set is thirteen: the eight core replies plus `NullableArrayReply` (id 9,
+The reply set is fifteen: the eight core replies plus `NullableArrayReply` (id 9,
 for `HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script
-results), `MapReply` (id 11, key/value pairs), and the two Pub/Sub replies.
+results), `MapReply` (id 11, key/value pairs), the two Pub/Sub replies, nullable
+native scores (id 14), and scored scan pages (id 15).
+
+### Sorted-set messages
+
+`ZAdd` (17) uses its `flags` byte for the complete conditional surface: `0x01`
+NX, `0x02` XX, `0x04` GT, `0x08` LT, `0x10` CH, and `0x20` INCR. INCR requires
+one member and replies with `DoubleReply` or `NilReply`; other forms reply with
+`IntReply`.
+
+`ZIncrBy` (119) carries one native-double increment. `ZRangeByScore` (120)
+carries native-double bounds plus exclusivity, reverse, score-return, offset,
+and limit fields. `ZCount` (121), `ZMScore` (122), `ZPop` (123), and `ZScan`
+(124) complete the same operation set as RESP without turning scores or cursors
+into text. `ZScan` replies with `ScoredScanReply`; its cursor remains opaque to
+clients.
 
 ### Pub/Sub messages
 

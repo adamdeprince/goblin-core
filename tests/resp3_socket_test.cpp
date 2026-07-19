@@ -124,6 +124,21 @@ int main(int argc, char** argv) {
   assert(read_reply(first, pending) ==
          "%1\r\n$5\r\nfield\r\n$5\r\nvalue\r\n");
 
+  send_command(first, {"ZADD", "z", "1.5", "a", "2", "b", "3", "c"});
+  assert(read_reply(first, pending) == ":3\r\n");
+  send_command(first, {"ZADD", "z", "INCR", "0.5", "a"});
+  assert(read_reply(first, pending) == ",2\r\n");
+  send_command(first, {"ZMSCORE", "z", "a", "missing", "c"});
+  assert(read_reply(first, pending) == "*3\r\n,2\r\n_\r\n,3\r\n");
+  send_command(first,
+               {"ZRANGE", "z", "1", "3", "BYSCORE", "WITHSCORES"});
+  assert(read_reply(first, pending) ==
+         "*3\r\n*2\r\n$1\r\na\r\n,2\r\n*2\r\n$1\r\nb\r\n,2\r\n"
+         "*2\r\n$1\r\nc\r\n,3\r\n");
+  send_command(first, {"ZPOPMAX", "z", "2"});
+  assert(read_reply(first, pending) ==
+         "*2\r\n*2\r\n$1\r\nc\r\n,3\r\n*2\r\n$1\r\nb\r\n,2\r\n");
+
   // A newly accepted connection still starts in RESP2.
   const int second = connect_socket(socket_path);
   assert(second >= 0);

@@ -84,14 +84,24 @@ pages.
 
 ### Sorted sets
 
-- [`ZADD`](../README.md#current-commands),
-  [`ZCARD`](../README.md#current-commands),
-  [`ZSCORE`](../README.md#current-commands)
-- [`ZRANGE`](../README.md#current-commands),
-  [`ZREVRANGE`](../README.md#current-commands),
-  [`ZRANK`](../README.md#current-commands),
-  [`ZREVRANK`](../README.md#current-commands)
-- [`ZREM`](../README.md#current-commands),
+The [sorted-set command reference](commands/sorted-sets.md) covers conditional
+updates, score bounds, rank and score ranges, endpoint pops, scans, and storage.
+
+- [`ZADD`](commands/sorted-sets.md#zadd-and-zincrby),
+  [`ZINCRBY`](commands/sorted-sets.md#zadd-and-zincrby),
+  [`ZCARD`](commands/sorted-sets.md#command-surface)
+- [`ZSCORE`](commands/sorted-sets.md#command-surface),
+  [`ZMSCORE`](commands/sorted-sets.md#multi-score-reads-and-endpoint-pops),
+  [`ZRANK`](commands/sorted-sets.md#rank-and-score-ranges),
+  [`ZREVRANK`](commands/sorted-sets.md#rank-and-score-ranges)
+- [`ZRANGE`](commands/sorted-sets.md#rank-and-score-ranges),
+  [`ZRANGEBYSCORE`](commands/sorted-sets.md#rank-and-score-ranges),
+  [`ZREVRANGEBYSCORE`](commands/sorted-sets.md#rank-and-score-ranges),
+  [`ZCOUNT`](commands/sorted-sets.md#rank-and-score-ranges)
+- [`ZREM`](commands/sorted-sets.md#command-surface),
+  [`ZPOPMIN`](commands/sorted-sets.md#multi-score-reads-and-endpoint-pops),
+  [`ZPOPMAX`](commands/sorted-sets.md#multi-score-reads-and-endpoint-pops),
+  [`ZSCAN`](commands/sorted-sets.md#incremental-scan),
   [`ZREMRANGEBYSCORE`](commands/ZREMRANGEBYSCORE.md)
 
 ### Hashes

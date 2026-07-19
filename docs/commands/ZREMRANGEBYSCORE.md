@@ -68,5 +68,5 @@ maintenance [`GOBLIN.OPTIMIZE`](goblin.md) performs on demand.
 
 - [`GOBLIN.ZWINDOW`](GOBLIN.ZWINDOW.md) — the sliding-window limiter that uses
   `ZREMRANGEBYSCORE` to evict expired entries before admitting a request.
-- [`ZADD`](../../README.md) / `ZREM` / `ZRANGE` — the rest of the sorted-set
-  surface.
+- [Sorted-set command reference](sorted-sets.md) — `ZADD`, score and rank
+  ranges, multi-score reads, endpoint pops, and scans.

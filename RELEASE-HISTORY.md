@@ -8,6 +8,15 @@ For the current command surface, build instructions, and compatibility limits,
 see the [project documentation](README.md). For changes after the latest tag,
 see the [repository history](https://github.com/adamdeprince/goblin-core/commits/main/).
 
+## Unreleased
+
+- Completed the Redis leaderboard command surface with conditional and
+  incrementing `ZADD`, `ZINCRBY`, indexed score ranges, `ZCOUNT`, `ZMSCORE`,
+  `ZPOPMIN`/`ZPOPMAX`, and `ZSCAN` over RESP2, RESP3, and typed SBE.
+- Added Redis differential coverage for option interactions, inclusive and
+  exclusive bounds, infinities, reverse limits, tied scores, pops, scan
+  traversal, wrong types, compact-to-full promotion, and every rank-cache mode.
+
 ## v0.8.0 — July 16, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.8.0)

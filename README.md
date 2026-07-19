@@ -91,15 +91,25 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `SELECT 0`
 - `QUIT`
 - `ECHO message`
+- `ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]`
+- `ZINCRBY key increment member`
 - `ZCARD key`
-- `ZADD key score member [score member ...]`
-- `ZRANGE key start stop [WITHSCORES]`
+- `ZCOUNT key min max`
+- `ZRANGE key start stop [REV] [WITHSCORES]`
+- `ZRANGE key min max BYSCORE [REV] [LIMIT offset count] [WITHSCORES]`
+- `ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]`
+- `ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]`
 - `ZRANK key member`
-- `ZREVRANGE key start stop [WITHSCORES]`
 - `ZREVRANK key member`
+- `ZSCORE key member`
+- `ZMSCORE key member [member ...]`
 - `ZREM key member [member ...]`
 - `ZREMRANGEBYSCORE key min max`
-- `ZSCORE key member`
+- `ZPOPMIN key [count]`, `ZPOPMAX key [count]`
+- `ZSCAN key cursor [MATCH pattern] [COUNT count]`
+
+See the [sorted-set command reference](docs/commands/sorted-sets.md) for option
+compatibility, score-bound syntax, reply shapes, and storage behavior.
 - `HSET key field value [field value ...]`
 - `HSETNX key field value`
 - `HGET key field`
