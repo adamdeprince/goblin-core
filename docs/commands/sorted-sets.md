@@ -15,7 +15,8 @@ block for leaderboards, priority queues, time windows, and score-indexed work.
 | `ZRANK`, `ZREVRANK` | Read a member's zero-based ascending or descending rank. |
 | `ZRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE` | Read rank or score ranges. |
 | `ZCOUNT` | Count members inside a score interval. |
-| `ZREM`, `ZREMRANGEBYSCORE` | Remove named members or a score interval. |
+| `ZREM`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK` | Remove named members, a score interval, or a rank interval. |
+| `ZINTERSTORE`, `ZUNIONSTORE` | Materialize weighted intersections or unions. |
 | `ZPOPMIN`, `ZPOPMAX` | Remove and return members at one score endpoint. |
 | `ZSCAN` | Incrementally visit members and scores. |
 
@@ -105,6 +106,27 @@ ZPOPMAX key [count]
 `ZPOPMIN` and `ZPOPMAX` atomically remove up to `count` entries from the selected
 endpoint and return each member with its score. The default count is one. A zero
 count returns an empty array.
+
+## Rank removal and aggregate stores
+
+```text
+ZREMRANGEBYRANK key start stop
+ZINTERSTORE destination numkeys key [key ...]
+  [WEIGHTS weight [weight ...]] [AGGREGATE SUM | MIN | MAX]
+ZUNIONSTORE destination numkeys key [key ...]
+  [WEIGHTS weight [weight ...]] [AGGREGATE SUM | MIN | MAX]
+```
+
+`ZREMRANGEBYRANK` removes an inclusive rank interval. Ranks are zero-based and
+negative ranks count from the high-score end, using the same normalization as
+`ZRANGE`.
+
+The store commands build a complete result before replacing `destination`, so
+the destination may also be one of the inputs and validation errors leave its
+old value intact. Missing inputs are empty sets. `WEIGHTS` multiplies each
+input score before aggregation. `SUM`, `MIN`, and `MAX` combine weighted scores;
+an empty result deletes the destination and every successful store clears its
+old TTL.
 
 ## Incremental scan
 

@@ -1171,6 +1171,163 @@ long long Store::zremrangebyscore(std::string_view key, double min,
   return static_cast<long long>(removed);
 }
 
+long long Store::zremrangebyrank(std::string_view key, long long start,
+                                 long long stop) {
+  auto* zset = find_zset(key);
+  if (zset == nullptr) {
+    return 0;
+  }
+  const auto bounds = zset->range_bounds(start, stop);
+  if (!bounds) {
+    return 0;
+  }
+  std::vector<std::string> members;
+  members.reserve(bounds->count);
+  zset->for_range_members(*bounds, [&](std::string_view member) {
+    members.emplace_back(member);
+  });
+  for (const auto& member : members) {
+    const bool removed = zset->remove(member);
+    assert(removed);
+    (void)removed;
+  }
+  (void)zset->compact_after_removal_if_needed(members.size());
+  (void)zset->cleanup_member_index_after_removal_if_needed(members.size());
+  if (!members.empty() && !zset->empty()) {
+    signal_key_modified(key);
+  }
+  erase_if_empty(key, *zset);
+  return static_cast<long long>(members.size());
+}
+
+namespace {
+
+[[nodiscard]] double zset_contribution(double score, double weight) noexcept {
+  return score * weight;
+}
+
+[[nodiscard]] double zset_combine(double current, double contribution,
+                                  ZSetAggregate aggregate) noexcept {
+  switch (aggregate) {
+    case ZSetAggregate::Sum:
+      return current + contribution;
+    case ZSetAggregate::Min:
+      return std::min(current, contribution);
+    case ZSetAggregate::Max:
+      return std::max(current, contribution);
+  }
+  return current;
+}
+
+}  // namespace
+
+ZStoreResult Store::zunionstore(std::string_view destination,
+                                std::span<const std::string_view> keys,
+                                std::span<const double> weights,
+                                ZSetAggregate aggregate) {
+  ZSet merged(zset_options());
+  bool invalid_score = false;
+  for (std::size_t i = 0; i < keys.size() && !invalid_score; ++i) {
+    const auto* source = find_zset(keys[i]);
+    if (source == nullptr) {
+      continue;
+    }
+    const double weight = weights.empty() ? 1.0 : weights[i];
+    source->for_range_values(0, -1, [&](std::string_view member, double score) {
+      if (invalid_score) {
+        return;
+      }
+      const double contribution = zset_contribution(score, weight);
+      const auto current = merged.score(member);
+      const double next = current ? zset_combine(*current, contribution, aggregate)
+                                  : contribution;
+      if (std::isnan(next)) {
+        invalid_score = true;
+        return;
+      }
+      (void)merged.add(next, member, zset_options());
+    });
+  }
+  if (invalid_score) {
+    return {.invalid_score = true};
+  }
+
+  (void)erase_key(destination);
+  const auto cardinality = static_cast<long long>(merged.size());
+  if (!merged.empty()) {
+    (void)keyspace_.place_loaded_zset(destination, std::move(merged));
+    signal_key_modified(destination);
+  }
+  return {.cardinality = cardinality};
+}
+
+ZStoreResult Store::zinterstore(std::string_view destination,
+                                std::span<const std::string_view> keys,
+                                std::span<const double> weights,
+                                ZSetAggregate aggregate) {
+  std::vector<const ZSet*> sources;
+  sources.reserve(keys.size());
+  std::size_t driver_index = 0;
+  std::size_t driver_size = std::numeric_limits<std::size_t>::max();
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto* source = find_zset(keys[i]);
+    if (source == nullptr) {
+      (void)erase_key(destination);
+      return {};
+    }
+    sources.push_back(source);
+    if (source->size() < driver_size) {
+      driver_index = i;
+      driver_size = source->size();
+    }
+  }
+
+  ZSet intersection(zset_options());
+  bool invalid_score = false;
+  if (!sources.empty()) {
+    sources[driver_index]->for_range_values(
+        0, -1, [&](std::string_view member, double) {
+          if (invalid_score) {
+            return;
+          }
+          bool present = true;
+          double combined = 0.0;
+          bool first = true;
+          for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto score = sources[i]->score(member);
+            if (!score) {
+              present = false;
+              break;
+            }
+            const double weight = weights.empty() ? 1.0 : weights[i];
+            const double contribution = zset_contribution(*score, weight);
+            combined = first ? contribution
+                             : zset_combine(combined, contribution, aggregate);
+            first = false;
+          }
+          if (!present) {
+            return;
+          }
+          if (std::isnan(combined)) {
+            invalid_score = true;
+            return;
+          }
+          (void)intersection.add(combined, member, zset_options());
+        });
+  }
+  if (invalid_score) {
+    return {.invalid_score = true};
+  }
+
+  (void)erase_key(destination);
+  const auto cardinality = static_cast<long long>(intersection.size());
+  if (!intersection.empty()) {
+    (void)keyspace_.place_loaded_zset(destination, std::move(intersection));
+    signal_key_modified(destination);
+  }
+  return {.cardinality = cardinality};
+}
+
 bool Store::zwindow(std::string_view key, double now, double cutoff,
                     long long limit, std::string_view member,
                     std::uint64_t when_ms, std::uint64_t now_ms) {
@@ -1641,6 +1798,30 @@ std::optional<long long> Store::hincrby(std::string_view key,
   return next;
 }
 
+std::optional<std::string> Store::hincrbyfloat(
+    std::string_view key, std::string_view field, double delta,
+    std::optional<HashImplementation> implementation) {
+  auto& hash = get_or_create_hash(key, implementation);
+  double current = 0.0;
+  if (const auto value = hash.get(field); value) {
+    const auto parsed = parse_double(value->to_string());
+    if (!parsed) {
+      erase_if_empty(key, hash);
+      return std::nullopt;
+    }
+    current = *parsed;
+  }
+  const double next = current + delta;
+  if (!std::isfinite(next)) {
+    erase_if_empty(key, hash);
+    return std::nullopt;
+  }
+  auto text = format_incrbyfloat(next);
+  (void)hash.set(field, text);
+  signal_key_modified(key);
+  return text;
+}
+
 bool Store::hash_compare_and_delete(std::string_view key, std::string_view field,
                                     std::string_view expected) {
   auto* hash = find_hash(key);
@@ -1994,6 +2175,24 @@ bool Store::set_nx(std::string_view key, std::string_view value) {
   return stored;
 }
 
+bool Store::mset_nx(
+    std::span<const std::pair<std::string_view, std::string_view>> pairs) {
+  for (const auto& [key, value] : pairs) {
+    (void)value;
+    if (keyspace_.contains(key)) {
+      return false;
+    }
+  }
+  for (const auto& [key, value] : pairs) {
+    const auto id = keyspace_.set_string(key, value);
+    if (!ttl_.empty()) {
+      ttl_.clear(id);
+    }
+    signal_key_modified(key);
+  }
+  return true;
+}
+
 std::optional<StringValueView> Store::get(std::string_view key) const noexcept {
   return keyspace_.get_string(key);
 }
@@ -2279,6 +2478,168 @@ std::optional<std::size_t> Store::setrange(std::string_view key,
   keyspace_.set_string(key, buffer);
   signal_key_modified(key);
   return result_len;
+}
+
+std::size_t Store::dbsize(std::uint64_t now) {
+  (void)active_expire(now, std::numeric_limits<std::size_t>::max());
+  return keyspace_.size();
+}
+
+std::optional<std::string> Store::random_key(std::uint64_t now,
+                                             std::uint64_t random) {
+  (void)active_expire(now, std::numeric_limits<std::size_t>::max());
+  if (keyspace_.empty()) {
+    return std::nullopt;
+  }
+  return std::string(keyspace_.key_for_id(random % keyspace_.size()));
+}
+
+std::size_t Store::touch(std::span<const std::string_view> keys,
+                         std::uint64_t now) {
+  std::size_t count = 0;
+  for (const auto key : keys) {
+    (void)purge_if_expired(key, now);
+    count += keyspace_.contains(key) ? 1 : 0;
+  }
+  return count;
+}
+
+RenameResult Store::rename(std::string_view source,
+                           std::string_view destination, bool nx,
+                           std::uint64_t now) {
+  (void)purge_if_expired(source, now);
+  if (!keyspace_.contains(source)) {
+    return RenameResult::SourceMissing;
+  }
+  if (source == destination) {
+    return nx ? RenameResult::DestinationExists : RenameResult::Renamed;
+  }
+  (void)purge_if_expired(destination, now);
+  if (nx && keyspace_.contains(destination)) {
+    return RenameResult::DestinationExists;
+  }
+  (void)erase_key(destination);
+  const bool renamed = keyspace_.rename_key(source, destination);
+  assert(renamed);
+  (void)renamed;
+  signal_key_modified(source);
+  signal_key_modified(destination);
+  return RenameResult::Renamed;
+}
+
+CopyResult Store::copy(std::string_view source, std::string_view destination,
+                       bool replace, std::uint64_t now) {
+  if (source == destination) {
+    return CopyResult::SameKey;
+  }
+  (void)purge_if_expired(source, now);
+  const auto source_id = keyspace_.id_of(source);
+  if (!source_id) {
+    return CopyResult::SourceMissing;
+  }
+  (void)purge_if_expired(destination, now);
+  if (!replace && keyspace_.contains(destination)) {
+    return CopyResult::DestinationExists;
+  }
+  const auto expiry = ttl_.expiry(*source_id);
+  const auto type = keyspace_.type_of(source);
+  assert(type.has_value());
+
+  switch (*type) {
+    case KeyType::String: {
+      const auto value = keyspace_.get_string(source)->to_string();
+      (void)erase_key(destination);
+      const auto id = keyspace_.set_string(destination, value);
+      if (expiry) {
+        ttl_.set(id, *expiry);
+      }
+      break;
+    }
+    case KeyType::Zset: {
+      const auto* original = find_zset(source);
+      ZSet clone(zset_options());
+      original->for_range_values(0, -1,
+                                 [&](std::string_view member, double score) {
+        (void)clone.add(score, member, zset_options());
+      });
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_zset(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
+    case KeyType::Hash: {
+      const auto* original = find_hash(source);
+      Hash clone(original->options(), original->implementation());
+      original->for_each([&](std::string_view field, EncodedStringView value) {
+        (void)clone.set(field, value.to_string());
+      });
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_hash(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
+    case KeyType::List: {
+      const auto* original = find_list(source);
+      List clone(original->options());
+      std::vector<std::string> values;
+      values.reserve(original->size());
+      original->for_each([&](EncodedStringView value) {
+        values.push_back(value.to_string());
+      });
+      std::vector<std::string_view> views;
+      views.reserve(values.size());
+      for (const auto& value : values) {
+        views.push_back(value);
+      }
+      clone.assign(views);
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_list(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
+    case KeyType::Set: {
+      const auto* original = find_set(source);
+      Set clone(original->options());
+      original->for_each([&](EncodedStringView member) {
+        (void)clone.add(member.to_string());
+      });
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_set(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
+    case KeyType::Array: {
+      const auto* original = keyspace_.find_array(source);
+      Array clone(original->options());
+      const auto stats = original->memory_stats();
+      if (stats.realtime_reserved) {
+        clone.reserve_realtime(stats.reserved_max_index,
+                               stats.reserved_value_capacity,
+                               stats.reserved_value_bytes);
+      }
+      original->scan(0, std::numeric_limits<Array::index_type>::max(),
+                     [&](Array::index_type index, std::string value) {
+        (void)clone.set(index, value);
+      });
+      (void)clone.seek(original->next_insert());
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_array(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
+  }
+  signal_key_modified(destination);
+  return CopyResult::Copied;
 }
 
 // ---- TTL ----

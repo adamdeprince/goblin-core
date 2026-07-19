@@ -12,6 +12,7 @@ replaces it, and a string command against a non-string key is a
 | [`SET`](#set) | Set a key to a value (optionally only if absent). |
 | [`SETNX`](#setnx) | Set only if the key does not exist. |
 | [`GET`](#get) | Get a key's value. |
+| [`GETEX`](#getex) | Get a value and optionally change its expiry. |
 | [`GETSET`](#getset) | Set a new value, return the old one. |
 | [`GETDEL`](#getdel) | Return a key's value and delete it. |
 | [`STRLEN`](#strlen) | Length of the value in bytes. |
@@ -21,6 +22,7 @@ replaces it, and a string command against a non-string key is a
 | [`GETRANGE`](#getrange) | A substring of the value. |
 | [`SETRANGE`](#setrange) | Overwrite part of the value at an offset. |
 | [`MSET`](#mset) | Set several keys at once. |
+| [`MSETNX`](#msetnx) | Set several keys only when every key is absent. |
 | [`MGET`](#mget) | Get several keys at once. |
 
 For `DEL`, `EXISTS`, and `TYPE` (which work on any type), see
@@ -70,7 +72,7 @@ that already holds a different type:
 ```
 
 The exceptions are the commands that **do not require** an existing string:
-`SET`, `SETNX`, and `MSET` create or replace regardless of the current type, and
+`SET`, `SETNX`, `MSET`, and `MSETNX` can create keys without a type gate, and
 `MGET` / `DEL` / `EXISTS` / `TYPE` are type-agnostic. So `SET` **clobbers**:
 
 ```
@@ -163,6 +165,25 @@ OK
 "10"
 > GET counter
 "0"
+```
+
+## GETEX
+
+```
+GETEX key [EX seconds | PX milliseconds | EXAT unix-seconds |
+           PXAT unix-milliseconds | PERSIST]
+```
+
+Return the current value and, in the same atomic command, optionally replace or
+remove its expiry. With no option the TTL is left unchanged. A missing key
+returns nil; a non-string key returns `WRONGTYPE`. Expiry syntax is validated
+before either the value or TTL is changed.
+
+```
+> GETEX session:7 PX 30000
+"payload"
+> GETEX session:7 PERSIST
+"payload"
 ```
 
 ## GETDEL
@@ -321,6 +342,25 @@ replies `+OK`.
 ```
 > MSET a 1 b 2 c 3
 OK
+```
+
+## MSETNX
+
+```
+MSETNX key value [key value ...]
+```
+
+Set the complete batch only when **every** named key is absent, regardless of
+the types currently stored there. The existence check and writes are one atomic
+block: the command returns `1` after committing every pair, or `0` without
+changing any key. Repeated names in a successful batch are applied from left to
+right, so the final pair for that name wins.
+
+```
+> MSETNX a 1 b 2
+(integer) 1
+> MSETNX b 3 c 4
+(integer) 0
 ```
 
 ## MGET

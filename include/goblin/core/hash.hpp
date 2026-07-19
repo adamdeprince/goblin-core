@@ -451,6 +451,25 @@ class Hash {
     }
   }
 
+  // Dense field-id access for HRANDFIELD. The callback is invoked while the
+  // listpack/full-storage views are valid and receives (field, value).
+  template <class Fn>
+  bool at(std::size_t index, Fn&& fn) const {
+    if (index >= size()) {
+      return false;
+    }
+    if (is_small()) {
+      read_small([&](const HashListpack& lp) {
+        lp.for_range(index, 1, std::forward<Fn>(fn),
+                     options().string_encoding);
+      });
+      return true;
+    }
+    const auto id = static_cast<std::uint32_t>(index);
+    fn(full().storage->view(id), full().storage->value(id));
+    return true;
+  }
+
   // HSCAN cursor is a dense field id in either representation. MATCH filters
   // after consuming work, so COUNT remains a bounded work hint even when a page
   // returns no fields.

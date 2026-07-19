@@ -86,12 +86,19 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `AUTH [username] password`
 - `HELLO [2|3 [AUTH username password] [SETNAME client-name]]`
 - `COMMAND [INFO [command-name ...]]`
+- `CONFIG GET pattern [pattern ...]`
 - `CLIENT SETINFO LIB-NAME|LIB-VER value`
 - `CLIENT SETNAME name`, `CLIENT GETNAME`, `CLIENT ID`
 - `SELECT 0`
 - `QUIT`
 - `ECHO message`
+- `TIME`, `ROLE`
 - `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`
+- `DBSIZE`, `RANDOMKEY`, `TOUCH key [key ...]`
+- `RENAME source destination`, `RENAMENX source destination`
+- `COPY source destination [DB 0] [REPLACE]`
+- `GETEX key [EX seconds|PX milliseconds|EXAT unix-seconds|PXAT unix-ms|PERSIST]`
+- `MSETNX key value [key value ...]`
 - `ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]`
 - `ZINCRBY key increment member`
 - `ZCARD key`
@@ -106,12 +113,16 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `ZMSCORE key member [member ...]`
 - `ZREM key member [member ...]`
 - `ZREMRANGEBYSCORE key min max`
+- `ZREMRANGEBYRANK key start stop`
+- `ZINTERSTORE destination numkeys key [key ...] [WEIGHTS ...] [AGGREGATE SUM|MIN|MAX]`
+- `ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS ...] [AGGREGATE SUM|MIN|MAX]`
 - `ZPOPMIN key [count]`, `ZPOPMAX key [count]`
 - `ZSCAN key cursor [MATCH pattern] [COUNT count]`
 
 See the [sorted-set command reference](docs/commands/sorted-sets.md) for option
 compatibility, score-bound syntax, reply shapes, and storage behavior.
 - `HSET key field value [field value ...]`
+- `HMSET key field value [field value ...]`
 - `HSETNX key field value`
 - `HGET key field`
 - `HMGET key field [field ...]`
@@ -123,6 +134,8 @@ compatibility, score-bound syntax, reply shapes, and storage behavior.
 - `HEXISTS key field`
 - `HSTRLEN key field`
 - `HINCRBY key field increment`
+- `HINCRBYFLOAT key field increment`
+- `HRANDFIELD key [count [WITHVALUES]]`
 - `HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]`
 
 Every hash command above is also available under `GOBLIN.RT.*` and

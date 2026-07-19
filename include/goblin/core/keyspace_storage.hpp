@@ -125,6 +125,21 @@ class KeyspaceStorage {
     return id;
   }
 
+  // Replace one live key's bytes without moving its object slot. The caller
+  // updates the key index around this operation; keeping the id stable also
+  // keeps any TTL attached to the object.
+  void replace_key(std::uint64_t id, std::string_view key) {
+    assert(id < key_len_.size());
+    if (key.size() > kMaxBlobBytes) {
+      throw std::length_error("keyspace key too large");
+    }
+    const auto loc = append_blob(key);
+    mark_key_dead(id);
+    key_block_[id] = loc.block;
+    key_offset_[id] = loc.offset;
+    key_len_[id] = static_cast<std::uint16_t>(key.size());
+  }
+
   // Swap-remove support: slide src's key location down into dst (the hole left by
   // an erased id), then pop_back_key() drops the now-duplicated last slot.
   void move_key_slot(std::uint64_t dst, std::uint64_t src) noexcept {

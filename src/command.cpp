@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <fstream>
@@ -601,6 +603,7 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::zrevrank:
     case CommandType::zrem:
     case CommandType::zremrangebyscore:
+    case CommandType::zremrangebyrank:
     case CommandType::zmscore:
     case CommandType::zpopmin:
     case CommandType::zpopmax:
@@ -617,6 +620,7 @@ constexpr std::string_view kValueTooLarge =
 [[nodiscard]] bool is_hash_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::hset:
+    case CommandType::hmset:
     case CommandType::hsetnx:
     case CommandType::hget:
     case CommandType::hmget:
@@ -628,6 +632,8 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::hexists:
     case CommandType::hstrlen:
     case CommandType::hincrby:
+    case CommandType::hincrbyfloat:
+    case CommandType::hrandfield:
     case CommandType::hscan:
     case CommandType::goblin_hcad:    // deletes a field; non-hash is WRONGTYPE
     case CommandType::goblin_hsetgt:  // sets a field; non-hash is WRONGTYPE
@@ -929,6 +935,7 @@ constexpr std::string_view kValueTooLarge =
     // GET is omitted: its store path returns Missing/WrongType/Ok in one probe
     // (see CommandType::get), so the central type gate would be a second find.
     case CommandType::getset:
+    case CommandType::getex:
     case CommandType::getdel:
     case CommandType::strlen:
     case CommandType::append:
@@ -999,9 +1006,14 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::set:
     case CommandType::setnx:
     case CommandType::mset:
+    case CommandType::msetnx:
     case CommandType::mget:
     case CommandType::del:
     case CommandType::exists:
+    case CommandType::rename:
+    case CommandType::renamenx:
+    case CommandType::copy:
+    case CommandType::touch:
     case CommandType::key_type:
     case CommandType::expire:
     case CommandType::pexpire:
@@ -1018,6 +1030,9 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::sinterstore:
     case CommandType::sunionstore:
     case CommandType::sdiffstore:
+    // Sorted-set stores also have a type-agnostic destination first.
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
       return true;
     default:
       return false;
@@ -1344,6 +1359,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
     case CommandType::command:
       command.type = CommandType::command;
       return {.command = std::move(command)};
+    case CommandType::config:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("config"));
+      }
+      command.type = CommandType::config;
+      return {.command = std::move(command)};
     case CommandType::client:
       if (command.args.empty()) {
         return parse_error(wrong_arity("client"));
@@ -1391,6 +1412,13 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("unwatch"));
       }
       command.type = CommandType::unwatch;
+      return {.command = std::move(command)};
+    case CommandType::time:
+    case CommandType::role:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::subscribe:
       if (command.args.empty()) {
@@ -1625,6 +1653,19 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::zremrangebyscore;
       return {.command = std::move(command)};
+    case CommandType::zremrangebyrank:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("zremrangebyrank"));
+      }
+      command.type = CommandType::zremrangebyrank;
+      return {.command = std::move(command)};
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
+      if (command.args.size() < 3) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
     case CommandType::zmscore:
       if (command.args.size() < 2) {
         return parse_error(wrong_arity("zmscore"));
@@ -1651,10 +1692,11 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       command.type = CommandType::zscore;
       return {.command = std::move(command)};
     case CommandType::hset:
+    case CommandType::hmset:
       if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
-        return parse_error(wrong_arity("hset"));
+        return parse_error(wrong_arity(command.name));
       }
-      command.type = CommandType::hset;
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     case CommandType::hsetnx:
       if (command.args.size() != 3) {
@@ -1721,6 +1763,18 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("hincrby"));
       }
       command.type = CommandType::hincrby;
+      return {.command = std::move(command)};
+    case CommandType::hincrbyfloat:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("hincrbyfloat"));
+      }
+      command.type = CommandType::hincrbyfloat;
+      return {.command = std::move(command)};
+    case CommandType::hrandfield:
+      if (command.args.empty() || command.args.size() > 3) {
+        return parse_error(wrong_arity("hrandfield"));
+      }
+      command.type = CommandType::hrandfield;
       return {.command = std::move(command)};
     case CommandType::hscan:
       if (command.args.size() < 2) {
@@ -2127,6 +2181,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::get;
       return {.command = std::move(command)};
+    case CommandType::getex:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("getex"));
+      }
+      command.type = CommandType::getex;
+      return {.command = std::move(command)};
     case CommandType::getset:
       if (command.args.size() != 2) {
         return parse_error(wrong_arity("getset"));
@@ -2205,6 +2265,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::mset;
       return {.command = std::move(command)};
+    case CommandType::msetnx:
+      if (command.args.size() < 2 || command.args.size() % 2 != 0) {
+        return parse_error(wrong_arity("msetnx"));
+      }
+      command.type = CommandType::msetnx;
+      return {.command = std::move(command)};
     case CommandType::mget:
       if (command.args.empty()) {
         return parse_error(wrong_arity("mget"));
@@ -2222,6 +2288,32 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("exists"));
       }
       command.type = CommandType::exists;
+      return {.command = std::move(command)};
+    case CommandType::dbsize:
+    case CommandType::randomkey:
+      if (!command.args.empty()) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    case CommandType::rename:
+    case CommandType::renamenx:
+      if (command.args.size() != 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    case CommandType::copy:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("copy"));
+      }
+      command.type = CommandType::copy;
+      return {.command = std::move(command)};
+    case CommandType::touch:
+      if (command.args.empty()) {
+        return parse_error(wrong_arity("touch"));
+      }
+      command.type = CommandType::touch;
       return {.command = std::move(command)};
     case CommandType::scan:
       if (command.args.empty()) {
@@ -2359,10 +2451,15 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::zpopmax:
     case CommandType::zrem:
     case CommandType::zremrangebyscore:
+    case CommandType::zremrangebyrank:
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
     case CommandType::hset:
+    case CommandType::hmset:
     case CommandType::hsetnx:
     case CommandType::hdel:
     case CommandType::hincrby:
+    case CommandType::hincrbyfloat:
     case CommandType::sadd:
     case CommandType::srem:
     case CommandType::spop:
@@ -2430,6 +2527,7 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::set:
     case CommandType::getset:
     case CommandType::setnx:
+    case CommandType::getex:
     case CommandType::getdel:
     case CommandType::append:
     case CommandType::incr:
@@ -2439,7 +2537,11 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::incrbyfloat:
     case CommandType::setrange:
     case CommandType::mset:
+    case CommandType::msetnx:
     case CommandType::del:
+    case CommandType::rename:
+    case CommandType::renamenx:
+    case CommandType::copy:
     case CommandType::expire:
     case CommandType::pexpire:
     case CommandType::expireat:
@@ -2535,6 +2637,34 @@ constexpr std::string_view kCommandNames[] = {
   return result;
 }
 
+[[nodiscard]] std::uint64_t random_u64() noexcept {
+  thread_local std::uint64_t state = [] {
+    const auto address = reinterpret_cast<std::uintptr_t>(&random_u64);
+    return std::uint64_t{0x9E3779B97F4A7C15ULL} ^
+           (static_cast<std::uint64_t>(address) << 1) ^
+           (static_cast<std::uint64_t>(address) >> 3);
+  }();
+  state ^= state >> 12;
+  state ^= state << 25;
+  state ^= state >> 27;
+  return state * 0x2545F4914F6CDD1DULL;
+}
+
+[[nodiscard]] std::uint64_t random_bounded(std::uint64_t bound) noexcept {
+  assert(bound > 0);
+  if (bound == 1) {
+    return 0;
+  }
+  const auto threshold =
+      (std::numeric_limits<std::uint64_t>::max() / bound) * bound;
+  for (;;) {
+    const auto value = random_u64();
+    if (value < threshold) {
+      return value % bound;
+    }
+  }
+}
+
 [[nodiscard]] int command_arity(CommandType type) noexcept {
   switch (type) {
     case CommandType::quit:
@@ -2542,6 +2672,10 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::exec:
     case CommandType::discard:
     case CommandType::unwatch:
+    case CommandType::time:
+    case CommandType::role:
+    case CommandType::dbsize:
+    case CommandType::randomkey:
       return 1;
     case CommandType::select:
     case CommandType::echo:
@@ -2597,10 +2731,13 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::rpoplpush:
     case CommandType::pma_rpoplpush:
     case CommandType::segmented_rpoplpush:
+    case CommandType::rename:
+    case CommandType::renamenx:
       return 3;
     case CommandType::getrange:
     case CommandType::setrange:
     case CommandType::hincrby:
+    case CommandType::hincrbyfloat:
     case CommandType::hsetnx:
     case CommandType::lset:
     case CommandType::lrem:
@@ -2618,6 +2755,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::zincrby:
     case CommandType::zcount:
     case CommandType::zremrangebyscore:
+    case CommandType::zremrangebyrank:
     case CommandType::expire:
     case CommandType::pexpire:
     case CommandType::expireat:
@@ -2651,6 +2789,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::punsubscribe:
       return -1;
     case CommandType::auth:
+    case CommandType::config:
     case CommandType::client:
     case CommandType::watch:
     case CommandType::subscribe:
@@ -2658,6 +2797,9 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::pubsub:
     case CommandType::spop:
     case CommandType::srandmember:
+    case CommandType::hrandfield:
+    case CommandType::getex:
+    case CommandType::touch:
     case CommandType::sinter:
     case CommandType::sunion:
     case CommandType::sdiff:
@@ -2711,6 +2853,8 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::segmented_rpushx:
     case CommandType::set:
     case CommandType::mset:
+    case CommandType::msetnx:
+    case CommandType::copy:
     case CommandType::blpop:
     case CommandType::brpop:
     case CommandType::pma_blpop:
@@ -2735,6 +2879,9 @@ constexpr std::string_view kCommandNames[] = {
       return -2;
     case CommandType::zadd:
     case CommandType::hset:
+    case CommandType::hmset:
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
     case CommandType::arset:
     case CommandType::armset:
       return -4;
@@ -2782,10 +2929,12 @@ struct CommandKeyRange {
     case CommandType::sintercard:
       return {2, -1, 1};
     case CommandType::mset:
+    case CommandType::msetnx:
       return {1, -1, 2};
     case CommandType::mget:
     case CommandType::del:
     case CommandType::exists:
+    case CommandType::touch:
     case CommandType::sinter:
     case CommandType::sunion:
     case CommandType::sdiff:
@@ -2793,6 +2942,15 @@ struct CommandKeyRange {
     case CommandType::sunionstore:
     case CommandType::sdiffstore:
       return {1, -1, 1};
+    case CommandType::rename:
+    case CommandType::renamenx:
+    case CommandType::copy:
+      return {1, 2, 1};
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
+      // The destination is fixed; source positions are described by numkeys
+      // and therefore cannot be represented by the legacy first/last fields.
+      return {1, 1, 1};
     case CommandType::smove:
       return {1, 2, 1};
     case CommandType::lmove:
@@ -3097,6 +3255,46 @@ void execute_command_into(Store& store,
     case CommandType::command:
       execute_command_introspection(command, out, version);
       return;
+    case CommandType::config: {
+      if (!equals_ci(command.args[0], "GET") || command.args.size() < 2) {
+        resp::append_error(out, "ERR unknown subcommand for CONFIG");
+        return;
+      }
+      struct ConfigValue {
+        std::string_view name;
+        std::string_view value;
+      };
+      static constexpr std::array<ConfigValue, 5> values{{
+          {"databases", "1"},
+          {"appendonly", "no"},
+          {"save", ""},
+          {"maxmemory", "0"},
+          {"maxmemory-policy", "noeviction"},
+      }};
+      std::array<bool, values.size()> selected{};
+      std::size_t count = 0;
+      for (const auto pattern_arg : command.args.subspan(1)) {
+        const auto pattern = lowercase_ascii(pattern_arg);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+          if (!selected[i] && scan_glob_match(pattern, values[i].name)) {
+            selected[i] = true;
+            ++count;
+          }
+        }
+      }
+      if (version == resp::Version::resp3) {
+        resp::append_map_header(out, count);
+      } else {
+        resp::append_array_header(out, count * 2);
+      }
+      for (std::size_t i = 0; i < values.size(); ++i) {
+        if (selected[i]) {
+          resp::append_bulk_string(out, values[i].name);
+          resp::append_bulk_string(out, values[i].value);
+        }
+      }
+      return;
+    }
     case CommandType::client: {
       const auto subcommand = command.args.front();
       if (equals_ci(subcommand, "SETNAME")) {
@@ -3187,6 +3385,21 @@ void execute_command_into(Store& store,
     case CommandType::unwatch:
       resp::append_error(out,
                          "ERR transaction command requires a live client connection");
+      return;
+    case CommandType::time: {
+      const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(micros / 1000000));
+      resp::append_bulk_string(out, std::to_string(micros % 1000000));
+      return;
+    }
+    case CommandType::role:
+      resp::append_array_header(out, 3);
+      resp::append_bulk_string(out, "master");
+      resp::append_integer(out, 0);
+      resp::append_array_header(out, 0);
       return;
     case CommandType::subscribe:
     case CommandType::unsubscribe:
@@ -3512,6 +3725,103 @@ void execute_command_into(Store& store,
       return;
     }
 
+    case CommandType::zremrangebyrank: {
+      const auto start = parse_ll(command.args[1]);
+      const auto stop = parse_ll(command.args[2]);
+      if (!start || !stop) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_integer(
+          out, store.zremrangebyrank(command.args[0], *start, *stop));
+      return;
+    }
+
+    case CommandType::zinterstore:
+    case CommandType::zunionstore: {
+      const auto numkeys_value = parse_ll(command.args[1]);
+      if (!numkeys_value) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*numkeys_value <= 0) {
+        resp::append_error(out, "ERR at least 1 input key is needed");
+        return;
+      }
+      const auto numkeys = static_cast<std::size_t>(*numkeys_value);
+      if (numkeys > command.args.size() - 2) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      const auto keys = command.args.subspan(2, numkeys);
+      static thread_local std::vector<double> weights;
+      weights.assign(numkeys, 1.0);
+      ZSetAggregate aggregate = ZSetAggregate::Sum;
+      bool saw_weights = false;
+      bool saw_aggregate = false;
+      std::size_t index = 2 + numkeys;
+      while (index < command.args.size()) {
+        if (equals_ci(command.args[index], "WEIGHTS") && !saw_weights) {
+          if (numkeys > command.args.size() - index - 1) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          saw_weights = true;
+          ++index;
+          for (std::size_t i = 0; i < numkeys; ++i, ++index) {
+            const auto weight = parse_zset_score(command.args[index]);
+            if (!weight) {
+              resp::append_error(out, "ERR weight value is not a float");
+              return;
+            }
+            weights[i] = *weight;
+          }
+          continue;
+        }
+        if (equals_ci(command.args[index], "AGGREGATE") && !saw_aggregate &&
+            index + 1 < command.args.size()) {
+          saw_aggregate = true;
+          const auto value = command.args[index + 1];
+          if (equals_ci(value, "SUM")) {
+            aggregate = ZSetAggregate::Sum;
+          } else if (equals_ci(value, "MIN")) {
+            aggregate = ZSetAggregate::Min;
+          } else if (equals_ci(value, "MAX")) {
+            aggregate = ZSetAggregate::Max;
+          } else {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          index += 2;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) {
+          (void)store.purge_if_expired(key, now);
+        }
+        const auto actual = store.key_type(key);
+        if (actual && *actual != KeyType::Zset) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+      }
+      const auto result =
+          type == CommandType::zinterstore
+              ? store.zinterstore(command.args[0], keys, weights, aggregate)
+              : store.zunionstore(command.args[0], keys, weights, aggregate);
+      if (result.invalid_score) {
+        resp::append_error(out, "ERR resulting score is not a number (NaN)");
+      } else {
+        resp::append_integer(out, result.cardinality);
+      }
+      return;
+    }
+
     case CommandType::zmscore: {
       const auto members = std::span<const std::string_view>(
           command.args.data() + 1, command.args.size() - 1);
@@ -3625,7 +3935,8 @@ void execute_command_into(Store& store,
       return;
     }
 
-    case CommandType::hset: {
+    case CommandType::hset:
+    case CommandType::hmset: {
       const auto& key = command.args[0];
       for (std::size_t index = 1; index + 1 < command.args.size(); index += 2) {
         if (command.args[index].size() > HashStorage::kMaxFieldBytes ||
@@ -3634,23 +3945,27 @@ void execute_command_into(Store& store,
           return;
         }
       }
-      // Common case: HSET k f v -- skip the multi-field vector.
+      long long added = 0;
+      // Common case: HSET/HMSET k f v -- skip the multi-field vector.
       if (command.args.size() == 3) {
-        resp::append_integer(
-            out, store.hset(key, command.args[1], command.args[2],
-                            hash_implementation));
-        return;
+        added = store.hset(key, command.args[1], command.args[2],
+                           hash_implementation);
+      } else {
+        // Multi-field: one keyspace lookup, reserve, then set each pair.
+        static thread_local std::vector<
+            std::pair<std::string_view, std::string_view>> pairs;
+        pairs.clear();
+        pairs.reserve((command.args.size() - 1) / 2);
+        for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
+          pairs.emplace_back(command.args[i], command.args[i + 1]);
+        }
+        added = store.hset_many(key, pairs, hash_implementation);
       }
-      // Multi-field: one keyspace lookup, reserve, then set each pair.
-      static thread_local std::vector<std::pair<std::string_view, std::string_view>>
-          pairs;
-      pairs.clear();
-      pairs.reserve((command.args.size() - 1) / 2);
-      for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
-        pairs.emplace_back(command.args[i], command.args[i + 1]);
+      if (type == CommandType::hmset) {
+        resp::append_simple_string(out, "OK");
+      } else {
+        resp::append_integer(out, added);
       }
-      resp::append_integer(out,
-                           store.hset_many(key, pairs, hash_implementation));
       return;
     }
 
@@ -3751,6 +4066,10 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::hincrby: {
+      if (command.args[1].size() > HashStorage::kMaxFieldBytes) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
       const auto delta = parse_ll(command.args[2]);
       if (!delta) {
         resp::append_error(out, "ERR value is not an integer or out of range");
@@ -3763,6 +4082,100 @@ void execute_command_into(Store& store,
             out, "ERR hash value is not an integer or out of range");
       } else {
         resp::append_integer(out, *result);
+      }
+      return;
+    }
+
+    case CommandType::hincrbyfloat: {
+      if (command.args[1].size() > HashStorage::kMaxFieldBytes) {
+        resp::append_error(out, kValueTooLarge);
+        return;
+      }
+      const auto delta = parse_score(command.args[2]);
+      if (!delta) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const auto result = store.hincrbyfloat(
+          command.args[0], command.args[1], *delta, hash_implementation);
+      if (!result) {
+        resp::append_error(out, "ERR hash value is not a float");
+      } else {
+        resp::append_bulk_string(out, *result);
+      }
+      return;
+    }
+
+    case CommandType::hrandfield: {
+      const auto field_count = store.hlen(command.args[0]);
+      if (command.args.size() == 1) {
+        if (field_count == 0) {
+          resp::append_null(out, version);
+          return;
+        }
+        (void)store.hash_at(
+            command.args[0], random_bounded(field_count),
+            [&](std::string_view field, EncodedStringView) {
+              resp::append_bulk_string(out, field);
+            });
+        return;
+      }
+
+      const auto requested = parse_ll(command.args[1]);
+      if (!requested) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const bool with_values = command.args.size() == 3;
+      if (with_values && !equals_ci(command.args[2], "WITHVALUES")) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      if (*requested == std::numeric_limits<long long>::min()) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const bool unique = *requested >= 0;
+      const auto magnitude = static_cast<unsigned long long>(
+          unique ? *requested : -*requested);
+      if (magnitude > std::numeric_limits<std::size_t>::max()) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      const auto wanted = static_cast<std::size_t>(magnitude);
+      const auto take = field_count == 0
+                            ? std::size_t{0}
+                            : (unique ? std::min(wanted, field_count) : wanted);
+      resp::append_array_header(out, take * (with_values ? 2 : 1));
+      if (take == 0 || field_count == 0) {
+        return;
+      }
+      const auto emit = [&](std::size_t id) {
+        (void)store.hash_at(
+            command.args[0], id,
+            [&](std::string_view field, EncodedStringView value) {
+              resp::append_bulk_string(out, field);
+              if (with_values) {
+                resp::append_bulk_string(out, value);
+              }
+            });
+      };
+      if (!unique) {
+        for (std::size_t i = 0; i < take; ++i) {
+          emit(static_cast<std::size_t>(random_bounded(field_count)));
+        }
+        return;
+      }
+      static thread_local std::vector<std::size_t> ids;
+      ids.resize(field_count);
+      for (std::size_t i = 0; i < field_count; ++i) {
+        ids[i] = i;
+      }
+      for (std::size_t i = 0; i < take; ++i) {
+        const auto selected =
+            i + static_cast<std::size_t>(random_bounded(field_count - i));
+        std::swap(ids[i], ids[selected]);
+        emit(ids[i]);
       }
       return;
     }
@@ -4778,6 +5191,60 @@ void execute_command_into(Store& store,
       }
       return;
     }
+    case CommandType::getex: {
+      enum class ExpiryAction { None, Persist, Set };
+      ExpiryAction action = ExpiryAction::None;
+      std::optional<std::uint64_t> when;
+      const auto now = store.now_ms();
+      if (command.args.size() == 2 && equals_ci(command.args[1], "PERSIST")) {
+        action = ExpiryAction::Persist;
+      } else if (command.args.size() == 3 &&
+                 (equals_ci(command.args[1], "EX") ||
+                  equals_ci(command.args[1], "PX") ||
+                  equals_ci(command.args[1], "EXAT") ||
+                  equals_ci(command.args[1], "PXAT"))) {
+        const auto amount = parse_ll(command.args[2]);
+        if (!amount) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        if (*amount <= 0) {
+          resp::append_error(out, "ERR invalid expire time in 'getex' command");
+          return;
+        }
+        if (equals_ci(command.args[1], "EX")) {
+          when = compute_when_ms(now, *amount, 1000);
+        } else if (equals_ci(command.args[1], "PX")) {
+          when = compute_when_ms(now, *amount, 1);
+        } else if (equals_ci(command.args[1], "EXAT")) {
+          when = compute_when_ms(0, *amount, 1000);
+        } else {
+          when = compute_when_ms(0, *amount, 1);
+        }
+        if (!when) {
+          resp::append_error(out, "ERR invalid expire time in 'getex' command");
+          return;
+        }
+        action = ExpiryAction::Set;
+      } else if (command.args.size() != 1) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      const auto current = store.get(command.args[0]);
+      if (!current) {
+        resp::append_null(out, version);
+        return;
+      }
+      const auto value = current->to_string();
+      if (action == ExpiryAction::Persist) {
+        (void)store.persist(command.args[0]);
+      } else if (action == ExpiryAction::Set) {
+        (void)store.expire_at_ms(command.args[0], *when, now);
+      }
+      resp::append_bulk_string(out, value);
+      return;
+    }
     case CommandType::getset: {
       const auto& value = command.args[1];
       if (!store.value_fits(value)) {
@@ -4911,6 +5378,28 @@ void execute_command_into(Store& store,
       resp::append_simple_string(out, "OK");
       return;
     }
+    case CommandType::msetnx: {
+      static thread_local std::vector<
+          std::pair<std::string_view, std::string_view>> pairs;
+      pairs.clear();
+      pairs.reserve(command.args.size() / 2);
+      for (std::size_t i = 0; i + 1 < command.args.size(); i += 2) {
+        if (!store.value_fits(command.args[i + 1])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+        pairs.emplace_back(command.args[i], command.args[i + 1]);
+      }
+      if (!store.ttl_empty()) {
+        const auto now = store.now_ms();
+        for (const auto& [key, value] : pairs) {
+          (void)value;
+          (void)store.purge_if_expired(key, now);
+        }
+      }
+      resp::append_integer(out, store.mset_nx(pairs) ? 1 : 0);
+      return;
+    }
     case CommandType::mget: {
       const bool has_ttl = !store.ttl_empty();
       const auto now = has_ttl ? store.now_ms() : std::uint64_t{0};
@@ -4949,6 +5438,81 @@ void execute_command_into(Store& store,
       resp::append_integer(out, count);
       return;
     }
+    case CommandType::dbsize:
+      resp::append_integer(
+          out, static_cast<long long>(store.dbsize(store.now_ms())));
+      return;
+    case CommandType::rename:
+    case CommandType::renamenx: {
+      const bool nx = type == CommandType::renamenx;
+      const auto result = store.rename(command.args[0], command.args[1], nx,
+                                       store.now_ms());
+      if (result == RenameResult::SourceMissing) {
+        resp::append_error(out, "ERR no such key");
+      } else if (nx) {
+        resp::append_integer(
+            out, result == RenameResult::Renamed ? 1 : 0);
+      } else {
+        resp::append_simple_string(out, "OK");
+      }
+      return;
+    }
+    case CommandType::copy: {
+      bool replace = false;
+      bool saw_db = false;
+      bool saw_replace = false;
+      for (std::size_t i = 2; i < command.args.size(); ++i) {
+        if (equals_ci(command.args[i], "DB") && !saw_db &&
+            i + 1 < command.args.size()) {
+          const auto db = parse_ll(command.args[++i]);
+          if (!db) {
+            resp::append_error(out, integer_range_error());
+            return;
+          }
+          if (*db != 0) {
+            resp::append_error(out, "ERR DB index is out of range");
+            return;
+          }
+          saw_db = true;
+          continue;
+        }
+        if (equals_ci(command.args[i], "REPLACE") && !saw_replace) {
+          saw_replace = true;
+          replace = true;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      switch (store.copy(command.args[0], command.args[1], replace,
+                         store.now_ms())) {
+        case CopyResult::Copied:
+          resp::append_integer(out, 1);
+          break;
+        case CopyResult::SourceMissing:
+        case CopyResult::DestinationExists:
+          resp::append_integer(out, 0);
+          break;
+        case CopyResult::SameKey:
+          resp::append_error(out,
+                             "ERR source and destination objects are the same");
+          break;
+      }
+      return;
+    }
+    case CommandType::randomkey: {
+      const auto key = store.random_key(store.now_ms(), random_u64());
+      if (key) {
+        resp::append_bulk_string(out, *key);
+      } else {
+        resp::append_null(out, version);
+      }
+      return;
+    }
+    case CommandType::touch:
+      resp::append_integer(
+          out, static_cast<long long>(store.touch(command.args, store.now_ms())));
+      return;
     case CommandType::scan: {
       const auto cursor = parse_u64(command.args[0]);
       if (!cursor) {

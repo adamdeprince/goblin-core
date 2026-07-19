@@ -194,8 +194,15 @@ void test_command_perfect_hash() {
   assert(type_of({"zcount", "k", "-inf", "+inf"}) == CT::zcount);
   assert(type_of({"zscan", "k", "0"}) == CT::zscan);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
+  assert(type_of({"hincrbyfloat", "h", "f", "1"}) == CT::hincrbyfloat);
+  assert(type_of({"hrandfield", "h"}) == CT::hrandfield);
+  assert(type_of({"hmset", "h", "f", "v"}) == CT::hmset);
   assert(type_of({"hscan", "h", "0"}) == CT::hscan);
   assert(type_of({"scan", "0"}) == CT::scan);
+  assert(type_of({"msetnx", "a", "1"}) == CT::msetnx);
+  assert(type_of({"zunionstore", "out", "1", "z"}) == CT::zunionstore);
+  assert(type_of({"time"}) == CT::time);
+  assert(type_of({"role"}) == CT::role);
   assert(type_of({"goblin.rt.hset", "h", "f", "v"}) == CT::hset);
   assert(type_of({"GoBlIn.EfFiCeNt.HgEt", "h", "f"}) == CT::hget);
   assert(type_of({"goblin.pma.lpush", "l", "v"}) == CT::pma_lpush);
@@ -5445,6 +5452,189 @@ void test_hash_commands() {
   assert(execute_fields(store, {"HEXISTS", "h", "f2"}) == ":0\r\n");
 }
 
+void test_hash_compatibility_commands() {
+  goblin::core::Store store;
+
+  assert(execute_fields(store, {"HMSET", "h", "number", "1"}) ==
+         "+OK\r\n");
+  assert(execute_fields(store, {"HINCRBYFLOAT", "h", "number", "0.5"}) ==
+         "$3\r\n1.5\r\n");
+  assert(execute_fields(store, {"HGET", "h", "number"}) ==
+         "$3\r\n1.5\r\n");
+  assert(execute_fields(store, {"HRANDFIELD", "h"}) ==
+         "$6\r\nnumber\r\n");
+  assert(execute_fields(store, {"HRANDFIELD", "h", "2", "WITHVALUES"}) ==
+         "*2\r\n$6\r\nnumber\r\n$3\r\n1.5\r\n");
+  assert(execute_fields(store, {"HRANDFIELD", "h", "-2"}) ==
+         "*2\r\n$6\r\nnumber\r\n$6\r\nnumber\r\n");
+  assert(execute_fields(store, {"HRANDFIELD", "missing"}) == "$-1\r\n");
+  assert(execute_fields(store, {"HRANDFIELD", "missing", "2"}) ==
+         "*0\r\n");
+
+  assert(execute_fields(store, {"HMSET", "bad", "field", "text"}) ==
+         "+OK\r\n");
+  assert(execute_fields(store,
+                        {"HINCRBYFLOAT", "bad", "field", "1"}) ==
+         "-ERR hash value is not a float\r\n");
+  assert(execute_fields(store, {"HGET", "bad", "field"}) ==
+         "$4\r\ntext\r\n");
+}
+
+void test_string_and_keyspace_compatibility_commands() {
+  using goblin::core::Store;
+
+  Store strings;
+  assert(execute_fields(strings, {"MSETNX", "a", "1", "b", "2"}) ==
+         ":1\r\n");
+  assert(execute_fields(strings, {"MSETNX", "b", "x", "c", "3"}) ==
+         ":0\r\n");
+  assert(execute_fields(strings, {"MGET", "a", "b", "c"}) ==
+         "*3\r\n$1\r\n1\r\n$1\r\n2\r\n$-1\r\n");
+  assert(execute_fields(strings, {"MSETNX", "duplicate", "1", "duplicate", "2"}) ==
+         ":1\r\n");
+  assert(execute_fields(strings, {"GET", "duplicate"}) == "$1\r\n2\r\n");
+
+  assert(execute_fields(strings, {"SET", "expiring", "value"}) ==
+         "+OK\r\n");
+  assert(execute_fields(strings, {"PEXPIRE", "expiring", "60000"}) ==
+         ":1\r\n");
+  assert(execute_fields(strings, {"GETEX", "expiring", "PERSIST"}) ==
+         "$5\r\nvalue\r\n");
+  assert(execute_fields(strings, {"PTTL", "expiring"}) == ":-1\r\n");
+  assert(execute_fields(strings, {"GETEX", "expiring", "PX", "60000"}) ==
+         "$5\r\nvalue\r\n");
+  assert(strings.pttl_ms("expiring", strings.now_ms()) > 0);
+  const auto ttl_before = strings.pttl_ms("expiring", strings.now_ms());
+  assert(execute_fields(strings, {"GETEX", "expiring", "BOGUS"}) ==
+         "-ERR syntax error\r\n");
+  assert(strings.pttl_ms("expiring", strings.now_ms()) <= ttl_before);
+  assert(strings.pttl_ms("expiring", strings.now_ms()) > 0);
+
+  Store rename;
+  assert(execute_fields(rename, {"SET", "source", "one"}) == "+OK\r\n");
+  assert(execute_fields(rename, {"PEXPIRE", "source", "60000"}) ==
+         ":1\r\n");
+  assert(execute_fields(rename, {"SET", "destination", "old"}) ==
+         "+OK\r\n");
+  assert(execute_fields(rename, {"RENAME", "source", "destination"}) ==
+         "+OK\r\n");
+  assert(execute_fields(rename, {"GET", "source"}) == "$-1\r\n");
+  assert(execute_fields(rename, {"GET", "destination"}) ==
+         "$3\r\none\r\n");
+  assert(rename.pttl_ms("destination", rename.now_ms()) > 0);
+  assert(execute_fields(rename, {"RENAME", "destination", "destination"}) ==
+         "+OK\r\n");
+  assert(execute_fields(rename, {"RENAMENX", "destination", "destination"}) ==
+         ":0\r\n");
+  assert(execute_fields(rename, {"RENAME", "missing", "x"}) ==
+         "-ERR no such key\r\n");
+
+  Store copy;
+  assert(execute_fields(copy, {"SET", "str", "original"}) == "+OK\r\n");
+  assert(execute_fields(copy, {"PEXPIRE", "str", "60000"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "str", "str-copy"}) == ":1\r\n");
+  assert(copy.pttl_ms("str-copy", copy.now_ms()) > 0);
+  assert(execute_fields(copy, {"SET", "str-copy", "changed"}) == "+OK\r\n");
+  assert(execute_fields(copy, {"GET", "str"}) == "$8\r\noriginal\r\n");
+
+  assert(execute_fields(copy, {"ZADD", "z", "1", "a"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "z", "z-copy"}) == ":1\r\n");
+  assert(execute_fields(copy, {"ZADD", "z-copy", "2", "b"}) == ":1\r\n");
+  assert(execute_fields(copy, {"ZCARD", "z"}) == ":1\r\n");
+  assert(execute_fields(copy, {"HSET", "h", "f", "v"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "h", "h-copy"}) == ":1\r\n");
+  assert(execute_fields(copy, {"HSET", "h-copy", "g", "w"}) == ":1\r\n");
+  assert(execute_fields(copy, {"HLEN", "h"}) == ":1\r\n");
+  assert(execute_fields(copy, {"RPUSH", "list", "a"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "list", "list-copy"}) == ":1\r\n");
+  assert(execute_fields(copy, {"RPUSH", "list-copy", "b"}) == ":2\r\n");
+  assert(execute_fields(copy, {"LLEN", "list"}) == ":1\r\n");
+  assert(execute_fields(copy, {"SADD", "set", "a"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "set", "set-copy"}) == ":1\r\n");
+  assert(execute_fields(copy, {"SADD", "set-copy", "b"}) == ":1\r\n");
+  assert(execute_fields(copy, {"SCARD", "set"}) == ":1\r\n");
+  assert(execute_fields(copy, {"ARSET", "array", "4", "a"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "array", "array-copy"}) == ":1\r\n");
+  assert(execute_fields(copy, {"ARSET", "array-copy", "5", "b"}) ==
+         ":1\r\n");
+  assert(execute_fields(copy, {"ARCOUNT", "array"}) == ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "str", "str-copy"}) == ":0\r\n");
+  assert(execute_fields(copy, {"COPY", "str", "str-copy", "REPLACE"}) ==
+         ":1\r\n");
+  assert(execute_fields(copy, {"COPY", "str", "str", "DB", "0"}) ==
+         "-ERR source and destination objects are the same\r\n");
+  assert(execute_fields(copy, {"COPY", "str", "other", "DB", "1"}) ==
+         "-ERR DB index is out of range\r\n");
+
+  Store keys;
+  assert(execute_fields(keys, {"RANDOMKEY"}) == "$-1\r\n");
+  assert(execute_fields(keys, {"SET", "only", "value"}) == "+OK\r\n");
+  assert(execute_fields(keys, {"DBSIZE"}) == ":1\r\n");
+  assert(execute_fields(keys, {"RANDOMKEY"}) == "$4\r\nonly\r\n");
+  assert(execute_fields(keys, {"TOUCH", "only", "missing", "only"}) ==
+         ":2\r\n");
+}
+
+void test_sorted_set_store_commands() {
+  goblin::core::Store store;
+  assert(execute_fields(store, {"ZADD", "z1", "1", "a", "2", "b"}) ==
+         ":2\r\n");
+  assert(execute_fields(store, {"ZADD", "z2", "3", "a", "4", "c"}) ==
+         ":2\r\n");
+  assert(execute_fields(store,
+                        {"ZUNIONSTORE", "union", "2", "z1", "z2",
+                         "WEIGHTS", "2", "3", "AGGREGATE", "SUM"}) ==
+         ":3\r\n");
+  assert(execute_fields(store, {"ZSCORE", "union", "a"}) ==
+         "$2\r\n11\r\n");
+  assert(execute_fields(store,
+                        {"ZINTERSTORE", "intersection", "2", "z1", "z2",
+                         "AGGREGATE", "MIN"}) == ":1\r\n");
+  assert(execute_fields(store, {"ZSCORE", "intersection", "a"}) ==
+         "$1\r\n1\r\n");
+  assert(execute_fields(store, {"ZREMRANGEBYRANK", "union", "-2", "-1"}) ==
+         ":2\r\n");
+  assert(execute_fields(store, {"ZCARD", "union"}) == ":1\r\n");
+
+  // Destination can also be an input because the result is built before the
+  // old destination is replaced.
+  assert(execute_fields(store,
+                        {"ZUNIONSTORE", "z1", "2", "z1", "z2"}) ==
+         ":3\r\n");
+  assert(execute_fields(store, {"ZCARD", "z1"}) == ":3\r\n");
+
+  assert(execute_fields(store, {"ZADD", "protected", "9", "keep"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"SET", "wrong", "type"}) == "+OK\r\n");
+  assert(execute_fields(store,
+                        {"ZUNIONSTORE", "protected", "2", "z1", "wrong"}) ==
+         "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+  assert(execute_fields(store, {"ZSCORE", "protected", "keep"}) ==
+         "$1\r\n9\r\n");
+}
+
+void test_operational_compatibility_commands() {
+  goblin::core::Store store;
+  const auto time = execute_fields(store, {"TIME"});
+  assert(time.starts_with("*2\r\n$"));
+  assert(execute_fields(store, {"ROLE"}) ==
+         "*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+  assert(execute_fields(store, {"CONFIG", "GET", "maxmemory*"}) ==
+         "*4\r\n$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n");
+  assert(execute_fields(store, {"CONFIG", "SET", "maxmemory", "1"}) ==
+         "-ERR unknown subcommand for CONFIG\r\n");
+
+  goblin::core::resp::Version version = goblin::core::resp::Version::resp3;
+  std::vector<std::string_view> fields{"CONFIG", "GET", "save"};
+  auto parsed = goblin::core::parse_command(fields);
+  assert(parsed.ok());
+  std::string out;
+  goblin::core::execute_command_into(
+      store, *parsed.command, out,
+      goblin::core::CommandExecutionOptions{.resp_version = &version});
+  assert(out == "%1\r\n$4\r\nsave\r\n$0\r\n\r\n");
+}
+
 void test_scan_commands() {
   using goblin::core::HashImplementation;
   using goblin::core::KeyType;
@@ -7064,6 +7254,10 @@ int main() {
   test_set_full_command_surface();
   test_set_snapshot_roundtrip();
   test_hash_commands();
+  test_hash_compatibility_commands();
+  test_string_and_keyspace_compatibility_commands();
+  test_sorted_set_store_commands();
+  test_operational_compatibility_commands();
   test_scan_commands();
   test_wrongtype();
   test_hash_snapshot_persistence();

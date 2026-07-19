@@ -59,6 +59,17 @@ struct ZSetOwnedEntry {
   double score{0.0};
 };
 
+enum class ZSetAggregate : std::uint8_t {
+  Sum,
+  Min,
+  Max,
+};
+
+struct ZStoreResult {
+  long long cardinality{0};
+  bool invalid_score{false};
+};
+
 struct ZSetRangeBounds {
   std::size_t first{0};
   std::size_t count{0};
@@ -537,6 +548,19 @@ struct KeyMove {
   std::uint64_t to;
 };
 
+enum class RenameResult : std::uint8_t {
+  Renamed,
+  SourceMissing,
+  DestinationExists,
+};
+
+enum class CopyResult : std::uint8_t {
+  Copied,
+  SourceMissing,
+  DestinationExists,
+  SameKey,
+};
+
 // EXPIRE-family condition flags (a bitmask; kNone sets unconditionally). A key
 // with no current expiry is treated as +infinity for GT/LT. NX is exclusive with
 // XX/GT/LT and GT with LT -- the command layer enforces that.
@@ -903,6 +927,35 @@ class Keyspace {
   // Key bytes for a live id (e.g. one a TTL entry references, for snapshotting).
   [[nodiscard]] std::string_view key_for_id(std::uint64_t id) const noexcept {
     return storage_.view(id);
+  }
+
+  // Change only the key bytes and index entry for an object. Its dense id,
+  // value representation, and externally-owned TTL entry remain unchanged.
+  [[nodiscard]] bool rename_key(std::string_view source,
+                                std::string_view destination) {
+    const auto id = find_id(source);
+    if (!id) {
+      return false;
+    }
+    const std::string old_key(source);
+    (void)index_.erase(old_key);
+    try {
+      storage_.replace_key(*id, destination);
+      KeyMeta meta;
+      meta.set(*id);
+      index_.insert(destination, meta);
+    } catch (...) {
+      // replace_key validates and allocates before changing the slot. If that
+      // allocation fails, restore the original mapping before propagating.
+      if (storage_.view(*id) == old_key) {
+        KeyMeta meta;
+        meta.set(*id);
+        index_.insert(old_key, meta);
+      }
+      throw;
+    }
+    maybe_compact();
+    return true;
   }
 
   // SCAN walks dense key ids directly. Deletion uses swap-remove, so mutation
@@ -1444,6 +1497,18 @@ class Store {
   [[nodiscard]] long long zremrangebyscore(std::string_view key, double min,
                                            bool min_exclusive, double max,
                                            bool max_exclusive);
+  [[nodiscard]] long long zremrangebyrank(std::string_view key,
+                                          long long start, long long stop);
+  [[nodiscard]] ZStoreResult zunionstore(
+      std::string_view destination,
+      std::span<const std::string_view> keys,
+      std::span<const double> weights,
+      ZSetAggregate aggregate = ZSetAggregate::Sum);
+  [[nodiscard]] ZStoreResult zinterstore(
+      std::string_view destination,
+      std::span<const std::string_view> keys,
+      std::span<const double> weights,
+      ZSetAggregate aggregate = ZSetAggregate::Sum);
   // GOBLIN.ZWINDOW sliding-window limiter: evict entries with score <= `cutoff`,
   // then if the count is below `limit` record `member` at `now` and (re)arm the
   // key's TTL to `when_ms`. Returns true if the request was admitted.
@@ -1839,6 +1904,14 @@ class Store {
                                                  std::optional<HashImplementation>
                                                      implementation =
                                                          std::nullopt);
+  [[nodiscard]] std::optional<std::string> hincrbyfloat(
+      std::string_view key, std::string_view field, double delta,
+      std::optional<HashImplementation> implementation = std::nullopt);
+  template <class Fn>
+  bool hash_at(std::string_view key, std::size_t index, Fn&& fn) const {
+    const auto* hash = find_hash(key);
+    return hash != nullptr && hash->at(index, std::forward<Fn>(fn));
+  }
   // GOBLIN.HCAD compare-and-delete on a field: if `field` holds a string equal to
   // `expected`, delete the field and return true; otherwise false. Deleting the
   // last field drops the key. A non-hash key is WRONGTYPE (command layer).
@@ -2078,6 +2151,8 @@ class Store {
   }
   void set(std::string_view key, std::string_view value);
   [[nodiscard]] bool set_nx(std::string_view key, std::string_view value);
+  [[nodiscard]] bool mset_nx(
+      std::span<const std::pair<std::string_view, std::string_view>> pairs);
   // One keyspace probe: Missing / WrongType / Ok+value. Prefer this over
   // key_type()+get() on the GET hot path.
   [[nodiscard]] StringGetResult get_result(
@@ -2201,6 +2276,17 @@ class Store {
   [[nodiscard]] bool key_is_string(std::string_view key) const noexcept {
     return keyspace_.is_type(key, KeyType::String);
   }
+  [[nodiscard]] std::size_t dbsize(std::uint64_t now);
+  [[nodiscard]] std::optional<std::string> random_key(std::uint64_t now,
+                                                       std::uint64_t random);
+  [[nodiscard]] std::size_t touch(
+      std::span<const std::string_view> keys, std::uint64_t now);
+  [[nodiscard]] RenameResult rename(std::string_view source,
+                                    std::string_view destination, bool nx,
+                                    std::uint64_t now);
+  [[nodiscard]] CopyResult copy(std::string_view source,
+                                std::string_view destination, bool replace,
+                                std::uint64_t now);
 
   // --- TTL (absolute times are ms since the Unix epoch) ---
   // Current wall-clock ms. The command layer reads it once and passes it to the

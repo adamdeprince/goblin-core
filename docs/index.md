@@ -53,13 +53,20 @@ pages.
 - [`SELECT`](commands/SELECT.md), [`QUIT`](commands/QUIT.md),
   [`PING`](../README.md#current-commands), [`ECHO`](../README.md#current-commands)
 - [`INFO`](commands/INFO.md)
+- [`TIME`](commands/operational.md#time),
+  [`ROLE`](commands/operational.md#role),
+  [`CONFIG GET`](commands/operational.md#config-get)
 - [`MULTI`](commands/transactions.md#multi-and-exec),
   [`EXEC`](commands/transactions.md#multi-and-exec),
   [`DISCARD`](commands/transactions.md#discard),
   [`WATCH`](commands/transactions.md#watch-and-unwatch),
   [`UNWATCH`](commands/transactions.md#watch-and-unwatch)
 - [`DEL`](commands/keys.md#del), [`EXISTS`](commands/keys.md#exists),
-  [`TYPE`](commands/keys.md#type), [`SCAN`](commands/iteration.md#scan)
+  [`TYPE`](commands/keys.md#type), [`DBSIZE`](commands/keys.md#dbsize),
+  [`RANDOMKEY`](commands/keys.md#randomkey), [`TOUCH`](commands/keys.md#touch)
+- [`RENAME`](commands/keys.md#rename--renamenx),
+  [`RENAMENX`](commands/keys.md#rename--renamenx),
+  [`COPY`](commands/keys.md#copy), [`SCAN`](commands/iteration.md#scan)
 
 The [bounded-iteration reference](commands/iteration.md) documents the shared
 cursor, filtering, and mutation contract for `SCAN`, `HSCAN`, `SSCAN`, and
@@ -72,7 +79,8 @@ page-backed per-client queue.
 ### Strings and counters
 
 - [`SET`](commands/strings.md#set), [`SETNX`](commands/strings.md#setnx),
-  [`GET`](commands/strings.md#get), [`GETSET`](commands/strings.md#getset),
+  [`GET`](commands/strings.md#get), [`GETEX`](commands/strings.md#getex),
+  [`GETSET`](commands/strings.md#getset),
   [`GETDEL`](commands/strings.md#getdel)
 - [`STRLEN`](commands/strings.md#strlen), [`APPEND`](commands/strings.md#append),
   [`GETRANGE`](commands/strings.md#getrange),
@@ -82,7 +90,8 @@ page-backed per-client queue.
   [`INCRBY`](commands/strings.md#incr-decr-incrby-decrby),
   [`DECRBY`](commands/strings.md#incr-decr-incrby-decrby),
   [`INCRBYFLOAT`](commands/strings.md#incrbyfloat)
-- [`MSET`](commands/strings.md#mset), [`MGET`](commands/strings.md#mget)
+- [`MSET`](commands/strings.md#mset), [`MSETNX`](commands/strings.md#msetnx),
+  [`MGET`](commands/strings.md#mget)
 
 ### Expiration
 
@@ -112,6 +121,9 @@ updates, score bounds, rank and score ranges, endpoint pops, scans, and storage.
   [`ZREVRANGEBYSCORE`](commands/sorted-sets.md#rank-and-score-ranges),
   [`ZCOUNT`](commands/sorted-sets.md#rank-and-score-ranges)
 - [`ZREM`](commands/sorted-sets.md#command-surface),
+  [`ZREMRANGEBYRANK`](commands/sorted-sets.md#rank-removal-and-aggregate-stores),
+  [`ZINTERSTORE`](commands/sorted-sets.md#rank-removal-and-aggregate-stores),
+  [`ZUNIONSTORE`](commands/sorted-sets.md#rank-removal-and-aggregate-stores),
   [`ZPOPMIN`](commands/sorted-sets.md#multi-score-reads-and-endpoint-pops),
   [`ZPOPMAX`](commands/sorted-sets.md#multi-score-reads-and-endpoint-pops),
   [`ZSCAN`](commands/sorted-sets.md#incremental-scan),
@@ -119,21 +131,19 @@ updates, score bounds, rank and score ranges, endpoint pops, scans, and storage.
 
 ### Hashes
 
+The [hash command reference](commands/hashes.md) covers behavior and replies.
 The [hash implementation guide](real-time-hashes.md) covers the efficient and
 incremental RT indexes, qualified command families, and `--real-time` mode.
 
-- [`HSET`](real-time-hashes.md#selecting-an-implementation),
-  [`HSETNX`](real-time-hashes.md#selecting-an-implementation),
-  [`HGET`](real-time-hashes.md#selecting-an-implementation),
-  [`HMGET`](real-time-hashes.md#selecting-an-implementation)
-- [`HDEL`](real-time-hashes.md#selecting-an-implementation),
-  [`HEXISTS`](real-time-hashes.md#selecting-an-implementation),
-  [`HLEN`](real-time-hashes.md#selecting-an-implementation),
-  [`HSTRLEN`](real-time-hashes.md#selecting-an-implementation)
-- [`HGETALL`](real-time-hashes.md#selecting-an-implementation),
-  [`HKEYS`](real-time-hashes.md#selecting-an-implementation),
-  [`HVALS`](real-time-hashes.md#selecting-an-implementation),
-  [`HINCRBY`](real-time-hashes.md#selecting-an-implementation),
+- [`HSET`](commands/hashes.md), [`HMSET`](commands/hashes.md#hmset),
+  [`HSETNX`](commands/hashes.md), [`HGET`](commands/hashes.md),
+  [`HMGET`](commands/hashes.md)
+- [`HDEL`](commands/hashes.md), [`HEXISTS`](commands/hashes.md),
+  [`HLEN`](commands/hashes.md), [`HSTRLEN`](commands/hashes.md)
+- [`HGETALL`](commands/hashes.md), [`HKEYS`](commands/hashes.md),
+  [`HVALS`](commands/hashes.md), [`HINCRBY`](commands/hashes.md),
+  [`HINCRBYFLOAT`](commands/hashes.md#hincrbyfloat),
+  [`HRANDFIELD`](commands/hashes.md#hrandfield),
   [`HSCAN`](commands/iteration.md#hscan)
 
 ### Bounded iteration

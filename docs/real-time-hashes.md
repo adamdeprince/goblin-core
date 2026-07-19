@@ -29,8 +29,9 @@ GOBLIN.RT.HSET key field value [field value ...]
 GOBLIN.EFFICENT.HSET key field value [field value ...]
 ```
 
-The same prefixes exist for `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HGETALL`,
-`HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, and `HINCRBY`. The
+The same prefixes exist for `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`,
+`HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, `HINCRBY`,
+`HINCRBYFLOAT`, `HRANDFIELD`, and `HSCAN`. The
 `GOBLIN.EFFICENT` spelling is part of this command surface (historical; hashes only).
 Array classic mode uses `GOBLIN.CLASSIC.AR*` — a different family.
 
