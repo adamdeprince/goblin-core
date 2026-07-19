@@ -159,6 +159,30 @@ int main(int argc, char** argv) {
     assert(mv[0] == "5" && !mv[1].has_value() && mv[2] == "2");
     assert(c->hkeys("h").size() == 2 && c->hvals("h").size() == 2);
   }
+  {
+    std::uint64_t cursor = 0;
+    std::vector<std::string> fields;
+    do {
+      auto page = c->hscan("h", cursor, 1);
+      cursor = page.next_cursor;
+      for (std::size_t index = 0; index + 1 < page.items.size(); index += 2) {
+        fields.push_back(page.items[index]);
+      }
+    } while (cursor != 0);
+    std::sort(fields.begin(), fields.end());
+    assert((fields == std::vector<std::string>{"f1", "f2"}));
+    const auto no_values = c->hscan("h", 0, 10, std::nullopt, true);
+    assert(no_values.next_cursor == 0 && no_values.items.size() == 2);
+  }
+  {
+    const auto hashes = c->scan(0, 100, std::nullopt, "hash");
+    assert(hashes.next_cursor == 0);
+    assert(std::find(hashes.items.begin(), hashes.items.end(), "h") !=
+           hashes.items.end());
+    const auto matched = c->scan(0, 100, "s*", std::nullopt);
+    assert(std::find(matched.items.begin(), matched.items.end(), "s") !=
+           matched.items.end());
+  }
   assert(c->hdel("h", V{"f1", "f2"}) == 2);
 
   // A pipeline much deeper than either direction of the constrained ring proves

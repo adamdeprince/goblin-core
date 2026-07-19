@@ -30,9 +30,11 @@
 #include "goblin_sbe/Ping.h"
 #include "goblin_sbe/ScoredArrayReply.h"
 #include "goblin_sbe/ScoredScanReply.h"
+#include "goblin_sbe/Scan.h"
 #include "goblin_sbe/Set.h"
 #include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
+#include "goblin_sbe/StringScanReply.h"
 #include "goblin_sbe/StrLen.h"
 #include "goblin_sbe/Del.h"
 #include "goblin_sbe/Exists.h"
@@ -56,6 +58,7 @@
 #include "goblin_sbe/HMGet.h"
 #include "goblin_sbe/HSet.h"
 #include "goblin_sbe/HSetNx.h"
+#include "goblin_sbe/HScan.h"
 #include "goblin_sbe/HStrLen.h"
 #include "goblin_sbe/HVals.h"
 #include "goblin_sbe/NullableArrayReply.h"
@@ -248,6 +251,41 @@ std::string zscan_frame(std::string_view key, std::uint64_t cursor, std::uint64_
   const auto pattern = match.value_or(std::string_view{});
   z.putMatch(pattern.data(), static_cast<std::uint32_t>(pattern.size()));
   return framed(buf, static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + z.encodedLength()));
+}
+
+std::string scan_frame(std::uint64_t cursor, std::uint64_t count,
+                       std::optional<std::string_view> match = std::nullopt,
+                       std::optional<std::string_view> type = std::nullopt) {
+  char buf[1024];
+  sbe::Scan scan;
+  scan.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  scan.cursor(cursor)
+      .count(count)
+      .hasMatch(match.has_value() ? 1 : 0)
+      .hasType(type.has_value() ? 1 : 0);
+  const auto pattern = match.value_or(std::string_view{});
+  const auto key_type = type.value_or(std::string_view{});
+  scan.putMatch(pattern.data(), static_cast<std::uint32_t>(pattern.size()));
+  scan.putType(key_type.data(), static_cast<std::uint32_t>(key_type.size()));
+  return framed(buf,
+                static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + scan.encodedLength()));
+}
+
+std::string hscan_frame(std::string_view key, std::uint64_t cursor, std::uint64_t count,
+                        std::optional<std::string_view> match = std::nullopt,
+                        bool no_values = false) {
+  char buf[1024];
+  sbe::HScan scan;
+  scan.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
+  scan.cursor(cursor)
+      .count(count)
+      .hasMatch(match.has_value() ? 1 : 0)
+      .noValues(no_values ? 1 : 0);
+  scan.putKey(key.data(), static_cast<std::uint32_t>(key.size()));
+  const auto pattern = match.value_or(std::string_view{});
+  scan.putMatch(pattern.data(), static_cast<std::uint32_t>(pattern.size()));
+  return framed(buf,
+                static_cast<std::uint32_t>(sbe::MessageHeader::encodedLength() + scan.encodedLength()));
 }
 
 template <class Msg>
@@ -919,6 +957,56 @@ int main() {
     for (std::size_t i = 0; i + 1 < flat.size(); i += 2) hv[flat[i]] = flat[i + 1];
     assert(hv["f1"] == "v1" && hv["f2"] == "v2" && hv["f3"] == "v3");
   });
+  // HSCAN pages directly and can omit values without changing cursor behavior.
+  dispatch(store, hscan_frame("h", 0, 1), [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+    auto r = decode<sbe::StringScanReply>(hd, m, l);
+    assert(r.nextCursor() == 1);
+    std::vector<std::string> flat;
+    auto& g = r.items();
+    while (g.hasNext()) {
+      g.next();
+      const auto value = g.getValueAsStringView();
+      flat.emplace_back(value.data(), value.size());
+    }
+    assert((flat == std::vector<std::string>{"f1", "v1"}));
+  });
+  dispatch(store, hscan_frame("h", 0, 10, "f2"),
+           [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+             auto r = decode<sbe::StringScanReply>(hd, m, l);
+             assert(r.nextCursor() == 0);
+             std::vector<std::string> flat;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const auto value = g.getValueAsStringView();
+               flat.emplace_back(value.data(), value.size());
+             }
+             assert((flat == std::vector<std::string>{"f2", "v2"}));
+           });
+  dispatch(store, hscan_frame("h", 0, 10, std::nullopt, true),
+           [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+             auto r = decode<sbe::StringScanReply>(hd, m, l);
+             assert(r.nextCursor() == 0);
+             std::vector<std::string> fields;
+             auto& g = r.items();
+             while (g.hasNext()) {
+               g.next();
+               const auto value = g.getValueAsStringView();
+               fields.emplace_back(value.data(), value.size());
+             }
+             assert((fields == std::vector<std::string>{"f1", "f2", "f3"}));
+           });
+  // SCAN applies both key glob and type filters before returning a page.
+  dispatch(store, scan_frame(0, 100, "h", "HASH"),
+           [](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
+             auto r = decode<sbe::StringScanReply>(hd, m, l);
+             assert(r.nextCursor() == 0);
+             auto& g = r.items();
+             assert(g.hasNext());
+             g.next();
+             assert(g.getValueAsStringView() == "h");
+             assert(!g.hasNext());
+           });
   // HKEYS / HVALS -> 3 elements each
   dispatch(store, key_frame<sbe::HKeys>("h"), [&](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
     assert(count_items(hd, m, l) == 3);

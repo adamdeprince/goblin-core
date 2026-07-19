@@ -6,27 +6,26 @@
   C++ codecs under sbe/generated/. Ordinary builds only compile the generated
   headers - SBE C++ has no runtime library.
 
-  BACKWARD-COMPATIBLE EXTENSION (goblin adds commands weekly - this is the rule):
+  LOCKSTEP EXTENSION (goblin adds commands weekly - this is the rule):
     * templateId is a PERMANENT command id. A new command takes the next unused id,
       APPENDED. Never renumber, never reuse a retired id. This file is the ledger.
     * Fields within a message are APPEND-ONLY: a new arg is appended (a fixed field
       after the block, or a group / var-data after the existing ones) tagged
-      sinceVersion="V". SBE decoders read the wire's blockLength and skip anything
-      they do not know, so a new server and an old client interoperate untouched.
+      sinceVersion="V". This keeps the schema auditable; it is not a cross-version
+      compatibility promise. Clients and servers must use the exact same release.
     * Bump the schema `version` on each additive change.
-    * Replies are a small fixed generic set reused by every command, so adding a
-      command is usually one request message + one handler + one test line.
+    * Replies are a small generic set reused by every command. New reply shapes
+      and requests both take the next unused template id; existing ids never move.
 
   ID PLAN:
-    * Reply messages (server -> client): ids 1-15 (generic, reused everywhere).
-    * Request messages (client -> server): ids 16+, appended densely so the
-      server's templateId switch compiles to a jump table.
+    * Reply messages (server -> client): ids 1-15, then appended ids as needed.
+    * Request messages (client -> server): ids 16-124, then appended ids as needed.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="goblin_sbe"
                    id="7"
-                   version="1"
-                   semanticVersion="1.1"
+                   version="2"
+                   semanticVersion="1.2"
                    description="Goblin Core SBE wire (binary alternative to RESP)"
                    byteOrder="littleEndian">
   <types>
@@ -134,6 +133,13 @@
     <group name="items" id="2" dimensionType="groupSizeEncoding">
       <field name="score" id="1" type="double"/>
       <data name="member" id="2" type="varData"/>
+    </group>
+  </sbe:message>
+
+  <sbe:message name="StringScanReply" id="125" description="cursor and flat string page (SCAN/HSCAN)">
+    <field name="nextCursor" id="1" type="uint64"/>
+    <group name="items" id="2" dimensionType="groupSizeEncoding">
+      <data name="value" id="1" type="varData"/>
     </group>
   </sbe:message>
 
@@ -733,5 +739,23 @@
     <field name="hasMatch" id="3" type="uint8"/>
     <data name="key" id="4" type="varData"/>
     <data name="match" id="5" type="varData"/>
+  </sbe:message>
+
+  <!-- ================= Bounded iteration (batch 13, ids 126-127) =========== -->
+  <sbe:message name="Scan" id="126" description="SCAN cursor [MATCH] [COUNT] [TYPE] -> StringScanReply">
+    <field name="cursor" id="1" type="uint64"/>
+    <field name="count" id="2" type="uint64"/>
+    <field name="hasMatch" id="3" type="uint8"/>
+    <field name="hasType" id="4" type="uint8"/>
+    <data name="match" id="5" type="varData"/>
+    <data name="type" id="6" type="varData"/>
+  </sbe:message>
+  <sbe:message name="HScan" id="127" description="HSCAN key cursor [MATCH] [COUNT] [NOVALUES] -> StringScanReply">
+    <field name="cursor" id="1" type="uint64"/>
+    <field name="count" id="2" type="uint64"/>
+    <field name="hasMatch" id="3" type="uint8"/>
+    <field name="noValues" id="4" type="uint8"/>
+    <data name="key" id="5" type="varData"/>
+    <data name="match" id="6" type="varData"/>
   </sbe:message>
 </sbe:messageSchema>

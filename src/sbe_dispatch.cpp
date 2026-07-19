@@ -30,6 +30,7 @@
 #include "goblin_sbe/Ping.h"
 #include "goblin_sbe/ScoredArrayReply.h"
 #include "goblin_sbe/ScoredScanReply.h"
+#include "goblin_sbe/StringScanReply.h"
 #include "goblin_sbe/Set.h"
 #include "goblin_sbe/SetNx.h"
 #include "goblin_sbe/StatusReply.h"
@@ -47,12 +48,14 @@
 #include "goblin_sbe/Persist.h"
 #include "goblin_sbe/Ttl.h"
 #include "goblin_sbe/Type.h"
+#include "goblin_sbe/Scan.h"
 // Hash (batch 3)
 #include "goblin_sbe/HDel.h"
 #include "goblin_sbe/HExists.h"
 #include "goblin_sbe/HGet.h"
 #include "goblin_sbe/HGetAll.h"
 #include "goblin_sbe/HIncrBy.h"
+#include "goblin_sbe/HScan.h"
 #include "goblin_sbe/HKeys.h"
 #include "goblin_sbe/HLen.h"
 #include "goblin_sbe/HMGet.h"
@@ -180,6 +183,7 @@ constexpr std::uint16_t kDecrBy = sbe::DecrBy::sbeTemplateId();
 constexpr std::uint16_t kIncrByFloat = sbe::IncrByFloat::sbeTemplateId();
 constexpr std::uint16_t kDel = sbe::Del::sbeTemplateId();
 constexpr std::uint16_t kExists = sbe::Exists::sbeTemplateId();
+constexpr std::uint16_t kScan = sbe::Scan::sbeTemplateId();
 constexpr std::uint16_t kType = sbe::Type::sbeTemplateId();
 constexpr std::uint16_t kExpire = sbe::Expire::sbeTemplateId();
 constexpr std::uint16_t kPExpire = sbe::PExpire::sbeTemplateId();
@@ -202,6 +206,7 @@ constexpr std::uint16_t kHLen = sbe::HLen::sbeTemplateId();
 constexpr std::uint16_t kHExists = sbe::HExists::sbeTemplateId();
 constexpr std::uint16_t kHStrLen = sbe::HStrLen::sbeTemplateId();
 constexpr std::uint16_t kHIncrBy = sbe::HIncrBy::sbeTemplateId();
+constexpr std::uint16_t kHScan = sbe::HScan::sbeTemplateId();
 constexpr std::uint16_t kZRevRank = sbe::ZRevRank::sbeTemplateId();
 constexpr std::uint16_t kZRem = sbe::ZRem::sbeTemplateId();
 constexpr std::uint16_t kZRemRangeByScore = sbe::ZRemRangeByScore::sbeTemplateId();
@@ -548,6 +553,33 @@ void reply_scored_scan(
   out.append(rbuf.data(), kSbeLenPrefix + total);
 }
 
+template <class String>
+void reply_string_scan(std::string& out, std::uint64_t next_cursor,
+                       const std::vector<String>& items) {
+  if (items.size() > kMaxGroup) {
+    reply_error(out, "ERR", "result too large for one SBE array reply");
+    return;
+  }
+  std::size_t body = sizeof(std::uint64_t) + 4;
+  for (const auto& item : items) {
+    body += 4 + item.size();
+  }
+  std::vector<char>& rbuf = array_scratch(
+      kSbeLenPrefix + sbe::MessageHeader::encodedLength() + body + 16);
+  sbe::StringScanReply reply;
+  reply.wrapAndApplyHeader(rbuf.data(), kSbeLenPrefix, rbuf.size());
+  reply.nextCursor(next_cursor);
+  auto& group = reply.itemsCount(static_cast<std::uint16_t>(items.size()));
+  for (const auto& item : items) {
+    group.next().putValue(item.data(),
+                          static_cast<std::uint32_t>(item.size()));
+  }
+  const std::uint32_t total = static_cast<std::uint32_t>(
+      sbe::MessageHeader::encodedLength() + reply.encodedLength());
+  std::memcpy(rbuf.data(), &total, kSbeLenPrefix);
+  out.append(rbuf.data(), kSbeLenPrefix + total);
+}
+
 // GOBLIN.MEMORY -> key/value pairs, from a flat [name, value, ...] field list.
 void reply_map(std::string& out, const std::vector<std::string>& kv) {
   const std::size_t pairs = kv.size() / 2;
@@ -730,7 +762,8 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
       return KeyType::Zset;
     case kHSet: case kHSetNx: case kHGet: case kHMGet: case kHDel:
     case kHGetAll: case kHKeys: case kHVals: case kHLen: case kHExists:
-    case kHStrLen: case kHIncrBy: case kGoblinHCad: case kGoblinHSetGt:
+    case kHStrLen: case kHIncrBy: case kHScan:
+    case kGoblinHCad: case kGoblinHSetGt:
       return KeyType::Hash;
     case kLPush: case kRPush: case kLPop: case kRPop: case kLLen:
     case kLIndex: case kLRange: case kLSet: case kLTrim: case kLRem:
@@ -780,9 +813,40 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
   return std::string_view(buf + pos + sizeof(len), len);
 }
 
-// Redis-style glob for SSCAN MATCH (* ? [abc]).
-[[nodiscard]] bool set_glob_match_sbe(std::string_view pattern,
-                                      std::string_view value) noexcept {
+[[nodiscard]] bool equals_ci_sbe(std::string_view lhs,
+                                 std::string_view rhs) noexcept {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    const auto upper = [](char byte) {
+      return byte >= 'a' && byte <= 'z'
+                 ? static_cast<char>(byte - ('a' - 'A'))
+                 : byte;
+    };
+    if (upper(lhs[index]) != upper(rhs[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr std::string_view sbe_key_type_name(
+    KeyType type) noexcept {
+  switch (type) {
+    case KeyType::String: return "string";
+    case KeyType::Zset: return "zset";
+    case KeyType::Hash: return "hash";
+    case KeyType::List: return "list";
+    case KeyType::Set: return "set";
+    case KeyType::Array: return "array";
+  }
+  return "none";
+}
+
+// Redis-style glob for SCAN-family MATCH (* ? [abc]).
+[[nodiscard]] bool scan_glob_match_sbe(std::string_view pattern,
+                                       std::string_view value) noexcept {
   std::size_t pi = 0;
   std::size_t vi = 0;
   std::size_t star_pi = std::string_view::npos;
@@ -1181,7 +1245,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto next = store.zscan(
           key, z.cursor(), static_cast<std::size_t>(z.count()),
           [&](std::string_view member, double score) {
-            if (!has_match || set_glob_match_sbe(pattern, member)) {
+            if (!has_match || scan_glob_match_sbe(pattern, member)) {
               items.emplace_back(member, score);
             }
           });
@@ -1424,22 +1488,39 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       break;
     }
 
+    case kScan: {
+      sbe::Scan scan;
+      scan.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      if (scan.count() == 0 ||
+          scan.count() > std::numeric_limits<std::size_t>::max()) {
+        reply_error(out, "ERR", kErrNotInteger);
+        break;
+      }
+      const auto pattern = scan.getMatchAsStringView();
+      const auto type_filter = scan.getTypeAsStringView();
+      const bool has_match = scan.hasMatch() != 0;
+      const bool has_type = scan.hasType() != 0;
+      static thread_local std::vector<std::string_view> items;
+      items.clear();
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      const auto next = store.scan(
+          scan.cursor(), static_cast<std::size_t>(scan.count()), now,
+          [&](std::string_view key, KeyType type) {
+            if ((!has_match || scan_glob_match_sbe(pattern, key)) &&
+                (!has_type ||
+                 equals_ci_sbe(type_filter, sbe_key_type_name(type)))) {
+              items.push_back(key);
+            }
+          });
+      reply_string_scan(out, next, items);
+      break;
+    }
+
     case kType: {
       sbe::Type t;
       t.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const auto type = store.key_type(t.getKeyAsStringView());
-      std::string_view name = "none";
-      if (type) {
-        switch (*type) {
-          case KeyType::String: name = "string"; break;
-          case KeyType::Zset: name = "zset"; break;
-          case KeyType::Hash: name = "hash"; break;
-          case KeyType::List: name = "list"; break;
-          case KeyType::Set: name = "set"; break;
-          case KeyType::Array: name = "array"; break;
-        }
-      }
-      reply_status(out, name);
+      reply_status(out, type ? sbe_key_type_name(*type) : "none");
       break;
     }
 
@@ -1886,6 +1967,35 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       } else {
         reply_error(out, "ERR", "hash value is not an integer or out of range");
       }
+      break;
+    }
+
+    case kHScan: {
+      sbe::HScan scan;
+      scan.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      if (scan.count() == 0 ||
+          scan.count() > std::numeric_limits<std::size_t>::max()) {
+        reply_error(out, "ERR", kErrNotInteger);
+        break;
+      }
+      const auto key = scan.getKeyAsStringView();
+      const auto pattern = scan.getMatchAsStringView();
+      const bool has_match = scan.hasMatch() != 0;
+      const bool no_values = scan.noValues() != 0;
+      static thread_local std::vector<std::string> items;
+      items.clear();
+      const auto next = store.hscan(
+          key, scan.cursor(), static_cast<std::size_t>(scan.count()),
+          [&](std::string_view field) {
+            return !has_match || scan_glob_match_sbe(pattern, field);
+          },
+          [&](std::string_view field, EncodedStringView value) {
+            items.emplace_back(field);
+            if (!no_values) {
+              items.push_back(value.to_string());
+            }
+          });
+      reply_string_scan(out, next, items);
       break;
     }
 
@@ -2649,7 +2759,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
           [&](std::string_view member) {
             if (pattern.empty()) return true;
             // Reuse Redis-style glob (* ? []).
-            return set_glob_match_sbe(pattern, member);
+            return scan_glob_match_sbe(pattern, member);
           },
           [&](std::string member) { items.push_back(std::move(member)); });
       next_cursor = std::to_string(next);

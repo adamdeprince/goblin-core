@@ -1,6 +1,6 @@
 /* Generated SBE (Simple Binary Encoding) message codec */
-#ifndef _GOBLIN_SBE_SSCAN_CXX_H_
-#define _GOBLIN_SBE_SSCAN_CXX_H_
+#ifndef _GOBLIN_SBE_HSCAN_CXX_H_
+#define _GOBLIN_SBE_HSCAN_CXX_H_
 
 #if __cplusplus >= 201103L
 #  define SBE_CONSTEXPR constexpr
@@ -96,7 +96,7 @@
 
 namespace goblin_sbe {
 
-class SScan
+class HScan
 {
 private:
     char *m_buffer = nullptr;
@@ -112,8 +112,8 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(16);
-    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(118);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(18);
+    static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(127);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(7);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(2);
     static constexpr const char* SBE_SEMANTIC_VERSION = "1.2";
@@ -137,9 +137,9 @@ public:
 
     using messageHeader = MessageHeader;
 
-    SScan() = default;
+    HScan() = default;
 
-    SScan(
+    HScan(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t bufferLength,
@@ -154,23 +154,23 @@ public:
     {
     }
 
-    SScan(char *buffer, const std::uint64_t bufferLength) :
-        SScan(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
+    HScan(char *buffer, const std::uint64_t bufferLength) :
+        HScan(buffer, 0, bufferLength, sbeBlockLength(), sbeSchemaVersion())
     {
     }
 
-    SScan(
+    HScan(
         char *buffer,
         const std::uint64_t bufferLength,
         const std::uint64_t actingBlockLength,
         const std::uint64_t actingVersion) :
-        SScan(buffer, 0, bufferLength, actingBlockLength, actingVersion)
+        HScan(buffer, 0, bufferLength, actingBlockLength, actingVersion)
     {
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(16);
+        return static_cast<std::uint16_t>(18);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -180,7 +180,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeTemplateId() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(118);
+        return static_cast<std::uint16_t>(127);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeSchemaId() SBE_NOEXCEPT
@@ -208,7 +208,7 @@ public:
         return m_offset;
     }
 
-    SScan &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    HScan &wrapForEncode(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         m_buffer = buffer;
         m_bufferLength = bufferLength;
@@ -219,7 +219,7 @@ public:
         return *this;
     }
 
-    SScan &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
+    HScan &wrapAndApplyHeader(char *buffer, const std::uint64_t offset, const std::uint64_t bufferLength)
     {
         messageHeader hdr(buffer, offset, bufferLength, sbeSchemaVersion());
 
@@ -238,7 +238,7 @@ public:
         return *this;
     }
 
-    SScan &wrapForDecode(
+    HScan &wrapForDecode(
         char *buffer,
         const std::uint64_t offset,
         const std::uint64_t actingBlockLength,
@@ -254,7 +254,7 @@ public:
         return *this;
     }
 
-    SScan &sbeRewind()
+    HScan &sbeRewind()
     {
         return wrapForDecode(m_buffer, m_offset, m_actingBlockLength, m_actingVersion, m_bufferLength);
     }
@@ -286,7 +286,7 @@ public:
 
     SBE_NODISCARD std::uint64_t decodeLength() const
     {
-        SScan skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
+        HScan skipper(m_buffer, m_offset, m_bufferLength, m_actingBlockLength, m_actingVersion);
         skipper.skip();
         return skipper.encodedLength();
     }
@@ -367,7 +367,7 @@ public:
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
-    SScan &cursor(const std::uint64_t value) SBE_NOEXCEPT
+    HScan &cursor(const std::uint64_t value) SBE_NOEXCEPT
     {
         std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
         std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::uint64_t));
@@ -403,19 +403,19 @@ public:
         return 8;
     }
 
-    static SBE_CONSTEXPR std::int64_t countNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t countNullValue() SBE_NOEXCEPT
     {
-        return SBE_NULLVALUE_INT64;
+        return SBE_NULLVALUE_UINT64;
     }
 
-    static SBE_CONSTEXPR std::int64_t countMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t countMinValue() SBE_NOEXCEPT
     {
-        return INT64_C(-9223372036854775807);
+        return UINT64_C(0x0);
     }
 
-    static SBE_CONSTEXPR std::int64_t countMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint64_t countMaxValue() SBE_NOEXCEPT
     {
-        return INT64_C(9223372036854775807);
+        return UINT64_C(0xfffffffffffffffe);
     }
 
     static SBE_CONSTEXPR std::size_t countEncodingLength() SBE_NOEXCEPT
@@ -423,17 +423,143 @@ public:
         return 8;
     }
 
-    SBE_NODISCARD std::int64_t count() const SBE_NOEXCEPT
+    SBE_NODISCARD std::uint64_t count() const SBE_NOEXCEPT
     {
-        std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int64_t));
+        std::uint64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::uint64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
-    SScan &count(const std::int64_t value) SBE_NOEXCEPT
+    HScan &count(const std::uint64_t value) SBE_NOEXCEPT
     {
-        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int64_t));
+        std::uint64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::uint64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *hasMatchMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t hasMatchId() SBE_NOEXCEPT
+    {
+        return 3;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t hasMatchSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool hasMatchInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t hasMatchEncodingOffset() SBE_NOEXCEPT
+    {
+        return 16;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t hasMatchMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t hasMatchEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t hasMatch() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    HScan &hasMatch(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::uint8_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *noValuesMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t noValuesId() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t noValuesSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool noValuesInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t noValuesEncodingOffset() SBE_NOEXCEPT
+    {
+        return 17;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t noValuesNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT8;
+    }
+
+    static SBE_CONSTEXPR std::uint8_t noValuesMinValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(0);
+    }
+
+    static SBE_CONSTEXPR std::uint8_t noValuesMaxValue() SBE_NOEXCEPT
+    {
+        return static_cast<std::uint8_t>(254);
+    }
+
+    static SBE_CONSTEXPR std::size_t noValuesEncodingLength() SBE_NOEXCEPT
+    {
+        return 1;
+    }
+
+    SBE_NODISCARD std::uint8_t noValues() const SBE_NOEXCEPT
+    {
+        std::uint8_t val;
+        std::memcpy(&val, m_buffer + m_offset + 17, sizeof(std::uint8_t));
+        return (val);
+    }
+
+    HScan &noValues(const std::uint8_t value) SBE_NOEXCEPT
+    {
+        std::uint8_t val = (value);
+        std::memcpy(m_buffer + m_offset + 17, &val, sizeof(std::uint8_t));
         return *this;
     }
 
@@ -463,7 +589,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t keyId() SBE_NOEXCEPT
     {
-        return 3;
+        return 5;
     }
 
     static SBE_CONSTEXPR std::uint64_t keyHeaderLength() SBE_NOEXCEPT
@@ -513,7 +639,7 @@ public:
         return bytesToCopy;
     }
 
-    SScan &putKey(const char *src, const std::uint32_t length)
+    HScan &putKey(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -592,7 +718,7 @@ public:
     }
     #endif
 
-    SScan &putKey(const std::string &str)
+    HScan &putKey(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -602,7 +728,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    SScan &putKey(const std::string_view str)
+    HScan &putKey(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -638,7 +764,7 @@ public:
 
     static SBE_CONSTEXPR std::uint16_t matchId() SBE_NOEXCEPT
     {
-        return 4;
+        return 6;
     }
 
     static SBE_CONSTEXPR std::uint64_t matchHeaderLength() SBE_NOEXCEPT
@@ -688,7 +814,7 @@ public:
         return bytesToCopy;
     }
 
-    SScan &putMatch(const char *src, const std::uint32_t length)
+    HScan &putMatch(const char *src, const std::uint32_t length)
     {
         std::uint64_t lengthOfLengthField = 4;
         std::uint64_t lengthPosition = sbePosition();
@@ -767,7 +893,7 @@ public:
     }
     #endif
 
-    SScan &putMatch(const std::string &str)
+    HScan &putMatch(const std::string &str)
     {
         if (str.length() > 1073741824)
         {
@@ -777,7 +903,7 @@ public:
     }
 
     #if __cplusplus >= 201703L
-    SScan &putMatch(const std::string_view str)
+    HScan &putMatch(const std::string_view str)
     {
         if (str.length() > 1073741824)
         {
@@ -789,9 +915,9 @@ public:
 
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
-    std::basic_ostream<CharT, Traits> &builder, const SScan &_writer)
+    std::basic_ostream<CharT, Traits> &builder, const HScan &_writer)
 {
-    SScan writer(
+    HScan writer(
         _writer.m_buffer,
         _writer.m_offset,
         _writer.m_bufferLength,
@@ -799,7 +925,7 @@ friend std::basic_ostream<CharT, Traits> & operator << (
         _writer.m_actingVersion);
 
     builder << '{';
-    builder << R"("Name": "SScan", )";
+    builder << R"("Name": "HScan", )";
     builder << R"("sbeTemplateId": )";
     builder << writer.sbeTemplateId();
     builder << ", ";
@@ -810,6 +936,14 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << ", ";
     builder << R"("count": )";
     builder << +writer.count();
+
+    builder << ", ";
+    builder << R"("hasMatch": )";
+    builder << +writer.hasMatch();
+
+    builder << ", ";
+    builder << R"("noValues": )";
+    builder << +writer.noValues();
 
     builder << ", ";
     builder << R"("key": )";

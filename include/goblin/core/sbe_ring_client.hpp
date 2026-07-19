@@ -40,6 +40,7 @@
 #include "goblin_sbe/RespValueReply.h"
 #include "goblin_sbe/ScoredArrayReply.h"
 #include "goblin_sbe/ScoredScanReply.h"
+#include "goblin_sbe/StringScanReply.h"
 #include "goblin_sbe/StatusReply.h"
 // String
 #include "goblin_sbe/Append.h"
@@ -71,12 +72,14 @@
 #include "goblin_sbe/Persist.h"
 #include "goblin_sbe/Ttl.h"
 #include "goblin_sbe/Type.h"
+#include "goblin_sbe/Scan.h"
 // Hash
 #include "goblin_sbe/HDel.h"
 #include "goblin_sbe/HExists.h"
 #include "goblin_sbe/HGet.h"
 #include "goblin_sbe/HGetAll.h"
 #include "goblin_sbe/HIncrBy.h"
+#include "goblin_sbe/HScan.h"
 #include "goblin_sbe/HKeys.h"
 #include "goblin_sbe/HLen.h"
 #include "goblin_sbe/HMGet.h"
@@ -216,6 +219,13 @@ struct SbeZAddOptions {
 struct SbeZScanResult {
   std::uint64_t next_cursor{0};
   std::vector<std::pair<std::string, double>> items;
+};
+
+struct SbeScanResult {
+  std::uint64_t next_cursor{0};
+  // SCAN: keys. HSCAN: alternating field/value strings, or fields with
+  // no_values=true.
+  std::vector<std::string> items;
 };
 
 // A decoded script reply (the flattened RespValueReply rebuilt into a tree).
@@ -697,6 +707,23 @@ class BasicSbeClient {
     finish(m, t);
     return as_int();
   }
+  [[nodiscard]] SbeScanResult scan(
+      std::uint64_t cursor, std::size_t count = 10,
+      std::optional<std::string_view> match = std::nullopt,
+      std::optional<std::string_view> type = std::nullopt,
+      ms t = kDefaultTimeout) {
+    const auto pattern = match.value_or(std::string_view{});
+    const auto type_filter = type.value_or(std::string_view{});
+    auto message = build<goblin_sbe::Scan>(pattern.size() + type_filter.size());
+    message.cursor(cursor)
+        .count(count)
+        .hasMatch(match.has_value() ? 1 : 0)
+        .hasType(type.has_value() ? 1 : 0);
+    message.putMatch(pattern.data(), u32(pattern.size()));
+    message.putType(type_filter.data(), u32(type_filter.size()));
+    finish(message, t);
+    return as_string_scan();
+  }
   [[nodiscard]] std::string type(std::string_view key, ms t = kDefaultTimeout) {
     auto m = build<goblin_sbe::Type>(key.size());
     m.putKey(key.data(), u32(key.size()));
@@ -795,6 +822,21 @@ class BasicSbeClient {
     m.putField(field.data(), u32(field.size()));
     finish(m, t);
     return as_int();
+  }
+  [[nodiscard]] SbeScanResult hscan(
+      std::string_view key, std::uint64_t cursor, std::size_t count = 10,
+      std::optional<std::string_view> match = std::nullopt,
+      bool no_values = false, ms t = kDefaultTimeout) {
+    const auto pattern = match.value_or(std::string_view{});
+    auto message = build<goblin_sbe::HScan>(key.size() + pattern.size());
+    message.cursor(cursor)
+        .count(count)
+        .hasMatch(match.has_value() ? 1 : 0)
+        .noValues(no_values ? 1 : 0);
+    message.putKey(key.data(), u32(key.size()));
+    message.putMatch(pattern.data(), u32(pattern.size()));
+    finish(message, t);
+    return as_string_scan();
   }
 
   // Windowed pipeline: keep up to `depth` requests outstanding (K). RESP
@@ -1971,6 +2013,19 @@ class BasicSbeClient {
       const auto member = group.getMemberAsStringView();
       out.items.emplace_back(std::string(member.data(), member.size()),
                              score);
+    }
+    return out;
+  }
+  [[nodiscard]] SbeScanResult as_string_scan() {
+    throw_if_error();
+    if (!reply_is<goblin_sbe::StringScanReply>()) unexpected();
+    auto reply = decode<goblin_sbe::StringScanReply>();
+    SbeScanResult out{.next_cursor = reply.nextCursor()};
+    auto& group = reply.items();
+    while (group.hasNext()) {
+      group.next();
+      const auto value = group.getValueAsStringView();
+      out.items.emplace_back(value.data(), value.size());
     }
     return out;
   }
