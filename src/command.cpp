@@ -206,6 +206,16 @@ using goblin::core::parse_i64;
   return value;
 }
 
+[[nodiscard]] std::optional<double> parse_zset_score(std::string_view text) {
+  if (equals_ci(text, "-inf")) {
+    return -std::numeric_limits<double>::infinity();
+  }
+  if (equals_ci(text, "+inf") || equals_ci(text, "inf")) {
+    return std::numeric_limits<double>::infinity();
+  }
+  return parse_score(text);
+}
+
 struct ScoreBound {
   double value{0.0};
   bool exclusive{false};
@@ -290,6 +300,68 @@ void append_hello_response(std::string& out, resp::Version version,
   command.range_start = *start;
   command.range_stop = *stop;
   return true;
+}
+
+[[nodiscard]] std::string parse_zrange_options(Command& command,
+                                               bool force_by_score,
+                                               bool force_reverse) {
+  command.range_by_score = force_by_score;
+  command.range_reverse = force_reverse;
+  bool seen_by_score = force_by_score;
+  bool seen_reverse = force_reverse;
+  bool seen_with_scores = false;
+
+  for (std::size_t i = 3; i < command.args.size(); ++i) {
+    const auto option = command.args[i];
+    if (equals_ci(option, "BYSCORE")) {
+      if (seen_by_score || force_by_score) {
+        return syntax_error();
+      }
+      seen_by_score = true;
+      command.range_by_score = true;
+      continue;
+    }
+    if (equals_ci(option, "REV")) {
+      if (seen_reverse || force_reverse) {
+        return syntax_error();
+      }
+      seen_reverse = true;
+      command.range_reverse = true;
+      continue;
+    }
+    if (equals_ci(option, "WITHSCORES")) {
+      if (seen_with_scores) {
+        return syntax_error();
+      }
+      seen_with_scores = true;
+      command.with_scores = true;
+      continue;
+    }
+    if (equals_ci(option, "LIMIT")) {
+      if (command.range_has_limit || i + 2 >= command.args.size()) {
+        return syntax_error();
+      }
+      const auto offset = parse_i64(command.args[i + 1]);
+      const auto count = parse_i64(command.args[i + 2]);
+      if (!offset || !count || *offset < 0) {
+        return integer_range_error();
+      }
+      command.range_has_limit = true;
+      command.range_limit_offset = *offset;
+      command.range_limit_count = *count;
+      i += 2;
+      continue;
+    }
+    return syntax_error();
+  }
+
+  if (command.range_has_limit && !command.range_by_score) {
+    return syntax_error();
+  }
+  if (!command.range_by_score && !parse_range_indexes(command)) {
+    return integer_range_error();
+  }
+  return {};
 }
 
 [[nodiscard]] std::vector<std::string> memory_stats_fields(const ZSetMemoryStats& stats) {
@@ -491,13 +563,21 @@ constexpr std::string_view kValueTooLarge =
 [[nodiscard]] bool is_zset_command(CommandType type) noexcept {
   switch (type) {
     case CommandType::zadd:
+    case CommandType::zincrby:
     case CommandType::zcard:
+    case CommandType::zcount:
     case CommandType::zrange:
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore:
     case CommandType::zrank:
     case CommandType::zrevrange:
     case CommandType::zrevrank:
     case CommandType::zrem:
     case CommandType::zremrangebyscore:
+    case CommandType::zmscore:
+    case CommandType::zpopmin:
+    case CommandType::zpopmax:
+    case CommandType::zscan:
     case CommandType::zscore:
     case CommandType::goblin_td_leaderboard_rescore:  // reads the zset like ZRANGE
     case CommandType::goblin_zwindow:                 // ZADD/ZREM/ZCARD on the zset
@@ -571,9 +651,9 @@ constexpr std::string_view kValueTooLarge =
   }
 }
 
-// Redis-style glob for SSCAN MATCH (* ? [abc]).
-[[nodiscard]] bool set_glob_match(std::string_view pattern,
-                                  std::string_view value) noexcept {
+// Redis-style glob for incremental scans' MATCH option (* ? [abc]).
+[[nodiscard]] bool scan_glob_match(std::string_view pattern,
+                                   std::string_view value) noexcept {
   std::size_t pi = 0;
   std::size_t vi = 0;
   std::size_t star_pi = std::string_view::npos;
@@ -958,7 +1038,26 @@ void append_range_response(Store& store,
                            CommandExecutionOptions options) {
   long long start = command.range_start;
   long long stop = command.range_stop;
-  if (!command.range_indexes_parsed) {
+  ScoreBound min_bound;
+  ScoreBound max_bound;
+  std::size_t score_offset = 0;
+  std::optional<std::size_t> score_limit;
+  if (command.range_by_score) {
+    const auto first = parse_score_bound(command.args[1]);
+    const auto second = parse_score_bound(command.args[2]);
+    if (!first || !second) {
+      resp::append_error(out, "ERR min or max is not a float");
+      return;
+    }
+    min_bound = reverse ? *second : *first;
+    max_bound = reverse ? *first : *second;
+    if (command.range_has_limit) {
+      score_offset = static_cast<std::size_t>(command.range_limit_offset);
+      if (command.range_limit_count >= 0) {
+        score_limit = static_cast<std::size_t>(command.range_limit_count);
+      }
+    }
+  } else if (!command.range_indexes_parsed) {
     const auto parsed_start = parse_i64(command.args[1]);
     const auto parsed_stop = parse_i64(command.args[2]);
     if (!parsed_start || !parsed_stop) {
@@ -989,49 +1088,79 @@ void append_range_response(Store& store,
     resp::append_array_header(out, element_count);
   };
 
+  auto stream_members = [&](auto&& count_fn, auto&& fn) {
+    if (command.range_by_score) {
+      return store.zrange_by_score_members_for_each_counted(
+          key, min_bound.value, min_bound.exclusive, max_bound.value,
+          max_bound.exclusive, reverse, score_offset, score_limit,
+          std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    if (reverse) {
+      return store.zrevrange_members_for_each_counted(
+          key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    return store.zrange_members_for_each_counted(
+        key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+        std::forward<decltype(fn)>(fn));
+  };
+  auto stream_values = [&](auto&& count_fn, auto&& fn) {
+    if (command.range_by_score) {
+      return store.zrange_by_score_values_for_each_counted(
+          key, min_bound.value, min_bound.exclusive, max_bound.value,
+          max_bound.exclusive, reverse, score_offset, score_limit,
+          std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    if (reverse) {
+      return store.zrevrange_values_for_each_counted(
+          key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    return store.zrange_values_for_each_counted(
+        key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+        std::forward<decltype(fn)>(fn));
+  };
+  auto stream_text_values = [&](auto&& count_fn, auto&& fn) {
+    if (command.range_by_score) {
+      return store.zrange_by_score_text_values_for_each_counted(
+          key, min_bound.value, min_bound.exclusive, max_bound.value,
+          max_bound.exclusive, reverse, score_offset, score_limit,
+          std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    if (reverse) {
+      return store.zrevrange_score_text_values_for_each_counted(
+          key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+          std::forward<decltype(fn)>(fn));
+    }
+    return store.zrange_score_text_values_for_each_counted(
+        key, start, stop, std::forward<decltype(count_fn)>(count_fn),
+        std::forward<decltype(fn)>(fn));
+  };
+
   if (with_scores) {
     if (version == resp::Version::resp3) {
       if (store.score_string_cache_enabled()) {
         Resp3WithscoresTextAppender appender{out};
-        if (reverse) {
-          store.zrevrange_score_text_values_for_each_counted(
-              key, start, stop, append_header, appender);
-        } else {
-          store.zrange_score_text_values_for_each_counted(
-              key, start, stop, append_header, appender);
-        }
+        stream_text_values(append_header, appender);
       } else {
         Resp3WithscoresAppender appender{out};
-        if (reverse) {
-          store.zrevrange_values_for_each_counted(
-              key, start, stop, append_header, appender);
-        } else {
-          store.zrange_values_for_each_counted(
-              key, start, stop, append_header, appender);
-        }
+        stream_values(append_header, appender);
       }
       return;
     }
 
     if (store.score_string_cache_enabled()) {
       WithscoresTextChunkAppender appender{out};
-      if (reverse) {
-        store.zrevrange_score_text_values_for_each_counted(
-            key, start, stop, append_header, appender);
-      } else {
-        store.zrange_score_text_values_for_each_counted(
-            key, start, stop, append_header, appender);
-      }
+      stream_text_values(append_header, appender);
       appender.flush();
       return;
     }
 
     WithscoresChunkAppender appender{out};
-    if (reverse) {
-      store.zrevrange_values_for_each_counted(key, start, stop, append_header, appender);
-    } else {
-      store.zrange_values_for_each_counted(key, start, stop, append_header, appender);
-    }
+    stream_values(append_header, appender);
     appender.flush();
     return;
   }
@@ -1039,13 +1168,7 @@ void append_range_response(Store& store,
   auto append_member = [&out](std::string_view member) {
     resp::append_bulk_string(out, member);
   };
-  if (reverse) {
-    store.zrevrange_members_for_each_counted(
-        key, start, stop, append_header, append_member);
-  } else {
-    store.zrange_members_for_each_counted(
-        key, start, stop, append_header, append_member);
-  }
+  stream_members(append_header, append_member);
 }
 
 }  // namespace
@@ -1300,10 +1423,16 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       command.type = CommandType::quickjs_script;
       return {.command = std::move(command)};
     case CommandType::zadd:
-      if (command.args.size() < 3 || (command.args.size() - 1) % 2 != 0) {
+      if (command.args.size() < 3) {
         return parse_error(wrong_arity("zadd"));
       }
       command.type = CommandType::zadd;
+      return {.command = std::move(command)};
+    case CommandType::zincrby:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("zincrby"));
+      }
+      command.type = CommandType::zincrby;
       return {.command = std::move(command)};
     case CommandType::zcard:
       if (command.args.size() != 1) {
@@ -1311,20 +1440,34 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = CommandType::zcard;
       return {.command = std::move(command)};
+    case CommandType::zcount:
+      if (command.args.size() != 3) {
+        return parse_error(wrong_arity("zcount"));
+      }
+      command.type = CommandType::zcount;
+      return {.command = std::move(command)};
     case CommandType::zrange: {
-      if (command.args.size() != 3 && command.args.size() != 4) {
+      if (command.args.size() < 3) {
         return parse_error(wrong_arity("zrange"));
       }
-      if (command.args.size() == 4) {
-        if (!equals_ci(command.args[3], "WITHSCORES")) {
-          return parse_error(syntax_error());
-        }
-        command.with_scores = true;
-      }
-      if (!parse_range_indexes(command)) {
-        return parse_error(integer_range_error());
+      if (auto error = parse_zrange_options(command, false, false);
+          !error.empty()) {
+        return parse_error(std::move(error));
       }
       command.type = CommandType::zrange;
+      return {.command = std::move(command)};
+    }
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore: {
+      if (command.args.size() < 3) {
+        return parse_error(wrong_arity(command.name));
+      }
+      const bool reverse = looked_up_type == CommandType::zrevrangebyscore;
+      if (auto error = parse_zrange_options(command, true, reverse);
+          !error.empty()) {
+        return parse_error(std::move(error));
+      }
+      command.type = looked_up_type;
       return {.command = std::move(command)};
     }
     case CommandType::zrank:
@@ -1334,17 +1477,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       command.type = CommandType::zrank;
       return {.command = std::move(command)};
     case CommandType::zrevrange: {
-      if (command.args.size() != 3 && command.args.size() != 4) {
+      if (command.args.size() < 3) {
         return parse_error(wrong_arity("zrevrange"));
       }
-      if (command.args.size() == 4) {
-        if (!equals_ci(command.args[3], "WITHSCORES")) {
-          return parse_error(syntax_error());
-        }
-        command.with_scores = true;
-      }
-      if (!parse_range_indexes(command)) {
-        return parse_error(integer_range_error());
+      if (auto error = parse_zrange_options(command, false, true);
+          !error.empty()) {
+        return parse_error(std::move(error));
       }
       command.type = CommandType::zrevrange;
       return {.command = std::move(command)};
@@ -1366,6 +1504,25 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
         return parse_error(wrong_arity("zremrangebyscore"));
       }
       command.type = CommandType::zremrangebyscore;
+      return {.command = std::move(command)};
+    case CommandType::zmscore:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("zmscore"));
+      }
+      command.type = CommandType::zmscore;
+      return {.command = std::move(command)};
+    case CommandType::zpopmin:
+    case CommandType::zpopmax:
+      if (command.args.size() != 1 && command.args.size() != 2) {
+        return parse_error(wrong_arity(command.name));
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
+    case CommandType::zscan:
+      if (command.args.size() < 2) {
+        return parse_error(wrong_arity("zscan"));
+      }
+      command.type = CommandType::zscan;
       return {.command = std::move(command)};
     case CommandType::zscore:
       if (command.args.size() != 2) {
@@ -1918,6 +2075,9 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
 bool command_mutates_store(CommandType type) noexcept {
   switch (type) {
     case CommandType::zadd:
+    case CommandType::zincrby:
+    case CommandType::zpopmin:
+    case CommandType::zpopmax:
     case CommandType::zrem:
     case CommandType::zremrangebyscore:
     case CommandType::hset:
@@ -2147,6 +2307,8 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::pma_ltrim:
     case CommandType::segmented_ltrim:
     case CommandType::smove:
+    case CommandType::zincrby:
+    case CommandType::zcount:
     case CommandType::zremrangebyscore:
     case CommandType::expire:
     case CommandType::pexpire:
@@ -2203,6 +2365,8 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::quickjs_eval:
     case CommandType::quickjs_evalsha:
     case CommandType::zrem:
+    case CommandType::zmscore:
+    case CommandType::zscan:
     case CommandType::hmget:
     case CommandType::hdel:
     case CommandType::sadd:
@@ -2244,8 +2408,12 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::armset:
       return -4;
     case CommandType::zrange:
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore:
     case CommandType::zrevrange:
       return -4;
+    case CommandType::zpopmin:
+    case CommandType::zpopmax:
     case CommandType::lpop:
     case CommandType::rpop:
     case CommandType::pma_lpop:
@@ -2815,16 +2983,92 @@ void execute_command_into(Store& store,
 
     case CommandType::zadd: {
       const auto& key = command.args[0];
-      long long added = 0;
-      for (std::size_t i = 1; i < command.args.size(); i += 2) {
-        const auto score = parse_score(command.args[i]);
+      ZAddOptions add_options;
+      bool return_changed = false;
+      std::size_t first_score = 1;
+      for (; first_score < command.args.size(); ++first_score) {
+        const auto option = command.args[first_score];
+        bool* flag = nullptr;
+        if (equals_ci(option, "NX")) flag = &add_options.nx;
+        else if (equals_ci(option, "XX")) flag = &add_options.xx;
+        else if (equals_ci(option, "GT")) flag = &add_options.gt;
+        else if (equals_ci(option, "LT")) flag = &add_options.lt;
+        else if (equals_ci(option, "CH")) {
+          // CH changes only the integer reply, not the storage condition.
+          if (return_changed) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          return_changed = true;
+          continue;
+        } else if (equals_ci(option, "INCR")) flag = &add_options.increment;
+        else break;
+        if (*flag) {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+        *flag = true;
+      }
+      if ((add_options.nx &&
+           (add_options.xx || add_options.gt || add_options.lt)) ||
+          (add_options.gt && add_options.lt) ||
+          first_score >= command.args.size() ||
+          (command.args.size() - first_score) % 2 != 0 ||
+          (add_options.increment &&
+           command.args.size() - first_score != 2)) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      static thread_local std::vector<ZAddItem> items;
+      items.clear();
+      items.reserve((command.args.size() - first_score) / 2);
+      for (std::size_t i = first_score; i < command.args.size(); i += 2) {
+        const auto score = parse_zset_score(command.args[i]);
         if (!score) {
           resp::append_error(out, "ERR value is not a valid float");
           return;
         }
-        added += store.zadd(key, *score, command.args[i + 1]);
+        items.push_back(ZAddItem{.score = *score,
+                                 .member = command.args[i + 1]});
       }
-      resp::append_integer(out, added);
+      const auto result = store.zadd(key, items, add_options);
+      if (result.invalid_score) {
+        resp::append_error(out, "ERR resulting score is not a number (NaN)");
+        return;
+      }
+      if (add_options.increment) {
+        if (!result.increment_score) {
+          resp::append_null(out, version);
+        } else if (version == resp::Version::resp3) {
+          resp::append_double(out, *result.increment_score);
+        } else {
+          resp::append_bulk_double(out, *result.increment_score);
+        }
+        return;
+      }
+      resp::append_integer(out, return_changed ? result.changed : result.added);
+      return;
+    }
+
+    case CommandType::zincrby: {
+      const auto increment = parse_zset_score(command.args[1]);
+      if (!increment) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const ZAddItem item{.score = *increment,
+                          .member = command.args[2]};
+      const auto result = store.zadd(
+          command.args[0], std::span<const ZAddItem>(&item, 1),
+          ZAddOptions{.increment = true});
+      if (result.invalid_score) {
+        resp::append_error(out, "ERR resulting score is not a number (NaN)");
+      } else if (version == resp::Version::resp3) {
+        resp::append_double(out, *result.increment_score);
+      } else {
+        resp::append_bulk_double(out, *result.increment_score);
+      }
       return;
     }
 
@@ -2832,8 +3076,23 @@ void execute_command_into(Store& store,
       resp::append_integer(out, store.zcard(command.args[0]));
       return;
 
+    case CommandType::zcount: {
+      const auto lo = parse_score_bound(command.args[1]);
+      const auto hi = parse_score_bound(command.args[2]);
+      if (!lo || !hi) {
+        resp::append_error(out, "ERR min or max is not a float");
+        return;
+      }
+      resp::append_integer(out, store.zcount(command.args[0], lo->value,
+                                             lo->exclusive, hi->value,
+                                             hi->exclusive));
+      return;
+    }
+
     case CommandType::zrange:
-      append_range_response(store, command, false, out, options);
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore:
+      append_range_response(store, command, command.range_reverse, out, options);
       return;
 
     case CommandType::zrank: {
@@ -2847,7 +3106,7 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::zrevrange:
-      append_range_response(store, command, true, out, options);
+      append_range_response(store, command, command.range_reverse, out, options);
       return;
 
     case CommandType::zrevrank: {
@@ -2879,6 +3138,107 @@ void execute_command_into(Store& store,
       return;
     }
 
+    case CommandType::zmscore: {
+      const auto members = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      resp::append_array_header(out, members.size());
+      store.zmscore_for_each(command.args[0], members,
+                             [&out, version](std::optional<double> score) {
+        if (!score) {
+          resp::append_null(out, version);
+        } else if (version == resp::Version::resp3) {
+          resp::append_double(out, *score);
+        } else {
+          resp::append_bulk_double(out, *score);
+        }
+      });
+      return;
+    }
+
+    case CommandType::zpopmin:
+    case CommandType::zpopmax: {
+      std::uint64_t count = 1;
+      if (command.args.size() == 2) {
+        const auto parsed = parse_u64(command.args[1]);
+        if (!parsed || *parsed > std::numeric_limits<std::size_t>::max()) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        count = *parsed;
+      }
+      const auto entries = store.zpop(
+          command.args[0], static_cast<std::size_t>(count),
+          command.type == CommandType::zpopmax);
+      if (version == resp::Version::resp3) {
+        resp::append_array_header(out, entries.size());
+        for (const auto& entry : entries) {
+          resp::append_array_header(out, 2);
+          resp::append_bulk_string(out, entry.member);
+          resp::append_double(out, entry.score);
+        }
+      } else {
+        resp::append_array_header(out, entries.size() * 2);
+        for (const auto& entry : entries) {
+          resp::append_bulk_string(out, entry.member);
+          resp::append_bulk_double(out, entry.score);
+        }
+      }
+      return;
+    }
+
+    case CommandType::zscan: {
+      const auto cursor = parse_u64(command.args[1]);
+      if (!cursor) {
+        resp::append_error(out, "ERR invalid cursor");
+        return;
+      }
+      std::string_view pattern;
+      bool has_pattern = false;
+      std::size_t count = 10;
+      for (std::size_t i = 2; i < command.args.size();) {
+        if (equals_ci(command.args[i], "MATCH") &&
+            i + 1 < command.args.size()) {
+          pattern = command.args[i + 1];
+          has_pattern = true;
+          i += 2;
+          continue;
+        }
+        if (equals_ci(command.args[i], "COUNT") &&
+            i + 1 < command.args.size()) {
+          const auto parsed = parse_u64(command.args[i + 1]);
+          if (!parsed || *parsed == 0 ||
+              *parsed > std::numeric_limits<std::size_t>::max()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          count = static_cast<std::size_t>(*parsed);
+          i += 2;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      static thread_local std::vector<std::pair<std::string_view, double>>
+          matches;
+      matches.clear();
+      const auto next = store.zscan(
+          command.args[0], *cursor, count,
+          [pattern, has_pattern](std::string_view member, double score) {
+            if (!has_pattern || scan_glob_match(pattern, member)) {
+              matches.emplace_back(member, score);
+            }
+          });
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(next));
+      resp::append_array_header(out, matches.size() * 2);
+      for (const auto& [member, score] : matches) {
+        resp::append_bulk_string(out, member);
+        resp::append_bulk_double(out, score);
+      }
+      return;
+    }
+
     case CommandType::zscore: {
       const auto score = store.zscore(command.args[0], command.args[1]);
       if (!score) {
@@ -2886,7 +3246,7 @@ void execute_command_into(Store& store,
       } else if (version == resp::Version::resp3) {
         resp::append_double(out, *score);
       } else {
-        resp::append_bulk_finite_double(out, *score);
+        resp::append_bulk_double(out, *score);
       }
       return;
     }
@@ -3297,7 +3657,7 @@ void execute_command_into(Store& store,
       const auto next = store.sscan(
           command.args[0], static_cast<std::uint64_t>(*cursor), count,
           [&](std::string_view member) {
-            return pattern.empty() || set_glob_match(pattern, member);
+            return pattern.empty() || scan_glob_match(pattern, member);
           },
           [&](std::string member) { members.push_back(std::move(member)); });
       // Reply: [next_cursor, [members...]]

@@ -411,49 +411,99 @@ void ZSet::maybe_demote_to_small() {
 // GOBLIN.OPTIMIZE reclaims it by scanning and demoting to the narrowest fit.
 int ZSet::add(double score, std::string_view member,
               const ZSetOptions* options) {
-  if (!std::isfinite(score)) {
-    return 0;
+  const auto result = add(score, member, ZAddOptions{}, options);
+  return result.added ? 1 : 0;
+}
+
+ZAddMutation ZSet::add(double score, std::string_view member,
+                       ZAddOptions add_options,
+                       const ZSetOptions* options) {
+  if (std::isnan(score)) {
+    return {.status = ZAddStatus::InvalidScore};
+  }
+
+  ZSetMemberMeta* meta = nullptr;
+  std::optional<double> old_score;
+  if (const auto* lp = small_ptr()) {
+    old_score = lp->score(member);
+  } else {
+    meta = members().find(member);
+    if (meta != nullptr) {
+      old_score = member_storage()->score(meta->member_id);
+    }
+  }
+  const bool existed = old_score.has_value();
+  double target_score = score;
+  if (add_options.increment && existed) {
+    target_score = *old_score + score;
+    if (std::isnan(target_score)) {
+      return {.status = ZAddStatus::InvalidScore};
+    }
+  }
+
+  if ((existed && add_options.nx) || (!existed && add_options.xx) ||
+      (existed && add_options.gt && target_score <= *old_score) ||
+      (existed && add_options.lt && target_score >= *old_score)) {
+    return {.status = ZAddStatus::Skipped};
+  }
+
+  if (existed && target_score == *old_score) {
+    return {.status = ZAddStatus::Applied,
+            .added = false,
+            .changed = false,
+            .score = target_score};
   }
 
   if (auto* lp = small_ptr()) {
-    const auto result = lp->add(score, member, options->listpack_max_entries);
+    const auto result =
+        lp->add(target_score, member, options->listpack_max_entries);
     if (!result.needs_full) {
-      return (result.changed && !result.existed) ? 1 : 0;
+      return {.status = ZAddStatus::Applied,
+              .added = result.changed && !result.existed,
+              .changed = result.changed,
+              .score = target_score};
     }
     ensure_full(options);  // outgrew the listpack; fall to the full add path
   }
 
-  auto* meta = members().find(member);
+  if (meta == nullptr) {
+    meta = members().find(member);
+  }
   if (meta != nullptr) {
     const auto member_id = meta->member_id;
-    const auto old_score = member_storage()->score(member_id);
-    if (old_score == score) {
-      return 0;
-    }
+    const auto stored_score = member_storage()->score(member_id);
 
     ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
-    member_storage()->set_score(member_id, score);
+    member_storage()->set_score(member_id, target_score);
     const bool rescored = entries().rescore(
-        ZSetScoreEntry{.score = old_score, .member_id = member_id,
+        ZSetScoreEntry{.score = stored_score, .member_id = member_id,
                        .prefix = zset_member_prefix(member)},
-        ZSetScoreEntry{.score = score, .member_id = member_id,
+        ZSetScoreEntry{.score = target_score, .member_id = member_id,
                        .prefix = zset_member_prefix(member)});
     assert(rescored);
     if (!rescored) {
-      return 0;
+      return {.status = ZAddStatus::Skipped};
     }
-    return 0;
+    return {.status = ZAddStatus::Applied,
+            .added = false,
+            .changed = true,
+            .score = target_score};
   }
 
   ensure_unique_mutable_state(WriteKind::Structural);
 
-  const auto member_id = allocate_member_id(member, score);
+  const auto member_id = allocate_member_id(member, target_score);
   const auto view = member_view(member_id);
   members().insert(view, ZSetMemberMeta{.member_id = member_id});
-  entries().insert(ZSetScoreEntry{.score = score, .member_id = member_id, .prefix = zset_member_prefix(member)});
+  entries().insert(ZSetScoreEntry{.score = target_score,
+                                  .member_id = member_id,
+                                  .prefix = zset_member_prefix(member)});
 
-  return 1;
+  return {.status = ZAddStatus::Applied,
+          .added = true,
+          .changed = true,
+          .score = target_score};
 }
 
 std::size_t ZSet::remove_by_score_range(double min, bool min_exclusive, double max,
@@ -622,6 +672,64 @@ std::optional<ZSetRangeBounds> ZSet::range_bounds(long long start,
 
   return ZSetRangeBounds{.first = static_cast<std::size_t>(start),
                          .count = static_cast<std::size_t>(stop - start + 1)};
+}
+
+std::optional<ZSetRangeBounds> ZSet::score_range_bounds(
+    double min, bool min_exclusive, double max,
+    bool max_exclusive) const {
+  if (empty() || std::isnan(min) || std::isnan(max) || min > max ||
+      (min == max && (min_exclusive || max_exclusive))) {
+    return std::nullopt;
+  }
+
+  if (const auto* lp = small_ptr()) {
+    std::size_t position = 0;
+    std::size_t first = 0;
+    std::size_t count = 0;
+    bool found = false;
+    lp->for_each([&](double score, std::string_view) {
+      const bool above_min = min_exclusive ? score > min : score >= min;
+      const bool below_max = max_exclusive ? score < max : score <= max;
+      if (above_min && below_max) {
+        if (!found) {
+          first = position;
+          found = true;
+        }
+        ++count;
+      }
+      ++position;
+    });
+    if (!found) {
+      return std::nullopt;
+    }
+    return ZSetRangeBounds{.first = first, .count = count};
+  }
+
+  const auto [first, count] =
+      entries().score_range_bounds(min, min_exclusive, max, max_exclusive);
+  if (count == 0) {
+    return std::nullopt;
+  }
+  return ZSetRangeBounds{.first = first, .count = count};
+}
+
+std::optional<ZSetRangeBounds> ZSet::score_range_slice(
+    double min, bool min_exclusive, double max, bool max_exclusive,
+    bool reverse, std::size_t offset,
+    std::optional<std::size_t> limit) const {
+  const auto ascending =
+      score_range_bounds(min, min_exclusive, max, max_exclusive);
+  if (!ascending || offset >= ascending->count ||
+      (limit.has_value() && *limit == 0)) {
+    return std::nullopt;
+  }
+
+  const auto available = ascending->count - offset;
+  const auto count = limit.has_value() ? std::min(available, *limit) : available;
+  const auto first = reverse
+                         ? size() - (ascending->first + ascending->count) + offset
+                         : ascending->first + offset;
+  return ZSetRangeBounds{.first = first, .count = count};
 }
 
 std::vector<ZSetEntry> ZSet::range(long long start, long long stop) const {
@@ -931,18 +1039,52 @@ const ZSet* Store::find_member_layer_template() const noexcept {
 }
 
 long long Store::zadd(std::string_view key, double score, std::string_view member) {
-  auto& zset = get_or_create_zset(key);
+  const ZAddItem item{.score = score, .member = member};
+  return zadd(key, std::span<const ZAddItem>(&item, 1)).added;
+}
+
+ZAddResult Store::zadd(std::string_view key, std::span<const ZAddItem> items,
+                       ZAddOptions options) {
+  ZAddResult result;
+  if (items.empty()) {
+    return result;
+  }
+
+  auto* existing = find_zset(key);
+  if (existing == nullptr && options.xx) {
+    return result;
+  }
+
+  auto& zset = existing != nullptr ? *existing : get_or_create_zset(key);
   // Small (listpack) zsets are standalone blobs -- they never adopt a shared
   // member layer, so skip the template scan entirely (it is O(number of zsets)).
-  if (!zset.is_small() && zset.empty()) {
+  if (!options.nx && !options.xx && !options.gt && !options.lt &&
+      !options.increment && !zset.is_small() && zset.empty()) {
     if (const ZSet* tmpl = find_member_layer_template(); tmpl != nullptr && tmpl != &zset) {
-      if (const auto tmpl_score = tmpl->score(member);
-          tmpl_score.has_value() && *tmpl_score == score) {
+      if (const auto tmpl_score = tmpl->score(items.front().member);
+          tmpl_score.has_value() && *tmpl_score == items.front().score) {
         zset.adopt_shared_member_layer_from(*tmpl);
       }
     }
   }
-  return zset.add(score, member, zset_options());
+
+  for (const auto& item : items) {
+    const auto mutation =
+        zset.add(item.score, item.member, options, zset_options());
+    if (mutation.status == ZAddStatus::InvalidScore) {
+      result.invalid_score = true;
+      return result;
+    }
+    if (mutation.status == ZAddStatus::Skipped) {
+      continue;
+    }
+    result.added += mutation.added ? 1 : 0;
+    result.changed += mutation.changed ? 1 : 0;
+    if (options.increment) {
+      result.increment_score = mutation.score;
+    }
+  }
+  return result;
 }
 
 long long Store::zrem(std::string_view key, std::span<const std::string_view> members) {
@@ -964,6 +1106,34 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
   erase_if_empty(key, *zset);
 
   return removed;
+}
+
+std::vector<ZSetOwnedEntry> Store::zpop(std::string_view key,
+                                       std::size_t count, bool maximum) {
+  std::vector<ZSetOwnedEntry> popped;
+  auto* zset = find_zset(key);
+  if (zset == nullptr || count == 0) {
+    return popped;
+  }
+
+  const auto take = std::min(count, zset->size());
+  popped.reserve(take);
+  const ZSetRangeBounds bounds{.first = 0, .count = take};
+  zset->for_position_range(
+      bounds, maximum,
+      [&popped](std::string_view member, double score, std::string_view) {
+        popped.push_back(ZSetOwnedEntry{.member = std::string(member),
+                                        .score = score});
+      });
+  for (const auto& entry : popped) {
+    const bool removed = zset->remove(entry.member);
+    assert(removed);
+    (void)removed;
+  }
+  (void)zset->compact_after_removal_if_needed(popped.size());
+  (void)zset->cleanup_member_index_after_removal_if_needed(popped.size());
+  erase_if_empty(key, *zset);
+  return popped;
 }
 
 long long Store::zremrangebyscore(std::string_view key, double min,
@@ -2065,6 +2235,17 @@ long long Store::zcard(std::string_view key) const {
   }
 
   return static_cast<long long>(zset->size());
+}
+
+long long Store::zcount(std::string_view key, double min, bool min_exclusive,
+                        double max, bool max_exclusive) const {
+  const auto* zset = find_zset(key);
+  if (zset == nullptr) {
+    return 0;
+  }
+  const auto bounds =
+      zset->score_range_bounds(min, min_exclusive, max, max_exclusive);
+  return bounds ? static_cast<long long>(bounds->count) : 0;
 }
 
 std::optional<double> Store::zscore(std::string_view key,

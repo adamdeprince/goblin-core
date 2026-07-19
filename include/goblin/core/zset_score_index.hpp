@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -444,35 +445,26 @@ class ZSetScoreIndex {
   template <class Fn>
   void for_score_range(double min, bool min_exclusive, double max,
                        bool max_exclusive, Fn&& fn) const {
-    if (blocks_.empty()) {
-      return;
+    const auto [first, count] =
+        score_range_bounds(min, min_exclusive, max, max_exclusive);
+    auto callback = [&fn](std::uint32_t member_id) { fn(member_id); };
+    for_member_ids(first, count, callback);
+  }
+
+  // Return the ascending positional span covered by score bounds. Both seeks are
+  // O(log blocks + log block-size), so ZCOUNT and score-range response headers do
+  // not walk the matching members just to learn their count.
+  [[nodiscard]] std::pair<size_type, size_type> score_range_bounds(
+      double min, bool min_exclusive, double max,
+      bool max_exclusive) const {
+    if (blocks_.empty() || std::isnan(min) || std::isnan(max) || min > max ||
+        (min == max && (min_exclusive || max_exclusive))) {
+      return {0, 0};
     }
-    const bool min_open = min == -std::numeric_limits<double>::infinity();
-    const bool max_open = max == std::numeric_limits<double>::infinity();
-    std::size_t block_index = min_open ? 0 : lower_block_by_score(min);
-    bool first_block = true;
-    while (block_index < blocks_.size()) {
-      const auto& block = blocks_[block_index];
-      size_type offset =
-          (first_block && !min_open) ? block.lower_bound_score(min) : size_type{0};
-      first_block = false;
-      const size_type count = block.size();
-      for (; offset < count; ++offset) {
-        if (!max_open) {
-          if (block.score_greater_than(offset, max)) {
-            return;  // past the high bound; ascending order means we are done
-          }
-          if (max_exclusive && block.score_equals(offset, max)) {
-            return;
-          }
-        }
-        if (min_exclusive && !min_open && block.score_equals(offset, min)) {
-          continue;  // skip the leading == min entries when the low bound is open
-        }
-        fn(block.member_id_at(offset));
-      }
-      ++block_index;
-    }
+    const auto first = first_position_by_score(min, min_exclusive);
+    const auto end = first_position_by_score(max, !max_exclusive);
+    return end > first ? std::pair<size_type, size_type>{first, end - first}
+                       : std::pair<size_type, size_type>{first, 0};
   }
 
   [[nodiscard]] std::optional<size_type> rank(ZSetScoreEntry value) const {
@@ -933,7 +925,9 @@ class ZSetScoreIndex {
       size_type count = size_;
       switch (score_width_) {
         case ScoreWidth::I16: {
-          const auto q = static_cast<std::int16_t>(score);
+          if (score <= std::numeric_limits<std::int16_t>::min()) return 0;
+          if (score > std::numeric_limits<std::int16_t>::max()) return size_;
+          const auto q = static_cast<std::int16_t>(std::ceil(score));
           while (count > 0) {
             const auto step = count / 2;
             const auto mid = first + step;
@@ -947,7 +941,9 @@ class ZSetScoreIndex {
           return first;
         }
         case ScoreWidth::I32: {
-          const auto q = static_cast<std::int32_t>(score);
+          if (score <= std::numeric_limits<std::int32_t>::min()) return 0;
+          if (score > std::numeric_limits<std::int32_t>::max()) return size_;
+          const auto q = static_cast<std::int32_t>(std::ceil(score));
           while (count > 0) {
             const auto step = count / 2;
             const auto mid = first + step;
@@ -965,6 +961,58 @@ class ZSetScoreIndex {
             const auto step = count / 2;
             const auto mid = first + step;
             if (load_f64(mid) < score) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
+      }
+      return first;
+    }
+
+    [[nodiscard]] size_type upper_bound_score(double score) const noexcept {
+      size_type first = 0;
+      size_type count = size_;
+      switch (score_width_) {
+        case ScoreWidth::I16: {
+          if (score < std::numeric_limits<std::int16_t>::min()) return 0;
+          if (score >= std::numeric_limits<std::int16_t>::max()) return size_;
+          const auto q = static_cast<std::int16_t>(std::floor(score));
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_i16(mid) <= q) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
+        }
+        case ScoreWidth::I32: {
+          if (score < std::numeric_limits<std::int32_t>::min()) return 0;
+          if (score >= std::numeric_limits<std::int32_t>::max()) return size_;
+          const auto q = static_cast<std::int32_t>(std::floor(score));
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_i32(mid) <= q) {
+              first = mid + 1;
+              count -= step + 1;
+            } else {
+              count = step;
+            }
+          }
+          return first;
+        }
+        case ScoreWidth::F64:
+          while (count > 0) {
+            const auto step = count / 2;
+            const auto mid = first + step;
+            if (load_f64(mid) <= score) {
               first = mid + 1;
               count -= step + 1;
             } else {
@@ -1744,6 +1792,28 @@ class ZSetScoreIndex {
                            return lhs.score < rhs;
                          }) -
         maxes_.begin());
+  }
+
+  [[nodiscard]] size_type upper_block_by_score(double score) const {
+    return static_cast<size_type>(
+        std::upper_bound(maxes_.begin(), maxes_.end(), score,
+                         [](double lhs, ZSetScoreEntry rhs) {
+                           return lhs < rhs.score;
+                         }) -
+        maxes_.begin());
+  }
+
+  [[nodiscard]] size_type first_position_by_score(double score,
+                                                  bool strictly_greater) const {
+    const auto block_index = strictly_greater ? upper_block_by_score(score)
+                                              : lower_block_by_score(score);
+    if (block_index >= blocks_.size()) {
+      return size_;
+    }
+    const auto& block = blocks_[block_index];
+    const auto offset = strictly_greater ? block.upper_bound_score(score)
+                                         : block.lower_bound_score(score);
+    return prefix_size(block_index) + offset;
   }
 
   [[nodiscard]] size_type upper_block(ZSetScoreEntry value) const {

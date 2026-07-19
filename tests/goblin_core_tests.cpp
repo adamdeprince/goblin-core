@@ -190,6 +190,9 @@ void test_command_perfect_hash() {
   assert(type_of({"hello", "3"}) == CT::hello);
   assert(type_of({"zscore", "k", "m"}) == CT::zscore);
   assert(type_of({"zRaNgE", "k", "0", "-1"}) == CT::zrange);
+  assert(type_of({"zincrby", "k", "1", "m"}) == CT::zincrby);
+  assert(type_of({"zcount", "k", "-inf", "+inf"}) == CT::zcount);
+  assert(type_of({"zscan", "k", "0"}) == CT::zscan);
   assert(type_of({"hincrby", "h", "f", "1"}) == CT::hincrby);
   assert(type_of({"goblin.rt.hset", "h", "f", "v"}) == CT::hset);
   assert(type_of({"GoBlIn.EfFiCeNt.HgEt", "h", "f"}) == CT::hget);
@@ -398,6 +401,83 @@ void test_zadd_updates_existing_members() {
   assert(execute_fields(store, {"ZADD", "z", "1", "a"}) == ":0\r\n");
   assert(execute_fields(store, {"ZRANGE", "z", "0", "-1", "WITHSCORES"}) ==
          "*2\r\n$1\r\na\r\n$1\r\n1\r\n");
+}
+
+void test_sorted_set_command_surface() {
+  goblin::core::Store store;
+
+  // Every score is validated before the first mutation.
+  assert(execute_fields(store, {"ZADD", "atomic", "1", "a", "nope", "b"}) ==
+         "-ERR value is not a valid float\r\n");
+  assert(execute_fields(store, {"EXISTS", "atomic"}) == ":0\r\n");
+
+  assert(execute_fields(store, {"ZADD", "opts", "1", "a", "2", "b"}) ==
+         ":2\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "NX", "3", "a", "4", "c"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "XX", "5", "a", "6", "d"}) ==
+         ":0\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "CH", "XX", "7", "a"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "GT", "6", "a"}) == ":0\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "CH", "GT", "8", "a"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "CH", "LT", "9", "a"}) ==
+         ":0\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "CH", "LT", "6", "a"}) ==
+         ":1\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "INCR", "2", "a"}) ==
+         "$1\r\n8\r\n");
+  assert(execute_fields(store, {"ZINCRBY", "opts", "-3", "a"}) ==
+         "$1\r\n5\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "NX", "XX", "1", "x"}) ==
+         "-ERR syntax error\r\n");
+  assert(execute_fields(store, {"ZADD", "opts", "INCR", "1", "a", "2", "b"}) ==
+         "-ERR syntax error\r\n");
+
+  assert(execute_fields(store,
+                        {"ZADD", "ranges", "-inf", "neg", "1", "a", "2",
+                         "b", "2", "c", "3", "d", "+inf", "pos"}) ==
+         ":6\r\n");
+  assert(execute_fields(store, {"ZRANGE", "ranges", "(1", "(3", "BYSCORE"}) ==
+         "*2\r\n$1\r\nb\r\n$1\r\nc\r\n");
+  assert(execute_fields(store, {"ZRANGE", "ranges", "1", "3", "BYSCORE",
+                                "LIMIT", "1", "2", "WITHSCORES"}) ==
+         "*4\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n2\r\n");
+  assert(execute_fields(store, {"ZRANGE", "ranges", "3", "1", "BYSCORE",
+                                "REV", "LIMIT", "1", "2"}) ==
+         "*2\r\n$1\r\nc\r\n$1\r\nb\r\n");
+  assert(execute_fields(store,
+                        {"ZRANGEBYSCORE", "ranges", "(1", "3", "LIMIT", "1", "2"}) ==
+         "*2\r\n$1\r\nc\r\n$1\r\nd\r\n");
+  assert(execute_fields(store,
+                        {"ZREVRANGEBYSCORE", "ranges", "3", "(1", "LIMIT", "1", "2"}) ==
+         "*2\r\n$1\r\nc\r\n$1\r\nb\r\n");
+  assert(execute_fields(store, {"ZCOUNT", "ranges", "(1", "3"}) == ":3\r\n");
+  assert(execute_fields(store, {"ZMSCORE", "ranges", "a", "missing", "pos"}) ==
+         "*3\r\n$1\r\n1\r\n$-1\r\n$3\r\ninf\r\n");
+
+  assert(execute_fields(store, {"ZPOPMIN", "ranges", "2"}) ==
+         "*4\r\n$3\r\nneg\r\n$4\r\n-inf\r\n$1\r\na\r\n$1\r\n1\r\n");
+  assert(execute_fields(store, {"ZPOPMAX", "ranges"}) ==
+         "*2\r\n$3\r\npos\r\n$3\r\ninf\r\n");
+
+  assert(execute_fields(store, {"ZADD", "scan", "1", "a", "2", "b", "3", "c"}) ==
+         ":3\r\n");
+  assert(execute_fields(store, {"ZSCAN", "scan", "0", "COUNT", "2"}) ==
+         "*2\r\n$1\r\n2\r\n*4\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n2\r\n");
+  assert(execute_fields(store, {"ZSCAN", "scan", "2", "MATCH", "c"}) ==
+         "*2\r\n$1\r\n0\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n");
+
+  // Force the full score index and query fractional bounds while scores retain
+  // their compressed integer width.
+  for (int i = 0; i < 100; ++i) {
+    assert(store.zadd("full", static_cast<double>(i),
+                      "m" + std::to_string(i)) == 1);
+  }
+  assert(execute_fields(store, {"ZCOUNT", "full", "1.5", "3.5"}) == ":2\r\n");
+  assert(execute_fields(store, {"ZRANGE", "full", "32768", "+inf", "BYSCORE"}) ==
+         "*0\r\n");
 }
 
 void test_score_string_cache_updates_with_scores() {
@@ -6812,6 +6892,7 @@ int main() {
   test_rdb_import();
   test_range_command_parses_indexes();
   test_zadd_updates_existing_members();
+  test_sorted_set_command_surface();
   test_score_string_cache_updates_with_scores();
   test_eval_type_conversions();
   test_eval_redis_call();

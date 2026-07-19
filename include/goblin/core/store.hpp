@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -53,9 +54,47 @@ struct ZSetEntry {
   std::string_view score_text;
 };
 
+struct ZSetOwnedEntry {
+  std::string member;
+  double score{0.0};
+};
+
 struct ZSetRangeBounds {
   std::size_t first{0};
   std::size_t count{0};
+};
+
+struct ZAddOptions {
+  bool nx{false};
+  bool xx{false};
+  bool gt{false};
+  bool lt{false};
+  bool increment{false};
+};
+
+struct ZAddItem {
+  double score{0.0};
+  std::string_view member;
+};
+
+enum class ZAddStatus : std::uint8_t {
+  Applied,
+  Skipped,
+  InvalidScore,
+};
+
+struct ZAddMutation {
+  ZAddStatus status{ZAddStatus::Skipped};
+  bool added{false};
+  bool changed{false};
+  double score{0.0};
+};
+
+struct ZAddResult {
+  long long added{0};
+  long long changed{0};
+  std::optional<double> increment_score;
+  bool invalid_score{false};
 };
 
 struct ZSetOptions {
@@ -119,6 +158,9 @@ class ZSet {
   [[nodiscard]] std::size_t block_count() const noexcept;
   [[nodiscard]] int add(double score, std::string_view member,
                         const ZSetOptions* options = default_options());
+  [[nodiscard]] ZAddMutation add(double score, std::string_view member,
+                                 ZAddOptions add_options,
+                                 const ZSetOptions* options = default_options());
   [[nodiscard]] bool remove(std::string_view member);
   // Remove every member whose score is in the [min, max] range (bounds optionally
   // exclusive; -inf/+inf for an open side). Returns the count removed. Uses the
@@ -135,6 +177,13 @@ class ZSet {
   [[nodiscard]] std::optional<ZSetRangeBounds> range_bounds(
       long long start,
       long long stop) const noexcept;
+  [[nodiscard]] std::optional<ZSetRangeBounds> score_range_bounds(
+      double min, bool min_exclusive, double max,
+      bool max_exclusive) const;
+  [[nodiscard]] std::optional<ZSetRangeBounds> score_range_slice(
+      double min, bool min_exclusive, double max, bool max_exclusive,
+      bool reverse, std::size_t offset,
+      std::optional<std::size_t> limit) const;
   template <class Fn>
   std::size_t for_range_members(ZSetRangeBounds bounds, Fn&& fn) const {
     if (const auto* lp = small_ptr()) {
@@ -313,6 +362,53 @@ class ZSet {
           fn(ZSetEntry{
               .member = member, .score = score, .score_text = score_text});
         });
+  }
+  template <class Fn>
+  std::size_t for_score_range_members(ZSetRangeBounds bounds, bool reverse,
+                                      Fn&& fn) const {
+    if (reverse) {
+      return for_reverse_range_members(bounds, std::forward<Fn>(fn));
+    }
+    return for_range_members(bounds, std::forward<Fn>(fn));
+  }
+  template <class Fn>
+  std::size_t for_score_range_values(ZSetRangeBounds bounds, bool reverse,
+                                     Fn&& fn) const {
+    if (reverse) {
+      return for_reverse_range_values(bounds, std::forward<Fn>(fn));
+    }
+    return for_range_values(bounds, std::forward<Fn>(fn));
+  }
+  template <class Fn>
+  std::size_t for_score_range_score_text_values(ZSetRangeBounds bounds,
+                                                bool reverse, Fn&& fn) const {
+    if (reverse) {
+      return for_reverse_range_score_text_values(bounds,
+                                                 std::forward<Fn>(fn));
+    }
+    return for_range_score_text_values(bounds, std::forward<Fn>(fn));
+  }
+  template <class Fn>
+  std::uint64_t scan(std::uint64_t cursor, std::size_t count, Fn&& fn) const {
+    const auto total = size();
+    if (cursor >= total || count == 0) {
+      return 0;
+    }
+    const auto first = static_cast<std::size_t>(cursor);
+    const auto take = std::min(count, total - first);
+    if (const auto* lp = small_ptr()) {
+      lp->for_range(first, take, false,
+                    [&fn](double score, std::string_view member) {
+                      fn(member, score);
+                    });
+    } else {
+      for (std::size_t id = first; id < first + take; ++id) {
+        fn(member_storage()->view(static_cast<std::uint32_t>(id)),
+           member_storage()->score(static_cast<std::uint32_t>(id)));
+      }
+    }
+    const auto next = first + take;
+    return next == total ? 0 : static_cast<std::uint64_t>(next);
   }
   [[nodiscard]] bool check_invariants() const;
   [[nodiscard]] ZSetMemoryStats memory_stats(
@@ -1295,6 +1391,9 @@ class Store {
   [[nodiscard]] bool real_time() const noexcept { return options_.real_time; }
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
+  [[nodiscard]] ZAddResult zadd(std::string_view key,
+                                std::span<const ZAddItem> items,
+                                ZAddOptions options = {});
   [[nodiscard]] long long zrem(std::string_view key, std::span<const std::string_view> members);
   // ZREMRANGEBYSCORE: remove members with score in [min, max] (bounds optionally
   // exclusive; -inf/+inf accepted). Returns the count removed; drops an emptied key.
@@ -1308,8 +1407,31 @@ class Store {
                              long long limit, std::string_view member,
                              std::uint64_t when_ms, std::uint64_t now_ms);
   [[nodiscard]] long long zcard(std::string_view key) const;
+  [[nodiscard]] long long zcount(std::string_view key, double min,
+                                 bool min_exclusive, double max,
+                                 bool max_exclusive) const;
   [[nodiscard]] std::optional<double> zscore(std::string_view key,
                                              std::string_view member) const;
+  template <class Fn>
+  void zmscore_for_each(std::string_view key,
+                        std::span<const std::string_view> members,
+                        Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    for (const auto member : members) {
+      fn(zset == nullptr ? std::optional<double>{} : zset->score(member));
+    }
+  }
+  [[nodiscard]] std::vector<ZSetOwnedEntry> zpop(std::string_view key,
+                                                 std::size_t count,
+                                                 bool maximum);
+  template <class Fn>
+  std::uint64_t zscan(std::string_view key, std::uint64_t cursor,
+                      std::size_t count, Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    return zset == nullptr
+               ? 0
+               : zset->scan(cursor, count, std::forward<Fn>(fn));
+  }
   [[nodiscard]] std::optional<std::size_t> zrank(std::string_view key,
                                                  std::string_view member) const;
   [[nodiscard]] std::optional<std::size_t> zrevrank(
@@ -1321,6 +1443,66 @@ class Store {
   [[nodiscard]] std::vector<ZSetEntry> zrevrange(std::string_view key,
                                                 long long start,
                                                 long long stop) const;
+  template <class CountFn, class Fn>
+  std::size_t zrange_by_score_members_for_each_counted(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse, std::size_t offset,
+      std::optional<std::size_t> limit, CountFn&& count_fn, Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    if (zset == nullptr) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    const auto bounds = zset->score_range_slice(
+        min, min_exclusive, max, max_exclusive, reverse, offset, limit);
+    if (!bounds) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    std::forward<CountFn>(count_fn)(bounds->count);
+    return zset->for_score_range_members(*bounds, reverse,
+                                         std::forward<Fn>(fn));
+  }
+  template <class CountFn, class Fn>
+  std::size_t zrange_by_score_values_for_each_counted(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse, std::size_t offset,
+      std::optional<std::size_t> limit, CountFn&& count_fn, Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    if (zset == nullptr) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    const auto bounds = zset->score_range_slice(
+        min, min_exclusive, max, max_exclusive, reverse, offset, limit);
+    if (!bounds) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    std::forward<CountFn>(count_fn)(bounds->count);
+    return zset->for_score_range_values(*bounds, reverse,
+                                        std::forward<Fn>(fn));
+  }
+  template <class CountFn, class Fn>
+  std::size_t zrange_by_score_text_values_for_each_counted(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse, std::size_t offset,
+      std::optional<std::size_t> limit, CountFn&& count_fn, Fn&& fn) const {
+    const auto* zset = find_zset(key);
+    if (zset == nullptr) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    const auto bounds = zset->score_range_slice(
+        min, min_exclusive, max, max_exclusive, reverse, offset, limit);
+    if (!bounds) {
+      std::forward<CountFn>(count_fn)(0);
+      return 0;
+    }
+    std::forward<CountFn>(count_fn)(bounds->count);
+    return zset->for_score_range_score_text_values(*bounds, reverse,
+                                                   std::forward<Fn>(fn));
+  }
   [[nodiscard]] bool score_string_cache_enabled() const noexcept {
     return options_.score_string_cache;
   }

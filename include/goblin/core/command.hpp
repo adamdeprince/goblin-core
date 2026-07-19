@@ -55,13 +55,21 @@ enum class CommandType {
   quickjs_evalsha,
   quickjs_script,
   zadd,
+  zincrby,
   zcard,
+  zcount,
   zrange,
+  zrangebyscore,
+  zrevrangebyscore,
   zrank,
   zrevrange,
   zrevrank,
   zrem,
   zremrangebyscore,
+  zmscore,
+  zpopmin,
+  zpopmax,
+  zscan,
   zscore,
   hset,
   hsetnx,
@@ -198,6 +206,11 @@ struct Command {
   bool range_indexes_parsed{false};
   long long range_start{0};
   long long range_stop{0};
+  bool range_by_score{false};
+  bool range_reverse{false};
+  bool range_has_limit{false};
+  long long range_limit_offset{0};
+  long long range_limit_count{-1};
   // Set once at parse for GOBLIN.RT.* / GOBLIN.EFFICENT.* / GOBLIN.CLASSIC.*
   // so execute can select hash vs array implementation without re-scanning.
   // 0 = default store policy, 1 = non-RT qualified family, 2 = Realtime.
