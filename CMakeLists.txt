@@ -27,9 +27,18 @@ option(GOBLIN_CORE_ENABLE_KAFKA
 option(GOBLIN_CORE_ENABLE_TLS
   "Enable OpenSSL TLS on ordinary TCP listeners"
   ON)
+option(GOBLIN_CORE_STATIC_GNU_RUNTIME
+  "Statically link the GNU libstdc++ and libgcc runtimes into C++ executables"
+  ON)
 option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   "Enable Redis-backed differential tests for Goblin Core's Redis-compatible subset"
   OFF)
+
+if(GOBLIN_CORE_STATIC_GNU_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_link_options(
+    "$<$<LINK_LANGUAGE:CXX>:-static-libstdc++>"
+    "$<$<LINK_LANGUAGE:CXX>:-static-libgcc>")
+endif()
 
 # The generator walks the project's complete Markdown set when invoked without
 # positional sources. Track the same set here so edits to blogs and nested docs
