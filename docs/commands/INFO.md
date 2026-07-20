@@ -38,7 +38,7 @@ automation.
 
 | field | meaning |
 |---|---|
-| `used_memory` | what Goblin's allocation layers hold: arena live + dead bytes, fixed index/table structures, full-hash heap state, and actual upstream blob-pool capacity |
+| `used_memory` | committed data-store capacity: arenas, fixed index/table structures, object state, TTL tables, and actual upstream blob-pool capacity |
 | `used_memory_rss` | the OS resident set size (`ps`-equivalent) |
 | `used_memory_peak` | currently mirrors `used_memory` — Goblin does not yet track a separate high-water mark |
 | `mem_reclaimable_bytes` | the **dead** subset of `used_memory`: bytes orphaned by deletes/overwrites that a compaction would free |
@@ -50,8 +50,8 @@ automation.
 | `blob_pool_fragmentation_bytes` | retained pool capacity beyond live requested blob bytes; unlike arena dead bytes, `GOBLIN.OPTIMIZE` does not reclaim it |
 | `blob_pool_live_allocations` | number of live blobs in the pool |
 | `blob_pool_upstream_allocations` | cumulative allocations the pool has requested from its upstream resource |
-| `maxmemory` | `0` — no limit |
-| `maxmemory_policy` | `noeviction` — Goblin never evicts |
+| `maxmemory` | configured `--maxmemory` byte ceiling; `0` means unlimited |
+| `maxmemory_policy` | `noeviction` — capacity-growing writes return `OOM` instead of evicting |
 | `mem_fragmentation_ratio` | **internal** fragmentation — see below |
 
 `used_memory` is a real number, not the RSS: it comes from
@@ -148,5 +148,7 @@ mem_fragmentation_ratio:1.00      # compacted back to tight
 
 - [`GOBLIN.OPTIMIZE`](goblin.md) — the deterministic compaction the ratio signals
   for; [`GOBLIN.MEMORY`](goblin.md) — per-key memory breakdown.
+- [Hard memory ceiling](../maxmemory.md) — `--maxmemory`, accounting scope, and
+  deterministic RESP/SBE OOM replies.
 - [Goblin extension commands](goblin.md), and the memory
   [benchmarks](../../BENCHMARKS.md) (RSS is the headline there).

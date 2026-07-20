@@ -225,11 +225,18 @@ class Hash {
     }
   }
 
-  void relocate_compact_blob(KeyspaceStorage& destination) {
+  [[nodiscard]] std::optional<KeyspaceStorage::TailLocation>
+  copy_compact_blob_to(KeyspaceStorage& destination) const {
     if (!is_small() || rep_ == kEmptyCompact) {
-      return;
+      return std::nullopt;
     }
-    rep_ = pack_location(destination.append_object_blob(compact_blob_view()));
+    return destination.append_object_blob(compact_blob_view());
+  }
+
+  void commit_compact_blob_relocation(
+      KeyspaceStorage::TailLocation location) noexcept {
+    assert(is_small() && rep_ != kEmptyCompact);
+    rep_ = pack_location(location);
   }
 
   // Pre-size the full form for an upcoming bulk insert. No-op while listpack
@@ -885,6 +892,7 @@ class Hash {
     context_flags_ &= ~kFullRepresentation;
     if (options().listpack_max_entries == 0 ||
         implementation() == HashImplementation::Realtime) {
+      ensure_memory_growth(full_heap_allocated_bytes());
       auto storage = std::make_unique<HashStorage>(options().chunk_bytes,
                                                    options().member_index_growth,
                                                    options().compaction_knapsack,
@@ -904,6 +912,7 @@ class Hash {
     if (!is_small()) {
       return;
     }
+    ensure_memory_growth(full_heap_allocated_bytes());
     auto storage = std::make_unique<HashStorage>(options().chunk_bytes,
                                                  options().member_index_growth,
                                                  options().compaction_knapsack,
@@ -1048,8 +1057,13 @@ class Hash {
     if (fs.storage->compaction_active() ||
         (fs.storage->dead_bytes() >= kAutoCompactDeadFloor &&
          fs.storage->dead_bytes() >= fs.storage->live_bytes())) {
-      (void)fs.storage->compact_step(options().compaction_work_budget,
-                                     kAutoCompactByteBudget);
+      try {
+        (void)fs.storage->compact_step(options().compaction_work_budget,
+                                       kAutoCompactByteBudget);
+      } catch (const MaxMemoryExceeded&) {
+        // The update has already committed. Defer optional reclamation instead
+        // of converting that successful write into an OOM reply.
+      }
     }
   }
 

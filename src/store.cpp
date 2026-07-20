@@ -160,9 +160,10 @@ class FdOutputStreambuf : public std::streambuf {
 ZSetMemberLayer::ZSetMemberLayer(bool score_string_cache,
                                  std::size_t member_chunk_bytes,
                                  double member_index_growth)
-    : storage(std::make_shared<ZSetMemberStorage>(score_string_cache,
-                                                  member_chunk_bytes,
-                                                  member_index_growth)),
+    : storage((ensure_memory_growth(sizeof(ZSetMemberByteArena)),
+               std::make_shared<ZSetMemberStorage>(score_string_cache,
+                                                   member_chunk_bytes,
+                                                   member_index_growth))),
       members(storage.get(), member_index_growth) {}
 
 std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone(
@@ -217,6 +218,8 @@ std::shared_ptr<ZSetMemberLayer> ZSetMemberLayer::clone_shallow(
 // the moved-from source valid).
 void ZSet::init_empty(const ZSetOptions* options) {
   if (options->listpack_max_entries == 0) {
+    ensure_memory_growth(sizeof(FullState) + sizeof(ZSetMemberLayer) +
+                         sizeof(ZSetMemberStorage) + sizeof(ZSetScoreIndex));
     auto member_layer = std::make_shared<ZSetMemberLayer>(
         options->score_string_cache, options->member_chunk_bytes,
         options->member_index_growth);
@@ -282,6 +285,7 @@ const ZSetScoreIndex& ZSet::entries() const noexcept {
 void ZSet::ensure_unique_mutable_state(WriteKind kind) {
   auto& fs = full();
   if (fs.member_layer.use_count() > 1) {
+    ensure_memory_growth(sizeof(ZSetMemberLayer) + sizeof(ZSetMemberStorage));
     fs.member_layer =
         fs.member_layer->clone_shallow(fs.options->member_index_growth);
   }
@@ -289,6 +293,7 @@ void ZSet::ensure_unique_mutable_state(WriteKind kind) {
     member_storage()->ensure_unique_arena();
   }
   if (fs.score_index.use_count() > 1) {
+    ensure_memory_growth(sizeof(ZSetScoreIndex));
     auto cloned = std::make_shared<ZSetScoreIndex>(
         member_storage(), fs.options->rank_cache_mode,
         ZSetScoreIndex::kDefaultBlockHintNarrowLimit, fs.options->score_index_load);
@@ -357,6 +362,8 @@ void ZSet::ensure_full(const ZSetOptions* options) {
   if (small == nullptr) {
     return;
   }
+  ensure_memory_growth(sizeof(FullState) + sizeof(ZSetMemberLayer) +
+                       sizeof(ZSetMemberStorage) + sizeof(ZSetScoreIndex));
   CompactListpack lp = std::move(*small);
   auto member_layer = std::make_shared<ZSetMemberLayer>(
       options->score_string_cache, options->member_chunk_bytes,
@@ -388,17 +395,21 @@ void ZSet::maybe_demote_to_small() {
     return;
   }
 
-  CompactListpack lp;
-  const auto ordered = entries().range(0, entries().size());
-  for (const auto& entry : ordered) {
-    const auto member = member_storage()->view(entry.member_id);
-    const auto result =
-        lp.add(entry.score, member, options->listpack_max_entries);
-    if (result.needs_full) {
-      return;
+  try {
+    CompactListpack lp;
+    const auto ordered = entries().range(0, entries().size());
+    for (const auto& entry : ordered) {
+      const auto member = member_storage()->view(entry.member_id);
+      const auto result =
+          lp.add(entry.score, member, options->listpack_max_entries);
+      if (result.needs_full) {
+        return;
+      }
     }
+    rep_ = std::move(lp);
+  } catch (const MaxMemoryExceeded&) {
+    // Demotion is optional after a successful removal.
   }
-  rep_ = std::move(lp);
 }
 
 // A ZADD whose score falls outside the zset's current score width auto-promotes
@@ -475,7 +486,7 @@ ZAddMutation ZSet::add(double score, std::string_view member,
 
     ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
-    member_storage()->set_score(member_id, target_score);
+    const auto member_snapshot = member_storage()->snapshot(member_id);
     const bool rescored = entries().rescore(
         ZSetScoreEntry{.score = stored_score, .member_id = member_id,
                        .prefix = zset_member_prefix(member)},
@@ -485,6 +496,21 @@ ZAddMutation ZSet::add(double score, std::string_view member,
     if (!rescored) {
       return {.status = ZAddStatus::Skipped};
     }
+    try {
+      member_storage()->set_score(member_id, target_score);
+    } catch (...) {
+      const bool restored = entries().rescore(
+          ZSetScoreEntry{.score = target_score,
+                         .member_id = member_id,
+                         .prefix = zset_member_prefix(member)},
+          ZSetScoreEntry{.score = stored_score,
+                         .member_id = member_id,
+                         .prefix = zset_member_prefix(member)});
+      member_storage()->restore_snapshot(member_id, member_snapshot);
+      assert(restored);
+      (void)restored;
+      throw;
+    }
     return {.status = ZAddStatus::Applied,
             .added = false,
             .changed = true,
@@ -493,12 +519,35 @@ ZAddMutation ZSet::add(double score, std::string_view member,
 
   ensure_unique_mutable_state(WriteKind::Structural);
 
+  // Make the member-index allocation fallible before appending to the arena,
+  // while retaining its geometric slack. A tight reserve(size + 1) rebuilds
+  // the table at nearly every load boundary.
+  members().reserve_additional(1);
   const auto member_id = allocate_member_id(member, target_score);
-  const auto view = member_view(member_id);
-  members().insert(view, ZSetMemberMeta{.member_id = member_id});
-  entries().insert(ZSetScoreEntry{.score = target_score,
-                                  .member_id = member_id,
-                                  .prefix = zset_member_prefix(member)});
+  bool indexed = false;
+  bool scored = false;
+  try {
+    const auto view = member_view(member_id);
+    members().insert(view, ZSetMemberMeta{.member_id = member_id});
+    indexed = true;
+    entries().insert(ZSetScoreEntry{.score = target_score,
+                                    .member_id = member_id,
+                                    .prefix = zset_member_prefix(member)});
+    scored = true;
+  } catch (...) {
+    if (scored) {
+      (void)entries().erase_one(ZSetScoreEntry{
+          .score = target_score,
+          .member_id = member_id,
+          .prefix = zset_member_prefix(member)});
+    }
+    if (indexed) {
+      (void)members().erase(member);
+    }
+    member_storage()->orphan(member_id);
+    member_storage()->pop_back();
+    throw;
+  }
 
   return {.status = ZAddStatus::Applied,
           .added = true,
@@ -836,7 +885,12 @@ ZSetMemoryStats ZSet::memory_stats(const ZSetOptions* options) const noexcept {
   stats.score_index_allocated_bytes = entries().allocated_bytes() / score_shares;
   stats.total_allocated_bytes = stats.member_storage_allocated_bytes +
                                 stats.member_index_allocated_bytes +
-                                stats.score_index_allocated_bytes;
+                                stats.score_index_allocated_bytes +
+                                sizeof(FullState) +
+                                (sizeof(ZSetMemberLayer) +
+                                 sizeof(ZSetMemberStorage)) /
+                                    layer_shares +
+                                sizeof(ZSetScoreIndex) / score_shares;
   return stats;
 }
 
@@ -939,7 +993,11 @@ bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
   // compact() used by GOBLIN.OPTIMIZE), then hand the freed pages back to the OS.
   // The arena is unique here (the preceding ZREM forked it). The swiss index's
   // own tombstones are reclaimed separately by the member-index cleanup.
-  member_storage()->compact();
+  try {
+    member_storage()->compact();
+  } catch (const MaxMemoryExceeded&) {
+    return false;
+  }
   release_unused_heap_pages();
   return true;
 }
@@ -1011,6 +1069,7 @@ namespace {
 
 Store::Store(StoreOptions options)
     : options_(options),
+      memory_ceiling_(options.maxmemory),
       zset_options_(build_zset_options(options)),
       keyspace_(build_hash_options(options), build_list_options(options),
                 build_set_options(options), build_array_options(options),
@@ -1020,6 +1079,10 @@ Store::Store(StoreOptions options)
                 options.real_time ||
                     options.hash_implementation ==
                         HashImplementation::Realtime) {
+  memory_ceiling_.bind(this, [](const void* context) noexcept {
+    return static_cast<const Store*>(context)->memory_report().used_memory;
+  });
+  memory_ceiling_.ensure_current_fits();
   reset_replication_identity();
 }
 
@@ -1083,7 +1146,14 @@ ZAddResult Store::zadd(std::string_view key, std::span<const ZAddItem> items,
     return result;
   }
 
-  auto& zset = existing != nullptr ? *existing : get_or_create_zset(key);
+  const bool created = existing == nullptr;
+  ZSet* zset_ptr = nullptr;
+  try {
+    zset_ptr = existing != nullptr ? existing : &get_or_create_zset(key);
+  } catch (...) {
+    throw;
+  }
+  auto& zset = *zset_ptr;
   // Small (listpack) zsets are standalone blobs -- they never adopt a shared
   // member layer, so skip the template scan entirely (it is O(number of zsets)).
   if (!options.nx && !options.xx && !options.gt && !options.lt &&
@@ -1096,21 +1166,28 @@ ZAddResult Store::zadd(std::string_view key, std::span<const ZAddItem> items,
     }
   }
 
-  for (const auto& item : items) {
-    const auto mutation =
-        zset.add(item.score, item.member, options, zset_options());
-    if (mutation.status == ZAddStatus::InvalidScore) {
-      result.invalid_score = true;
-      return result;
+  try {
+    for (const auto& item : items) {
+      const auto mutation =
+          zset.add(item.score, item.member, options, zset_options());
+      if (mutation.status == ZAddStatus::InvalidScore) {
+        result.invalid_score = true;
+        return result;
+      }
+      if (mutation.status == ZAddStatus::Skipped) {
+        continue;
+      }
+      result.added += mutation.added ? 1 : 0;
+      result.changed += mutation.changed ? 1 : 0;
+      if (options.increment) {
+        result.increment_score = mutation.score;
+      }
     }
-    if (mutation.status == ZAddStatus::Skipped) {
-      continue;
+  } catch (...) {
+    if (created && zset.empty()) {
+      rollback_empty_created_key(key);
     }
-    result.added += mutation.added ? 1 : 0;
-    result.changed += mutation.changed ? 1 : 0;
-    if (options.increment) {
-      result.increment_score = mutation.score;
-    }
+    throw;
   }
   if (result.changed != 0) {
     signal_key_modified(key);
@@ -1415,7 +1492,18 @@ long long Store::sadd(std::string_view key,
   if (members.empty()) {
     return 0;
   }
-  const auto added = get_or_create_set(key).add_many(members);
+  const bool created = !keyspace_.contains(key);
+  Set* set = nullptr;
+  long long added = 0;
+  try {
+    set = &get_or_create_set(key);
+    added = set->add_many(members);
+  } catch (...) {
+    if (created && set != nullptr && set->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   if (added != 0) {
     signal_key_modified(key);
   }
@@ -1510,16 +1598,27 @@ int Store::smove(std::string_view source, std::string_view destination,
   if (src == nullptr || !src->contains(member)) {
     return 0;
   }
-  // Materialize before erase: the member view is invalidated by swap-remove.
+  // Commit the destination first. Its insert is the only allocation-bearing
+  // half, so an OOM leaves the source untouched; source removal cannot allocate.
   const auto owned = std::string(member);
-  if (!src->erase(owned)) {
-    return 0;
+  const bool destination_created = !keyspace_.contains(destination);
+  Set* dst = nullptr;
+  try {
+    dst = &get_or_create_set(destination);
+    (void)dst->add(owned);
+  } catch (...) {
+    if (destination_created && dst != nullptr && dst->empty()) {
+      rollback_empty_created_key(destination);
+    }
+    throw;
   }
+  const bool removed = src->erase(owned);
+  assert(removed);
+  (void)removed;
   if (!src->empty()) {
     signal_key_modified(source);
   }
   erase_if_empty(source, *src);
-  (void)get_or_create_set(destination).add(owned);
   signal_key_modified(destination);
   return 1;
 }
@@ -1704,7 +1803,18 @@ void Store::place_loaded_hash(std::string key, Hash&& hash) {
 int Store::hset(std::string_view key, std::string_view field,
                 std::string_view value,
                 std::optional<HashImplementation> implementation) {
-  const int added = get_or_create_hash(key, implementation).set(field, value);
+  const bool created = !keyspace_.contains(key);
+  Hash* hash = nullptr;
+  int added = 0;
+  try {
+    hash = &get_or_create_hash(key, implementation);
+    added = hash->set(field, value);
+  } catch (...) {
+    if (created && hash != nullptr && hash->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   signal_key_modified(key);
   return added;
 }
@@ -1716,7 +1826,18 @@ long long Store::hset_many(
   if (fields.empty()) {
     return 0;
   }
-  const auto added = get_or_create_hash(key, implementation).set_many(fields);
+  const bool created = !keyspace_.contains(key);
+  Hash* hash = nullptr;
+  long long added = 0;
+  try {
+    hash = &get_or_create_hash(key, implementation);
+    added = hash->set_many(fields);
+  } catch (...) {
+    if (created && hash != nullptr && hash->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   signal_key_modified(key);
   return added;
 }
@@ -1724,7 +1845,18 @@ long long Store::hset_many(
 int Store::hsetnx(std::string_view key, std::string_view field,
                   std::string_view value,
                   std::optional<HashImplementation> implementation) {
-  const int added = get_or_create_hash(key, implementation).set_nx(field, value);
+  const bool created = !keyspace_.contains(key);
+  Hash* hash = nullptr;
+  int added = 0;
+  try {
+    hash = &get_or_create_hash(key, implementation);
+    added = hash->set_nx(field, value);
+  } catch (...) {
+    if (created && hash != nullptr && hash->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   if (added != 0) {
     signal_key_modified(key);
   }
@@ -1919,6 +2051,7 @@ long long Store::lpush(std::string_view key,
                        bool only_if_exists,
                        std::optional<ListImplementation> implementation) {
   List* list = find_list(key);
+  const bool created = list == nullptr && !keyspace_.contains(key);
   if (list == nullptr) {
     if (only_if_exists) {
       return 0;
@@ -1926,7 +2059,15 @@ long long Store::lpush(std::string_view key,
     list = &get_or_create_list(
         key, implementation.value_or(options_.list_implementation));
   }
-  const auto size = static_cast<long long>(list->push_front(values));
+  long long size = 0;
+  try {
+    size = static_cast<long long>(list->push_front(values));
+  } catch (...) {
+    if (created && list->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   signal_key_modified(key);
   return size;
 }
@@ -1936,6 +2077,7 @@ long long Store::rpush(std::string_view key,
                        bool only_if_exists,
                        std::optional<ListImplementation> implementation) {
   List* list = find_list(key);
+  const bool created = list == nullptr && !keyspace_.contains(key);
   if (list == nullptr) {
     if (only_if_exists) {
       return 0;
@@ -1943,7 +2085,15 @@ long long Store::rpush(std::string_view key,
     list = &get_or_create_list(
         key, implementation.value_or(options_.list_implementation));
   }
-  const auto size = static_cast<long long>(list->push_back(values));
+  long long size = 0;
+  try {
+    size = static_cast<long long>(list->push_back(values));
+  } catch (...) {
+    if (created && list->empty()) {
+      rollback_empty_created_key(key);
+    }
+    throw;
+  }
   signal_key_modified(key);
   return size;
 }
@@ -3431,6 +3581,7 @@ std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
 }
 
 SnapshotLoadStats Store::load(std::istream& in) {
+  MemoryCeilingScope memory_scope(&memory_ceiling_);
   // A load replaces the complete keyspace. Active WATCH clients must abort even
   // when a watched key is absent from both the old and new snapshots.
   signal_all_modified();
@@ -3719,15 +3870,12 @@ MemoryReport Store::memory_report() const noexcept {
   r.realtime_keyspace_index_pool_bytes =
       keyspace_.realtime_keyspace_index_pool_bytes();
   const ZSetOptions* zopts = zset_options();
-  // Full zsets: arena used (live + dead) plus fixed index/cache structures.
-  // Compact zset blobs are accounted once through the process-wide pool below.
+  // Full zsets: committed arena/table capacity. Compact blobs are accounted by
+  // the process-wide pool below.
   keyspace_.for_each_zset([&r, zopts](std::string_view, const ZSet& zset) {
     const auto s = zset.memory_stats(zopts);
     if (!zset.is_small()) {
-      r.used_memory +=
-          s.member_storage_bytes + s.score_string_cache_bytes +
-          s.member_index_allocated_bytes + s.score_index_allocated_bytes +
-          s.rank_location_cache_allocated_bytes;
+      r.used_memory += s.total_allocated_bytes;
     }
     r.reclaimable_bytes += s.member_storage_dead_bytes;
   });
@@ -3735,9 +3883,7 @@ MemoryReport Store::memory_report() const noexcept {
   // in KeyspaceStorage and are therefore already included in its footprint.
   keyspace_.for_each_hash([&r](std::string_view, const Hash& hash) {
     const auto s = hash.memory_stats();
-    const auto hash_owned_bytes =
-        s.field_value_live_bytes + s.field_value_dead_bytes +
-        s.field_index_allocated_bytes + s.hash_heap_allocated_bytes;
+    const auto hash_owned_bytes = s.total_allocated_bytes;
     r.used_memory += hash_owned_bytes - s.keyspace_accounted_bytes;
     r.reclaimable_bytes += s.field_value_dead_bytes;
     r.hash_heap_allocated_bytes += s.hash_heap_allocated_bytes;
@@ -3759,13 +3905,22 @@ MemoryReport Store::memory_report() const noexcept {
   // Sets own an encoded-member arena and a Swiss member index.
   keyspace_.for_each_set([&r](std::string_view, const Set& set) {
     const auto s = set.memory_stats();
-    r.used_memory += s.total_allocated_bytes;
+    // Compact set blobs belong to the process-wide pool below. The heap-owned
+    // Set object itself remains per key; full sets additionally own their arena
+    // and member index.
+    r.used_memory += s.is_listpack ? sizeof(Set) : s.total_allocated_bytes;
     r.reclaimable_bytes += s.member_dead_bytes;
   });
-  // The keyspace itself: key/value arena (live + dead) plus the swiss index and
-  // object/type tables.
+  keyspace_.for_each_array([&r](std::string_view, const Array& array) {
+    const auto s = array.memory_stats();
+    r.used_memory += s.total_allocated_bytes;
+    r.reclaimable_bytes += s.value_dead_bytes;
+  });
+  // The keyspace itself: committed key/value arena capacity plus the Swiss
+  // index and object/type tables.
   r.used_memory += keyspace_.footprint_used_bytes();
   r.reclaimable_bytes += keyspace_.footprint_dead_bytes();
+  r.used_memory += ttl_.allocated_bytes();
 
   const auto pool = blob_pool_stats();
   r.blob_pool_requested_bytes = pool.requested_live_bytes;

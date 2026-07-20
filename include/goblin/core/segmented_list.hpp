@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "goblin/core/list_listpack.hpp"
+#include "goblin/core/memory_limit.hpp"
 
 namespace goblin::core {
 
@@ -48,6 +49,11 @@ class SegmentedList {
       throw std::length_error("list element space exhausted");
     }
     auto replacements = build_view_leaves(values);
+    if (replacements.capacity() > leaves_.capacity()) {
+      ensure_memory_growth((replacements.capacity() - leaves_.capacity()) *
+                           sizeof(ListListpack));
+    }
+    reserve_memory_vector(fenwick_, replacements.size() + 1);
     leaves_ = std::move(replacements);
     size_ = values.size();
     rebuild_index();
@@ -58,6 +64,11 @@ class SegmentedList {
       throw std::length_error("list element space exhausted");
     }
     auto replacements = build_raw_leaves(values);
+    if (replacements.capacity() > leaves_.capacity()) {
+      ensure_memory_growth((replacements.capacity() - leaves_.capacity()) *
+                           sizeof(ListListpack));
+    }
+    reserve_memory_vector(fenwick_, replacements.size() + 1);
     leaves_ = std::move(replacements);
     size_ = values.size();
     rebuild_index();
@@ -72,6 +83,7 @@ class SegmentedList {
       if (!inserted) {
         throw std::length_error("list value does not fit packed leaf");
       }
+      reserve_leaf_count(1);
       leaves_.push_back(std::move(leaf));
       size_ = 1;
       rebuild_index();
@@ -130,6 +142,23 @@ class SegmentedList {
 
     if (leaves_.empty()) {
       assign(values);
+      return;
+    }
+
+    if (memory_ceiling_active()) {
+      // Build every replacement leaf before touching the live endpoint. This is
+      // a little more work than filling residual space in place, but guarantees
+      // a multi-value push is all-or-nothing when maxmemory rejects growth.
+      const auto bias = index == size_ ? LeafBias::Back
+                                       : index == 0 ? LeafBias::Front
+                                                    : LeafBias::Balanced;
+      const auto location = index == size_ ? tail_location() : locate(index);
+      auto combined = leaf_values(location.leaf);
+      combined.insert(
+          combined.begin() + static_cast<std::ptrdiff_t>(location.offset),
+          values.begin(), values.end());
+      replace_leaf(location.leaf, combined, bias);
+      size_ += values.size();
       return;
     }
 
@@ -240,6 +269,7 @@ class SegmentedList {
       return;
     }
     if (count <= leaf_entries_) {
+      reserve_leaf_count(1);
       leaves_.clear();
       leaves_.push_back(std::move(leaf));
       size_ = count;
@@ -499,6 +529,7 @@ class SegmentedList {
   }
 
   void rebuild_index() {
+    reserve_memory_vector(fenwick_, leaves_.size() + 1);
     fenwick_.assign(leaves_.size() + 1, 0);
     for (std::size_t leaf = 0; leaf < leaves_.size(); ++leaf) {
       const auto count = static_cast<std::uint32_t>(leaves_[leaf].size());
@@ -738,13 +769,15 @@ class SegmentedList {
   }
 
   void reserve_leaf_count(std::size_t required) {
-    if (required <= leaves_.capacity()) {
+    if (required <= leaves_.capacity() && required + 1 <= fenwick_.capacity()) {
       return;
     }
     const auto grown = leaves_.capacity() == 0
                            ? std::size_t{1}
                            : leaves_.capacity() * 2;
-    leaves_.reserve(std::max(required, grown));
+    const auto target = std::max(required, grown);
+    reserve_memory_vector(leaves_, target);
+    reserve_memory_vector(fenwick_, target + 1);
   }
 
   void maybe_merge(std::size_t leaf) {

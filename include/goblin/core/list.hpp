@@ -514,10 +514,12 @@ class List {
   void init_empty() {
     if (options_->listpack_max_entries == 0) {
       if (options_->implementation == ListImplementation::Segmented) {
+        ensure_memory_growth(sizeof(SegmentedList));
         rep_.template emplace<SegmentedStatePtr>(
             std::make_unique<SegmentedList>(
                 options_->string_encoding, options_->string_compression));
       } else {
+        ensure_memory_growth(sizeof(FullState));
         rep_.template emplace<FullStatePtr>(
             std::make_unique<FullState>(*options_));
       }
@@ -532,6 +534,7 @@ class List {
       return;
     }
     if (options_->implementation == ListImplementation::Segmented) {
+      ensure_memory_growth(sizeof(SegmentedList));
       auto state = std::make_unique<SegmentedList>(
           options_->string_encoding, options_->string_compression);
       // Move the compact blob into the segmented representation without
@@ -541,6 +544,7 @@ class List {
       return;
     }
 
+    ensure_memory_growth(sizeof(FullState));
     auto state = std::make_unique<FullState>(*options_);
     std::vector<ListValueRef> refs;
     refs.reserve(lp->size());
@@ -594,35 +598,43 @@ class List {
         size() > options_->listpack_max_entries) {
       return;
     }
-    ListListpack packed;
-    bool fits = true;
-    if (const auto* segmented = segmented_ptr()) {
-      (*segmented)->for_each([&](EncodedStringView value) {
-        if (fits && !packed.insert_encoded(
-                        packed.size(), value,
-                        options_->listpack_max_entries)) {
-          fits = false;
-        }
-      });
-    } else {
-      auto& state = full();
-      state.order.for_each([&](ListValueRef ref) {
-        if (fits && !packed.insert_encoded(
-                        packed.size(), state.values.view(ref),
-                        options_->listpack_max_entries)) {
-          fits = false;
-        }
-      });
-    }
-    if (fits) {
-      rep_.template emplace<ListListpack>(std::move(packed));
+    try {
+      ListListpack packed;
+      bool fits = true;
+      if (const auto* segmented = segmented_ptr()) {
+        (*segmented)->for_each([&](EncodedStringView value) {
+          if (fits && !packed.insert_encoded(
+                          packed.size(), value,
+                          options_->listpack_max_entries)) {
+            fits = false;
+          }
+        });
+      } else {
+        auto& state = full();
+        state.order.for_each([&](ListValueRef ref) {
+          if (fits && !packed.insert_encoded(
+                          packed.size(), state.values.view(ref),
+                          options_->listpack_max_entries)) {
+            fits = false;
+          }
+        });
+      }
+      if (fits) {
+        rep_.template emplace<ListListpack>(std::move(packed));
+      }
+    } catch (const MaxMemoryExceeded&) {
+      // Demotion is optional after a successful removal.
     }
   }
 
   void maybe_compact_values() {
     if (!is_small() && segmented_ptr() == nullptr &&
         full().values.should_compact()) {
-      compact_values();
+      try {
+        compact_values();
+      } catch (const MaxMemoryExceeded&) {
+        // Preserve the already-committed list mutation and compact later.
+      }
     }
   }
 

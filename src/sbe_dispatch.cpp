@@ -3114,9 +3114,15 @@ std::size_t sbe_dispatch_one(Store& store, std::string_view bytes, std::string& 
   char* buf = const_cast<char*>(bytes.data()) + kSbeLenPrefix;
   const std::uint64_t buflen = msg_len;
 
+  const auto output_start = out.size();
+  MemoryCeilingScope memory_scope(&store.memory_ceiling());
   try {
     sbe::MessageHeader hdr(buf, buflen);
     handle(store, hdr.templateId(), buf, buflen, hdr.blockLength(), hdr.version(), out, options);
+  } catch (const MaxMemoryExceeded&) {
+    out.resize(output_start);
+    reply_error(out, "OOM",
+                "command not allowed when used memory exceeds 'maxmemory'.");
   } catch (const std::exception&) {
     // Malformed / hostile frame (a bad length or var-data size trips SBE's bounds
     // check): consume it and resync, never crash.

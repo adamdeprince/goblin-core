@@ -1217,6 +1217,35 @@ int main() {
   dispatch(store, key_frame<sbe::GoblinMemory>("nosuchkey"), is_nil);
   dispatch(store, set_frame("strk", "v"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
   dispatch(store, key_frame<sbe::GoblinMemory>("strk"), is_nil);  // MEMORY on a string -> nil
+
+  // --maxmemory is protocol-independent: SBE receives a typed OOM and the
+  // allocation that crossed the ceiling does not leave a key behind.
+  {
+    Store probe;
+    StoreOptions options;
+    options.maxmemory = probe.memory_report().used_memory + 48 * 1024;
+    Store capped(options);
+    const std::string payload(2000, 'm');
+    bool saw_oom = false;
+    for (std::size_t i = 0; i < 100 && !saw_oom; ++i) {
+      const auto key = "sbe-max:" + std::to_string(i);
+      dispatch(capped, set_frame(key, payload),
+               [&](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+                 if (h.templateId() == sbe::ErrorReply::sbeTemplateId()) {
+                   assert(decode<sbe::ErrorReply>(h, m, l)
+                              .getCodeAsStringView() == "OOM");
+                   saw_oom = true;
+                   assert(!capped.exists(key));
+                 } else {
+                   assert(decode<sbe::StatusReply>(h, m, l)
+                              .getStatusAsStringView() == "OK");
+                 }
+               });
+      assert(capped.memory_report().used_memory <= options.maxmemory);
+    }
+    assert(saw_oom);
+  }
+
   // GOBLIN.LOAD: a missing file and a garbage file both -> ErrorReply
   dispatch(store, load_frame("/tmp/goblin-sbe-no-such-snapshot"), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
     assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");

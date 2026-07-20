@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "goblin/core/zset_member_storage.hpp"
+#include "goblin/core/memory_limit.hpp"
 
 namespace goblin::core {
 
@@ -170,7 +171,7 @@ class ZSetScoreIndex {
     block_hints_wide_ = source.block_hints_wide_;
 
     blocks_.clear();
-    blocks_.reserve(source.blocks_.size());
+    reserve_memory_vector(blocks_, source.blocks_.size());
     for (const auto& source_block : source.blocks_) {
       blocks_.push_back(source_block.clone());
     }
@@ -200,9 +201,9 @@ class ZSetScoreIndex {
     score_width_ = width;
 
     size_ = values.size();
-    blocks_.reserve((values.size() + load_ - 1) / load_);
-    maxes_.reserve(blocks_.capacity());
-    mins_.reserve(blocks_.capacity());
+    reserve_memory_vector(blocks_, (values.size() + load_ - 1) / load_);
+    reserve_memory_vector(maxes_, blocks_.capacity());
+    reserve_memory_vector(mins_, blocks_.capacity());
 
     for (size_type start = 0; start < values.size(); start += load_) {
       const auto count = std::min(load_, values.size() - start);
@@ -232,7 +233,15 @@ class ZSetScoreIndex {
       value.prefix = compute_prefix(value.member_id);
     }
     ensure_score_width(value.score);
+    if (rank_cache_mode_ == RankCacheMode::Exact) {
+      ensure_location_capacity(value.member_id);
+    } else if (rank_cache_mode_ == RankCacheMode::BlockHint) {
+      ensure_block_hint_capacity(value.member_id);
+    }
     if (blocks_.empty()) {
+      reserve_memory_vector_for_push(blocks_, 1);
+      reserve_memory_vector_for_push(maxes_, 1);
+      reserve_memory_vector_for_push(mins_, 1);
       blocks_.push_back(Block{});
       blocks_.back().score_width_ = score_width_;
       blocks_.back().load_ = load_;
@@ -246,7 +255,19 @@ class ZSetScoreIndex {
       return;
     }
 
-    const auto position = locate_insert_position(value);
+    auto position = locate_insert_position(value);
+    if (blocks_[position.first].size() > load_ * 2) {
+      // A prior insert may have fit its existing block while the metadata needed
+      // to split did not fit under maxmemory. Split that deferred block before
+      // accepting another entry so the temporary 2*load+1 bound stays hard.
+      const auto deferred = position.first;
+      split_block(deferred);
+      refresh_block_indices_from(deferred + 1);
+      refresh_block_locations(deferred);
+      refresh_block_locations(deferred + 1);
+      invalidate_index();
+      position = locate_insert_position(value);
+    }
     auto& block = blocks_[position.first];
     const auto offset = position.second;
     block.insert(offset, value);
@@ -254,12 +275,19 @@ class ZSetScoreIndex {
     ++size_;
 
     if (block.size() > load_ * 2) {
-      split_block(block_index);
-      refresh_block_indices_from(block_index + 1);
-      refresh_block_locations(block_index);
-      refresh_block_locations(block_index + 1);
-      invalidate_index();
-      return;
+      try {
+        split_block(block_index);
+        refresh_block_indices_from(block_index + 1);
+        refresh_block_locations(block_index);
+        refresh_block_locations(block_index + 1);
+        invalidate_index();
+        return;
+      } catch (const std::bad_alloc&) {
+        // The entry already fits the block's bounded 2*load+1 capacity. A split
+        // is maintenance, so keep the valid overfull block and retry the split
+        // before the next insertion instead of reporting a failed command after
+        // its member became visible.
+      }
     }
 
     refresh_block_metadata(block_index);
@@ -313,8 +341,25 @@ class ZSetScoreIndex {
       return true;
     }
 
-    erase_at(block_index, old_offset);
+    // Insert first so an allocation failure leaves the old entry untouched.
+    // The old block is then erased without optional merge maintenance; that
+    // erase cannot allocate and the next ordinary mutation may rebalance it.
     insert(new_entry);
+    const auto relocated_old = locate_entry(old_entry);
+    if (!relocated_old) {
+      const auto inserted = locate_entry(new_entry);
+      if (inserted) {
+        erase_at(inserted->first, inserted->second,
+                 EraseRebalancePolicy::None);
+      }
+      return false;
+    }
+    erase_at(relocated_old->first, relocated_old->second,
+             EraseRebalancePolicy::None);
+    if (const auto relocated_new = locate_entry(new_entry)) {
+      set_location(new_entry.member_id, relocated_new->first,
+                   relocated_new->second);
+    }
     return true;
   }
 
@@ -1192,6 +1237,7 @@ class ZSetScoreIndex {
       copy.load_ = load_;
       if (capacity_ > 0) {
         const auto stride = entry_stride();
+        ensure_memory_growth(static_cast<size_type>(capacity_) * stride);
         copy.entries_ = std::make_unique_for_overwrite<std::byte[]>(
             static_cast<size_type>(capacity_) * stride);
         if (size_ > 0) {
@@ -1272,8 +1318,13 @@ class ZSetScoreIndex {
     void reallocate(size_type required) {
       const auto new_capacity = allocation_capacity(required);
       const auto stride = entry_stride();
+      const auto old_bytes = static_cast<size_type>(capacity_) * stride;
+      const auto new_bytes = new_capacity * stride;
+      if (new_bytes > old_bytes) {
+        ensure_memory_growth(new_bytes - old_bytes);
+      }
       auto entries = std::make_unique_for_overwrite<std::byte[]>(
-          new_capacity * stride);
+          new_bytes);
       if (size_ > 0) {
         std::memcpy(entries.get(), entries_.get(), size_ * stride);
       }
@@ -1338,6 +1389,8 @@ class ZSetScoreIndex {
     }
     block.id_ = next_block_id_++;
     if (block.id_ >= block_index_by_id_.size()) {
+      reserve_memory_vector(block_index_by_id_,
+                            static_cast<size_type>(block.id_) + 1);
       block_index_by_id_.resize(static_cast<size_type>(block.id_) + 1,
                                 kInvalidBlockIndex);
     }
@@ -1381,6 +1434,7 @@ class ZSetScoreIndex {
 
   void ensure_location_capacity(std::uint32_t member_id) {
     if (member_id >= locations_.size()) {
+      reserve_memory_vector(locations_, static_cast<size_type>(member_id) + 1);
       locations_.resize(static_cast<size_type>(member_id) + 1, kInvalidLocation);
     }
   }
@@ -1390,6 +1444,7 @@ class ZSetScoreIndex {
       return;
     }
 
+    reserve_memory_vector(block_hints32_, block_hints16_.size());
     block_hints32_.assign(block_hints16_.size(), kInvalidBlockHint32);
     for (size_type i = 0; i < block_hints16_.size(); ++i) {
       const auto hint = block_hints16_[i];
@@ -1405,12 +1460,14 @@ class ZSetScoreIndex {
     const auto required = static_cast<size_type>(member_id) + 1;
     if (block_hints_wide_) {
       if (required > block_hints32_.size()) {
+        reserve_memory_vector(block_hints32_, required);
         block_hints32_.resize(required, kInvalidBlockHint32);
       }
       return;
     }
 
     if (required > block_hints16_.size()) {
+      reserve_memory_vector(block_hints16_, required);
       block_hints16_.resize(required, kInvalidBlockHint16);
     }
   }
@@ -1424,6 +1481,7 @@ class ZSetScoreIndex {
   void ensure_block_hint_offset_capacity(std::uint32_t member_id) const {
     const auto required = static_cast<size_type>(member_id) + 1;
     if (required > block_hint_offsets16_.size()) {
+      reserve_memory_vector(block_hint_offsets16_, required);
       block_hint_offsets16_.resize(required, kInvalidBlockHint16);
     }
   }
@@ -1735,6 +1793,13 @@ class ZSetScoreIndex {
       return;
     }
     const auto target = score_width_for(score, score_width_);
+    const auto old_stride = score_width_bytes(score_width_) + Block::kTailBytes;
+    const auto new_stride = score_width_bytes(target) + Block::kTailBytes;
+    std::size_t growth = 0;
+    for (const auto& block : blocks_) {
+      growth += block.capacity() * (new_stride - old_stride);
+    }
+    ensure_memory_growth(growth);
     for (auto& block : blocks_) {
       block.promote_scores(target);
     }
@@ -1877,6 +1942,7 @@ class ZSetScoreIndex {
   enum class EraseRebalancePolicy {
     Default,
     Remove,
+    None,
   };
 
   [[nodiscard]] bool erase_and_retarget_same_block(size_type r_offset,
@@ -1957,10 +2023,12 @@ class ZSetScoreIndex {
     const auto rebalance_threshold =
         policy == EraseRebalancePolicy::Remove ? (load_ / 4) : (load_ / 2);
 
-    if (block.size() < rebalance_threshold && blocks_.size() > 1) {
-      rebalance_after_erase(block_index);
-      invalidate_index();
-      return;
+    if (policy != EraseRebalancePolicy::None &&
+        block.size() < rebalance_threshold && blocks_.size() > 1) {
+      if (rebalance_after_erase(block_index)) {
+        invalidate_index();
+        return;
+      }
     }
 
     if (rank_cache_mode_ == RankCacheMode::Exact) {
@@ -1969,11 +2037,23 @@ class ZSetScoreIndex {
   }
 
   void split_block(size_type block_index) {
+    reserve_memory_vector_for_push(blocks_, 1);
+    reserve_memory_vector_for_push(maxes_, 1);
+    reserve_memory_vector_for_push(mins_, 1);
+    if (location_cache_enabled()) {
+      reserve_memory_vector(block_index_by_id_,
+                            static_cast<size_type>(next_block_id_) + 1);
+    }
     auto& block = blocks_[block_index];
     const auto split_at = block.size() / 2;
     auto right = block.split_off(split_at);
     if (trim_enabled_) {
-      block.trim();
+      try {
+        block.trim();
+      } catch (const std::bad_alloc&) {
+        // Trimming the left half is optional. The right half has already been
+        // copied, so preserving the old left capacity keeps the split atomic.
+      }
     }
     assign_block_id(right);
 
@@ -1986,16 +2066,31 @@ class ZSetScoreIndex {
                  blocks_[block_index + 1].front());
   }
 
-  void rebalance_after_erase(size_type block_index) {
+  [[nodiscard]] bool rebalance_after_erase(size_type block_index) {
     if (block_index + 1 < blocks_.size()) {
-      merge_with_next(block_index);
-      return;
+      return merge_with_next(block_index);
     }
-    merge_with_next(block_index - 1);
+    return merge_with_next(block_index - 1);
   }
 
-  void merge_with_next(size_type block_index) {
+  [[nodiscard]] bool merge_with_next(size_type block_index) {
     auto& left = blocks_[block_index];
+    const auto& right_view = blocks_[block_index + 1];
+    const auto required = left.size() + right_view.size();
+    // A merge that immediately needs a split is optional maintenance. Under a
+    // hard ceiling, defer it instead of risking a post-delete allocation.
+    if (memory_ceiling_active() && required > load_ * 2) {
+      return false;
+    }
+    const auto target_capacity = left.allocation_capacity(required);
+    const auto growth = target_capacity > left.capacity()
+                            ? (target_capacity - left.capacity()) *
+                                  left.entry_stride()
+                            : size_type{0};
+    if (!memory_growth_allowed(growth)) {
+      return false;
+    }
+    left.reserve(required);
     auto right = std::move(blocks_[block_index + 1]);
     const auto removed_block_id = right.id_;
     left.append(std::move(right));
@@ -2008,14 +2103,19 @@ class ZSetScoreIndex {
     refresh_block_metadata(block_index);
 
     if (left.size() > load_ * 2) {
-      split_block(block_index);
-      refresh_block_indices_from(block_index + 1);
-      refresh_block_locations(block_index);
-      refresh_block_locations(block_index + 1);
-      return;
+      try {
+        split_block(block_index);
+        refresh_block_indices_from(block_index + 1);
+        refresh_block_locations(block_index);
+        refresh_block_locations(block_index + 1);
+      } catch (const std::bad_alloc&) {
+        refresh_block_locations(block_index);
+      }
+      return true;
     }
 
     refresh_block_locations(block_index);
+    return true;
   }
 
   void invalidate_index() const {
@@ -2029,8 +2129,17 @@ class ZSetScoreIndex {
     }
 
     const auto leaf_count = std::bit_ceil(blocks_.size());
-    index_offset_ = leaf_count - 1;
-    index_.assign(index_offset_ + leaf_count, 0);
+    const auto index_offset = leaf_count - 1;
+    const auto required = index_offset + leaf_count;
+    const auto growth = required > index_.capacity()
+                            ? (required - index_.capacity()) * sizeof(size_type)
+                            : size_type{0};
+    if (!memory_growth_allowed(growth)) {
+      return;
+    }
+    reserve_memory_vector(index_, required);
+    index_offset_ = index_offset;
+    index_.assign(required, 0);
 
     for (size_type i = 0; i < blocks_.size(); ++i) {
       index_[index_offset_ + i] = blocks_[i].size();
@@ -2063,6 +2172,13 @@ class ZSetScoreIndex {
 
   [[nodiscard]] size_type prefix_size(size_type block_index) const {
     build_index();
+    if (index_.empty()) {
+      size_type total = 0;
+      for (size_type block = 0; block < block_index; ++block) {
+        total += blocks_[block].size();
+      }
+      return total;
+    }
 
     size_type total = 0;
     auto node = index_offset_ + block_index;
@@ -2080,6 +2196,15 @@ class ZSetScoreIndex {
 
   [[nodiscard]] std::pair<size_type, size_type> position_at(size_type index) const {
     build_index();
+    if (index_.empty()) {
+      for (size_type block = 0; block < blocks_.size(); ++block) {
+        if (index < blocks_[block].size()) {
+          return {block, index};
+        }
+        index -= blocks_[block].size();
+      }
+      return {blocks_.size(), 0};
+    }
 
     size_type node = 0;
     while (node < index_offset_) {

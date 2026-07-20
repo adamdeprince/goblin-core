@@ -19,6 +19,7 @@ rings, and polled one-sided RDMA rings.
 - [Kafka write-log ingestion](kafka.md)
 - [Authentication and trusted transports](authentication.md)
 - [TCP listeners and native TLS](tls.md)
+- [Hard memory ceiling and deterministic OOM](maxmemory.md)
 
 ## Protocols and transports
 

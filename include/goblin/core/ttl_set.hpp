@@ -101,12 +101,23 @@ class TtlSet {
   // Set or replace a key's expiry.
   void set(std::uint64_t key_id, std::uint64_t expiry_ms) {
     if (auto* existing = index_.find(PackedU48::make(key_id))) {
-      (void)order_.erase_one(TtlEntry::make(existing->get(), key_id));
+      const auto old_entry = TtlEntry::make(existing->get(), key_id);
+      const auto new_entry = TtlEntry::make(expiry_ms, key_id);
+      order_.insert(new_entry);
       *existing = PackedU48::make(expiry_ms);
+      (void)order_.erase_one(old_entry);
     } else {
-      index_.insert_or_assign(PackedU48::make(key_id), PackedU48::make(expiry_ms));
+      index_.reserve_additional(1);
+      const auto entry = TtlEntry::make(expiry_ms, key_id);
+      order_.insert(entry);
+      try {
+        index_.insert_or_assign(PackedU48::make(key_id),
+                                PackedU48::make(expiry_ms));
+      } catch (...) {
+        (void)order_.erase_one(entry);
+        throw;
+      }
     }
-    order_.insert(TtlEntry::make(expiry_ms, key_id));
   }
 
   // Remove a key's TTL; true if it had one.
@@ -139,9 +150,9 @@ class TtlSet {
       return;
     }
     const auto expiry_ms = existing->get();
+    order_.insert(TtlEntry::make(expiry_ms, to));
     (void)order_.erase_one(TtlEntry::make(expiry_ms, from));
     (void)index_.erase(PackedU48::make(from));
-    order_.insert(TtlEntry::make(expiry_ms, to));
     index_.insert_or_assign(PackedU48::make(to), PackedU48::make(expiry_ms));
   }
 
@@ -177,7 +188,7 @@ class TtlSet {
   void clear_all() noexcept { *this = TtlSet{}; }
 
   [[nodiscard]] std::size_t allocated_bytes() const noexcept {
-    return index_.allocated_bytes() + order_.size() * sizeof(TtlEntry);
+    return index_.allocated_bytes() + order_.allocated_bytes();
   }
 
  private:

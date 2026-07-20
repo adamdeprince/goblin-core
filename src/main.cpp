@@ -589,6 +589,7 @@ void print_usage(std::string_view program) {
             << "       [--tcp-listen ADDRESS:PORT]... (compatibility alias)\n"
             << "       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...\n"
             << "       [--rank-cache|--no-rank-cache]\n"
+            << "       [--maxmemory BYTES]    (0/unset means unlimited; no eviction)\n"
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--member-index-growth FACTOR] [--load-factor N]\n"
@@ -708,6 +709,26 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.auth_file = argv[++i];
+      continue;
+    }
+
+    if (arg == "--maxmemory") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --maxmemory requires a byte count\n";
+        return 2;
+      }
+      const std::string_view text(argv[++i]);
+      if (text == "0") {
+        store_options.maxmemory = 0;
+        continue;
+      }
+      const auto bytes = goblin::core::ring::parse_size(text);
+      if (!bytes || *bytes == 0 ||
+          *bytes > std::numeric_limits<std::size_t>::max()) {
+        std::cerr << "goblin-core: invalid --maxmemory byte count\n";
+        return 2;
+      }
+      store_options.maxmemory = static_cast<std::size_t>(*bytes);
       continue;
     }
 
@@ -1893,7 +1914,15 @@ int main(int argc, char** argv) {
   // is visible but does not make the compatibility server unusable there.
   lock_server_memory();
 
-  goblin::core::Store store(store_options);
+  std::optional<goblin::core::Store> store_holder;
+  try {
+    store_holder.emplace(store_options);
+  } catch (const goblin::core::MaxMemoryExceeded&) {
+    std::cerr << "goblin-core: --maxmemory is below the server's initial "
+                 "tracked memory footprint\n";
+    return 1;
+  }
+  auto& store = *store_holder;
 
   if (load_path) {
     std::ifstream snapshot(*load_path, std::ios::binary);

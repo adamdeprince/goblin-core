@@ -5,6 +5,8 @@
 #include <memory_resource>
 #include <string>
 
+#include "goblin/core/memory_limit.hpp"
+
 namespace goblin::core {
 
 struct BlobPoolStats {
@@ -33,6 +35,7 @@ class TrackingMemoryResource final : public std::pmr::memory_resource {
 
  private:
   void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+    ensure_memory_growth(bytes);
     void* p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
     current_bytes_ += bytes;
     ++allocations_;

@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include "goblin/core/memory_limit.hpp"
+
 namespace goblin::core {
 
 template <class T, class Compare = std::less<T>, std::size_t Load = 256>
@@ -37,6 +39,16 @@ class ChunkedSortedList {
 
   [[nodiscard]] size_type block_count() const noexcept {
     return blocks_.size();
+  }
+
+  [[nodiscard]] size_type allocated_bytes() const noexcept {
+    size_type bytes = blocks_.capacity() * sizeof(Block) +
+                      maxes_.capacity() * sizeof(T) +
+                      index_.capacity() * sizeof(size_type);
+    for (const auto& block : blocks_) {
+      bytes += block.capacity() * sizeof(T);
+    }
+    return bytes;
   }
 
   [[nodiscard]] bool contains(const T& value) const {
@@ -81,7 +93,10 @@ class ChunkedSortedList {
 
   void insert(T value) {
     if (blocks_.empty()) {
+      reserve_memory_vector_for_push(blocks_, 1);
+      reserve_memory_vector_for_push(maxes_, 1);
       blocks_.push_back(Block{});
+      reserve_memory_vector_for_push(blocks_.back(), Load);
       blocks_.back().push_back(std::move(value));
       maxes_.push_back(blocks_.back().back());
       size_ = 1;
@@ -89,16 +104,31 @@ class ChunkedSortedList {
       return;
     }
 
-    const auto block_index = upper_block(value);
+    auto block_index = upper_block(value);
+    if (blocks_[block_index].size() > Load * 2) {
+      // A previous insert may have fit the data block while maxmemory deferred
+      // its metadata split. Complete that split before accepting another item.
+      split_block(block_index);
+      invalidate_index();
+      block_index = upper_block(value);
+    }
     auto& block = blocks_[block_index];
-    const auto insert_at = std::ranges::upper_bound(block, value, compare_);
-    block.insert(insert_at, std::move(value));
+    const auto insert_offset = static_cast<size_type>(
+        std::ranges::upper_bound(block, value, compare_) - block.begin());
+    reserve_memory_vector_for_push(block, Load);
+    block.insert(block.begin() + static_cast<long>(insert_offset),
+                 std::move(value));
     ++size_;
 
     if (block.size() > Load * 2) {
-      split_block(block_index);
-      invalidate_index();
-      return;
+      try {
+        split_block(block_index);
+        invalidate_index();
+        return;
+      } catch (const std::bad_alloc&) {
+        // Splitting is maintenance after the value has committed. The block has
+        // bounded spare capacity for this one entry; retry before the next one.
+      }
     }
 
     maxes_[block_index] = block.back();
@@ -235,11 +265,13 @@ class ChunkedSortedList {
   }
 
   void split_block(size_type block_index) {
+    reserve_memory_vector_for_push(blocks_, 1);
+    reserve_memory_vector_for_push(maxes_, 1);
     auto& block = blocks_[block_index];
     const auto split_at = block.size() / 2;
 
     Block right;
-    right.reserve(block.size() - split_at);
+    reserve_memory_vector(right, block.size() - split_at);
     right.insert(right.end(),
                  std::make_move_iterator(block.begin() + static_cast<long>(split_at)),
                  std::make_move_iterator(block.end()));
@@ -262,7 +294,14 @@ class ChunkedSortedList {
   void merge_with_next(size_type block_index) {
     auto& left = blocks_[block_index];
     auto& right = blocks_[block_index + 1];
-    left.reserve(left.size() + right.size());
+    const auto required = left.size() + right.size();
+    const auto growth = required > left.capacity()
+                            ? (required - left.capacity()) * sizeof(T)
+                            : size_type{0};
+    if (!memory_growth_allowed(growth)) {
+      return;
+    }
+    reserve_memory_vector(left, required);
     left.insert(left.end(),
                 std::make_move_iterator(right.begin()),
                 std::make_move_iterator(right.end()));
@@ -272,7 +311,12 @@ class ChunkedSortedList {
     maxes_[block_index] = left.back();
 
     if (left.size() > Load * 2) {
-      split_block(block_index);
+      try {
+        split_block(block_index);
+      } catch (const std::bad_alloc&) {
+        // The merge already completed. Leave its valid combined block in place
+        // and let the next insertion retry the optional split.
+      }
     }
   }
 
@@ -287,8 +331,17 @@ class ChunkedSortedList {
     }
 
     const auto leaf_count = std::bit_ceil(blocks_.size());
-    index_offset_ = leaf_count - 1;
-    index_.assign(index_offset_ + leaf_count, 0);
+    const auto index_offset = leaf_count - 1;
+    const auto required = index_offset + leaf_count;
+    const auto growth = required > index_.capacity()
+                            ? (required - index_.capacity()) * sizeof(size_type)
+                            : size_type{0};
+    if (!memory_growth_allowed(growth)) {
+      return;
+    }
+    reserve_memory_vector(index_, required);
+    index_offset_ = index_offset;
+    index_.assign(required, 0);
 
     for (size_type i = 0; i < blocks_.size(); ++i) {
       index_[index_offset_ + i] = blocks_[i].size();
@@ -321,6 +374,13 @@ class ChunkedSortedList {
 
   [[nodiscard]] size_type prefix_size(size_type block_index) const {
     build_index();
+    if (index_.empty()) {
+      size_type total = 0;
+      for (size_type block = 0; block < block_index; ++block) {
+        total += blocks_[block].size();
+      }
+      return total;
+    }
 
     size_type total = 0;
     auto node = index_offset_ + block_index;
@@ -338,6 +398,15 @@ class ChunkedSortedList {
 
   [[nodiscard]] std::pair<size_type, size_type> position_at(size_type index) const {
     build_index();
+    if (index_.empty()) {
+      for (size_type block = 0; block < blocks_.size(); ++block) {
+        if (index < blocks_[block].size()) {
+          return {block, index};
+        }
+        index -= blocks_[block].size();
+      }
+      return {blocks_.size(), 0};
+    }
 
     size_type node = 0;
     while (node < index_offset_) {

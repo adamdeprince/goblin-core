@@ -352,7 +352,7 @@ class Set {
     if (const auto* lp = small_ptr()) {
       stats.member_live_bytes = lp->allocated_bytes();
       stats.member_allocated_bytes = lp->allocated_bytes();
-      stats.total_allocated_bytes = lp->allocated_bytes();
+      stats.total_allocated_bytes = sizeof(Set) + lp->allocated_bytes();
       return stats;
     }
     stats.member_live_bytes = full().storage->live_bytes();
@@ -363,7 +363,7 @@ class Set {
     stats.member_index_allocated_bytes = full().members.allocated_bytes();
     stats.total_allocated_bytes =
         stats.member_allocated_bytes + stats.member_index_allocated_bytes +
-        sizeof(FullState) + sizeof(SetStorage);
+        sizeof(Set) + sizeof(FullState) + sizeof(SetStorage);
     return stats;
   }
 
@@ -475,6 +475,7 @@ class Set {
 
   void init_empty() {
     if (options_.listpack_max_entries == 0) {
+      ensure_memory_growth(sizeof(FullState) + sizeof(SetStorage));
       auto storage = std::make_unique<SetStorage>(
           options_.chunk_bytes, kDefaultArenaGrowth, options_.string_encoding);
       MemberIndex<SetStorage> members(storage.get(),
@@ -532,6 +533,7 @@ class Set {
     if (!is_small()) {
       return;
     }
+    ensure_memory_growth(sizeof(FullState) + sizeof(SetStorage));
     auto storage = std::make_unique<SetStorage>(
         options_.chunk_bytes, kDefaultArenaGrowth, options_.string_encoding);
     MemberIndex<SetStorage> members(storage.get(), options_.member_index_growth);
@@ -561,21 +563,25 @@ class Set {
     if (!SetListpack::can_encode(n, full().storage->live_bytes())) {
       return;
     }
-    std::vector<std::string> owned;
-    std::vector<std::string_view> views;
-    owned.reserve(n);
-    views.reserve(n);
-    for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(n); ++id) {
-      owned.push_back(full().storage->encoded_view(id).to_string());
-      views.push_back(owned.back());
+    try {
+      std::vector<std::string> owned;
+      std::vector<std::string_view> views;
+      owned.reserve(n);
+      views.reserve(n);
+      for (std::uint32_t id = 0; id < static_cast<std::uint32_t>(n); ++id) {
+        owned.push_back(full().storage->encoded_view(id).to_string());
+        views.push_back(owned.back());
+      }
+      SetListpack lp;
+      const auto result = lp.add_many(views, options_.listpack_max_entries,
+                                      options_.string_encoding);
+      if (result.needs_full) {
+        return;
+      }
+      rep_ = std::move(lp);
+    } catch (const MaxMemoryExceeded&) {
+      // Demotion is an optional representation change after a successful erase.
     }
-    SetListpack lp;
-    const auto result =
-        lp.add_many(views, options_.listpack_max_entries, options_.string_encoding);
-    if (result.needs_full) {
-      return;
-    }
-    rep_ = std::move(lp);
   }
 
   void maybe_compact_arena() {
@@ -584,8 +590,12 @@ class Set {
     }
     if (full().storage->dead_bytes() >= kAutoCompactDeadFloor &&
         full().storage->dead_bytes() >= full().storage->live_bytes()) {
-      full().storage->compact();
-      full().storage->shrink_to_fit();
+      try {
+        full().storage->compact();
+        full().storage->shrink_to_fit();
+      } catch (const MaxMemoryExceeded&) {
+        // Keep the valid un-compacted representation until memory is freed.
+      }
     }
   }
 

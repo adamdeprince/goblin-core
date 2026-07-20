@@ -13,6 +13,7 @@
 // size (sysconf, not a hardcoded 4 KiB -- Apple/LoongArch use 16 KiB pages).
 
 #include "goblin/core/hugetlb.hpp"
+#include "goblin/core/memory_limit.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -90,12 +91,19 @@ struct PageBlockDeleter {
   }
 };
 
+[[nodiscard]] inline std::size_t page_block_capacity(
+    const std::shared_ptr<char[]>& block) noexcept {
+  const auto* deleter = std::get_deleter<PageBlockDeleter>(block);
+  return deleter == nullptr ? std::size_t{0} : deleter->bytes;
+}
+
 // Allocate a block able to hold at least `bytes`. >= a page -> mmap (page-aligned,
 // reclaimable on free); smaller -> malloc. The returned shared_ptr frees it the
 // right way. The mapping is explicitly locked even though the server executable
 // also requests MCL_FUTURE: this keeps arena residency correct for library users
 // and on kernels whose process lock policy does not cover a later mapping.
-[[nodiscard]] inline std::shared_ptr<char[]> alloc_page_block(std::size_t bytes) {
+[[nodiscard]] inline std::shared_ptr<char[]> alloc_page_block_unchecked(
+    std::size_t bytes) {
 #if defined(GOBLIN_HAVE_MMAP)
   if (bytes >= page_bytes()) {
     const std::size_t mapped_bytes = round_up_to_page(bytes);
@@ -115,6 +123,24 @@ struct PageBlockDeleter {
   }
   return std::shared_ptr<char[]>(static_cast<char*>(ptr),
                                  PageBlockDeleter{bytes, false});
+}
+
+[[nodiscard]] inline std::shared_ptr<char[]> alloc_page_block(std::size_t bytes) {
+  ensure_memory_growth(page_block_alloc_bytes(bytes));
+  return alloc_page_block_unchecked(bytes);
+}
+
+// Allocate a replacement whose final footprint supersedes `old`. The old block
+// stays readable until the caller finishes transforming it, but maxmemory is
+// charged only for the persistent capacity delta, not this transient overlap.
+[[nodiscard]] inline std::shared_ptr<char[]> alloc_replacement_page_block(
+    const std::shared_ptr<char[]>& old, std::size_t bytes) {
+  const auto old_bytes = page_block_capacity(old);
+  const auto next_bytes = page_block_alloc_bytes(bytes);
+  if (next_bytes > old_bytes) {
+    ensure_memory_growth(next_bytes - old_bytes);
+  }
+  return alloc_page_block_unchecked(bytes);
 }
 
 // Try to re-home a just-frozen block onto a huge page: allocate a huge block of
@@ -159,7 +185,14 @@ inline bool maybe_freeze_block_to_huge(std::shared_ptr<char[]>& block,
                                        std::size_t used, std::size_t chunk_bytes,
                                        std::size_t current_capacity,
                                        std::size_t& committed_bytes) {
+  const auto growth = chunk_bytes > current_capacity
+                          ? chunk_bytes - current_capacity
+                          : std::size_t{0};
+  if (!memory_growth_allowed(growth)) {
+    return false;
+  }
   if (auto huge = try_promote_to_huge(block, used, chunk_bytes)) {
+    ensure_memory_growth(growth);
     committed_bytes += chunk_bytes - current_capacity;
     block = std::move(huge);
     return true;
@@ -174,7 +207,12 @@ inline bool maybe_freeze_block_to_huge(std::shared_ptr<char[]>& block,
 // COW-safe (never writes a shared/frozen buffer).
 [[nodiscard]] inline std::shared_ptr<char[]> grow_page_block(
     const std::shared_ptr<char[]>& old, std::size_t used, std::size_t new_bytes) {
-  auto fresh = alloc_page_block(new_bytes);
+  const auto old_bytes = page_block_capacity(old);
+  const auto allocated = page_block_alloc_bytes(new_bytes);
+  if (allocated > old_bytes) {
+    ensure_memory_growth(allocated - old_bytes);
+  }
+  auto fresh = alloc_page_block_unchecked(new_bytes);
   if (used != 0 && old) {
     std::memcpy(fresh.get(), old.get(), used);
   }
@@ -255,6 +293,7 @@ struct RunReservation {
 
   if (block_index >= blocks.size()) {  // fresh active block from a tiny floor
     const std::size_t want = std::min(chunk_bytes, std::max(initial_bytes, size));
+    reserve_memory_vector_for_push(blocks, 1);
     blocks.push_back(alloc_page_block(want));
     const std::size_t committed = page_block_alloc_bytes(want);
     committed_bytes += committed;
@@ -323,6 +362,7 @@ struct RunReservationSplit {
 
   if (block_index >= blocks.size()) {  // fresh active block from a tiny floor
     const std::size_t want = std::min(chunk_bytes, std::max(initial_bytes, size));
+    reserve_memory_vector_for_push(blocks, 1);
     blocks.push_back(alloc_page_block(want));
     const std::size_t committed = page_block_alloc_bytes(want);
     committed_bytes += committed;

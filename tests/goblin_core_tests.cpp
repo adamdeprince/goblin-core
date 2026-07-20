@@ -1897,6 +1897,297 @@ void test_memory_report() {
   assert(info.find("blob_pool_fragmentation_bytes:") != std::string::npos);
 }
 
+void test_maxmemory_hard_ceiling() {
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  std::size_t baseline = 0;
+  {
+    Store probe;
+    baseline = probe.memory_report().used_memory;
+  }
+
+  StoreOptions options;
+  options.maxmemory = baseline + 96 * 1024;
+  Store store(options);
+  assert(store.maxmemory() == options.maxmemory);
+
+  assert(execute_fields(store, {"SET", "stable", "before"}) == "+OK\r\n");
+  const std::string payload(2048, 'x');
+  std::size_t accepted = 0;
+  std::string rejected_key;
+  for (std::size_t i = 0; i < 1000; ++i) {
+    const auto key = "blob:" + std::to_string(i);
+    const auto reply = execute_fields(store, {"SET", key, payload});
+    assert(store.memory_report().used_memory <= options.maxmemory);
+    if (reply.starts_with("-OOM ")) {
+      rejected_key = key;
+      break;
+    }
+    assert(reply == "+OK\r\n");
+    ++accepted;
+  }
+  assert(accepted != 0);
+  assert(!rejected_key.empty());
+  assert(!store.exists(rejected_key));
+  assert(store.dbsize(store.now_ms()) == accepted + 1);
+
+  // Writes that need no persistent capacity growth still work after the next
+  // arena growth has been refused, as do memory-releasing commands.
+  assert(execute_fields(store, {"SET", "stable", "after!"}) == "+OK\r\n");
+  assert(execute_fields(store, {"GET", "stable"}) == "$6\r\nafter!\r\n");
+  assert(execute_fields(store, {"DEL", "blob:0"}) == ":1\r\n");
+  assert(store.memory_report().used_memory <= options.maxmemory);
+
+  const auto info = execute_fields(store, {"INFO", "memory"});
+  assert(info.find("maxmemory:" + std::to_string(options.maxmemory) + "\r\n") !=
+         std::string::npos);
+  const auto config = execute_fields(store, {"CONFIG", "GET", "maxmemory"});
+  assert(config.find(std::to_string(options.maxmemory)) != std::string::npos);
+}
+
+void test_maxmemory_array_growth_rejection() {
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  std::size_t baseline = 0;
+  {
+    Store probe;
+    baseline = probe.memory_report().used_memory;
+  }
+
+  StoreOptions options;
+  options.maxmemory = baseline + 256 * 1024;
+  options.array_slice_slots = 64;
+  options.array_chunk_bytes = 128 * 1024;
+  Store store(options);
+
+  const std::string payload(60'000, 'a');
+  std::size_t accepted = 0;
+  std::uint64_t rejected_index = 0;
+  for (std::uint64_t i = 0; i < 32; ++i) {
+    const auto index = i * options.array_slice_slots;
+    const auto reply = execute_fields(
+        store, {"ARSET", "array", std::to_string(index), payload});
+    assert(store.memory_report().used_memory <= options.maxmemory);
+    if (reply.starts_with("-OOM ")) {
+      rejected_index = index;
+      break;
+    }
+    assert(reply == ":1\r\n");
+    ++accepted;
+  }
+  assert(accepted != 0);
+  assert(rejected_index != 0);
+  assert(execute_fields(store,
+                        {"ARGET", "array", std::to_string(rejected_index)}) ==
+         "$-1\r\n");
+  assert(execute_fields(store, {"ARCOUNT", "array"}) ==
+         ":" + std::to_string(accepted) + "\r\n");
+}
+
+void test_maxmemory_new_typed_key_rollback() {
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  const auto exercise = [](StoreOptions options, const auto& write) {
+    std::size_t growth = 0;
+    {
+      Store probe(options);
+      const auto before = probe.memory_report().used_memory;
+      const auto reply = write(probe);
+      assert(!reply.starts_with("-"));
+      const auto after = probe.memory_report().used_memory;
+      assert(after > before);
+      growth = after - before;
+    }
+
+    std::size_t baseline = 0;
+    {
+      Store probe(options);
+      baseline = probe.memory_report().used_memory;
+    }
+    assert(growth > 1);
+    options.maxmemory = baseline + growth - 1;
+    Store capped(options);
+    const auto reply = write(capped);
+    assert(reply.starts_with("-OOM "));
+    assert(!capped.exists("oom-key"));
+    assert(capped.memory_report().used_memory <= options.maxmemory);
+  };
+
+  const std::string payload(2048, 'v');
+  {
+    StoreOptions options;
+    options.hash_listpack_max_entries = 0;
+    exercise(options, [&](Store& store) {
+      return execute_fields(store, {"HSET", "oom-key", "field", payload});
+    });
+  }
+  {
+    StoreOptions options;
+    options.set_listpack_max_entries = 0;
+    exercise(options, [&](Store& store) {
+      return execute_fields(store, {"SADD", "oom-key", payload});
+    });
+  }
+  {
+    StoreOptions options;
+    options.zset_listpack_max_entries = 0;
+    exercise(options, [&](Store& store) {
+      return execute_fields(store, {"ZADD", "oom-key", "1", payload});
+    });
+  }
+  {
+    StoreOptions options;
+    options.list_listpack_max_entries = 0;
+    exercise(options, [&](Store& store) {
+      return execute_fields(store, {"RPUSH", "oom-key", payload});
+    });
+  }
+}
+
+void test_maxmemory_zset_score_update_rollback() {
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  StoreOptions options;
+  options.zset_listpack_max_entries = 0;
+
+  std::size_t initial_usage = 0;
+  std::size_t update_growth = 0;
+  {
+    Store probe(options);
+    assert(execute_fields(probe, {"ZADD", "leaders", "1", "alice"}) ==
+           ":1\r\n");
+    initial_usage = probe.memory_report().used_memory;
+    assert(execute_fields(probe, {"ZADD", "leaders", "1.5", "alice"}) ==
+           ":0\r\n");
+    const auto updated_usage = probe.memory_report().used_memory;
+    assert(updated_usage > initial_usage);
+    update_growth = updated_usage - initial_usage;
+  }
+
+  options.maxmemory = initial_usage + update_growth - 1;
+  Store capped(options);
+  assert(execute_fields(capped, {"ZADD", "leaders", "1", "alice"}) ==
+         ":1\r\n");
+  assert(execute_fields(capped, {"ZADD", "leaders", "1.5", "alice"})
+             .starts_with("-OOM "));
+  assert(execute_fields(capped, {"ZSCORE", "leaders", "alice"}) ==
+         "$1\r\n1\r\n");
+  assert(execute_fields(capped, {"ZRANK", "leaders", "alice"}) ==
+         ":0\r\n");
+  assert(capped.memory_report().used_memory <= options.maxmemory);
+}
+
+void test_maxmemory_collection_growth_rejection() {
+  using goblin::core::Store;
+  using goblin::core::StoreOptions;
+
+  const auto capped_options = [](StoreOptions options) {
+    std::size_t baseline = 0;
+    {
+      Store probe(options);
+      baseline = probe.memory_report().used_memory;
+    }
+    options.maxmemory = baseline + 512 * 1024;
+    return options;
+  };
+  const auto payload = [](std::size_t index) {
+    return std::to_string(index) + std::string(4096, 'v');
+  };
+
+  {
+    StoreOptions options;
+    options.hash_listpack_max_entries = 0;
+    options = capped_options(options);
+    Store store(options);
+    bool rejected = false;
+    for (std::size_t index = 0; index < 1000; ++index) {
+      const auto field = "field-" + std::to_string(index);
+      const auto value = payload(index);
+      const auto reply = execute_fields(store, {"HSET", "hash", field, value});
+      assert(store.memory_report().used_memory <= options.maxmemory);
+      if (reply.starts_with("-OOM ")) {
+        assert(execute_fields(store, {"HEXISTS", "hash", field}) == ":0\r\n");
+        rejected = true;
+        break;
+      }
+      assert(reply == ":1\r\n");
+    }
+    assert(rejected);
+  }
+
+  {
+    StoreOptions options;
+    options.set_listpack_max_entries = 0;
+    options = capped_options(options);
+    Store store(options);
+    bool rejected = false;
+    for (std::size_t index = 0; index < 1000; ++index) {
+      const auto member = payload(index);
+      const auto reply = execute_fields(store, {"SADD", "set", member});
+      assert(store.memory_report().used_memory <= options.maxmemory);
+      if (reply.starts_with("-OOM ")) {
+        assert(execute_fields(store, {"SISMEMBER", "set", member}) ==
+               ":0\r\n");
+        rejected = true;
+        break;
+      }
+      assert(reply == ":1\r\n");
+    }
+    assert(rejected);
+  }
+
+  {
+    StoreOptions options;
+    options.zset_listpack_max_entries = 0;
+    options = capped_options(options);
+    Store store(options);
+    bool rejected = false;
+    for (std::size_t index = 0; index < 1000; ++index) {
+      const auto member = payload(index);
+      const auto score = std::to_string(index);
+      const auto reply =
+          execute_fields(store, {"ZADD", "zset", score, member});
+      assert(store.memory_report().used_memory <= options.maxmemory);
+      if (reply.starts_with("-OOM ")) {
+        assert(execute_fields(store, {"ZSCORE", "zset", member}) ==
+               "$-1\r\n");
+        rejected = true;
+        break;
+      }
+      assert(reply == ":1\r\n");
+    }
+    assert(rejected);
+  }
+
+  {
+    StoreOptions options;
+    options.list_listpack_max_entries = 0;
+    options = capped_options(options);
+    Store store(options);
+    std::size_t accepted = 0;
+    bool rejected = false;
+    for (std::size_t index = 0; index < 1000; ++index) {
+      const auto value = payload(index);
+      const auto reply = execute_fields(store, {"RPUSH", "list", value});
+      assert(store.memory_report().used_memory <= options.maxmemory);
+      if (reply.starts_with("-OOM ")) {
+        assert(execute_fields(store,
+                              {"LINDEX", "list", std::to_string(accepted)}) ==
+               "$-1\r\n");
+        rejected = true;
+        break;
+      }
+      ++accepted;
+      assert(reply == ":" + std::to_string(accepted) + "\r\n");
+    }
+    assert(rejected);
+  }
+}
+
 void test_goblin_increx() {
   goblin::core::Store store;
   const std::string wrongtype =
@@ -7189,6 +7480,11 @@ int main() {
   test_goblin_cas();
   test_goblin_td_leaderboard_rescore();
   test_memory_report();
+  test_maxmemory_hard_ceiling();
+  test_maxmemory_array_growth_rejection();
+  test_maxmemory_new_typed_key_rollback();
+  test_maxmemory_zset_score_update_rollback();
+  test_maxmemory_collection_growth_rejection();
   test_goblin_increx();
   test_zremrangebyscore();
   test_goblin_zwindow();

@@ -98,6 +98,9 @@ class ArrayStorage {
     std::vector<std::uint32_t> offsets;
     std::vector<std::uint16_t> lengths;
     std::vector<value_id> free_ids;
+    reserve_memory_vector(offsets, value_capacity);
+    reserve_memory_vector(lengths, value_capacity);
+    reserve_memory_vector(free_ids, value_capacity);
     offsets.resize(value_capacity, kFreeOffset);
     lengths.resize(value_capacity, 0);
     free_ids.resize(value_capacity, kEmptyId);
@@ -108,7 +111,7 @@ class ArrayStorage {
     const auto chunk_count =
         (arena_bytes + chunk_bytes_ - 1) / chunk_bytes_;
     std::vector<std::shared_ptr<char[]>> chunks;
-    chunks.reserve(chunk_count);
+    reserve_memory_vector(chunks, chunk_count);
     for (size_type i = 0; i < chunk_count; ++i) {
       auto block = alloc_page_block(chunk_bytes_);
       std::memset(block.get(), 0, chunk_bytes_);
@@ -159,6 +162,7 @@ class ArrayStorage {
     if (offsets_.size() >= static_cast<size_type>(kEmptyId)) {
       throw std::length_error("array value id space exhausted");
     }
+    reserve_metadata_for_push();
     const auto id = static_cast<value_id>(offsets_.size());
     offsets_.push_back(offset);
     lengths_.push_back(length);
@@ -228,6 +232,9 @@ class ArrayStorage {
       return;
     }
     std::vector<std::shared_ptr<char[]>> fresh_chunks;
+    std::vector<std::uint32_t> fresh_offsets;
+    reserve_memory_vector(fresh_offsets, offsets_.size());
+    fresh_offsets.resize(offsets_.size(), kFreeOffset);
     size_type fresh_next = 0;
     size_type fresh_active = 0;
     size_type fresh_committed = 0;
@@ -237,8 +244,6 @@ class ArrayStorage {
     for (size_type raw = 0; raw < count; ++raw) {
       const auto id = static_cast<value_id>(raw);
       if (!is_live(id)) {
-        offsets_[id] = kFreeOffset;
-        lengths_[id] = 0;
         continue;
       }
       const auto member = view(id);
@@ -249,9 +254,10 @@ class ArrayStorage {
         std::memcpy(r.dst, member.data(), member.size());
         fresh_used += member.size();
       }
-      offsets_[id] = r.offset;
+      fresh_offsets[id] = r.offset;
     }
 
+    offsets_ = std::move(fresh_offsets);
     chunks_ = std::move(fresh_chunks);
     next_offset_ = fresh_next;
     active_bytes_ = fresh_active;
@@ -268,6 +274,24 @@ class ArrayStorage {
 
  private:
   static constexpr size_type kCompactFloorBytes = 4096;
+
+  void reserve_metadata_for_push() {
+    if (offsets_.size() < offsets_.capacity() &&
+        lengths_.size() < lengths_.capacity() &&
+        free_ids_.capacity() >= offsets_.capacity()) {
+      return;
+    }
+    const auto current = offsets_.capacity();
+    const auto target =
+        current == 0
+            ? size_type{8}
+            : current <= std::numeric_limits<size_type>::max() / 2
+                  ? current * 2
+                  : current + 1;
+    reserve_memory_vector(offsets_, target);
+    reserve_memory_vector(lengths_, target);
+    reserve_memory_vector(free_ids_, target);
+  }
 
   void configure_chunk_bytes(size_type chunk_bytes) {
     if (!std::has_single_bit(chunk_bytes) || chunk_bytes < kMinChunkBytes ||

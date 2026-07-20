@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -314,6 +315,42 @@ class SwissTable {
     rehash(capacity_for_size(expected_size));
   }
 
+  // Preflight a batch without collapsing normal geometric slack. This is used
+  // when later mutation must be non-allocating (for example, under maxmemory).
+  void reserve_additional(size_type additional) {
+    if (additional == 0) {
+      return;
+    }
+    if (additional > std::numeric_limits<size_type>::max() - size_) {
+      throw std::length_error("Swiss table size overflow");
+    }
+
+    const auto expected_size = size_ + additional;
+    const auto usable = max_usable(capacity_);
+    const auto occupied = size_ + tombstones_;
+    if (expected_size <= usable && occupied <= usable &&
+        additional <= usable - occupied) {
+      return;
+    }
+
+    auto target = capacity_;
+    if (expected_size > usable) {
+      if (capacity_ == 0) {
+        target = page_aligned_capacity(GroupWidth);
+      } else {
+        const auto grown = static_cast<size_type>(
+            static_cast<double>(capacity_) * kGrowthFactor);
+        target = page_aligned_capacity(
+            grown > capacity_ ? grown : capacity_ + GroupWidth,
+            current_pages() + 1);
+      }
+      if (expected_size > max_usable(target)) {
+        target = capacity_for_size(expected_size);
+      }
+    }
+    rehash(target);
+  }
+
  private:
   using alloc_traits = std::allocator_traits<Allocator>;
 
@@ -564,8 +601,18 @@ class SwissTable {
   }
 
   void rehash(size_type requested_capacity) {
+    auto normalized = requested_capacity < GroupWidth ? GroupWidth
+                                                      : requested_capacity;
+    normalized -= normalized % GroupWidth;
+    const auto requested_bytes =
+        (normalized + GroupWidth) * sizeof(std::uint8_t) +
+        normalized * sizeof(value_type);
+    const auto current_bytes = allocated_bytes();
+    if (requested_bytes > current_bytes) {
+      ensure_memory_growth(requested_bytes - current_bytes);
+    }
     SwissTable replacement(hasher_, equal_, allocator_);
-    replacement.allocate_capacity(requested_capacity);
+    replacement.allocate_capacity(normalized);
 
     for (size_type i = 0; i < capacity_; ++i) {
       if (is_full(i)) {

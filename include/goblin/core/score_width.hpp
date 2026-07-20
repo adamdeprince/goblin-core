@@ -14,6 +14,8 @@
 #include <variant>
 #include <vector>
 
+#include "goblin/core/memory_limit.hpp"
+
 #include "goblin/core/score_format.hpp"
 
 namespace goblin::core {
@@ -97,17 +99,22 @@ class ScoreArray {
         [index](const auto& v) { return static_cast<double>(v[index]); }, data_);
   }
   void reserve(std::size_t count) {
-    std::visit([count](auto& v) { v.reserve(count); }, data_);
+    std::visit([count](auto& v) { reserve_memory_vector(v, count); }, data_);
   }
   void pop_back() noexcept {
     std::visit([](auto& v) { v.pop_back(); }, data_);
+  }
+  void reserve_push(double value) {
+    widen_for(value);
+    std::visit(
+        [](auto& v) { reserve_memory_vector_for_push(v, 8); }, data_);
   }
   void copy_within(std::size_t dst, std::size_t src) noexcept {
     std::visit([dst, src](auto& v) { v[dst] = v[src]; }, data_);
   }
   // Widen to hold `value` if needed, then append it.
   void push_back(double value) {
-    widen_for(value);
+    reserve_push(value);
     std::visit(
         [value](auto& v) {
           using T = typename std::decay_t<decltype(v)>::value_type;
@@ -156,6 +163,11 @@ class ScoreArray {
   [[nodiscard]] std::vector<T> to_vector() const {
     const std::size_t count = size();
     std::vector<T> out;
+    const auto next_bytes = count * sizeof(T);
+    const auto old_bytes = allocated_bytes();
+    if (next_bytes > old_bytes) {
+      ensure_memory_growth(next_bytes - old_bytes);
+    }
     out.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
       out.push_back(static_cast<T>(at(i)));

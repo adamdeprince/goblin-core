@@ -91,6 +91,7 @@ struct ArrayMemoryStats {
   std::size_t dense_slices{0};
   std::size_t directory_depth{0};
   std::size_t directory_nodes{0};
+  std::size_t directory_table_bytes{0};
   std::size_t value_live_bytes{0};
   std::size_t value_dead_bytes{0};
   std::size_t value_allocated_bytes{0};
@@ -193,9 +194,6 @@ class Array {
     }
     ensure_capacity_for(index);
     auto& slice = slice_for_write(index);
-    if (is_realtime()) {
-      slice.prepare_realtime(options_.slice_slots);
-    }
     const auto offset = static_cast<std::uint16_t>(index & slice_mask());
     const auto current_id = slice.get(offset);
     if (current_id != ArrayStorage::kEmptyId) {
@@ -203,6 +201,9 @@ class Array {
       maybe_compact_storage();
       return false;
     }
+    // Leaf growth is admitted before the value arena is changed. Once this
+    // succeeds, publishing the new value id into the leaf cannot allocate.
+    slice.prepare_set(offset, options_, is_realtime());
     const auto new_id = storage_.push(value);
     value_id old_id = ArrayStorage::kEmptyId;
     const bool created =
@@ -321,7 +322,8 @@ class Array {
       root_->accumulate(stats);
     }
     stats.total_allocated_bytes =
-        stats.value_allocated_bytes + stats.leaf_table_bytes + sizeof(Array) +
+        stats.value_allocated_bytes + stats.leaf_table_bytes +
+        stats.directory_table_bytes + sizeof(Array) +
         stats.directory_nodes * sizeof(Directory) +
         stats.slice_count * sizeof(Slice);
     return stats;
@@ -484,7 +486,8 @@ class Array {
 
   void promote_directory() {
     assert(!is_realtime());
-    auto new_root = std::make_unique<Directory>(/*leaf=*/false);
+    auto new_root = make_directory(/*leaf=*/false);
+    reserve_memory_vector(new_root->dirs, 1);
     new_root->dirs.resize(1);
     new_root->dirs[0] = std::move(root_);
     root_ = std::move(new_root);
@@ -493,7 +496,12 @@ class Array {
 
   void maybe_compact_storage() {
     if (storage_.should_compact()) {
-      storage_.compact();
+      try {
+        storage_.compact();
+      } catch (const MaxMemoryExceeded&) {
+        // Reclamation is optional; the triggering write/delete is already
+        // complete and the storage rebuild has strong exception safety.
+      }
     }
   }
 
@@ -551,6 +559,32 @@ class Array {
         return sparse_set(offset, new_id, old_id, options, realtime);
       }
       return dense_set(offset, new_id, old_id);
+    }
+
+    void prepare_set(std::uint16_t offset, const ArrayOptions& options,
+                     bool realtime) {
+      if (realtime) {
+        prepare_realtime(options.slice_slots);
+        return;
+      }
+      if (kind == Kind::Dense) {
+        ensure_dense_covers(offset);
+        return;
+      }
+      const auto* entries = reinterpret_cast<const ArraySparseEntry*>(
+          block ? block.get() : nullptr);
+      bool found = false;
+      if (entries != nullptr) {
+        const auto* it = std::lower_bound(
+            entries, entries + size, offset,
+            [](const ArraySparseEntry& entry, std::uint16_t key) {
+              return entry.offset < key;
+            });
+        found = it != entries + size && it->offset == offset;
+      }
+      if (!found) {
+        ensure_sparse_cap(size + 1, false, options.slice_slots);
+      }
     }
 
     bool del(std::uint16_t offset, value_id& old_id, const ArrayOptions& options,
@@ -650,7 +684,7 @@ class Array {
     void reallocate_sparse(std::uint32_t new_cap) {
       const auto bytes =
           static_cast<std::size_t>(new_cap) * sizeof(ArraySparseEntry);
-      auto fresh = alloc_page_block(bytes);
+      auto fresh = alloc_replacement_page_block(block, bytes);
       if (size != 0 && block) {
         std::memcpy(fresh.get(), block.get(),
                     static_cast<std::size_t>(size) * sizeof(ArraySparseEntry));
@@ -662,7 +696,7 @@ class Array {
     void reallocate_dense(std::uint32_t new_cap, std::uint32_t new_size,
                           std::uint16_t new_base) {
       const auto bytes = static_cast<std::size_t>(new_cap) * sizeof(value_id);
-      auto fresh = alloc_page_block(bytes);
+      auto fresh = alloc_replacement_page_block(block, bytes);
       auto* ids = reinterpret_cast<value_id*>(fresh.get());
       std::fill(ids, ids + new_cap, ArrayStorage::kEmptyId);
       if (size != 0 && block && kind == Kind::Dense) {
@@ -830,8 +864,15 @@ class Array {
       const auto lo = entries[0].offset;
       const auto hi = entries[size - 1].offset;
       const auto win = static_cast<std::uint32_t>(hi - lo) + 1;
-      auto fresh =
-          alloc_page_block(static_cast<std::size_t>(win) * sizeof(value_id));
+      const auto bytes = static_cast<std::size_t>(win) * sizeof(value_id);
+      const auto old_bytes = page_block_capacity(block);
+      const auto next_bytes = page_block_alloc_bytes(bytes);
+      const auto growth = next_bytes > old_bytes ? next_bytes - old_bytes : 0;
+      if (!memory_growth_allowed(growth)) {
+        return;
+      }
+      ensure_memory_growth(growth);
+      auto fresh = alloc_page_block_unchecked(bytes);
       auto* ids = reinterpret_cast<value_id*>(fresh.get());
       std::fill(ids, ids + win, ArrayStorage::kEmptyId);
       for (std::uint32_t i = 0; i < size; ++i) {
@@ -872,8 +913,8 @@ class Array {
         kind = Kind::Sparse;
         return;
       }
-      auto fresh = alloc_page_block(static_cast<std::size_t>(n) *
-                                    sizeof(ArraySparseEntry));
+      auto fresh = alloc_replacement_page_block(
+          block, static_cast<std::size_t>(n) * sizeof(ArraySparseEntry));
       std::memcpy(fresh.get(), tmp.data(), n * sizeof(ArraySparseEntry));
       block = std::move(fresh);
       size = n;
@@ -894,12 +935,16 @@ class Array {
     void accumulate(ArrayMemoryStats& stats) const {
       ++stats.directory_nodes;
       if (leaf) {
+        stats.directory_table_bytes +=
+            slices.capacity() * sizeof(std::unique_ptr<Slice>);
         for (const auto& slice : slices) {
           if (slice) {
             slice->accumulate(stats);
           }
         }
       } else {
+        stats.directory_table_bytes +=
+            dirs.capacity() * sizeof(std::unique_ptr<Directory>);
         for (const auto& dir : dirs) {
           if (dir) {
             dir->accumulate(stats);
@@ -910,6 +955,7 @@ class Array {
   };
 
   std::unique_ptr<Directory> make_directory(bool leaf) const {
+    ensure_memory_growth(sizeof(Directory));
     return std::make_unique<Directory>(leaf);
   }
 
@@ -923,6 +969,7 @@ class Array {
           static_cast<std::size_t>((rest >> shift) & (dir_fanout() - 1));
       rest &= (index_type{1} << shift) - 1;
       if (dir->dirs.size() <= digit) {
+        reserve_memory_vector(dir->dirs, digit + 1);
         dir->dirs.resize(digit + 1);
       }
       if (!dir->dirs[digit]) {
@@ -932,9 +979,11 @@ class Array {
     }
     const auto leaf_digit = static_cast<std::size_t>(rest);
     if (dir->slices.size() <= leaf_digit) {
+      reserve_memory_vector(dir->slices, leaf_digit + 1);
       dir->slices.resize(leaf_digit + 1);
     }
     if (!dir->slices[leaf_digit]) {
+      ensure_memory_growth(sizeof(Slice));
       dir->slices[leaf_digit] = std::make_unique<Slice>();
     }
     return *dir->slices[leaf_digit];

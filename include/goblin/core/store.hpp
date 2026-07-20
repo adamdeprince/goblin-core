@@ -23,6 +23,7 @@
 #include "goblin/core/key_arena.hpp"
 #include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/list.hpp"
+#include "goblin/core/memory_limit.hpp"
 #include "goblin/core/replication.hpp"
 #include "goblin/core/set.hpp"
 #include "goblin/core/snapshot.hpp"
@@ -735,7 +736,13 @@ class Keyspace {
       return *id;
     }
     const auto id = create_key(key, KeyType::String);
-    write_string_value(objects_[id].str, value);
+    objects_[id].str = StringValue{};
+    try {
+      write_string_value(objects_[id].str, value);
+    } catch (...) {
+      rollback_created_key(id);
+      throw;
+    }
     maybe_compact();
     return id;
   }
@@ -745,7 +752,14 @@ class Keyspace {
     if (find_id(key)) {
       return false;
     }
-    write_string_value(objects_[create_key(key, KeyType::String)].str, value);
+    const auto id = create_key(key, KeyType::String);
+    objects_[id].str = StringValue{};
+    try {
+      write_string_value(objects_[id].str, value);
+    } catch (...) {
+      rollback_created_key(id);
+      throw;
+    }
     return true;
   }
 
@@ -776,8 +790,10 @@ class Keyspace {
       }
       return objects_[*id].zset;
     }
+    ZSet prepared(zset_options);
     const auto id = create_key(key, KeyType::Zset);
-    return *::new (static_cast<void*>(&objects_[id].zset)) ZSet(zset_options);
+    return *::new (static_cast<void*>(&objects_[id].zset))
+        ZSet(std::move(prepared));
   }
   [[nodiscard]] ZSet& place_loaded_zset(std::string_view key, ZSet&& zset) {
     const auto id = create_key(key, KeyType::Zset);
@@ -809,9 +825,10 @@ class Keyspace {
       }
       return objects_[*id].hash;
     }
+    Hash prepared(*hash_context_, implementation);
     const auto id = create_key(key, KeyType::Hash);
     return *::new (static_cast<void*>(&objects_[id].hash))
-        Hash(*hash_context_, implementation);
+        Hash(std::move(prepared));
   }
   [[nodiscard]] Hash& place_loaded_hash(std::string_view key, Hash&& hash) {
     const auto id = create_key(key, KeyType::Hash);
@@ -844,13 +861,18 @@ class Keyspace {
       }
       return *objects_[*id].list;
     }
+    ensure_memory_growth(sizeof(List));
+    auto prepared = std::make_unique<List>(
+        list_options_[implementation == ListImplementation::Pma ? 0 : 1]);
     const auto id = create_key(key, KeyType::List);
-    objects_[id].list = alloc_list(implementation);
+    objects_[id].list = prepared.release();
     return *objects_[id].list;
   }
   [[nodiscard]] List& place_loaded_list(std::string_view key, List&& list) {
+    ensure_memory_growth(sizeof(List));
+    auto prepared = std::make_unique<List>(std::move(list));
     const auto id = create_key(key, KeyType::List);
-    objects_[id].list = new List(std::move(list));
+    objects_[id].list = prepared.release();
     return *objects_[id].list;
   }
 
@@ -876,13 +898,17 @@ class Keyspace {
       }
       return *objects_[*id].set;
     }
+    ensure_memory_growth(sizeof(Set));
+    auto prepared = std::make_unique<Set>(*set_options_);
     const auto id = create_key(key, KeyType::Set);
-    objects_[id].set = new Set(*set_options_);
+    objects_[id].set = prepared.release();
     return *objects_[id].set;
   }
   [[nodiscard]] Set& place_loaded_set(std::string_view key, Set&& set) {
+    ensure_memory_growth(sizeof(Set));
+    auto prepared = std::make_unique<Set>(std::move(set));
     const auto id = create_key(key, KeyType::Set);
-    objects_[id].set = new Set(std::move(set));
+    objects_[id].set = prepared.release();
     return *objects_[id].set;
   }
 
@@ -910,13 +936,19 @@ class Keyspace {
       }
       return *objects_[*id].array;
     }
+    ArrayOptions options = *array_options_;
+    options.implementation = implementation;
+    ensure_memory_growth(sizeof(Array));
+    auto prepared = std::make_unique<Array>(std::move(options));
     const auto id = create_key(key, KeyType::Array);
-    objects_[id].array = alloc_array(implementation);
+    objects_[id].array = prepared.release();
     return *objects_[id].array;
   }
   [[nodiscard]] Array& place_loaded_array(std::string_view key, Array&& array) {
+    ensure_memory_growth(sizeof(Array));
+    auto prepared = std::make_unique<Array>(std::move(array));
     const auto id = create_key(key, KeyType::Array);
-    objects_[id].array = new Array(std::move(array));
+    objects_[id].array = prepared.release();
     return *objects_[id].array;
   }
 
@@ -1001,6 +1033,21 @@ class Keyspace {
     return moved;
   }
 
+  // Undo creation of the newest key after its first payload allocation fails.
+  // Unlike ordinary erase, this does not compact or notify mutation observers:
+  // the command never became visible and must remain a no-op to WATCH clients.
+  void rollback_last_created_key(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    assert(id.has_value());
+    assert(*id + 1 == types_.size());
+    destroy_object(*id);
+    storage_.mark_key_dead(*id);
+    (void)index_.erase(storage_.view(*id));
+    storage_.pop_back_key();
+    objects_.pop_back();
+    types_.pop_back();
+  }
+
   template <class Fn>
   void for_each_string(Fn&& fn) const {  // fn(std::string_view, StringValueView)
     for (std::uint64_t id = 0; id < types_.size(); ++id) {
@@ -1063,19 +1110,20 @@ class Keyspace {
   [[nodiscard]] std::size_t allocated_bytes() const noexcept {
     return storage_.allocated_bytes() + index_.allocated_bytes() +
            index_.realtime_arena_slack_bytes() +
-           realtime_hash_arena_slack_bytes() + types_.capacity() +
-           types_.size() * sizeof(KeyObjectSlot);
+           realtime_hash_arena_slack_bytes() +
+           types_.capacity() * (sizeof(std::uint8_t) + sizeof(KeyObjectSlot));
   }
   [[nodiscard]] std::size_t value_arena_used_bytes() const noexcept {
     return storage_.used_bytes();
   }
-  // Keyspace contribution to used_memory: the key+value arena's used (live+dead)
-  // bytes plus the fixed index / type / object-slot tables (no dead of their own).
+  // Keyspace contribution to used_memory: committed key/value arena capacity
+  // plus the fixed index/type/object-slot tables. Maxmemory governs capacity,
+  // not just the initialized prefix, so an arena block cannot hide as slack.
   [[nodiscard]] std::size_t footprint_used_bytes() const noexcept {
-    return storage_.used_bytes() + index_.allocated_bytes() +
+    return storage_.allocated_bytes() + index_.allocated_bytes() +
            index_.realtime_arena_slack_bytes() +
-           realtime_hash_arena_slack_bytes() + types_.capacity() +
-           types_.size() * sizeof(KeyObjectSlot);
+           realtime_hash_arena_slack_bytes() +
+           types_.capacity() * (sizeof(std::uint8_t) + sizeof(KeyObjectSlot));
   }
   [[nodiscard]] std::size_t footprint_dead_bytes() const noexcept {
     return storage_.dead_bytes();
@@ -1112,28 +1160,78 @@ class Keyspace {
 
   // Append the key blob, a raw object slot, and its type; register key -> id.
   [[nodiscard]] std::uint64_t create_key(std::string_view key, KeyType type) {
-    const auto id = storage_.push_back_key(key);
-    objects_.emplace_back();
-    types_.push_back(static_cast<std::uint8_t>(type));
-    KeyMeta meta;
-    meta.set(id);
-    index_.insert(key, meta);
+    const auto id = static_cast<std::uint64_t>(types_.size());
+    reserve_key_slot();
+    index_.reserve_additional(1);
+    const auto stored_id = storage_.push_back_key(key);
+    assert(stored_id == id);
+    (void)stored_id;
+    bool object_added = false;
+    bool indexed = false;
+    try {
+      objects_.emplace_back();
+      object_added = true;
+      types_.push_back(static_cast<std::uint8_t>(type));
+      KeyMeta meta;
+      meta.set(id);
+      index_.insert(key, meta);
+      indexed = true;
+    } catch (...) {
+      if (indexed) {
+        (void)index_.erase(key);
+      }
+      if (types_.size() > id) {
+        types_.pop_back();
+      }
+      if (object_added) {
+        objects_.pop_back();
+      }
+      storage_.mark_key_dead(id);
+      storage_.pop_back_key();
+      throw;
+    }
     return id;
+  }
+
+  void reserve_key_slot() {
+    if (types_.size() < types_.capacity()) {
+      return;
+    }
+    const auto current = types_.capacity();
+    const auto target =
+        current == 0
+            ? std::size_t{8}
+            : current <= std::numeric_limits<std::size_t>::max() / 2
+                  ? current * 2
+                  : current + 1;
+    ensure_memory_growth((target - current) * sizeof(KeyObjectSlot));
+    reserve_memory_vector(types_, target);
   }
 
   // Overwrite id (a string, or another type being clobbered) with a string value.
   void store_string(std::uint64_t id, std::string_view value) {
+    StringValue replacement{};
+    write_string_value(replacement, value);
     if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
       auto& slot = objects_[id].str;
       if (!slot.is_inline()) {
         storage_.mark_tail_dead(slot.tail_length());
       }
-      write_string_value(slot, value);
+      slot = replacement;
       return;
     }
     destroy_object(id);
     types_[id] = static_cast<std::uint8_t>(KeyType::String);
-    write_string_value(objects_[id].str, value);
+    objects_[id].str = replacement;
+  }
+
+  void rollback_created_key(std::uint64_t id) noexcept {
+    assert(id + 1 == types_.size());
+    storage_.mark_key_dead(id);
+    (void)index_.erase(storage_.view(id));
+    storage_.pop_back_key();
+    objects_.pop_back();
+    types_.pop_back();
   }
 
   // Store a raw-encoded (0xff-tagged) or verbatim value without building an
@@ -1301,7 +1399,12 @@ class Keyspace {
 
   void maybe_compact() {
     if (storage_.should_compact()) {
-      compact_arena();
+      try {
+        compact_arena();
+      } catch (const MaxMemoryExceeded&) {
+        // Compaction is maintenance, not the logical write. The strong rebuild
+        // below leaves the live arena untouched, so retry after memory is freed.
+      }
     }
   }
   // Rebuild the arena, dropping dead key/tail bytes. Ids are preserved (walked in
@@ -1310,18 +1413,31 @@ class Keyspace {
   void compact_arena() {
     KeyspaceStorage fresh(storage_.chunk_bytes());
     fresh.reserve(types_.size());
+    std::vector<std::optional<KeyspaceStorage::TailLocation>> relocations(
+        types_.size());
     for (std::uint64_t id = 0; id < types_.size(); ++id) {
       (void)fresh.push_back_key(storage_.view(id));
       if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
-        auto& slot = objects_[id].str;
+        const auto& slot = objects_[id].str;
         if (!slot.is_inline()) {
           const auto tail = storage_.tail_view(
               {slot.tail_block(), slot.tail_offset()}, slot.tail_length());
-          const auto loc = fresh.append_tail(tail);
-          slot.set_tail(loc.block, loc.offset);
+          relocations[id] = fresh.append_tail(tail);
         }
       } else if (types_[id] == static_cast<std::uint8_t>(KeyType::Hash)) {
-        objects_[id].hash.relocate_compact_blob(fresh);
+        relocations[id] = objects_[id].hash.copy_compact_blob_to(fresh);
+      }
+    }
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (!relocations[id]) {
+        continue;
+      }
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::String)) {
+        objects_[id].str.set_tail(relocations[id]->block,
+                                  relocations[id]->offset);
+      } else {
+        assert(types_[id] == static_cast<std::uint8_t>(KeyType::Hash));
+        objects_[id].hash.commit_compact_blob_relocation(*relocations[id]);
       }
     }
     storage_ = std::move(fresh);
@@ -1353,6 +1469,9 @@ class Keyspace {
 };
 
 struct StoreOptions {
+  // Hard ceiling for persistent keyspace memory. Zero means unlimited. The
+  // noeviction policy rejects a write before its capacity growth crosses this.
+  std::size_t maxmemory{0};
   RankCacheMode rank_cache_mode{RankCacheMode::Off};
   bool score_string_cache{false};
   double member_index_growth{ZSetMemberIndex::kDefaultGrowth};
@@ -1433,10 +1552,10 @@ struct StoreMemoryStats {
   std::size_t total_allocated_bytes{0};
 };
 
-// Process-wide allocation accounting for INFO. `used_memory` includes arena
-// live + dead bytes, fixed index/table structures, full-hash heap state, and the
-// blob pool's actual upstream capacity. `reclaimable_bytes` is the dead arena
-// subset a compaction would free; retained pool slack is reported separately.
+// Process-wide allocation accounting for INFO. `used_memory` includes committed
+// arena capacity, fixed index/table/object structures, and the blob pool's actual
+// upstream capacity. `reclaimable_bytes` is the dead arena subset a compaction
+// would free; retained pool slack is reported separately.
 struct MemoryReport {
   std::size_t used_memory{0};
   std::size_t reclaimable_bytes{0};
@@ -1487,6 +1606,12 @@ class Store {
                               : options_.hash_implementation;
   }
   [[nodiscard]] bool real_time() const noexcept { return options_.real_time; }
+  [[nodiscard]] std::size_t maxmemory() const noexcept {
+    return options_.maxmemory;
+  }
+  [[nodiscard]] const MemoryCeiling& memory_ceiling() const noexcept {
+    return memory_ceiling_;
+  }
 
   [[nodiscard]] const ReplicationState& replication_state() const noexcept {
     return replication_state_;
@@ -2095,6 +2220,11 @@ class Store {
     }
     (void)erase_key(key);
   }
+  // Command dispatch uses this only for a just-created, still-empty object
+  // whose first persistent allocation was rejected by --maxmemory.
+  void rollback_empty_created_key(std::string_view key) noexcept {
+    keyspace_.rollback_last_created_key(key);
+  }
   [[nodiscard]] std::optional<ArrayMemoryStats> array_memory_stats(
       std::string_view key) const {
     const auto* array = find_array(key);
@@ -2476,6 +2606,7 @@ class Store {
   }
 
   StoreOptions options_;
+  MemoryCeiling memory_ceiling_;
   // Built once in the constructor from options_; every zset in this store shares
   // it (an 8 B pointer per zset, not a 32 B copy). Declared before keyspace_ so
   // it is alive when the keyspace binds to it.

@@ -563,6 +563,14 @@ locked before serving. Growth and reverse merges move at most one physical
 bucket per mutation. A mutation that needs an unavailable bucket, directory
 block, or table fails explicitly. The serving path never grows the pool.
 
+`--maxmemory <bytes>` places a hard `noeviction` ceiling on persistent store
+capacity. Byte values accept `k`, `m`, and `g` binary suffixes. Arena, index,
+directory, object-slot, TTL, fixed RT-pool, and compact-blob-pool growth is
+admitted before allocation; a write that would cross the limit returns `OOM`.
+Deletes and writes that reuse existing capacity continue to work. `0` or
+omission is unlimited. See [the maxmemory guide](docs/maxmemory.md) for the
+accounting boundary and operational behavior.
+
 `--zset-chunk-bytes <bytes>`, `--hash-chunk-bytes <bytes>`, and
 `--list-chunk-bytes <bytes>` set the packed-arena chunk size per type. Each must
 be a power of two and large enough to hold its largest entry; all three default

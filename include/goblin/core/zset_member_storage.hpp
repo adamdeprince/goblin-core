@@ -44,6 +44,10 @@ struct ZSetMemberByteArena {
   double growth{kDefaultArenaGrowth};
 
   [[nodiscard]] std::shared_ptr<ZSetMemberByteArena> fork() const {
+    ensure_memory_growth(sizeof(ZSetMemberByteArena) +
+                         member_chunks.capacity() * sizeof(member_chunks[0]) +
+                         score_text_chunks.capacity() *
+                             sizeof(score_text_chunks[0]));
     return std::make_shared<ZSetMemberByteArena>(*this);
   }
 };
@@ -129,11 +133,21 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
-    return byte_capacity() +
+    const auto arena_shares = std::max<long>(1, arena_.use_count());
+    const auto arena_bytes =
+        arena_->member_committed_bytes + arena_->score_text_committed_bytes +
+        arena_->member_chunks.capacity() * sizeof(arena_->member_chunks[0]) +
+        arena_->score_text_chunks.capacity() *
+            sizeof(arena_->score_text_chunks[0]) +
+        sizeof(ZSetMemberByteArena);
+    const auto shared_arena_bytes =
+        arena_bytes / static_cast<size_type>(arena_shares) +
+        static_cast<size_type>(arena_bytes % arena_shares != 0);
+    return shared_arena_bytes +
            offsets_.capacity() * sizeof(std::uint32_t) +
            lengths_.capacity() * sizeof(std::uint16_t) +
            scores_.allocated_bytes() +
-           score_text_allocated_bytes();
+           score_text_refs_.capacity() * sizeof(ScoreTextRef);
   }
 
   [[nodiscard]] bool score_string_cache_enabled() const noexcept {
@@ -153,7 +167,13 @@ class ZSetMemberStorage {
   }
 
   [[nodiscard]] size_type score_text_allocated_bytes() const noexcept {
-    return score_text_byte_capacity() +
+    const auto arena_shares = std::max<long>(1, arena_.use_count());
+    const auto arena_bytes =
+        score_text_byte_capacity() +
+        arena_->score_text_chunks.capacity() *
+            sizeof(arena_->score_text_chunks[0]);
+    return arena_bytes / static_cast<size_type>(arena_shares) +
+           static_cast<size_type>(arena_bytes % arena_shares != 0) +
            score_text_refs_.capacity() * sizeof(ScoreTextRef);
   }
 
@@ -178,23 +198,25 @@ class ZSetMemberStorage {
   }
 
   void reserve(size_type member_count) {
-    offsets_.reserve(member_count);
-    lengths_.reserve(member_count);
+    reserve_memory_vector(offsets_, member_count);
+    reserve_memory_vector(lengths_, member_count);
     scores_.reserve(member_count);
     if (score_string_cache_enabled_) {
-      score_text_refs_.reserve(member_count);
+      reserve_memory_vector(score_text_refs_, member_count);
     }
   }
 
   void reserve_bytes(size_type byte_count) {
-    arena_->member_chunks.reserve((byte_count + arena_->chunk_bytes - 1) /
-                                  arena_->chunk_bytes);
+    reserve_memory_vector(
+        arena_->member_chunks,
+        (byte_count + arena_->chunk_bytes - 1) / arena_->chunk_bytes);
   }
 
   void reserve_score_text_bytes(size_type byte_count) {
     if (score_string_cache_enabled_) {
-      arena_->score_text_chunks.reserve((byte_count + arena_->chunk_bytes - 1) /
-                                        arena_->chunk_bytes);
+      reserve_memory_vector(
+          arena_->score_text_chunks,
+          (byte_count + arena_->chunk_bytes - 1) / arena_->chunk_bytes);
     }
   }
 
@@ -213,12 +235,26 @@ class ZSetMemberStorage {
     }
 
     const auto id = static_cast<std::uint32_t>(offsets_.size());
+    if (offsets_.size() == offsets_.capacity()) {
+      const auto current = offsets_.capacity();
+      reserve(current == 0 ? size_type{8} : current * 2);
+    }
+    scores_.reserve_push(score);
     const auto offset = append_bytes(member);
+    ScoreTextRef score_text{};
+    try {
+      if (score_string_cache_enabled_) {
+        score_text = append_score_text(score);
+      }
+    } catch (...) {
+      arena_->member_dead_bytes += member.size();
+      throw;
+    }
     offsets_.push_back(offset);
     lengths_.push_back(static_cast<std::uint16_t>(member.size()));
     scores_.push_back(score);
     if (score_string_cache_enabled_) {
-      score_text_refs_.push_back(append_score_text(score));
+      score_text_refs_.push_back(score_text);
     }
     return id;
   }
@@ -321,6 +357,7 @@ class ZSetMemberStorage {
     if (arena_->member_dead_bytes == 0) {
       return;
     }
+    ensure_memory_growth(sizeof(ZSetMemberByteArena));
     auto fresh = std::make_shared<ZSetMemberByteArena>();
     fresh->chunk_bytes = arena_->chunk_bytes;
     fresh->chunk_shift = arena_->chunk_shift;
@@ -328,6 +365,14 @@ class ZSetMemberStorage {
     fresh->growth = arena_->growth;
 
     const auto count = offsets_.size();
+    std::vector<std::uint32_t> fresh_offsets;
+    reserve_memory_vector(fresh_offsets, count);
+    fresh_offsets.resize(count);
+    std::vector<ScoreTextRef> fresh_score_text_refs;
+    if (score_string_cache_enabled_) {
+      reserve_memory_vector(fresh_score_text_refs, count);
+      fresh_score_text_refs.resize(count);
+    }
     for (std::size_t id = 0; id < count; ++id) {
       const auto member_id = static_cast<std::uint32_t>(id);
       const auto member = view(member_id);  // reads the OLD arena
@@ -340,7 +385,7 @@ class ZSetMemberStorage {
         std::memcpy(r.dst, member.data(), member.size());
         fresh->member_used_bytes += member.size();
       }
-      offsets_[id] = r.offset;
+      fresh_offsets[id] = r.offset;
 
       if (score_string_cache_enabled_) {
         const auto text = score_text(member_id);  // reads the OLD score-text arena
@@ -353,12 +398,16 @@ class ZSetMemberStorage {
           std::memcpy(tr.dst, text.data(), text.size());
           fresh->score_text_used_bytes += text.size();
         }
-        score_text_refs_[id] = ScoreTextRef{
+        fresh_score_text_refs[id] = ScoreTextRef{
             .offset = tr.offset,
             .length = static_cast<std::uint32_t>(text.size())};
       }
     }
 
+    offsets_ = std::move(fresh_offsets);
+    if (score_string_cache_enabled_) {
+      score_text_refs_ = std::move(fresh_score_text_refs);
+    }
     arena_ = std::move(fresh);  // old arena's blocks are freed/munmap'd here
   }
 

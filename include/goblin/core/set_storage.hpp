@@ -57,8 +57,8 @@ class SetStorage {
   }
 
   void reserve(size_type member_count) {
-    offsets_.reserve(member_count);
-    lengths_.reserve(member_count);
+    reserve_memory_vector(offsets_, member_count);
+    reserve_memory_vector(lengths_, member_count);
   }
 
   void reserve_additional(size_type additional) {
@@ -76,8 +76,8 @@ class SetStorage {
           static_cast<size_type>(static_cast<double>(capacity) * growth_);
       capacity = grown > capacity ? grown : capacity + 1;
     }
-    offsets_.reserve(capacity);
-    lengths_.reserve(capacity);
+    reserve_memory_vector(offsets_, capacity);
+    reserve_memory_vector(lengths_, capacity);
   }
 
   // Encode `member` and append. Returns the dense member id. The encoded form
@@ -95,6 +95,9 @@ class SetStorage {
       throw std::length_error("set member too large");
     }
     const auto id = static_cast<std::uint32_t>(offsets_.size());
+    if (offsets_.size() == offsets_.capacity()) {
+      reserve_additional(1);
+    }
     const auto offset = append_encoded(encoded);
     offsets_.push_back(offset);
     lengths_.push_back(static_cast<std::uint16_t>(encoded.size()));
@@ -145,6 +148,9 @@ class SetStorage {
       return;
     }
     std::vector<std::shared_ptr<char[]>> fresh_chunks;
+    std::vector<std::uint32_t> fresh_offsets;
+    reserve_memory_vector(fresh_offsets, offsets_.size());
+    fresh_offsets.resize(offsets_.size());
     size_type fresh_next = 0;
     size_type fresh_active = 0;
     size_type fresh_committed = 0;
@@ -160,9 +166,10 @@ class SetStorage {
         std::memcpy(r.dst, member.data(), member.size());
         fresh_used += member.size();
       }
-      offsets_[id] = r.offset;
+      fresh_offsets[id] = r.offset;
     }
 
+    offsets_ = std::move(fresh_offsets);
     chunks_ = std::move(fresh_chunks);
     next_offset_ = fresh_next;
     active_bytes_ = fresh_active;

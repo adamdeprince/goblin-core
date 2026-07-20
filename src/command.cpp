@@ -153,7 +153,7 @@ namespace {
        std::to_string(mem.blob_pool_live_allocations) + "\r\n";
   s += "blob_pool_upstream_allocations:" +
        std::to_string(mem.blob_pool_upstream_allocations) + "\r\n";
-  s += "maxmemory:0\r\n";
+  s += "maxmemory:" + std::to_string(store.maxmemory()) + "\r\n";
   s += "maxmemory_policy:noeviction\r\n";
   s += "mem_fragmentation_ratio:" + std::string(frag) + "\r\n";
   return s;
@@ -3139,10 +3139,10 @@ void execute_command_introspection(const Command& command, std::string& out,
 
 }  // namespace
 
-void execute_command_into(Store& store,
-                          const Command& command,
-                          std::string& out,
-                          CommandExecutionOptions options) {
+void execute_command_into_impl(Store& store,
+                               const Command& command,
+                               std::string& out,
+                               CommandExecutionOptions options) {
   const auto type =
       resolve_list_command(command.type, store.list_implementation());
   const auto version = response_version(options);
@@ -3305,11 +3305,12 @@ void execute_command_into(Store& store,
         std::string_view name;
         std::string_view value;
       };
-      static constexpr std::array<ConfigValue, 5> values{{
+      const auto maxmemory = std::to_string(store.maxmemory());
+      const std::array<ConfigValue, 5> values{{
           {"databases", "1"},
           {"appendonly", "no"},
           {"save", ""},
-          {"maxmemory", "0"},
+          {"maxmemory", maxmemory},
           {"maxmemory-policy", "noeviction"},
       }};
       std::array<bool, values.size()> selected{};
@@ -4597,15 +4598,22 @@ void execute_command_into(Store& store,
         return;
       }
       const bool created = store.find_array(command.args[0]) == nullptr;
+      Array* array = nullptr;
       try {
-        auto& array = store.get_or_create_array(
-            command.args[0], ArrayImplementation::Realtime);
-        array.reserve_realtime(
+        array = &store.get_or_create_array(command.args[0],
+                                           ArrayImplementation::Realtime);
+        array->reserve_realtime(
             static_cast<std::uint64_t>(*max_index),
             static_cast<std::size_t>(*value_capacity),
             static_cast<std::size_t>(*value_bytes));
         store.signal_key_modified(command.args[0]);
         resp::append_integer(out, 1);
+      } catch (const MaxMemoryExceeded&) {
+        if (created && array != nullptr && array->count() == 0 &&
+            !array->realtime_reserved()) {
+          store.rollback_empty_created_key(command.args[0]);
+        }
+        throw;
       } catch (const std::length_error& ex) {
         if (created) {
           if (auto* array = store.find_array(command.args[0]); array != nullptr) {
@@ -4629,19 +4637,26 @@ void execute_command_into(Store& store,
           return;
         }
       }
+      const bool created = store.find_array(command.args[0]) == nullptr;
+      Array* array = nullptr;
       try {
-        auto& array =
-            store.get_or_create_array(command.args[0], array_implementation);
+        array =
+            &store.get_or_create_array(command.args[0], array_implementation);
         std::size_t written = 0;
         for (std::size_t i = 2; i < command.args.size(); ++i) {
-          (void)array.set(static_cast<std::uint64_t>(*index) + written,
-                          command.args[i]);
+          (void)array->set(static_cast<std::uint64_t>(*index) + written,
+                           command.args[i]);
           ++written;
         }
         if (written != 0) {
           store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, static_cast<long long>(written));
+      } catch (const MaxMemoryExceeded&) {
+        if (created && array != nullptr && array->count() == 0) {
+          store.rollback_empty_created_key(command.args[0]);
+        }
+        throw;
       } catch (const std::length_error& ex) {
         resp::append_error(out, ex.what());
       }
@@ -4669,26 +4684,40 @@ void execute_command_into(Store& store,
     }
 
     case CommandType::armset: {
+      std::vector<std::pair<std::uint64_t, std::string_view>> pairs;
+      pairs.reserve((command.args.size() - 1) / 2);
+      for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
+        const auto index = parse_ll(command.args[i]);
+        if (!index || *index < 0) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        if (!store.value_fits(command.args[i + 1])) {
+          resp::append_error(out, kValueTooLarge);
+          return;
+        }
+        pairs.emplace_back(static_cast<std::uint64_t>(*index),
+                           command.args[i + 1]);
+      }
+      const bool created = store.find_array(command.args[0]) == nullptr;
+      Array* array = nullptr;
       try {
-        auto& array =
-            store.get_or_create_array(command.args[0], array_implementation);
+        array =
+            &store.get_or_create_array(command.args[0], array_implementation);
         long long applied = 0;
-        for (std::size_t i = 1; i + 1 < command.args.size(); i += 2) {
-          const auto index = parse_ll(command.args[i]);
-          if (!index || *index < 0) {
-            resp::append_error(out, integer_range_error());
-            return;
-          }
-          if (!store.value_fits(command.args[i + 1])) {
-            resp::append_error(out, kValueTooLarge);
-            return;
-          }
-          (void)array.set(static_cast<std::uint64_t>(*index),
-                          command.args[i + 1]);
+        for (const auto& [index, value] : pairs) {
+          (void)array->set(index, value);
           ++applied;
+        }
+        if (applied != 0) {
           store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, applied);
+      } catch (const MaxMemoryExceeded&) {
+        if (created && array != nullptr && array->count() == 0) {
+          store.rollback_empty_created_key(command.args[0]);
+        }
+        throw;
       } catch (const std::length_error& ex) {
         resp::append_error(out, ex.what());
       }
@@ -4766,12 +4795,14 @@ void execute_command_into(Store& store,
           return;
         }
       }
+      const bool created = store.find_array(command.args[0]) == nullptr;
+      Array* array = nullptr;
       try {
-        auto& array =
-            store.get_or_create_array(command.args[0], array_implementation);
+        array =
+            &store.get_or_create_array(command.args[0], array_implementation);
         long long first = -1;
         for (std::size_t i = 1; i < command.args.size(); ++i) {
-          const auto index = array.insert(command.args[i]);
+          const auto index = array->insert(command.args[i]);
           if (first < 0) {
             first = static_cast<long long>(index);
           }
@@ -4780,6 +4811,11 @@ void execute_command_into(Store& store,
           store.signal_key_modified(command.args[0]);
         }
         resp::append_integer(out, first < 0 ? 0 : first);
+      } catch (const MaxMemoryExceeded&) {
+        if (created && array != nullptr && array->count() == 0) {
+          store.rollback_empty_created_key(command.args[0]);
+        }
+        throw;
       } catch (const std::length_error& ex) {
         resp::append_error(out, ex.what());
       }
@@ -6126,6 +6162,21 @@ void execute_command_into(Store& store,
   }
 
   resp::append_error(out, "ERR internal command dispatch error");
+}
+
+void execute_command_into(Store& store,
+                          const Command& command,
+                          std::string& out,
+                          CommandExecutionOptions options) {
+  const auto output_start = out.size();
+  MemoryCeilingScope memory_scope(&store.memory_ceiling());
+  try {
+    execute_command_into_impl(store, command, out, options);
+  } catch (const MaxMemoryExceeded&) {
+    out.resize(output_start);
+    resp::append_error(
+        out, "OOM command not allowed when used memory exceeds 'maxmemory'.");
+  }
 }
 
 std::string execute_command(Store& store, const Command& command) {

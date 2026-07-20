@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "goblin/core/simd_ops.hpp"
+#include "goblin/core/memory_limit.hpp"
 #include "goblin/core/snapshot.hpp"
 #include "goblin/core/zset_member_storage.hpp"
 
@@ -396,6 +397,13 @@ class MemberIndex {
     capacity_ = static_cast<size_type>(reader.u64());
     size_ = static_cast<size_type>(reader.u64());
     tombstones_ = static_cast<size_type>(reader.u64());
+    const auto requested_bytes =
+        (capacity_ + kGroupWidth) * sizeof(std::uint8_t) +
+        capacity_ * sizeof(Slot);
+    const auto current_bytes = allocated_bytes();
+    if (requested_bytes > current_bytes) {
+      ensure_memory_growth(requested_bytes - current_bytes);
+    }
     const auto control = reader.bytes(capacity_ + kGroupWidth);
     const auto* control_begin = reinterpret_cast<const std::uint8_t*>(control.data());
     control_.assign(control_begin, control_begin + control.size());
@@ -670,8 +678,16 @@ class MemberIndex {
   }
 
   void rehash(size_type requested_capacity) {
+    const auto normalized = round_up_to_group(requested_capacity);
+    const auto requested_bytes =
+        (normalized + kGroupWidth) * sizeof(std::uint8_t) +
+        normalized * sizeof(Slot);
+    const auto current_bytes = allocated_bytes();
+    if (requested_bytes > current_bytes) {
+      ensure_memory_growth(requested_bytes - current_bytes);
+    }
     MemberIndex replacement(members_, growth_);
-    replacement.allocate_capacity(requested_capacity);
+    replacement.allocate_capacity(normalized);
 
     for (size_type i = 0; i < capacity_; ++i) {
       if (is_full(i)) {

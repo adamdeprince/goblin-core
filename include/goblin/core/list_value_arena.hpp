@@ -145,7 +145,7 @@ class ListValueArena {
       }
     }
 
-    blocks_.reserve(block_used.size());
+    reserve_memory_vector(blocks_, block_used.size());
     committed_bytes_ = 0;
     for (const auto bytes : block_used) {
       blocks_.push_back(alloc_page_block(bytes));

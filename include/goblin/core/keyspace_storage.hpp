@@ -89,9 +89,9 @@ class KeyspaceStorage {
   [[nodiscard]] size_type chunk_bytes() const noexcept { return chunk_bytes_; }
 
   void reserve(size_type key_count) {
-    key_block_.reserve(key_count);
-    key_offset_.reserve(key_count);
-    key_len_.reserve(key_count);
+    reserve_memory_vector(key_block_, key_count);
+    reserve_memory_vector(key_offset_, key_count);
+    reserve_memory_vector(key_len_, key_count);
   }
 
   // --- key table (id-indexed; MemberIndex resolves keys through view) ---
@@ -118,6 +118,7 @@ class KeyspaceStorage {
       throw std::length_error("keyspace id space exhausted");
     }
     const auto id = static_cast<std::uint64_t>(key_len_.size());
+    reserve_key_slot();
     const auto loc = append_blob(key);
     key_block_.push_back(loc.block);
     key_offset_.push_back(loc.offset);
@@ -255,6 +256,7 @@ class KeyspaceStorage {
 
   [[nodiscard]] size_type allocated_bytes() const noexcept {
     return committed_bytes_ +
+           blocks_.capacity() * sizeof(blocks_[0]) +
            key_block_.capacity() * sizeof(std::uint32_t) +
            key_offset_.capacity() * sizeof(std::uint32_t) +
            key_len_.capacity() * sizeof(std::uint16_t);
@@ -293,6 +295,22 @@ class KeyspaceStorage {
       used_bytes_ += bytes.size();
     }
     return {r.block, r.offset};
+  }
+
+  void reserve_key_slot() {
+    if (key_len_.size() < key_len_.capacity() &&
+        key_block_.size() < key_block_.capacity() &&
+        key_offset_.size() < key_offset_.capacity()) {
+      return;
+    }
+    const auto current = key_len_.capacity();
+    const auto target =
+        current == 0
+            ? size_type{8}
+            : current <= std::numeric_limits<size_type>::max() / 2
+                  ? current * 2
+                  : current + 1;
+    reserve(target);
   }
 
   std::vector<std::shared_ptr<char[]>> blocks_;

@@ -75,9 +75,11 @@ published:
 | `databases` | `1` | Only database zero exists. |
 | `appendonly` | `no` | Goblin Core does not own an append-only log. |
 | `save` | empty | No Redis-style periodic save rules are configured. |
-| `maxmemory` | `0` | No configured process memory ceiling. |
-| `maxmemory-policy` | `noeviction` | Writes are not resolved by key eviction. |
+| `maxmemory` | configured bytes, or `0` | Persistent-store ceiling selected by `--maxmemory`; `0` is unlimited. |
+| `maxmemory-policy` | `noeviction` | Capacity-growing writes are rejected rather than resolved by key eviction. |
 
 `CONFIG SET` and every other `CONFIG` subcommand are rejected. Snapshot and
 Kafka durability are configured through Goblin Core's own command-line and
 `GOBLIN.*` surfaces rather than being misrepresented as Redis configuration.
+See the [hard memory ceiling guide](../maxmemory.md) for the accounting boundary
+and OOM behavior.

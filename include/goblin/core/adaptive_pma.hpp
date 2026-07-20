@@ -31,6 +31,7 @@
 #endif
 
 #include "goblin/core/list_value_arena.hpp"
+#include "goblin/core/memory_limit.hpp"
 
 namespace goblin::core {
 
@@ -96,9 +97,15 @@ class AdaptivePma {
     if (size_ == std::numeric_limits<std::uint32_t>::max()) {
       throw std::length_error("list element space exhausted");
     }
+    if (capacity() != 0 && !wide_references() && !fits_narrow(value)) {
+      promote_references();
+    }
     note_insert(rank);
     if (capacity() == 0) {
       allocate_slots(kInitialCapacity);
+      if (!fits_narrow(value)) {
+        promote_references();
+      }
       const std::array initial{value};
       redistribute(0, capacity(), initial);
       size_ = 1;
@@ -188,11 +195,22 @@ class AdaptivePma {
     if (values.size() > limit - size_) {
       throw std::length_error("list element space exhausted");
     }
+    const bool needs_wide = !wide_references() &&
+                            std::any_of(values.begin(), values.end(),
+                                        [this](ListValueRef value) {
+                                          return !fits_narrow(value);
+                                        });
+    if (capacity() != 0 && needs_wide) {
+      promote_references();
+    }
 
     note_insert(rank, values.size(), endpoint);
     const auto next_size = size_ + values.size();
     if (capacity() == 0) {
       allocate_slots(minimum_capacity(next_size));
+      if (needs_wide) {
+        promote_references();
+      }
       redistribute(0, capacity(), values);
       size_ = next_size;
       return;
@@ -459,6 +477,19 @@ class AdaptivePma {
 
   void allocate_slots(size_type slots) {
     const bool wide = wide_references();
+    const auto desired_bytes =
+        std::max(offsets_.capacity(), slots) * sizeof(std::uint32_t) +
+        std::max(lengths_.capacity(), slots) * sizeof(std::uint16_t) +
+        (wide ? std::max(blocks_.capacity(), slots) : blocks_.capacity()) *
+            sizeof(std::uint32_t) +
+        std::max(occupied_.capacity(), word_count(slots)) *
+            sizeof(std::uint64_t) +
+        std::max(fenwick_.capacity(), word_count(slots) + 1) *
+            sizeof(std::uint32_t);
+    const auto current_bytes = allocated_bytes();
+    if (desired_bytes > current_bytes) {
+      ensure_memory_growth(desired_bytes - current_bytes);
+    }
     offsets_.assign(slots, 0);
     lengths_.assign(slots, 0);
     if (wide) {
@@ -721,6 +752,7 @@ class AdaptivePma {
 
   void promote_references() {
     assert(!wide_references());
+    reserve_memory_vector(blocks_, capacity());
     blocks_.resize(capacity());
     for (size_type slot = 0; slot < capacity(); ++slot) {
       const auto tagged = offsets_[slot];

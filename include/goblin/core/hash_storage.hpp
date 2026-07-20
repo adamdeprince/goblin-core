@@ -186,10 +186,11 @@ class HashStorage {
   }
 
   void reserve(size_type field_count) {
-    field_offsets_.reserve(field_count);
-    relocation_blocks_.reserve(relocation_directory_entries(field_count));
-    field_lengths_.reserve(field_count);
-    value_lengths_.reserve(field_count);
+    reserve_memory_vector(field_offsets_, field_count);
+    reserve_memory_vector(relocation_blocks_,
+                          relocation_directory_entries(field_count));
+    reserve_memory_vector(field_lengths_, field_count);
+    reserve_memory_vector(value_lengths_, field_count);
   }
 
   // Reserve for a growing batch without defeating amortized growth. Calling
@@ -218,8 +219,8 @@ class HashStorage {
 
   void reserve_bytes(size_type byte_count) {
     const auto chunks = (byte_count + chunk_bytes_ - 1) / chunk_bytes_;
-    chunks_.reserve(chunks);
-    chunk_usage_.reserve(chunks);
+    reserve_memory_vector(chunks_, chunks);
+    reserve_memory_vector(chunk_usage_, chunks);
   }
 
   // Drop every field ref and arena byte; keep chunk/growth config. Used when
@@ -666,6 +667,7 @@ class HashStorage {
     assert(block_index < relocation_blocks_.size());
     auto& block = relocation_blocks_[block_index];
     if (!block) {
+      ensure_memory_growth(sizeof(RelocationBlock));
       auto fresh = std::make_unique<RelocationBlock>();
       fresh->fill(kContiguousValueOffset);
       block = std::move(fresh);
@@ -771,14 +773,14 @@ class HashStorage {
   void make_active_chunk(size_type first_run_bytes) {
     const auto wanted =
         std::min(chunk_bytes_, std::max(kInitialArenaBytes, first_run_bytes));
-    auto block = alloc_page_block(wanted);
     const auto max_chunk =
         std::numeric_limits<std::uint32_t>::max() >> chunk_shift_;
     if (chunks_.size() > max_chunk) {
       throw std::length_error("hash arena exhausted");
     }
-    chunks_.reserve(chunks_.size() + 1);
-    chunk_usage_.reserve(chunk_usage_.size() + 1);
+    reserve_memory_vector(chunks_, chunks_.size() + 1);
+    reserve_memory_vector(chunk_usage_, chunk_usage_.size() + 1);
+    auto block = alloc_page_block(wanted);
     const auto chunk = static_cast<std::uint32_t>(chunks_.size());
     chunks_.push_back(std::move(block));
     chunk_usage_.push_back(
