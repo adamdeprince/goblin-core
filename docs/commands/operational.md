@@ -38,14 +38,17 @@ A server configured with one `--replica-*` source returns:
 1) "slave"
 2) "<upstream transport description>"
 3) (integer) 0
-4) "connected"
+4) "connected" | "connecting" | "down"
 5) (integer) <offset>
 ```
 
 The third element is zero because a ring, UDS, RDMA, or TLS source does not
 necessarily have one meaningful Redis TCP port. The transport and endpoint are
 included in the second element. See [Firehose replication and Kafka
-recovery](../replication.md) for setup and recovery semantics.
+recovery](../replication.md) for setup and recovery semantics. `connected`
+means the replica is ready; `connecting` covers connection and Kafka/firehose
+handoff states; `down` means a lineage or offset safety check left it degraded.
+`INFO` exposes the more detailed state and last error.
 
 ## GOBLIN.FIREHOSE
 

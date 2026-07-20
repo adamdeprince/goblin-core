@@ -1631,10 +1631,21 @@ class Store {
   void set_replica_mode(std::string upstream) {
     replica_mode_ = true;
     replication_upstream_ = std::move(upstream);
+    replica_runtime_status_.state = ReplicaSyncState::connecting;
   }
   [[nodiscard]] bool replica_mode() const noexcept { return replica_mode_; }
   [[nodiscard]] std::string_view replication_upstream() const noexcept {
     return replication_upstream_;
+  }
+  [[nodiscard]] const ReplicaRuntimeStatus& replica_runtime_status() const
+      noexcept {
+    return replica_runtime_status_;
+  }
+  [[nodiscard]] ReplicaRuntimeStatus& replica_runtime_status() noexcept {
+    return replica_runtime_status_;
+  }
+  [[nodiscard]] bool ready() const noexcept {
+    return !replica_mode_ || replica_runtime_status_.ready();
   }
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
@@ -2619,6 +2630,7 @@ class Store {
   ReplicationState replication_state_{};
   bool replica_mode_{false};
   std::string replication_upstream_;
+  ReplicaRuntimeStatus replica_runtime_status_{};
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
   // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so

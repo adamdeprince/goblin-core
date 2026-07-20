@@ -6,6 +6,7 @@
 #include <rdkafka.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -187,10 +188,12 @@ std::string read_reply(int fd, std::string& pending) {
 
 struct Child {
   pid_t pid{-1};
-  ~Child() {
+  ~Child() { stop(); }
+  void stop() {
     if (pid > 0) {
       (void)::kill(pid, SIGTERM);
       (void)::waitpid(pid, nullptr, 0);
+      pid = -1;
     }
   }
 };
@@ -223,11 +226,15 @@ int main(int argc, char** argv) {
   const std::string snapshot =
       "/tmp/goblin-kafka-test-" + std::to_string(::getpid()) + ".gcsn";
   const std::string recovery_snapshot = snapshot + ".recovery";
+  const std::string live_snapshot = snapshot + ".live";
+  const std::string ahead_snapshot = snapshot + ".ahead";
   const std::string replica_socket = socket + ".replica";
   (void)::unlink(socket.c_str());
   (void)::unlink(replica_socket.c_str());
   (void)::unlink(snapshot.c_str());
   (void)::unlink(recovery_snapshot.c_str());
+  (void)::unlink(live_snapshot.c_str());
+  (void)::unlink(ahead_snapshot.c_str());
   Producer producer(argv[2], argv[3]);
   producer.send({"SET", "startup-key", "from-backlog"}, 0);
   producer.send({"GET", "startup-key"}, 0);
@@ -386,14 +393,87 @@ int main(int argc, char** argv) {
     assert(read_reply(replica_client, replica_pending).starts_with(
         "-READONLY "));
 
-    ::close(replica_client);
+    // Capture the live primary, then restart it one logical mutation ahead of
+    // the still-running replica. The same mutation is placed in Kafka. Runtime
+    // recovery must replay it inclusively, filter any older duplicates, drain
+    // the firehose suffix, and return to ready without restarting the replica.
+    send_command(primary_client, {"GOBLIN.SAVE", live_snapshot, "NOACCEL"});
+    assert(read_reply(primary_client, primary_pending) ==
+           "+Background saving started\r\n");
+    for (int attempt = 0;
+         attempt < 1000 && !std::filesystem::exists(live_snapshot);
+         ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(std::filesystem::exists(live_snapshot));
+
+    goblin::core::Store ahead;
+    {
+      std::ifstream input(live_snapshot, std::ios::binary);
+      assert(input);
+      (void)ahead.load(input);
+    }
+    const auto before_gap = ahead.replication_state();
+    assert(before_gap.valid);
+    const auto gap_offset = before_gap.offset + 1;
+    producer.send_replication({"SET", "runtime-gap", "from-kafka"},
+                              before_gap.id, gap_offset);
+    std::string apply_error;
+    const auto gap_payload = encode_command(
+        std::array<std::string_view, 3>{"SET", "runtime-gap", "from-kafka"});
+    assert(apply_kafka_replication_record(ahead, before_gap.id, gap_offset,
+                                          gap_payload, apply_error) ==
+           goblin::core::KafkaRecordResult::applied);
+    {
+      std::ofstream output(ahead_snapshot, std::ios::binary);
+      assert(output);
+      ahead.save(output, false);
+      output.close();
+      assert(output);
+    }
+
+    primary.stop();
     ::close(primary_client);
+    bool unready = false;
+    for (int attempt = 0; attempt < 1000 && !unready; ++attempt) {
+      send_command(replica_client, {"INFO"});
+      unready = read_reply(replica_client, replica_pending)
+                    .find("goblin_ready:0\r\n") != std::string::npos;
+      if (!unready) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(unready);
+
+    auto restarted_primary = spawn_server(
+        argv[1], {"--uds-listen", socket, "--port",
+                  std::to_string(primary_port), "--load", ahead_snapshot,
+                  "--kafka", connection});
+    const int restarted_primary_client = wait_for_server(socket);
+    assert(restarted_primary_client >= 0);
+    bool recovered = false;
+    for (int attempt = 0; attempt < 1500 && !recovered; ++attempt) {
+      send_command(replica_client, {"GET", "runtime-gap"});
+      recovered = read_reply(replica_client, replica_pending) ==
+                  "$10\r\nfrom-kafka\r\n";
+      if (!recovered) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(recovered);
+    send_command(replica_client, {"INFO"});
+    const auto recovered_info = read_reply(replica_client, replica_pending);
+    assert(recovered_info.find("goblin_ready:1\r\n") != std::string::npos);
+    assert(recovered_info.find("replica_state:live\r\n") != std::string::npos);
+    assert(recovered_info.find("replica_successful_reconnects:1\r\n") !=
+           std::string::npos);
+    ::close(restarted_primary_client);
+
+    ::close(replica_client);
   }
 
   (void)::unlink(socket.c_str());
   (void)::unlink(replica_socket.c_str());
   (void)::unlink(snapshot.c_str());
   (void)::unlink(recovery_snapshot.c_str());
+  (void)::unlink(live_snapshot.c_str());
+  (void)::unlink(ahead_snapshot.c_str());
   std::cout << "Kafka journal, lineage filtering, inclusive snapshot recovery, "
-               "live handoff, and RESP2 ingestion OK\n";
+               "runtime reconnect, live handoff, and RESP2 ingestion OK\n";
 }

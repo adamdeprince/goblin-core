@@ -69,6 +69,12 @@ namespace {
 #endif
 }
 
+void append_info_value(std::string& out, std::string_view value) {
+  for (const char ch : value) {
+    out.push_back(ch == '\r' || ch == '\n' ? ' ' : ch);
+  }
+}
+
 // A minimal redis-compatible INFO payload: enough of the Server + Memory
 // sections for tooling (redis-cli, benchmark harnesses) that keys off
 // used_memory_rss / redis_version. Fields are CRLF-separated per the protocol.
@@ -132,6 +138,51 @@ namespace {
   s += "kafka_acknowledged_offset:" +
        std::to_string(store.replication_state().kafka_acknowledged_offset) +
        "\r\n";
+  s += std::string("goblin_ready:") + (store.ready() ? "1\r\n" : "0\r\n");
+  if (store.replica_mode()) {
+    const auto& status = store.replica_runtime_status();
+    const auto state = replica_sync_state_name(status.state);
+    const std::uint64_t local_offset = store.replication_state().offset;
+    s += std::string("master_link_status:") +
+         (status.ready() ? "up\r\n" : "down\r\n");
+    s += "master_sync_in_progress:";
+    s += status.state == ReplicaSyncState::replaying_kafka ||
+                 status.state == ReplicaSyncState::buffering_firehose
+             ? "1\r\n"
+             : "0\r\n";
+    s += "replica_state:";
+    s.append(state);
+    s += "\r\n";
+    s += "slave_repl_offset:" + std::to_string(local_offset) + "\r\n";
+    s += "upstream_repl_offset:" +
+         std::to_string(status.upstream_offset) + "\r\n";
+    s += "replica_lag:";
+    if (!status.ready() && status.upstream_offset <= local_offset) {
+      s += "-1\r\n";
+    } else {
+      s += std::to_string(status.upstream_offset > local_offset
+                              ? status.upstream_offset - local_offset
+                              : 0);
+      s += "\r\n";
+    }
+    s += "replica_reconnect_attempts:" +
+         std::to_string(status.reconnect_attempts) + "\r\n";
+    s += "replica_successful_reconnects:" +
+         std::to_string(status.successful_reconnects) + "\r\n";
+    s += "master_last_io_seconds_ago:";
+    if (status.last_io_unix_ms == 0) {
+      s += "-1\r\n";
+    } else {
+      const auto now = store.now_ms();
+      s += std::to_string(now > status.last_io_unix_ms
+                              ? (now - status.last_io_unix_ms) / 1000
+                              : 0);
+      s += "\r\n";
+    }
+    s += "replica_last_error:";
+    append_info_value(s, status.last_error);
+    s += "\r\n";
+  }
   s += "# Memory\r\n";
   s += "used_memory:" + std::to_string(used) + "\r\n";
   s += "used_memory_rss:" + std::to_string(rss) + "\r\n";
@@ -3441,11 +3492,16 @@ void execute_command_into_impl(Store& store,
       if (options.render_role != nullptr) {
         options.render_role(options.replication_context, out, version);
       } else if (store.replica_mode()) {
+        const auto& status = store.replica_runtime_status();
         resp::append_array_header(out, 5);
         resp::append_bulk_string(out, "slave");
         resp::append_bulk_string(out, store.replication_upstream());
         resp::append_integer(out, 0);
-        resp::append_bulk_string(out, "connected");
+        resp::append_bulk_string(
+            out, status.ready() ? "connected"
+                                : status.state == ReplicaSyncState::degraded
+                                      ? "down"
+                                      : "connecting");
         resp::append_integer(
             out, static_cast<long long>(std::min<std::uint64_t>(
                      store.replication_state().offset,

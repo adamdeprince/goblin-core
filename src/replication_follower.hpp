@@ -3,16 +3,22 @@
 #include "goblin/core/replication.hpp"
 #include "goblin/core/server.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 
 namespace goblin::core {
 
+[[nodiscard]] std::string describe_replica_source(
+    const ReplicaSourceConfig& config);
+
 class ReplicationFollowerRuntime {
  public:
   ReplicationFollowerRuntime(const ReplicaSourceConfig& config,
                              std::size_t buffer_bytes,
-                             const ReplicaAuthConfig* auth = nullptr);
+                             const ReplicaAuthConfig* auth = nullptr,
+                             std::chrono::milliseconds connect_timeout =
+                                 std::chrono::seconds(5));
   ~ReplicationFollowerRuntime();
 
   ReplicationFollowerRuntime(const ReplicationFollowerRuntime&) = delete;

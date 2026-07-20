@@ -195,6 +195,10 @@ class ReplicationRuntime {
   [[nodiscard]] bool subscribe(EndpointSession& session, Store& store,
                                std::string& error) {
     remove(session);
+    if (!firehose_available_) {
+      error = "ERR replication source is not live";
+      return false;
+    }
     try {
       session.firehose_output =
           std::make_unique<detail::UnsolicitedOutputQueue>(buffer_bytes_);
@@ -256,6 +260,15 @@ class ReplicationRuntime {
     return subscribers_.size();
   }
 
+  void set_firehose_available(bool available) noexcept {
+    firehose_available_ = available;
+    if (available) return;
+    for (auto* subscriber : subscribers_) {
+      terminate(*subscriber, "-ERR replication source is not live\r\n");
+    }
+    subscribers_.clear();
+  }
+
   [[nodiscard]] bool apply_received(Store& store,
                                     const ReplicationBatch& batch,
                                     std::string& error) {
@@ -273,6 +286,30 @@ class ReplicationRuntime {
       error_.assign(message);
     } catch (...) {
     }
+  }
+
+  static void terminate(EndpointSession& subscriber,
+                        std::string_view error) noexcept {
+    subscriber.clear_unsolicited_front_cache();
+    if (subscriber.firehose_output != nullptr) {
+      bool queued = subscriber.firehose_output->push(
+          subscriber.next_output_sequence, error);
+      if (!queued) {
+        // A saturated follower has already lost the contiguous suffix. Replace
+        // it with an explicit terminal frame so every transport notices and
+        // reconnects; offset validation then fails closed if no log can bridge it.
+        subscriber.firehose_output->clear();
+        queued = subscriber.firehose_output->push(
+            subscriber.next_output_sequence, error);
+      }
+      if (queued) {
+        ++subscriber.next_output_sequence;
+        subscriber.quit_after_write = true;
+        return;
+      }
+    }
+    subscriber.close_requested = true;
+    subscriber.firehose = false;
   }
 
   void commit(Store& store) noexcept {
@@ -325,14 +362,15 @@ class ReplicationRuntime {
         if (subscriber->firehose_output == nullptr ||
             !subscriber->firehose_output->push(
                 subscriber->next_output_sequence, wire)) {
-          subscriber->close_requested = true;
           overflowed_.push_back(subscriber);
           continue;
         }
         ++subscriber->next_output_sequence;
       }
       for (auto* subscriber : overflowed_) {
-        remove(*subscriber);
+        (void)subscribers_.erase(subscriber);
+        terminate(*subscriber,
+                  "-ERR replication output buffer exhausted\r\n");
       }
       overflowed_.clear();
     } catch (const std::exception& exception) {
@@ -351,6 +389,7 @@ class ReplicationRuntime {
   KafkaJournal* journal_{nullptr};
 #endif
   bool failed_{false};
+  bool firehose_available_{true};
   std::string error_;
 };
 
@@ -2745,6 +2784,10 @@ template <class ReplicaFn, class NetFn>
         did_work = true;
       }
 
+      if (keep && client.quit_after_write && !has_pending_output(client)) {
+        keep = false;
+      }
+
       if (!keep || client.close_requested) {
         replication.remove(client);
         pubsub.remove(client);
@@ -2984,39 +3027,58 @@ int Server::run() {
     std::cout << "goblin-core: SBE enabled as a trusted, unauthenticated fabric\n";
   }
   const AuthDatabase* auth = auth_database ? &*auth_database : nullptr;
+  struct ReplicaCredentialScrub {
+    std::optional<ReplicaAuthConfig>* auth;
+    ~ReplicaCredentialScrub() {
+      if (auth && *auth) {
+        std::fill((*auth)->password.begin(), (*auth)->password.end(), '\0');
+        (*auth)->password.clear();
+      }
+    }
+  } replica_credential_scrub{&config_.replica_auth};
 
   std::unique_ptr<ReplicationFollowerRuntime> replica;
   if (config_.replica_source) {
+    store_.set_replica_mode(describe_replica_source(*config_.replica_source));
+    auto& status = store_.replica_runtime_status();
+    status.state = ReplicaSyncState::connecting;
     try {
       replica = std::make_unique<ReplicationFollowerRuntime>(
           *config_.replica_source, config_.replication_buffer_bytes,
-          config_.replica_auth ? &*config_.replica_auth : nullptr);
-      if (config_.replica_auth) {
-        std::fill(config_.replica_auth->password.begin(),
-                  config_.replica_auth->password.end(), '\0');
-        config_.replica_auth->password.clear();
-      }
+          config_.replica_auth ? &*config_.replica_auth : nullptr,
+          std::chrono::milliseconds(250));
     } catch (const std::exception& error) {
-      std::cerr << "goblin-core: replica setup failed: " << error.what() << '\n';
-      return 1;
+      status.state = ReplicaSyncState::reconnecting;
+      status.last_error = error.what();
+      std::cerr << "goblin-core: initial replica connection failed: "
+                << error.what() << "; starting unready and retrying\n";
     }
-    const auto& hello = replica->hello();
-    const auto state = store_.replication_state();
-    if (state.valid && state.id != hello.id) {
-      std::cerr << "goblin-core: replica snapshot lineage " << state.id.hex()
-                << " does not match upstream " << hello.id.hex() << '\n';
-      return 1;
+    if (replica) {
+      const auto& hello = replica->hello();
+      status.upstream_offset = hello.offset;
+      status.last_io_unix_ms = store_.now_ms();
+      const auto state = store_.replication_state();
+      if (state.valid && state.id != hello.id) {
+        status.state = ReplicaSyncState::degraded;
+        status.last_error = "local lineage " + state.id.hex() +
+                            " does not match upstream lineage " +
+                            hello.id.hex();
+        std::cerr << "goblin-core: initial replica is degraded: "
+                  << status.last_error << '\n';
+        replica.reset();
+      } else {
+        if (!state.valid) {
+          store_.set_replication_state(ReplicationState{
+              .id = hello.id,
+              .offset = 0,
+              .kafka_acknowledged_offset = -1,
+              .valid = true});
+        }
+        std::cout << "goblin-core: connected replica source "
+                  << replica->description() << " at replication offset "
+                  << hello.offset << " (lineage " << hello.id.hex() << ")\n";
+      }
     }
-    if (!state.valid) {
-      store_.set_replication_state(ReplicationState{
-          .id = hello.id,
-          .offset = 0,
-          .kafka_acknowledged_offset = -1,
-          .valid = true});
-    }
-    std::cout << "goblin-core: connected replica source "
-              << replica->description() << " at replication offset "
-              << hello.offset << " (lineage " << hello.id.hex() << ")\n";
   }
 
 #ifdef GOBLIN_HAS_KAFKA
@@ -3036,33 +3098,58 @@ int Server::run() {
                                    config_.kafka->require_replication_metadata,
                                    error);
     if (!kafka) {
-      std::cerr << "goblin-core: Kafka setup failed: " << error << '\n';
-      return 1;
-    }
-    KafkaReplayStats replay;
-    std::cout << "goblin-core: replaying Kafka " << kafka->description()
-              << " before opening listeners\n" << std::flush;
-    const auto buffer_replica = [](void* context, std::string& observer_error) {
-      return static_cast<ReplicationFollowerRuntime*>(context)
-          ->buffer_available(observer_error);
-    };
-    if (!kafka->catch_up(store_, replay, error, replica.get(),
-                         replica ? buffer_replica : nullptr)) {
-      std::cerr << "goblin-core: Kafka startup replay failed: " << error << '\n';
-      return 1;
-    }
-    std::cout << "goblin-core: Kafka startup replay complete: "
-              << replay.records << " record(s), " << replay.writes
-              << " write(s), " << replay.filtered << " filtered\n";
-    if (!store_.replication_state().valid) {
-      store_.reset_replication_identity();
-    }
-    if (!replica) {
-      kafka_journal =
-          KafkaJournal::connect(config_.kafka->connection, error);
-      if (!kafka_journal) {
-        std::cerr << "goblin-core: Kafka journal setup failed: " << error << '\n';
+      if (!config_.replica_source) {
+        std::cerr << "goblin-core: Kafka setup failed: " << error << '\n';
         return 1;
+      }
+      auto& status = store_.replica_runtime_status();
+      status.last_error = "Kafka startup setup failed: " + error;
+      std::cerr << "goblin-core: " << status.last_error
+                << "; replica remains unready\n";
+    } else {
+      KafkaReplayStats replay;
+      std::cout << "goblin-core: replaying Kafka " << kafka->description()
+                << " before opening listeners\n" << std::flush;
+      const auto buffer_replica = [](void* context,
+                                     std::string& observer_error) {
+        return static_cast<ReplicationFollowerRuntime*>(context)
+            ->buffer_available(observer_error);
+      };
+      if (!kafka->catch_up(store_, replay, error, replica.get(),
+                           replica ? buffer_replica : nullptr)) {
+        if (!config_.replica_source) {
+          std::cerr << "goblin-core: Kafka startup replay failed: " << error
+                    << '\n';
+          return 1;
+        }
+        auto& status = store_.replica_runtime_status();
+        status.state = ReplicaSyncState::degraded;
+        status.last_error = "Kafka startup replay failed: " + error;
+        std::cerr << "goblin-core: " << status.last_error
+                  << "; replica remains unready\n";
+        replica.reset();
+        kafka.reset();
+      } else {
+        std::cout << "goblin-core: Kafka startup replay complete: "
+                  << replay.records << " record(s), " << replay.writes
+                  << " write(s), " << replay.filtered << " filtered\n";
+        if (!store_.replication_state().valid) {
+          store_.reset_replication_identity();
+        }
+        if (!config_.replica_source) {
+          kafka_journal =
+              KafkaJournal::connect(config_.kafka->connection, error);
+          if (!kafka_journal) {
+            std::cerr << "goblin-core: Kafka journal setup failed: " << error
+                      << '\n';
+            return 1;
+          }
+        } else if (!replica) {
+          // The startup high-water mark is useful, but without a connected
+          // firehose there is no safe cutover target yet. Reconnect creates a
+          // new inclusive consumer from this updated broker acknowledgement.
+          kafka.reset();
+        }
       }
     }
   }
@@ -3111,41 +3198,56 @@ int Server::run() {
                                             : store_.replication_state().offset !=
                                                   replica->hello().offset;
     if (handoff_offset_invalid) {
-      std::cerr << "goblin-core: upstream is at replication offset "
-                << replica->hello().offset << ", but the loaded snapshot is at "
-                << store_.replication_state().offset
-                << "; configure Kafka recovery or load a current snapshot\n";
-      return 1;
-    }
-
-    if (!replica->buffer_available(error)) {
-      std::cerr << "goblin-core: replica handoff buffering failed: " << error
-                << '\n';
-      return 1;
-    }
-    for (;;) {
-      ReplicationBatch batch;
-      bool available = false;
-      if (!replica->try_next(batch, available, error)) {
-        std::cerr << "goblin-core: replica handoff failed: " << error << '\n';
-        return 1;
-      }
-      if (!available) break;
-      if (!apply_firehose_batch(store_, batch, error)) {
-        std::cerr << "goblin-core: replica handoff apply failed: " << error
+      auto& status = store_.replica_runtime_status();
+      status.state = ReplicaSyncState::degraded;
+      status.upstream_offset = replica->hello().offset;
+      status.last_error =
+          "upstream is at replication offset " +
+          std::to_string(replica->hello().offset) +
+          ", but local state is at " +
+          std::to_string(store_.replication_state().offset) +
+          "; Kafka recovery or a current snapshot is required";
+      std::cerr << "goblin-core: initial replica is degraded: "
+                << status.last_error << '\n';
+      replica.reset();
+#ifdef GOBLIN_HAS_KAFKA
+      kafka.reset();
+#endif
+    } else {
+      if (!replica->buffer_available(error)) {
+        std::cerr << "goblin-core: replica handoff buffering failed: " << error
                   << '\n';
         return 1;
       }
-    }
-    std::cout << "goblin-core: replica is live at replication offset "
-              << store_.replication_state().offset << '\n';
-    store_.set_replica_mode(replica->description());
+      for (;;) {
+        ReplicationBatch batch;
+        bool available = false;
+        if (!replica->try_next(batch, available, error)) {
+          std::cerr << "goblin-core: replica handoff failed: " << error << '\n';
+          return 1;
+        }
+        if (!available) break;
+        if (!apply_firehose_batch(store_, batch, error)) {
+          std::cerr << "goblin-core: replica handoff apply failed: " << error
+                    << '\n';
+          return 1;
+        }
+      }
+      std::cout << "goblin-core: replica is live at replication offset "
+                << store_.replication_state().offset << '\n';
+      store_.set_replica_mode(replica->description());
+      auto& status = store_.replica_runtime_status();
+      status.state = ReplicaSyncState::live;
+      status.upstream_offset = store_.replication_state().offset;
+      status.last_io_unix_ms = store_.now_ms();
+      status.last_error.clear();
 #ifdef GOBLIN_HAS_KAFKA
-    // The firehose connection was established before replay. Once its buffered
-    // suffix is applied it is the sole upstream; keeping Kafka active would race
-    // the same logical records down two inputs.
-    kafka.reset();
+      // The firehose connection was established before replay. Once its
+      // buffered suffix is applied it is the sole upstream; keeping Kafka
+      // active would race the same logical records down two inputs.
+      kafka.reset();
 #endif
+    }
   }
 
   auto listeners_result = create_socket_listeners(config_);
@@ -3186,6 +3288,8 @@ int Server::run() {
 #else
   ReplicationRuntime replication(config_.replication_buffer_bytes);
 #endif
+  replication.set_firehose_available(!config_.replica_source ||
+                                     store_.replica_runtime_status().ready());
   const NestedCommandDispatch nested_dispatch{
       .context = &pubsub,
       .publish = [](void* context, std::string_view channel,
@@ -3195,7 +3299,7 @@ int Server::run() {
       },
       .replication_context = &replication,
       .replicate_write = &ReplicationRuntime::replicate,
-      .read_only = replica != nullptr,
+      .read_only = config_.replica_source.has_value(),
   };
 
   // One engine per interpreter for the process. Each holds its own script cache
@@ -3208,39 +3312,6 @@ int Server::run() {
   UPythonEngine upython_engine(store_, nested_dispatch);
   QuickJsEngine quickjs_engine(store_, nested_dispatch);
 
-  const auto replica_iteration = [&]() -> bool {
-    if (!replica) return false;
-    ReplicationBatch batch;
-    bool available = false;
-    std::string error;
-    if (!replica->try_next(batch, available, error)) {
-      std::cerr << "goblin-core: upstream replication failed: " << error
-                << '\n';
-      kafka_failed = true;
-      running_ = false;
-      return true;
-    }
-    if (!available) return false;
-    try {
-      if (!replication.apply_received(store_, batch, error)) {
-        std::cerr << "goblin-core: upstream replication apply failed: " << error
-                  << '\n';
-        kafka_failed = true;
-        running_ = false;
-      }
-    } catch (const std::exception& exception) {
-      std::cerr << "goblin-core: upstream replication apply failed: "
-                << exception.what() << '\n';
-      kafka_failed = true;
-      running_ = false;
-    }
-    return true;
-  };
-
-  for (const auto& listener : listeners) {
-    std::cout << "goblin-core listening on " << listener.description << '\n';
-  }
-
   // Keys expired per active-expiration sweep. A bounded batch keeps a mass
   // expiry from stalling the loop; when a sweep fills the batch more are likely
   // due, so the poll below returns immediately to sweep again.
@@ -3248,6 +3319,189 @@ int Server::run() {
 #ifdef GOBLIN_HAS_KAFKA
   constexpr std::size_t kKafkaDrainBudget = 1024;
   bool kafka_may_have_more = kafka && kafka->has_pending();
+#endif
+
+  auto next_replica_reconnect = config_.replica_source && !replica
+                                    ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point::max();
+  unsigned replica_backoff_exponent = 0;
+  std::uint64_t recovery_target_offset = 0;
+#ifdef GOBLIN_HAS_KAFKA
+  std::uint64_t recovery_last_offset = 0;
+  auto recovery_progress_deadline =
+      std::chrono::steady_clock::time_point::max();
+#endif
+
+  const auto reconnect_delay = [&]() {
+    const unsigned exponent = std::min(replica_backoff_exponent++, 6U);
+    const std::uint64_t base =
+        std::min<std::uint64_t>(100ULL << exponent, 5000ULL);
+    const auto attempts = store_.replica_runtime_status().reconnect_attempts;
+    const std::uint64_t mixed =
+        ((attempts + 1) ^ static_cast<std::uint64_t>(::getpid())) *
+        0x9e3779b97f4a7c15ULL;
+    const std::uint64_t percent = 75 + mixed % 51;  // 75% .. 125%
+    return std::chrono::milliseconds(base * percent / 100);
+  };
+
+  const auto mark_replica_unavailable = [&](std::string message,
+                                             bool degraded) {
+    replication.set_firehose_available(false);
+    replica.reset();
+#ifdef GOBLIN_HAS_KAFKA
+    if (config_.replica_source) {
+      kafka.reset();
+      kafka_may_have_more = false;
+    }
+#endif
+    auto& status = store_.replica_runtime_status();
+    status.state = degraded ? ReplicaSyncState::degraded
+                            : ReplicaSyncState::reconnecting;
+    status.last_error = std::move(message);
+    const auto delay = reconnect_delay();
+    next_replica_reconnect = std::chrono::steady_clock::now() + delay;
+    std::cerr << "goblin-core: replica "
+              << replica_sync_state_name(status.state) << ": "
+              << status.last_error << "; retrying in " << delay.count()
+              << " ms\n";
+  };
+
+  const auto finish_replica_handoff = [&]() -> bool {
+    if (!replica) return false;
+    auto& status = store_.replica_runtime_status();
+    status.state = ReplicaSyncState::buffering_firehose;
+    std::string error;
+    if (!replica->buffer_available(error)) {
+      mark_replica_unavailable(std::move(error), false);
+      return false;
+    }
+    for (;;) {
+      ReplicationBatch batch;
+      bool available = false;
+      if (!replica->try_next(batch, available, error)) {
+        mark_replica_unavailable(std::move(error), false);
+        return false;
+      }
+      if (!available) break;
+      if (!replication.apply_received(store_, batch, error)) {
+        mark_replica_unavailable(std::move(error), true);
+        return false;
+      }
+      const auto last = batch.offset + batch.mutations.size() - 1;
+      status.upstream_offset = std::max(status.upstream_offset, last);
+      status.last_io_unix_ms = store_.now_ms();
+    }
+#ifdef GOBLIN_HAS_KAFKA
+    kafka.reset();
+    kafka_may_have_more = false;
+#endif
+    status.state = ReplicaSyncState::live;
+    status.upstream_offset =
+        std::max(status.upstream_offset, store_.replication_state().offset);
+    status.last_io_unix_ms = store_.now_ms();
+    status.last_error.clear();
+    ++status.successful_reconnects;
+    replica_backoff_exponent = 0;
+    next_replica_reconnect =
+        std::chrono::steady_clock::time_point::max();
+    replication.set_firehose_available(true);
+    std::cout << "goblin-core: replica reconnected and live at replication "
+                 "offset "
+              << store_.replication_state().offset << '\n';
+    return true;
+  };
+
+  const auto begin_replica_reconnect = [&]() {
+    if (!config_.replica_source || replica) return;
+    auto& status = store_.replica_runtime_status();
+    status.state = ReplicaSyncState::reconnecting;
+    ++status.reconnect_attempts;
+
+    std::unique_ptr<ReplicationFollowerRuntime> candidate;
+    try {
+      candidate = std::make_unique<ReplicationFollowerRuntime>(
+          *config_.replica_source, config_.replication_buffer_bytes,
+          config_.replica_auth ? &*config_.replica_auth : nullptr,
+          std::chrono::milliseconds(250));
+    } catch (const std::exception& exception) {
+      mark_replica_unavailable(exception.what(), false);
+      return;
+    }
+
+    const auto hello = candidate->hello();
+    status.upstream_offset = hello.offset;
+    status.last_io_unix_ms = store_.now_ms();
+    const auto local = store_.replication_state();
+    if (local.valid && local.id != hello.id) {
+      mark_replica_unavailable(
+          "upstream replication lineage " + hello.id.hex() +
+              " does not match local lineage " + local.id.hex(),
+          true);
+      return;
+    }
+    if (!local.valid) {
+      store_.set_replication_state(ReplicationState{
+          .id = hello.id,
+          .offset = 0,
+          .kafka_acknowledged_offset = -1,
+          .valid = true});
+    }
+    if (hello.offset < store_.replication_state().offset) {
+      mark_replica_unavailable(
+          "upstream replication offset " + std::to_string(hello.offset) +
+              " is behind local offset " +
+              std::to_string(store_.replication_state().offset),
+          true);
+      return;
+    }
+
+    recovery_target_offset = hello.offset;
+    replica = std::move(candidate);
+    if (store_.replication_state().offset == recovery_target_offset) {
+      (void)finish_replica_handoff();
+      return;
+    }
+
+#ifdef GOBLIN_HAS_KAFKA
+    if (config_.kafka) {
+      std::optional<std::int64_t> acknowledged_offset;
+      if (store_.replication_state().kafka_acknowledged_offset >= 0) {
+        acknowledged_offset =
+            store_.replication_state().kafka_acknowledged_offset;
+      } else {
+        acknowledged_offset = config_.kafka->acknowledged_offset;
+      }
+      std::string error;
+      kafka = KafkaIngestor::connect(
+          config_.kafka->connection,
+          acknowledged_offset ? std::nullopt
+                              : config_.kafka->start_timestamp_ms,
+          acknowledged_offset, /*require_replication_metadata=*/true, error);
+      if (!kafka) {
+        mark_replica_unavailable("Kafka recovery setup failed: " + error,
+                                 true);
+        return;
+      }
+      status.state = ReplicaSyncState::replaying_kafka;
+      recovery_last_offset = store_.replication_state().offset;
+      recovery_progress_deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      kafka_may_have_more = kafka->has_pending();
+      std::cout << "goblin-core: replaying Kafka from logical offset "
+                << recovery_last_offset << " toward upstream offset "
+                << recovery_target_offset << '\n';
+      return;
+    }
+#endif
+    mark_replica_unavailable(
+        "firehose gap from local offset " +
+            std::to_string(store_.replication_state().offset) +
+            " to upstream offset " + std::to_string(recovery_target_offset) +
+            "; Kafka recovery or a current snapshot is required",
+        true);
+  };
+
+#ifdef GOBLIN_HAS_KAFKA
   const auto poll_kafka_journal = [&]() -> bool {
     if (!kafka_journal) return true;
     std::string error;
@@ -3258,18 +3512,100 @@ int Server::run() {
     return false;
   };
   const auto drain_kafka = [&]() -> bool {
+    if (!kafka) return true;
     auto result = kafka->poll(store_, kKafkaDrainBudget);
     if (!result.ok()) {
-      std::cerr << "goblin-core: Kafka ingestion failed: " << result.error
-                << '\n';
-      kafka_failed = true;
-      running_ = false;
+      if (config_.replica_source) {
+        mark_replica_unavailable("Kafka recovery failed: " + result.error,
+                                 true);
+      } else {
+        std::cerr << "goblin-core: Kafka ingestion failed: " << result.error
+                  << '\n';
+        kafka_failed = true;
+        running_ = false;
+      }
       return false;
     }
     kafka_may_have_more = result.may_have_more;
     return true;
   };
 #endif
+
+  const auto advance_replica_recovery = [&]() -> bool {
+    auto& status = store_.replica_runtime_status();
+    if (!replica || status.state != ReplicaSyncState::replaying_kafka) {
+      return false;
+    }
+    const auto offset_before = store_.replication_state().offset;
+    const bool had_buffered_firehose = replica->has_buffered();
+    std::string error;
+    if (!replica->buffer_available(error)) {
+      mark_replica_unavailable(std::move(error), false);
+      return true;
+    }
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka && kafka_may_have_more && !drain_kafka()) return true;
+    const auto local_offset = store_.replication_state().offset;
+    if (local_offset != recovery_last_offset) {
+      recovery_last_offset = local_offset;
+      recovery_progress_deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+    if (kafka && kafka->startup_complete() &&
+        local_offset >= recovery_target_offset) {
+      (void)finish_replica_handoff();
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= recovery_progress_deadline) {
+      mark_replica_unavailable(
+          "Kafka recovery made no logical progress for 30 seconds toward "
+          "upstream offset " +
+              std::to_string(recovery_target_offset),
+          true);
+      return true;
+    }
+#endif
+    return store_.replication_state().offset != offset_before ||
+           (!had_buffered_firehose && replica && replica->has_buffered());
+  };
+
+  const auto replica_iteration = [&]() -> bool {
+    if (config_.replica_source && !replica &&
+        std::chrono::steady_clock::now() >= next_replica_reconnect) {
+      begin_replica_reconnect();
+      return true;
+    }
+    auto& status = store_.replica_runtime_status();
+    if (replica && status.state == ReplicaSyncState::replaying_kafka) {
+      return advance_replica_recovery();
+    }
+    if (!replica || status.state != ReplicaSyncState::live) return false;
+    ReplicationBatch batch;
+    bool available = false;
+    std::string error;
+    if (!replica->try_next(batch, available, error)) {
+      mark_replica_unavailable(std::move(error), false);
+      return true;
+    }
+    if (!available) return false;
+    try {
+      if (!replication.apply_received(store_, batch, error)) {
+        mark_replica_unavailable(std::move(error), true);
+        return true;
+      }
+      status.upstream_offset =
+          std::max(status.upstream_offset,
+                   batch.offset + batch.mutations.size() - 1);
+      status.last_io_unix_ms = store_.now_ms();
+    } catch (const std::exception& exception) {
+      mark_replica_unavailable(exception.what(), true);
+    }
+    return true;
+  };
+
+  for (const auto& listener : listeners) {
+    std::cout << "goblin-core listening on " << listener.description << '\n';
+  }
 
   // One pass over the network: reap a finished background save, do a bounded
   // active-expiration sweep, then poll() (blocking up to max_timeout_ms) and
@@ -3295,6 +3631,7 @@ int Server::run() {
     if (kafka && kafka_may_have_more && !drain_kafka()) {
       return;
     }
+    (void)advance_replica_recovery();
 #endif
     if (auto outcome = store_.reap_background_save()) {
       if (outcome->ok) {
@@ -3317,6 +3654,15 @@ int Server::run() {
           kActiveExpireBudget) {
         poll_timeout = 0;  // batch full -- more are likely due, sweep again now
       }
+    }
+    if (config_.replica_source && !replica &&
+        next_replica_reconnect !=
+            std::chrono::steady_clock::time_point::max()) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          next_replica_reconnect - std::chrono::steady_clock::now());
+      poll_timeout = std::min(
+          poll_timeout,
+          static_cast<int>(std::max<std::int64_t>(remaining.count(), 0)));
     }
     blocking_lists.serve_ready(store_, replication);
     poll_timeout = blocking_lists.clamp_poll_timeout(poll_timeout);
@@ -3384,6 +3730,7 @@ int Server::run() {
           !drain_kafka()) {
         return;
       }
+      (void)advance_replica_recovery();
       ++kafka_event_index;
     }
     if (kafka_journal &&
@@ -3397,8 +3744,13 @@ int Server::run() {
     if (replica_fd_count != 0 &&
         (pollfds[replica_event_index].revents &
          (POLLIN | POLLERR | POLLHUP)) != 0) {
-      for (std::size_t i = 0; i < 1024 && replica_iteration(); ++i) {
-        if (!running_.load(std::memory_order_relaxed)) return;
+      if (store_.replica_runtime_status().state ==
+          ReplicaSyncState::replaying_kafka) {
+        (void)advance_replica_recovery();
+      } else {
+        for (std::size_t i = 0; i < 1024 && replica_iteration(); ++i) {
+          if (!running_.load(std::memory_order_relaxed)) return;
+        }
       }
     }
     for (std::size_t i = 0; i < clients.size(); ++i) {
@@ -3454,6 +3806,10 @@ int Server::run() {
         }
       }
 
+      if (keep && client.quit_after_write && !has_pending_output(client)) {
+        keep = false;
+      }
+
       if (keep && (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 &&
           !has_pending_output(client)) {
         keep = false;
@@ -3490,8 +3846,12 @@ int Server::run() {
     }
   };
 
+  const bool configured_polled_replica =
+      config_.replica_source &&
+      (std::holds_alternative<ReplicaRingConfig>(*config_.replica_source) ||
+       std::holds_alternative<ReplicaRdmaConfig>(*config_.replica_source));
   if (config_.poll_targets.empty() && !config_.pubsub_listener &&
-      !(replica && replica->polled())) {
+      !configured_polled_replica) {
     // No polled targets: the ordinary event-driven server. poll() blocks, so an idle
     // server costs no CPU.
     while (running_) {

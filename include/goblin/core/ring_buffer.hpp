@@ -96,7 +96,7 @@ inline constexpr std::size_t kIndexLine = 128;
 inline constexpr std::size_t kIndexLine = 64;
 #endif
 inline constexpr std::uint32_t kMagic = 0x474E5247;  // 'GRNG'
-inline constexpr std::uint32_t kVersion = 2;  // v2 adds the Header::mirror flag
+inline constexpr std::uint32_t kVersion = 3;  // v3 identifies the server process
 
 // Pure-spin budget before parking on a ring index (macOS). Must cover a healthy
 // sub-µs RTT with headroom for brief peer preemption -- parking too early turns
@@ -317,6 +317,10 @@ struct alignas(kIndexLine) Header {
   // open() reads it, so the producer and consumer always agree on whether fillers
   // exist. Read-mostly config, so it shares the config line with the fields above.
   std::uint32_t mirror;
+  // Server process that owns this mapping. Replica-ring followers use it as a
+  // liveness check; it also distinguishes a recreated mapping whose normal-file
+  // inode did not change. Immutable after magic is published.
+  std::uint32_t owner_pid;
   // Each index on its own kIndexLine: the producer writes one, the consumer the
   // other, and they must not share a line (or an Apple 128-byte prefetch pair)
   // or every publish bounces the cache.
@@ -774,6 +778,9 @@ class Mapping {
     h->epoch = 0;
     h->epoch_ack = 0;
     h->mirror = m.mirror_ ? 1u : 0u;
+    std::atomic_ref<std::uint32_t>(h->owner_pid)
+        .store(static_cast<std::uint32_t>(::getpid()),
+               std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->sq_head).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->sq_tail).store(0, std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(h->cq_head).store(0, std::memory_order_relaxed);

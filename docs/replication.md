@@ -4,7 +4,7 @@ Goblin Core separates live replication from durable history. `GOBLIN.FIREHOSE`
 streams writes directly from one Goblin server to another over any supported
 transport. Kafka owns the durable log, and native snapshots provide compact
 restart points. A replica can combine all three: load a snapshot, replay Kafka,
-and hand off to a firehose without opening its client listeners in between.
+and hand off to a firehose without exposing an unready replica as healthy.
 
 ## Configure an upstream
 
@@ -136,8 +136,15 @@ Startup proceeds in this order:
    hello.
 7. Apply the buffered firehose suffix. Any overlap already applied from Kafka
    is skipped by logical offset.
-8. Close the Kafka consumer, make the firehose the sole live input, and only
-   then open client listeners.
+8. Close the Kafka consumer, make the firehose the sole live input, mark the
+   replica ready, and then open client listeners.
+
+If the upstream is unavailable at startup, Goblin opens its listeners in
+read-only, not-ready state after loading the snapshot and completing any Kafka
+startup replay it can perform. Connection attempts use a 250 ms bound and
+continue in the background with jittered exponential backoff. This lets an
+operator inspect or read the last durable state without advertising it as a
+current serving replica.
 
 The inclusive Kafka seek is intentional. A snapshot may capture a broker
 acknowledgement immediately before or after the corresponding state becomes
@@ -174,21 +181,44 @@ the startup handoff buffer on a replica and the output queue for each downstream
 firehose client. The default is 1 MiB. The requested size is always rounded up
 to a whole OS page and prefaulted.
 
-Goblin fails closed rather than silently diverging:
+Goblin fails closed rather than silently diverging. Losing a live upstream
+makes the replica unready, disconnects every downstream firehose, and starts
+bounded reconnect attempts. Existing data remains readable and ordinary writes
+remain rejected. A chained replica must reconnect after its parent becomes live
+again; it cannot silently sit through mutations the parent replays from Kafka.
+Each chained replica therefore needs its own Kafka recovery configuration or a
+current snapshot when its parent advances while the chain is detached.
 
-- a lineage change or a gap in a live firehose stops the replica;
-- an invalid or failed replicated write stops the replica;
-- exhausting the startup handoff buffer aborts startup;
-- a downstream that fills its fixed output queue is disconnected;
-- losing the upstream after startup stops the replica process.
+On reconnect:
 
-Automatic reconnect and full-snapshot transfer are not implemented yet.
-`GOBLIN.LOAD` is rejected on a running replicated server; supply `--load` at
-startup so the lineage and offsets can be validated before listeners open.
+- an identical lineage and offset returns directly to the live firehose;
+- an upstream offset ahead of local state is recovered by seeking Kafka
+  inclusively from the last acknowledged broker offset, buffering the new
+  firehose suffix, and deduplicating the overlap by logical offset;
+- an offset gap without Kafka, an upstream behind local state, or a different
+  lineage leaves the replica degraded and not ready;
+- an invalid replicated write, an exhausted handoff buffer, or a stalled Kafka
+  replay abandons that attempt and retries without applying an unverified gap;
+- a downstream that fills its fixed output queue is disconnected.
+
+Full-snapshot transfer is not implemented. A lineage change therefore requires
+an operator-supplied snapshot from the new lineage. `GOBLIN.LOAD` is rejected on
+a running replicated server; restart with `--load` so the durable boundary is
+validated before the replica can become ready.
 
 ## Observe the role
 
-`ROLE` reports `master` for a primary and `slave` plus the upstream transport
-description and current logical offset for a replica. `INFO` exposes `role`,
-`master_replid`, `master_repl_offset`, and `kafka_acknowledged_offset`. The last
-field is `-1` until a Kafka broker acknowledgement is available.
+`ROLE` reports `master` for a primary and `slave` plus the upstream transport,
+link state, and current logical offset for a replica. `INFO` exposes the durable
+`master_replid`, `master_repl_offset`, and `kafka_acknowledged_offset` plus:
+
+- `goblin_ready`, `master_link_status`, and `replica_state`;
+- `master_sync_in_progress`, `slave_repl_offset`, and
+  `upstream_repl_offset`;
+- `replica_lag` (`-1` while the upstream offset is unknown);
+- reconnect attempt/success counters, seconds since upstream I/O, and
+  `replica_last_error`.
+
+The acknowledged Kafka offset remains `-1` until a broker acknowledgement is
+available. Readiness is `1` for a primary and only for a replica in `live`
+state.

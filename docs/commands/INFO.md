@@ -29,10 +29,22 @@ the full payload.
 | `master_replid` | the 128-bit replication lineage ID, rendered as 32 hexadecimal digits |
 | `master_repl_offset` | highest logical mutation offset represented by this server |
 | `kafka_acknowledged_offset` | last broker offset acknowledged by Kafka and eligible for inclusive snapshot recovery; `-1` until one is known |
+| `goblin_ready` | `1` for a primary or live replica; `0` while a replica is connecting, replaying, or degraded |
+| `master_link_status` | replica upstream link: `up` only after a complete handoff, otherwise `down` |
+| `master_sync_in_progress` | `1` while Kafka replay or buffered-firehose handoff is active |
+| `replica_state` | `connecting`, `reconnecting`, `replaying_kafka`, `buffering_firehose`, `live`, or `degraded` |
+| `slave_repl_offset` | replica's locally applied logical offset |
+| `upstream_repl_offset` | latest offset observed in an upstream hello or firehose batch |
+| `replica_lag` | known upstream-minus-local logical offset; `-1` when disconnected before a newer upstream offset is known |
+| `replica_reconnect_attempts` | connection attempts made after startup lost or could not establish the source |
+| `replica_successful_reconnects` | reconnects that completed a safe handoff and returned to live state |
+| `master_last_io_seconds_ago` | seconds since a successful upstream handshake or frame; `-1` before either occurs |
+| `replica_last_error` | most recent connection, lineage, replay, buffering, or apply failure; empty while live |
 
 The logical and Kafka offsets are different coordinate systems. See [Firehose
 replication and Kafka recovery](../replication.md) before using them in restart
-automation.
+automation. The replica-only fields are omitted on a primary except for
+`goblin_ready`, which is always present.
 
 ## `# Memory`
 

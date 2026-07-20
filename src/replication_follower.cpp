@@ -7,10 +7,13 @@
 
 #include <chrono>
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 
 #ifdef GOBLIN_HAS_TLS
 #include <arpa/inet.h>
@@ -40,9 +43,10 @@ class ReplicaTlsSocket {
   }
 
   [[nodiscard]] static std::unique_ptr<ReplicaTlsSocket> open(
-      const ReplicaTcpConfig& source, std::string& error) {
+      const ReplicaTcpConfig& source, std::chrono::milliseconds timeout,
+      std::string& error) {
     auto plain = SocketSbeTransport::open(
-        SbeSocketEndpoint::tcp(source.address, source.port), 5s, 64 * 1024,
+        SbeSocketEndpoint::tcp(source.address, source.port), timeout, 64 * 1024,
         &error);
     if (!plain) return nullptr;
 
@@ -97,7 +101,7 @@ class ReplicaTlsSocket {
       }
     }
 
-    const auto deadline = Clock::now() + 5s;
+    const auto deadline = Clock::now() + timeout;
     for (;;) {
       ERR_clear_error();
       const int connected = SSL_connect(result->ssl_);
@@ -224,6 +228,21 @@ class ReplicaTlsSocket {
 
 }  // namespace
 
+std::string describe_replica_source(const ReplicaSourceConfig& config) {
+  if (const auto* source = std::get_if<ReplicaRingConfig>(&config)) {
+    return "ring " + source->path;
+  }
+  if (const auto* source = std::get_if<ReplicaUdsConfig>(&config)) {
+    return "Unix socket " + source->path;
+  }
+  if (const auto* source = std::get_if<ReplicaTcpConfig>(&config)) {
+    return std::string(source->tls ? "TLS TCP " : "TCP ") + source->address +
+           ':' + std::to_string(source->port);
+  }
+  const auto& source = std::get<ReplicaRdmaConfig>(config);
+  return "RDMA " + source.address + ':' + std::to_string(source.port);
+}
+
 struct ReplicationFollowerRuntime::Impl {
   std::unique_ptr<ring::RingClient> ring_client;
   std::unique_ptr<SocketSbeTransport> socket_client;
@@ -236,18 +255,26 @@ struct ReplicationFollowerRuntime::Impl {
   detail::UnsolicitedOutputQueue buffered;
   std::string socket_pending;
   std::string description;
+  std::string ring_path;
   FirehoseHello hello;
   std::uint64_t next_buffer_sequence{1};
+  std::uint64_t ring_epoch{0};
+  dev_t ring_device{0};
+  ino_t ring_inode{0};
+  pid_t ring_owner_pid{-1};
+  Clock::time_point next_ring_identity_check{};
+  std::chrono::milliseconds request_timeout{5s};
 
-  explicit Impl(std::size_t buffer_bytes) : buffered(buffer_bytes) {}
+  Impl(std::size_t buffer_bytes, std::chrono::milliseconds timeout)
+      : buffered(buffer_bytes), request_timeout(timeout) {}
 
   void send(std::string_view bytes) {
     if (ring_client) {
-      ring_client->send_raw(bytes);
+      ring_client->send_raw(bytes, request_timeout);
       return;
     }
     if (socket_client) {
-      const auto deadline = Clock::now() + 5s;
+      const auto deadline = Clock::now() + request_timeout;
       if (!socket_client->send(bytes, [&] { return Clock::now() >= deadline; })) {
         throw std::runtime_error("firehose request timed out");
       }
@@ -255,7 +282,7 @@ struct ReplicationFollowerRuntime::Impl {
     }
 #ifdef GOBLIN_HAS_TLS
     if (tls_client) {
-      const auto deadline = Clock::now() + 5s;
+      const auto deadline = Clock::now() + request_timeout;
       if (!tls_client->send(bytes, [&] { return Clock::now() >= deadline; })) {
         throw std::runtime_error("firehose TLS request timed out");
       }
@@ -263,7 +290,7 @@ struct ReplicationFollowerRuntime::Impl {
     }
 #endif
 #ifdef GOBLIN_HAS_RDMA
-    rdma_client->send_raw(bytes);
+    rdma_client->send_raw(bytes, request_timeout);
 #else
     throw std::runtime_error("RDMA replication is unavailable in this build");
 #endif
@@ -299,7 +326,29 @@ struct ReplicationFollowerRuntime::Impl {
   }
 
   [[nodiscard]] std::optional<std::string> try_read() {
-    if (ring_client) return ring_client->try_read_reply();
+    if (ring_client) {
+      const auto now = Clock::now();
+      if (now >= next_ring_identity_check) {
+        struct stat current {};
+        if (::stat(ring_path.c_str(), &current) != 0 ||
+            current.st_dev != ring_device || current.st_ino != ring_inode) {
+          throw std::runtime_error("upstream ring was removed or replaced");
+        }
+        const auto& mapping = ring_client->mapping();
+        const auto owner = static_cast<pid_t>(
+            std::atomic_ref<std::uint32_t>(mapping.header()->owner_pid)
+                .load(std::memory_order_acquire));
+        if (owner <= 0 || owner != ring_owner_pid ||
+            mapping.requested_epoch() != ring_epoch) {
+          throw std::runtime_error("upstream ring was recreated or reassigned");
+        }
+        if (::kill(owner, 0) != 0 && errno == ESRCH) {
+          throw std::runtime_error("upstream ring owner exited");
+        }
+        next_ring_identity_check = now + 250ms;
+      }
+      return ring_client->try_read_reply();
+    }
     if (socket_client
 #ifdef GOBLIN_HAS_TLS
         || tls_client
@@ -345,21 +394,35 @@ struct ReplicationFollowerRuntime::Impl {
 
 ReplicationFollowerRuntime::ReplicationFollowerRuntime(
     const ReplicaSourceConfig& config, std::size_t buffer_bytes,
-    const ReplicaAuthConfig* auth)
-    : impl_(std::make_unique<Impl>(buffer_bytes)) {
+    const ReplicaAuthConfig* auth, std::chrono::milliseconds connect_timeout)
+    : impl_(std::make_unique<Impl>(buffer_bytes, connect_timeout)) {
   if (const auto* source = std::get_if<ReplicaRingConfig>(&config)) {
-    auto client = ring::RingClient::open(source->path.c_str(), 5s);
+    auto client = ring::RingClient::open(source->path.c_str(), connect_timeout);
     if (!client) {
       throw std::runtime_error("could not connect to upstream ring " +
                                source->path);
     }
     impl_->ring_client =
         std::make_unique<ring::RingClient>(std::move(*client));
+    struct stat identity {};
+    if (::stat(source->path.c_str(), &identity) != 0) {
+      throw std::runtime_error("could not stat upstream ring " + source->path);
+    }
+    impl_->ring_path = source->path;
+    impl_->ring_device = identity.st_dev;
+    impl_->ring_inode = identity.st_ino;
+    impl_->ring_owner_pid = static_cast<pid_t>(
+        std::atomic_ref<std::uint32_t>(
+            impl_->ring_client->mapping().header()->owner_pid)
+            .load(std::memory_order_acquire));
+    impl_->ring_epoch = impl_->ring_client->mapping().requested_epoch();
+    impl_->next_ring_identity_check = Clock::now() + 250ms;
     impl_->description = "ring " + source->path;
   } else if (const auto* source = std::get_if<ReplicaUdsConfig>(&config)) {
     std::string error;
     auto transport = SocketSbeTransport::open(
-        SbeSocketEndpoint::unix_domain(source->path), 5s, 64 * 1024, &error);
+        SbeSocketEndpoint::unix_domain(source->path), connect_timeout,
+        64 * 1024, &error);
     if (!transport) {
       throw std::runtime_error("could not connect to upstream Unix socket " +
                                source->path +
@@ -372,7 +435,8 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
     std::string error;
     if (source->tls) {
 #ifdef GOBLIN_HAS_TLS
-      impl_->tls_client = ReplicaTlsSocket::open(*source, error);
+      impl_->tls_client =
+          ReplicaTlsSocket::open(*source, connect_timeout, error);
       if (!impl_->tls_client) {
         throw std::runtime_error("could not connect to upstream TLS TCP " +
                                  source->address + ':' +
@@ -386,8 +450,8 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
 #endif
     } else {
       auto transport = SocketSbeTransport::open(
-          SbeSocketEndpoint::tcp(source->address, source->port), 5s, 64 * 1024,
-          &error);
+          SbeSocketEndpoint::tcp(source->address, source->port), connect_timeout,
+          64 * 1024, &error);
       if (!transport) {
         throw std::runtime_error("could not connect to upstream TCP " +
                                  source->address + ':' +
@@ -404,7 +468,7 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
     const auto& source = std::get<ReplicaRdmaConfig>(config);
     std::string error;
     auto client = rdma::RdmaClient::open(source.address, source.port,
-                                         source.bytes, 5s, &error);
+                                         source.bytes, connect_timeout, &error);
     if (!client) {
       throw std::runtime_error("could not connect to upstream RDMA " +
                                source.address + ':' +
@@ -423,7 +487,7 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
   if (auth != nullptr) {
     const std::string_view fields[]{"AUTH", auth->username, auth->password};
     impl_->send(ring::encode_command(fields));
-    const auto response = impl_->read(5s);
+    const auto response = impl_->read(connect_timeout);
     if (response != "+OK\r\n") {
       throw std::runtime_error("upstream firehose authentication failed");
     }
@@ -431,7 +495,7 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
 
   const std::string_view command[]{"GOBLIN.FIREHOSE"};
   impl_->send(ring::encode_command(command));
-  const auto response = impl_->read(5s);
+  const auto response = impl_->read(connect_timeout);
   std::string error;
   auto hello = decode_firehose_hello(response, error);
   if (!hello) {

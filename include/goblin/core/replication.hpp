@@ -40,6 +40,53 @@ struct ReplicationState {
   bool valid{false};
 };
 
+// Process-local follower health. Unlike ReplicationState, this is never saved:
+// it describes the current upstream connection and recovery attempt, not the
+// durable lineage boundary represented by the keyspace.
+enum class ReplicaSyncState : std::uint8_t {
+  disabled,
+  connecting,
+  replaying_kafka,
+  buffering_firehose,
+  live,
+  reconnecting,
+  degraded,
+};
+
+[[nodiscard]] constexpr std::string_view replica_sync_state_name(
+    ReplicaSyncState state) noexcept {
+  switch (state) {
+    case ReplicaSyncState::disabled:
+      return "disabled";
+    case ReplicaSyncState::connecting:
+      return "connecting";
+    case ReplicaSyncState::replaying_kafka:
+      return "replaying_kafka";
+    case ReplicaSyncState::buffering_firehose:
+      return "buffering_firehose";
+    case ReplicaSyncState::live:
+      return "live";
+    case ReplicaSyncState::reconnecting:
+      return "reconnecting";
+    case ReplicaSyncState::degraded:
+      return "degraded";
+  }
+  return "degraded";
+}
+
+struct ReplicaRuntimeStatus {
+  ReplicaSyncState state{ReplicaSyncState::disabled};
+  std::uint64_t upstream_offset{0};
+  std::uint64_t reconnect_attempts{0};
+  std::uint64_t successful_reconnects{0};
+  std::uint64_t last_io_unix_ms{0};
+  std::string last_error;
+
+  [[nodiscard]] bool ready() const noexcept {
+    return state == ReplicaSyncState::live;
+  }
+};
+
 struct ReplicationMutation {
   // Empty means the operation is ordered but cannot be compacted independently.
   std::string kafka_key;

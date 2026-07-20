@@ -241,7 +241,9 @@ an append-only write log or cluster mode. Point-in-time
 `GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts;
 [`GOBLIN.FIREHOSE`](docs/replication.md) provides live primary/replica streams;
 and [`--kafka`](docs/kafka.md) journals and replays the durable RESP2 mutation
-log, where logging is the product. A Redis `dump.rdb` can be imported to migrate
+log, where logging is the product. Replicas automatically reconnect; Kafka
+bridges any logged offset gap while `INFO` readiness stays down until the
+handoff is complete. A Redis `dump.rdb` can be imported to migrate
 sorted sets and lists (see "Migrating from Redis" below).
 
 Following Redis's single-namespace keyspace, a key holds at most one type. A

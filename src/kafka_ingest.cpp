@@ -791,6 +791,10 @@ bool KafkaIngestor::has_pending() const noexcept {
   return rd_kafka_queue_length(impl_->consumer_queue) != 0;
 }
 
+bool KafkaIngestor::startup_complete() const noexcept {
+  return impl_->startup_complete();
+}
+
 std::string_view KafkaIngestor::description() const noexcept {
   return impl_->description;
 }

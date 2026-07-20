@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -37,15 +38,20 @@ struct Child {
   pid_t pid{-1};
 
   explicit Child(pid_t value) : pid(value) {}
-  ~Child() {
+  ~Child() { stop(); }
+  void stop() {
     if (pid > 0) {
       (void)::kill(pid, SIGTERM);
       for (int attempt = 0; attempt < 100; ++attempt) {
-        if (::waitpid(pid, nullptr, WNOHANG) == pid) return;
+        if (::waitpid(pid, nullptr, WNOHANG) == pid) {
+          pid = -1;
+          return;
+        }
         std::this_thread::sleep_for(10ms);
       }
       (void)::kill(pid, SIGKILL);
       (void)::waitpid(pid, nullptr, 0);
+      pid = -1;
     }
   }
   Child(const Child&) = delete;
@@ -98,19 +104,27 @@ struct Child {
 }
 
 [[nodiscard]] std::uint16_t reserve_tcp_port() {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  assert(fd >= 0);
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = 0;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  assert(::bind(fd, reinterpret_cast<const sockaddr*>(&address),
-                sizeof(address)) == 0);
-  socklen_t size = sizeof(address);
-  assert(::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) == 0);
-  const auto port = ntohs(address.sin_port);
-  (void)::close(fd);
-  return port;
+  for (int attempt = 0; attempt < 32; ++attempt) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) continue;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&address),
+               sizeof(address)) == 0) {
+      socklen_t size = sizeof(address);
+      assert(::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &size) ==
+             0);
+      const auto port = ntohs(address.sin_port);
+      (void)::close(fd);
+      return port;
+    }
+    (void)::close(fd);
+    std::this_thread::sleep_for(1ms);
+  }
+  assert(false && "could not reserve a loopback TCP port");
+  return 0;
 }
 
 void send_command(int fd, std::initializer_list<std::string_view> fields) {
@@ -162,6 +176,16 @@ void wait_for_get(int fd, std::string& pending, std::string_view key,
   assert(false && "replicated value did not arrive");
 }
 
+void wait_for_info(int fd, std::string& pending, std::string_view expected) {
+  for (int attempt = 0; attempt < 1000; ++attempt) {
+    if (request(fd, pending, {"INFO"}).find(expected) != std::string::npos) {
+      return;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  assert(false && "replica INFO state did not arrive");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -178,18 +202,134 @@ int main(int argc, char** argv) {
   const std::string auth_path = "/tmp/goblin-repl-auth-" + suffix + ".conf";
   const std::string password_path =
       "/tmp/goblin-repl-password-" + suffix + ".txt";
-  for (const auto* path : {&primary_path, &replica_path, &chained_path}) {
+  const std::string snapshot_path =
+      "/tmp/goblin-repl-primary-" + suffix + ".gcsn";
+  const std::string late_primary_path =
+      "/tmp/goblin-repl-late-primary-" + suffix + ".sock";
+  const std::string early_replica_path =
+      "/tmp/goblin-repl-early-replica-" + suffix + ".sock";
+  const std::string ring_primary_path =
+      "/tmp/goblin-repl-ring-primary-" + suffix + ".sock";
+  const std::string ring_replica_path =
+      "/tmp/goblin-repl-ring-replica-" + suffix + ".sock";
+  const std::string ring_chained_path =
+      "/tmp/goblin-repl-ring-chain-" + suffix + ".sock";
+  const std::string replica_ring_path =
+      "/tmp/goblin-repl-upstream-" + suffix + ".ring";
+  const std::string chained_ring_path =
+      "/tmp/goblin-repl-downstream-" + suffix + ".ring";
+  const std::string ring_snapshot_path =
+      "/tmp/goblin-repl-ring-primary-" + suffix + ".gcsn";
+  for (const auto* path : {&primary_path, &replica_path, &chained_path,
+                           &late_primary_path, &early_replica_path,
+                           &ring_primary_path, &ring_replica_path,
+                           &ring_chained_path, &replica_ring_path,
+                           &chained_ring_path}) {
     (void)::unlink(path->c_str());
   }
   (void)::unlink(auth_path.c_str());
   (void)::unlink((auth_path + ".lock").c_str());
   (void)::unlink(password_path.c_str());
+  (void)::unlink(snapshot_path.c_str());
+  (void)::unlink(ring_snapshot_path.c_str());
   assert(upsert_auth_user(auth_path, "replicator", "secret") ==
          AuthUserUpdate::added);
   {
     std::ofstream password(password_path, std::ios::binary);
     password << "secret\n";
     assert(password.good());
+  }
+
+  {
+    const auto primary_port = std::to_string(reserve_tcp_port());
+    const auto replica_port = std::to_string(reserve_tcp_port());
+    auto early_replica = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", early_replica_path,
+                  "--port", replica_port, "--replica-uds",
+                  late_primary_path});
+    const int replica_client = wait_for_uds(early_replica_path);
+    assert(replica_client >= 0);
+    std::string replica_pending;
+    wait_for_info(replica_client, replica_pending, "goblin_ready:0\r\n");
+
+    auto late_primary = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", late_primary_path,
+                  "--port", primary_port});
+    const int primary_client = wait_for_uds(late_primary_path);
+    assert(primary_client >= 0);
+    std::string primary_pending;
+    wait_for_info(replica_client, replica_pending, "replica_state:live\r\n");
+    assert(request(primary_client, primary_pending,
+                   {"SET", "late-primary", "connected"}) == "+OK\r\n");
+    wait_for_get(replica_client, replica_pending, "late-primary", "connected");
+    (void)::close(primary_client);
+    (void)::close(replica_client);
+  }
+
+  {
+    const auto primary_port = std::to_string(reserve_tcp_port());
+    const auto replica_port = std::to_string(reserve_tcp_port());
+    const auto chained_port = std::to_string(reserve_tcp_port());
+    auto ring_replica = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", ring_replica_path,
+                  "--port", replica_port, "--replica-ring",
+                  replica_ring_path, "--ring", chained_ring_path, "64kb"});
+    const int replica_client = wait_for_uds(ring_replica_path);
+    assert(replica_client >= 0);
+    std::string replica_pending;
+    wait_for_info(replica_client, replica_pending, "goblin_ready:0\r\n");
+
+    auto ring_primary = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", ring_primary_path, "--port",
+                  primary_port, "--ring", replica_ring_path, "64kb"});
+    int primary_client = wait_for_uds(ring_primary_path);
+    assert(primary_client >= 0);
+    std::string primary_pending;
+    wait_for_info(replica_client, replica_pending, "replica_state:live\r\n");
+
+    auto ring_chained = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", ring_chained_path, "--port",
+                  chained_port, "--replica-ring", chained_ring_path});
+    const int chained_client = wait_for_uds(ring_chained_path);
+    assert(chained_client >= 0);
+    std::string chained_pending;
+    wait_for_info(chained_client, chained_pending, "replica_state:live\r\n");
+
+    assert(request(primary_client, primary_pending,
+                   {"SET", "ring-primary", "connected"}) == "+OK\r\n");
+    wait_for_get(replica_client, replica_pending, "ring-primary", "connected");
+    wait_for_get(chained_client, chained_pending, "ring-primary", "connected");
+
+    assert(request(primary_client, primary_pending,
+                   {"GOBLIN.SAVE", ring_snapshot_path, "NOACCEL"}) ==
+           "+Background saving started\r\n");
+    for (int attempt = 0; attempt < 1000 &&
+                          !std::filesystem::exists(ring_snapshot_path);
+         ++attempt) {
+      std::this_thread::sleep_for(10ms);
+    }
+    assert(std::filesystem::exists(ring_snapshot_path));
+    ring_primary.stop();
+    (void)::close(primary_client);
+    wait_for_info(replica_client, replica_pending, "goblin_ready:0\r\n");
+    wait_for_info(chained_client, chained_pending, "goblin_ready:0\r\n");
+
+    auto restarted_ring_primary = spawn_server(
+        argv[1], {"--enable-sbe", "--unixsocket", ring_primary_path, "--port",
+                  primary_port, "--ring", replica_ring_path, "64kb", "--load",
+                  ring_snapshot_path});
+    primary_client = wait_for_uds(ring_primary_path);
+    assert(primary_client >= 0);
+    wait_for_info(replica_client, replica_pending, "replica_state:live\r\n");
+    wait_for_info(chained_client, chained_pending, "replica_state:live\r\n");
+    assert(request(primary_client, primary_pending,
+                   {"SET", "ring-restart", "safe"}) == "+OK\r\n");
+    wait_for_get(replica_client, replica_pending, "ring-restart", "safe");
+    wait_for_get(chained_client, chained_pending, "ring-restart", "safe");
+
+    (void)::close(primary_client);
+    (void)::close(chained_client);
+    (void)::close(replica_client);
   }
 
   {
@@ -306,18 +446,68 @@ int main(int argc, char** argv) {
     assert(request(chained_client, chained_pending, {"ROLE"})
                .find("$5\r\nslave\r\n") != std::string::npos);
 
+    const auto live_info = request(replica_client, replica_pending, {"INFO"});
+    assert(live_info.find("goblin_ready:1\r\n") != std::string::npos);
+    assert(live_info.find("replica_state:live\r\n") != std::string::npos);
+
+    // Restarting an upstream at the exact durable offset is gap-free without
+    // Kafka. The direct replica remains readable but advertises not-ready while
+    // reconnecting. Its chained subscriber is disconnected and independently
+    // reconnects, so it cannot silently miss a recovery interval.
+    assert(request(primary_client, primary_pending,
+                   {"GOBLIN.SAVE", snapshot_path, "NOACCEL"}) ==
+           "+Background saving started\r\n");
+    for (int attempt = 0; attempt < 1000 &&
+                          !std::filesystem::exists(snapshot_path);
+         ++attempt) {
+      std::this_thread::sleep_for(10ms);
+    }
+    assert(std::filesystem::exists(snapshot_path));
+    primary.stop();
+    (void)::close(primary_client);
+    wait_for_info(replica_client, replica_pending, "goblin_ready:0\r\n");
+    assert(request(replica_client, replica_pending, {"GET", "alpha"}) ==
+           "$3\r\none\r\n");
+
+    auto restarted_primary = spawn_server(
+        argv[1], {"--enable-sbe", "--auth-file", auth_path, "--unixsocket",
+                  primary_path, "--port", primary_port, "--load",
+                  snapshot_path});
+    const int restarted_primary_client = wait_for_uds(primary_path);
+    assert(restarted_primary_client >= 0);
+    std::string restarted_primary_pending;
+    assert(request(restarted_primary_client, restarted_primary_pending,
+                   {"AUTH", "replicator", "secret"}) == "+OK\r\n");
+    wait_for_info(replica_client, replica_pending, "replica_state:live\r\n");
+    wait_for_info(chained_client, chained_pending, "replica_state:live\r\n");
+    const auto recovered_info =
+        request(replica_client, replica_pending, {"INFO"});
+    assert(recovered_info.find("replica_successful_reconnects:1\r\n") !=
+           std::string::npos);
+
+    assert(request(restarted_primary_client, restarted_primary_pending,
+                   {"SET", "after-restart", "safe"}) == "+OK\r\n");
+    wait_for_get(replica_client, replica_pending, "after-restart", "safe");
+    wait_for_get(chained_client, chained_pending, "after-restart", "safe");
+
     (void)::close(observer);
+    (void)::close(restarted_primary_client);
     (void)::close(chained_client);
     (void)::close(replica_client);
-    (void)::close(primary_client);
   }
 
-  for (const auto* path : {&primary_path, &replica_path, &chained_path}) {
+  for (const auto* path : {&primary_path, &replica_path, &chained_path,
+                           &late_primary_path, &early_replica_path,
+                           &ring_primary_path, &ring_replica_path,
+                           &ring_chained_path, &replica_ring_path,
+                           &chained_ring_path}) {
     (void)::unlink(path->c_str());
   }
   (void)::unlink(auth_path.c_str());
   (void)::unlink((auth_path + ".lock").c_str());
   (void)::unlink(password_path.c_str());
+  (void)::unlink(snapshot_path.c_str());
+  (void)::unlink(ring_snapshot_path.c_str());
   std::cout << "Primary, chained replica, transaction, and SBE replication OK\n";
   return 0;
 }

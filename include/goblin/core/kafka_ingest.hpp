@@ -92,6 +92,10 @@ class KafkaIngestor {
 
   [[nodiscard]] int notification_fd() const noexcept;
   [[nodiscard]] bool has_pending() const noexcept;
+  // True after this consumer has advanced through every partition high-water
+  // mark captured at connect time. Runtime replica recovery uses this to stay
+  // nonblocking while it replays the durable gap behind a live firehose buffer.
+  [[nodiscard]] bool startup_complete() const noexcept;
   [[nodiscard]] std::string_view description() const noexcept;
 
  private:

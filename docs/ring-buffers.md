@@ -225,6 +225,10 @@ drains abandoned SQ/CQ data and resets protocol state. See the
   clients.
 - **The server creates the ring files; start it first.** The client opens an
   existing, initialized file (and retries briefly to absorb a startup race).
+- **The header is versioned.** Ring clients and servers must use the same Goblin
+  Core release. The header records the owning server process so replica followers
+  stop reporting ready when that process exits, even if a normal ring file remains
+  mapped at the same inode.
 - **Shared-memory rings are a co-located transport.** The client and server must
   share memory. Across machines, use the [polled RDMA ring](rdma-rings.md) or a
   socket interface.

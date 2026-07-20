@@ -130,6 +130,12 @@ firehose hello; overlapping live frames are skipped by logical offset, the
 Kafka consumer closes, and the firehose becomes the sole upstream before client
 listeners open.
 
+The same handoff runs after a live firehose disconnect. The replica becomes
+not-ready, reconnects upstream, and creates a fresh inclusive Kafka consumer
+only when the new hello is ahead of local state. Kafka closes again after the
+target and buffered suffix are applied. An exact-offset reconnect does not need
+Kafka; a positive gap cannot be bridged without it.
+
 ## Runtime behavior
 
 librdkafka fetches on its own I/O threads, but those threads never touch the
@@ -153,8 +159,10 @@ true for replicas of replicas as well: only the origin primary owns the durable
 journal.
 
 Transient broker and leader changes are left to librdkafka's reconnect logic.
-Permanent consumer errors and invalid write records stop serving with a nonzero
-exit status.
+On a primary, permanent Kafka errors and invalid write records stop the process
+with a nonzero exit status rather than allow unjournaled serving state. During
+replica recovery, they instead leave the read-only replica degraded and
+not-ready while a fresh firehose/Kafka handoff is retried.
 
 ## Library and license
 
