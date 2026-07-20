@@ -204,14 +204,18 @@ git diff --check
 git rev-parse HEAD
 ```
 
-Export that commit into the shared home, then extract and build it under
-`/mnt/local`. Keeping the archive name tied to the short commit makes the
-running source unambiguous without compiling on NFS.
+Export that commit on the development workstation, copy the archive into the
+shared home, then extract and build it under `/mnt/local`. Keeping the archive
+name tied to the short commit makes the running source unambiguous without
+compiling on NFS.
 
 ```sh
 git archive --format=tar.gz \
   --prefix=goblin-core-<commit>/ \
-  --output=/home/adam/goblin-core-<commit>.tar.gz HEAD
+  --output=/tmp/goblin-core-<commit>.tar.gz HEAD
+scp /tmp/goblin-core-<commit>.tar.gz thunder:/home/adam/
+
+# The remaining commands run on thunder.
 tar -xzf /home/adam/goblin-core-<commit>.tar.gz -C /mnt/local
 
 /home/adam/opt/cmake-3.28.6-linux-x86_64/bin/cmake \
@@ -224,12 +228,23 @@ tar -xzf /home/adam/goblin-core-<commit>.tar.gz -C /mnt/local
   -DGOBLIN_CORE_ARCH=native \
   -DGOBLIN_CORE_ENABLE_KAFKA=ON \
   -DGOBLIN_CORE_ENABLE_RDMA=ON \
+  -DGOBLIN_CORE_STATIC_GNU_RUNTIME=ON \
   -DGOBLIN_CORE_BUILD_TESTS=ON \
   -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF \
   -DGOBLIN_CORE_BUILD_HTML_DOCS=OFF
 
 /home/adam/opt/cmake-3.28.6-linux-x86_64/bin/cmake \
   --build /mnt/local/goblin-core-build-<commit> --parallel 24
+```
+
+Ubuntu 22.04's system `libstdc++` is older than the runtime required by GCC
+16. `GOBLIN_CORE_STATIC_GNU_RUNTIME` is on by default and embeds `libstdc++`
+and `libgcc` in each C++ executable. Keep glibc, OpenSSL, and the RDMA provider
+libraries dynamic, then verify that the binary has no dependency on either GCC
+runtime:
+
+```sh
+ldd /mnt/local/goblin-core-build-<commit>/goblin-core
 ```
 
 Run at least the Kafka unit test before starting the server:

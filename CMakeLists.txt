@@ -35,6 +35,16 @@ option(GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS
   OFF)
 
 if(GOBLIN_CORE_STATIC_GNU_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # CMake propagates the C compiler's implicit gcc_s entry when C-only static
+  # libraries (notably librdkafka) are linked into a C++ executable. That
+  # explicit entry defeats -static-libgcc, so leave the GCC driver responsible
+  # for selecting its runtime after removing the propagated duplicate.
+  foreach(GOBLIN_GCC_SHARED_RUNTIME gcc_s gcc_s_asneeded)
+    list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES
+      "${GOBLIN_GCC_SHARED_RUNTIME}")
+    list(REMOVE_ITEM CMAKE_CXX_IMPLICIT_LINK_LIBRARIES
+      "${GOBLIN_GCC_SHARED_RUNTIME}")
+  endforeach()
   add_link_options(
     "$<$<LINK_LANGUAGE:CXX>:-static-libstdc++>"
     "$<$<LINK_LANGUAGE:CXX>:-static-libgcc>")
