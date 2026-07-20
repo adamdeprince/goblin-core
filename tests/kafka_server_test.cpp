@@ -223,7 +223,9 @@ int main(int argc, char** argv) {
   const std::string snapshot =
       "/tmp/goblin-kafka-test-" + std::to_string(::getpid()) + ".gcsn";
   const std::string recovery_snapshot = snapshot + ".recovery";
+  const std::string replica_socket = socket + ".replica";
   (void)::unlink(socket.c_str());
+  (void)::unlink(replica_socket.c_str());
   (void)::unlink(snapshot.c_str());
   (void)::unlink(recovery_snapshot.c_str());
   Producer producer(argv[2], argv[3]);
@@ -338,9 +340,60 @@ int main(int argc, char** argv) {
     ::close(client);
   }
 
+  // Recover both sides from the same snapshot/Kafka boundary. The replica
+  // connects its firehose first, catches Kafka up to the hello offset, and then
+  // must receive the next primary write over the live stream.
   (void)::unlink(socket.c_str());
+  {
+    const auto primary_port = goblin::test::reserve_loopback_tcp_port();
+    const auto replica_port = goblin::test::reserve_loopback_tcp_port();
+    assert(primary_port != 0 && replica_port != 0 &&
+           primary_port != replica_port);
+    auto primary = spawn_server(
+        argv[1], {"--uds-listen", socket, "--port",
+                  std::to_string(primary_port), "--load", recovery_snapshot,
+                  "--kafka", connection});
+    const int primary_client = wait_for_server(socket);
+    assert(primary_client >= 0);
+
+    auto replica = spawn_server(
+        argv[1], {"--uds-listen", replica_socket, "--port",
+                  std::to_string(replica_port), "--load", recovery_snapshot,
+                  "--kafka", connection, "--replica-uds", socket});
+    const int replica_client = wait_for_server(replica_socket);
+    assert(replica_client >= 0);
+
+    std::string primary_pending;
+    std::string replica_pending;
+    send_command(replica_client, {"GET", "cutoff-key"});
+    assert(read_reply(replica_client, replica_pending) ==
+           "$14\r\nafter-snapshot\r\n");
+    send_command(replica_client, {"ROLE"});
+    assert(read_reply(replica_client, replica_pending).find("Unix socket") !=
+           std::string::npos);
+
+    send_command(primary_client, {"SET", "after-handoff", "from-firehose"});
+    assert(read_reply(primary_client, primary_pending) == "+OK\r\n");
+    bool observed = false;
+    for (int attempt = 0; attempt < 500 && !observed; ++attempt) {
+      send_command(replica_client, {"GET", "after-handoff"});
+      observed = read_reply(replica_client, replica_pending) ==
+                 "$13\r\nfrom-firehose\r\n";
+      if (!observed) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(observed);
+    send_command(replica_client, {"SET", "replica-write", "rejected"});
+    assert(read_reply(replica_client, replica_pending).starts_with(
+        "-READONLY "));
+
+    ::close(replica_client);
+    ::close(primary_client);
+  }
+
+  (void)::unlink(socket.c_str());
+  (void)::unlink(replica_socket.c_str());
   (void)::unlink(snapshot.c_str());
   (void)::unlink(recovery_snapshot.c_str());
   std::cout << "Kafka journal, lineage filtering, inclusive snapshot recovery, "
-               "and live RESP2 ingestion OK\n";
+               "live handoff, and RESP2 ingestion OK\n";
 }
