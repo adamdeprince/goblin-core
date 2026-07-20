@@ -4,6 +4,9 @@ This is the deployment record for the single-node Goblin Core and Redpanda
 test installation on `thunder`. Redpanda owns the durable write log; Goblin
 Core consumes and produces canonical RESP2 mutations through Kafka.
 
+This procedure was verified on July 20, 2026 with Goblin Core revision
+`6791e30` and Redpanda `26.1.13`.
+
 The deployed LAN endpoints are:
 
 - `thunder`: `192.168.1.49/24`
@@ -187,7 +190,8 @@ RDMA build:
 
 ```sh
 sudo apt-get install -y \
-  libsodium-dev liblz4-dev libssl-dev libibverbs-dev librdmacm-dev ninja-build
+  libsodium-dev liblz4-dev libssl-dev libibverbs-dev librdmacm-dev ninja-build \
+  redis-tools
 ```
 
 Kafka support uses the BSD-2-Clause librdkafka sources already vendored in the
@@ -240,19 +244,26 @@ tar -xzf /home/adam/goblin-core-<commit>.tar.gz -C /mnt/local
 Ubuntu 22.04's system `libstdc++` is older than the runtime required by GCC
 16. `GOBLIN_CORE_STATIC_GNU_RUNTIME` is on by default and embeds `libstdc++`
 and `libgcc` in each C++ executable. Keep glibc, OpenSSL, and the RDMA provider
-libraries dynamic, then verify that the binary has no dependency on either GCC
-runtime:
+libraries dynamic, then verify that neither GCC runtime appears in the binary's
+direct dynamic dependencies:
 
 ```sh
-ldd /mnt/local/goblin-core-build-<commit>/goblin-core
+readelf -d /mnt/local/goblin-core-build-<commit>/goblin-core
 ```
 
-Run at least the Kafka unit test before starting the server:
+Run the Kafka ingest, replication-state, and plaintext socket replication tests
+before starting the server:
 
 ```sh
 ctest --test-dir /mnt/local/goblin-core-build-<commit> \
-  --output-on-failure -R kafka
+  --output-on-failure \
+  -R '^(goblin_core_kafka_ingest|goblin_core_replication|goblin_core_replication_socket)$'
 ```
+
+The TLS replication test opens `[::]`. On `thunder`, that wildcard spans
+Ethernet on NUMA node 0, InfiniBand on node 1, and Tailscale with unknown NUMA
+placement. Goblin correctly refuses to guess a slice, so the current test
+harness cannot start that server until it can pass an explicit `--numa` choice.
 
 ## 6. Create the replication topic and run Goblin Core
 
@@ -264,13 +275,35 @@ rpk -X brokers=192.168.1.49:9092 topic create goblin-core-replication \
   --partitions 1 --replicas 1
 ```
 
-Start the committed binary with Redpanda's static LAN address:
+`thunder` has network hardware on multiple NUMA nodes. Select `eno1` explicitly;
+this puts Goblin on node 0 with its Ethernet path to Redpanda. The verified
+deployment used a transient systemd unit so systemd could raise the memlock
+limit while still running Goblin as `adam`:
 
 ```sh
-/mnt/local/goblin-core-build-<commit>/goblin-core \
-  --port 6379 \
-  --kafka 'kafka://192.168.1.49:9092/goblin-core-replication'
+sudo systemd-run \
+  --unit=goblin-core-thunder \
+  --description='Goblin Core Kafka replication smoke deployment' \
+  --property=User=adam \
+  --property=WorkingDirectory=/mnt/local \
+  --property=Restart=on-failure \
+  --property=RestartSec=1s \
+  --property=LimitMEMLOCK=infinity \
+  /mnt/local/goblin-core-build-<commit>/goblin-core \
+    --port 6379 \
+    --numa eno1 \
+    --kafka 'kafka://192.168.1.49:9092/goblin-core-replication'
+
+systemctl status goblin-core-thunder.service --no-pager --full
+redis-cli -h 127.0.0.1 -p 6379 PING
+
+pid=$(systemctl show goblin-core-thunder.service --property=MainPID --value)
+grep '^VmLck:' /proc/"$pid"/status
 ```
+
+This unit lives under `/run/systemd/transient` and is not enabled across a
+reboot. Convert the same command and limits into a permanent unit before using
+this as a standing service.
 
 Only the origin primary writes the Kafka journal. A Goblin process configured
 with an upstream firehose consumes Kafka for recovery but does not produce a
@@ -286,14 +319,25 @@ redis-cli -h 127.0.0.1 -p 6379 SET thunder:replication-smoke alive
 redis-cli -h 127.0.0.1 -p 6379 GET thunder:replication-smoke
 rpk -X brokers=192.168.1.49:9092 topic consume goblin-core-replication \
   --offset start --num 1 --format '%v\n'
+rpk -X brokers=192.168.1.49:9092 topic describe \
+  goblin-core-replication -p
 ```
 
 Finally, stop and restart Goblin without a snapshot. Its initial Kafka replay
-must finish before the RESP listener opens, and the value must be restored:
+must finish before the RESP listener opens, the value must be restored, and the
+high watermark must remain unchanged:
 
 ```sh
+sudo systemctl restart goblin-core-thunder.service
 redis-cli -h 127.0.0.1 -p 6379 GET thunder:replication-smoke
+rpk -X brokers=192.168.1.49:9092 topic describe \
+  goblin-core-replication -p
 ```
+
+The verified run consumed one canonical RESP2 `SET` record, restored `alive`
+after the restart, and kept partition 0's high watermark at `1`. Replay did not
+write a duplicate mutation back to Kafka. The running Goblin process reported
+about 469 MiB in `VmLck`, confirming that the systemd memlock limit took effect.
 
 For a stronger storage check, produce with `acks=all`, restart Redpanda, and
 consume the record again. That test was also used during this installation.
