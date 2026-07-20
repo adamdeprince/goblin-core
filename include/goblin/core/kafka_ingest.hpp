@@ -80,9 +80,12 @@ class KafkaIngestor {
       std::string& error);
 
   // Replay through the high-water marks captured during connect(). This is
-  // called before any Goblin listener is created.
+  // called before any Goblin listener is created. An optional observer lets a
+  // replica drain its already-connected live firehose into a bounded buffer
+  // while historical Kafka replay is in progress.
   [[nodiscard]] bool catch_up(Store& store, KafkaReplayStats& stats,
-                              std::string& error);
+                              std::string& error, void* observer_context = nullptr,
+                              bool (*observer)(void*, std::string&) = nullptr);
 
   // Nonblocking steady-state drain for the server event loop.
   [[nodiscard]] KafkaPollResult poll(Store& store, std::size_t max_records);

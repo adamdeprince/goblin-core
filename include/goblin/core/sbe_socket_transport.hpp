@@ -168,6 +168,7 @@ class SocketSbeTransport {
   [[nodiscard]] std::size_t buffer_size_hint() const noexcept {
     return buffer_size_;
   }
+  [[nodiscard]] int native_handle() const noexcept { return fd_; }
 
  private:
   SocketSbeTransport(int fd, std::size_t buffer_size)

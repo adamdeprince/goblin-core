@@ -307,6 +307,7 @@ std::string_view UPythonEngine::call_dispatch() {
       CommandExecutionOptions{
           .replication_context = nested_dispatch_.replication_context,
           .replicate_write = nested_dispatch_.replicate_write,
+          .read_only = nested_dispatch_.read_only,
           .nested_dispatch = nested_dispatch_});
   return call_reply_;
 }

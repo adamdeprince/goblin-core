@@ -124,7 +124,8 @@ namespace {
   s += "exasock_loaded:0\r\n";
 #endif
   s += "# Replication\r\n";
-  s += "role:master\r\n";
+  s += std::string("role:") + (store.replica_mode() ? "slave" : "master") +
+       "\r\n";
   s += "master_replid:" + store.replication_state().id.hex() + "\r\n";
   s += "master_repl_offset:" +
        std::to_string(store.replication_state().offset) + "\r\n";
@@ -282,7 +283,7 @@ void append_null_array(std::string& out, resp::Version version) {
 }
 
 void append_hello_response(std::string& out, resp::Version version,
-                           std::uint64_t connection_id) {
+                           std::uint64_t connection_id, bool replica) {
   constexpr std::size_t kFieldCount = 7;
   if (version == resp::Version::resp3) {
     resp::append_map_header(out, kFieldCount);
@@ -302,7 +303,7 @@ void append_hello_response(std::string& out, resp::Version version,
   resp::append_bulk_string(out, "id");
   resp::append_integer(out, static_cast<long long>(connection_id));
   append_string("mode", "standalone");
-  append_string("role", "master");
+  append_string("role", replica ? "slave" : "master");
   resp::append_bulk_string(out, "modules");
   resp::append_array_header(out, 0);
 }
@@ -2559,7 +2560,6 @@ bool command_mutates_store(CommandType type) noexcept {
     case CommandType::goblin_cad:
     case CommandType::goblin_caexpire:
     case CommandType::goblin_cas:
-    case CommandType::goblin_td_leaderboard_rescore:
     case CommandType::goblin_increx:
     case CommandType::goblin_zwindow:
     case CommandType::goblin_incrbound:
@@ -3146,6 +3146,18 @@ void execute_command_into(Store& store,
   const auto type =
       resolve_list_command(command.type, store.list_implementation());
   const auto version = response_version(options);
+  if (options.read_only &&
+      (command_mutates_store(type) || type == CommandType::goblin_load)) {
+    resp::append_error(
+        out, "READONLY You can't write against a read-only replica.");
+    return;
+  }
+  if (type == CommandType::goblin_load && options.replicate_write != nullptr) {
+    resp::append_error(
+        out,
+        "ERR GOBLIN.LOAD is disabled on a running replicated server; use --load at startup");
+    return;
+  }
   struct ReplicationGuard {
     Store& store;
     const Command& command;
@@ -3223,7 +3235,8 @@ void execute_command_into(Store& store,
     case CommandType::hello: {
       auto selected = version;
       if (command.args.empty()) {
-        append_hello_response(out, selected, options.connection_id);
+        append_hello_response(out, selected, options.connection_id,
+                              store.replica_mode());
         return;
       }
 
@@ -3276,7 +3289,8 @@ void execute_command_into(Store& store,
       if (saw_setname && options.client_name != nullptr) {
         options.client_name->assign(requested_name);
       }
-      append_hello_response(out, selected, options.connection_id);
+      append_hello_response(out, selected, options.connection_id,
+                            store.replica_mode());
       return;
     }
     case CommandType::command:
@@ -3425,6 +3439,17 @@ void execute_command_into(Store& store,
     case CommandType::role:
       if (options.render_role != nullptr) {
         options.render_role(options.replication_context, out, version);
+      } else if (store.replica_mode()) {
+        resp::append_array_header(out, 5);
+        resp::append_bulk_string(out, "slave");
+        resp::append_bulk_string(out, store.replication_upstream());
+        resp::append_integer(out, 0);
+        resp::append_bulk_string(out, "connected");
+        resp::append_integer(
+            out, static_cast<long long>(std::min<std::uint64_t>(
+                     store.replication_state().offset,
+                     static_cast<std::uint64_t>(
+                         std::numeric_limits<long long>::max()))));
       } else {
         resp::append_array_header(out, 3);
         resp::append_bulk_string(out, "master");

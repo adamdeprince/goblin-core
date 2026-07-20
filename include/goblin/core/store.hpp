@@ -1503,6 +1503,14 @@ class Store {
   void set_kafka_acknowledged_offset(std::int64_t offset) noexcept {
     replication_state_.kafka_acknowledged_offset = offset;
   }
+  void set_replica_mode(std::string upstream) {
+    replica_mode_ = true;
+    replication_upstream_ = std::move(upstream);
+  }
+  [[nodiscard]] bool replica_mode() const noexcept { return replica_mode_; }
+  [[nodiscard]] std::string_view replication_upstream() const noexcept {
+    return replication_upstream_;
+  }
 
   [[nodiscard]] long long zadd(std::string_view key, double score, std::string_view member);
   [[nodiscard]] ZAddResult zadd(std::string_view key,
@@ -2478,6 +2486,8 @@ class Store {
   TtlSet ttl_;
   StoreMutationObserver mutation_observer_{};
   ReplicationState replication_state_{};
+  bool replica_mode_{false};
+  std::string replication_upstream_;
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
   // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so

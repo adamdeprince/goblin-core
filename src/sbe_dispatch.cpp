@@ -785,6 +785,118 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
   }
 }
 
+[[nodiscard]] bool sbe_mutates_store(std::uint16_t tid) noexcept {
+  switch (tid) {
+    case kZAdd:
+    case kZIncrBy:
+    case kZPop:
+    case kZRem:
+    case kZRemRangeByScore:
+    case kSet:
+    case kGetSet:
+    case kSetNx:
+    case kGetDel:
+    case kAppend:
+    case kIncr:
+    case kDecr:
+    case kIncrBy:
+    case kDecrBy:
+    case kIncrByFloat:
+    case kDel:
+    case kExpire:
+    case kPExpire:
+    case kExpireAt:
+    case kPExpireAt:
+    case kPersist:
+    case kSetRange:
+    case kMSet:
+    case kLPush:
+    case kRPush:
+    case kLPop:
+    case kRPop:
+    case kLSet:
+    case kLTrim:
+    case kLRem:
+    case kLInsert:
+    case kHSet:
+    case kHSetNx:
+    case kHDel:
+    case kHIncrBy:
+    case kSAdd:
+    case kSRem:
+    case kSPop:
+    case kSMove:
+    case kSInterStore:
+    case kSUnionStore:
+    case kSDiffStore:
+    case kGoblinCad:
+    case kGoblinCaExpire:
+    case kGoblinCas:
+    case kGoblinIncrEx:
+    case kGoblinZWindow:
+    case kGoblinIncrBound:
+    case kGoblinDecrPos:
+    case kGoblinHCad:
+    case kGoblinHSetGt:
+    case kGoblinClaim:
+    case kGoblinLoad:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void replicate_sbe_command(const CommandExecutionOptions& options, Store& store,
+                           CommandType type, std::string_view name,
+                           std::span<const std::string_view> args) noexcept {
+  if (options.replicate_write == nullptr) return;
+  const Command command{.type = type, .name = name, .args = args};
+  options.replicate_write(options.replication_context, store, command,
+                          "+OK\r\n");
+}
+
+void replicate_sbe_string(const CommandExecutionOptions& options, Store& store,
+                          std::string_view key) noexcept {
+  const std::string_view args[]{key};
+  replicate_sbe_command(options, store, CommandType::set, "SET", args);
+}
+
+void replicate_sbe_ttl(const CommandExecutionOptions& options, Store& store,
+                       std::string_view key) noexcept {
+  const std::string_view args[]{key};
+  replicate_sbe_command(options, store, CommandType::persist, "PERSIST", args);
+}
+
+void replicate_sbe_hash_fields(
+    const CommandExecutionOptions& options, Store& store, std::string_view key,
+    std::span<const std::string_view> fields) noexcept {
+  for (const auto field : fields) {
+    const std::string_view args[]{key, field, {}};
+    replicate_sbe_command(options, store, CommandType::hset, "HSET", args);
+  }
+}
+
+void replicate_sbe_zset_members(
+    const CommandExecutionOptions& options, Store& store, std::string_view key,
+    std::span<const std::string_view> members) noexcept {
+  for (const auto member : members) {
+    const std::string_view args[]{key, "0", member};
+    replicate_sbe_command(options, store, CommandType::zadd, "ZADD", args);
+  }
+}
+
+void replicate_sbe_set_members(
+    const CommandExecutionOptions& options, Store& store, std::string_view key,
+    std::span<const std::string_view> members) noexcept {
+  if (members.empty()) return;
+  static thread_local std::vector<std::string_view> args;
+  args.clear();
+  args.reserve(members.size() + 1);
+  args.push_back(key);
+  args.insert(args.end(), members.begin(), members.end());
+  replicate_sbe_command(options, store, CommandType::sadd, "SADD", args);
+}
+
 // The key a type-specific request operates on, for the WRONGTYPE check. For every
 // guarded message except the five below, the key is the leading varData -- at
 // header + block, encoded as [uint32 length][bytes] (the varData composite) -- so it
@@ -949,6 +1061,17 @@ void eval_dispatch(const CommandExecutionOptions& o, std::uint8_t lang, ScriptOp
 void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
             std::uint16_t block_length, std::uint16_t version, std::string& out,
             const CommandExecutionOptions& options) {
+  if (options.read_only && sbe_mutates_store(tid)) {
+    reply_error(out, "READONLY",
+                "You can't write against a read-only replica.");
+    return;
+  }
+  if (tid == kGoblinLoad && options.replicate_write != nullptr) {
+    reply_error(
+        out, "ERR",
+        "GOBLIN.LOAD is disabled on a running replicated server; use --load at startup");
+    return;
+  }
   // Reject a command aimed at the wrong key type before it reaches a typed store
   // accessor (see sbe_requires_type). The five group-then-key messages carry the key
   // after their group, so they self-check inside their case with wrong_type().
@@ -1019,6 +1142,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         else reply_nil(out);
       } else {
         reply_int(out, (flags & kCh) != 0 ? result.changed : result.added);
+      }
+      if (!result.invalid_score) {
+        for (const auto& member : members) {
+          const std::string_view changed[]{member.member};
+          replicate_sbe_zset_members(options, store, key, changed);
+        }
       }
       break;
     }
@@ -1115,6 +1244,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "resulting score is not a number (NaN)");
       } else {
         reply_double(out, *result.increment_score);
+        const std::string_view changed[]{member};
+        replicate_sbe_zset_members(options, store, key, changed);
       }
       break;
     }
@@ -1216,8 +1347,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kErrNotInteger);
         break;
       }
+      const auto key = z.getKeyAsStringView();
       const auto popped =
-          store.zpop(z.getKeyAsStringView(), static_cast<std::size_t>(z.count()),
+          store.zpop(key, static_cast<std::size_t>(z.count()),
                      z.maximum() != 0);
       static thread_local std::vector<std::pair<std::string_view, double>> items;
       items.clear();
@@ -1226,6 +1358,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         items.emplace_back(item.member, item.score);
       }
       reply_scored_array(out, items);
+      for (const auto& item : popped) {
+        const std::string_view changed[]{item.member};
+        replicate_sbe_zset_members(options, store, key, changed);
+      }
       break;
     }
 
@@ -1296,6 +1432,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply<sbe::StatusReply>(out, [](sbe::StatusReply& r) {
           r.putStatus("OK", 2);
         });
+        replicate_sbe_string(options, store, key);
         break;
       }
       const auto now = store.now_ms();
@@ -1351,6 +1488,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       } else {
         reply_nil(out);
       }
+      if (condition_met) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1364,6 +1502,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         break;
       }
       reply_bulk_or_nil(out, store.get_set(key, value));
+      replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1376,14 +1515,19 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, store.set_nx(key, value) ? 1 : 0);
+      const bool changed = store.set_nx(key, value);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) replicate_sbe_string(options, store, key);
       break;
     }
 
     case kGetDel: {
       sbe::GetDel g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      reply_bulk_or_nil(out, store.get_del(g.getKeyAsStringView()));
+      const auto key = g.getKeyAsStringView();
+      const auto removed = store.get_del(key);
+      reply_bulk_or_nil(out, removed);
+      if (removed) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1406,20 +1550,27 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         break;
       }
       reply_int(out, static_cast<long long>(*length));
+      replicate_sbe_string(options, store, key);
       break;
     }
 
     case kIncr: {
       sbe::Incr g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      reply_int_or_range_error(out, store.incr_by(g.getKeyAsStringView(), 1));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_by(key, 1);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
     case kDecr: {
       sbe::Decr g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      reply_int_or_range_error(out, store.incr_by(g.getKeyAsStringView(), -1));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_by(key, -1);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1427,7 +1578,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::IncrBy g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::int64_t delta = g.delta();
-      reply_int_or_range_error(out, store.incr_by(g.getKeyAsStringView(), delta));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_by(key, delta);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1439,7 +1593,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kErrNotInteger);  // negating LLONG_MIN overflows
         break;
       }
-      reply_int_or_range_error(out, store.incr_by(g.getKeyAsStringView(), -delta));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_by(key, -delta);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -1447,9 +1604,11 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::IncrByFloat g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const double delta = g.delta();
-      const auto result = store.incr_by_float(g.getKeyAsStringView(), delta);
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_by_float(key, delta);
       if (result) {
         reply_bulk(out, *result);  // formatted float, matches RESP
+        replicate_sbe_string(options, store, key);
       } else {
         reply_error(out, "ERR", kErrNotFloat);
       }
@@ -1459,13 +1618,19 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kDel: {
       sbe::Del d;
       d.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
+      static thread_local std::vector<std::string_view> removed_keys;
+      removed_keys.clear();
       long long removed = 0;
       auto& keys = d.keys();
       while (keys.hasNext()) {
         keys.next();
-        removed += store.del(keys.getKeyAsStringView()) ? 1 : 0;
+        const auto key = keys.getKeyAsStringView();
+        removed_keys.push_back(key);
+        removed += store.del(key) ? 1 : 0;
       }
       reply_int(out, removed);
+      replicate_sbe_command(options, store, CommandType::del, "DEL",
+                            removed_keys);
       break;
     }
 
@@ -1529,7 +1694,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const long long amount = e.amount();
       const unsigned flags = e.flags();
-      handle_expire(store, true, 1000, amount, flags, e.getKeyAsStringView(), out);
+      const auto key = e.getKeyAsStringView();
+      handle_expire(store, true, 1000, amount, flags, key, out);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
     case kPExpire: {
@@ -1537,7 +1704,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const long long amount = e.amount();
       const unsigned flags = e.flags();
-      handle_expire(store, true, 1, amount, flags, e.getKeyAsStringView(), out);
+      const auto key = e.getKeyAsStringView();
+      handle_expire(store, true, 1, amount, flags, key, out);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
     case kExpireAt: {
@@ -1545,7 +1714,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const long long amount = e.amount();
       const unsigned flags = e.flags();
-      handle_expire(store, false, 1000, amount, flags, e.getKeyAsStringView(), out);
+      const auto key = e.getKeyAsStringView();
+      handle_expire(store, false, 1000, amount, flags, key, out);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
     case kPExpireAt: {
@@ -1553,7 +1724,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       e.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const long long amount = e.amount();
       const unsigned flags = e.flags();
-      handle_expire(store, false, 1, amount, flags, e.getKeyAsStringView(), out);
+      const auto key = e.getKeyAsStringView();
+      handle_expire(store, false, 1, amount, flags, key, out);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
 
@@ -1574,7 +1747,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kPersist: {
       sbe::Persist p;
       p.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      reply_int(out, store.persist(p.getKeyAsStringView()) ? 1 : 0);
+      const auto key = p.getKeyAsStringView();
+      reply_int(out, store.persist(key) ? 1 : 0);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
 
@@ -1644,6 +1819,24 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
                               ? store.lpush(key, values, only_if_exists, implementation)
                               : store.rpush(key, values, only_if_exists, implementation);
       reply_int(out, length);
+      static thread_local std::vector<std::string_view> replication_args;
+      replication_args.clear();
+      replication_args.reserve(values.size() + 1);
+      replication_args.push_back(key);
+      replication_args.insert(replication_args.end(), values.begin(), values.end());
+      if (tid == kLPush) {
+        replicate_sbe_command(options, store,
+                              only_if_exists ? CommandType::lpushx
+                                             : CommandType::lpush,
+                              only_if_exists ? "LPUSHX" : "LPUSH",
+                              replication_args);
+      } else {
+        replicate_sbe_command(options, store,
+                              only_if_exists ? CommandType::rpushx
+                                             : CommandType::rpush,
+                              only_if_exists ? "RPUSHX" : "RPUSH",
+                              replication_args);
+      }
       break;
     }
 
@@ -1664,6 +1857,11 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       if (count == -1) {
         reply_bulk_or_nil(out, tid == kLPop ? store.lpop(key) : store.rpop(key));
+        const std::string_view args[]{key};
+        replicate_sbe_command(options, store,
+                              tid == kLPop ? CommandType::lpop
+                                           : CommandType::rpop,
+                              tid == kLPop ? "LPOP" : "RPOP", args);
         break;
       }
       if (count < 0) {
@@ -1678,6 +1876,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
                               ? store.lpop(key, static_cast<std::size_t>(count))
                               : store.rpop(key, static_cast<std::size_t>(count));
       reply_array(out, values);
+      const std::string count_text = std::to_string(count);
+      const std::string_view args[]{key, count_text};
+      replicate_sbe_command(options, store,
+                            tid == kLPop ? CommandType::lpop
+                                         : CommandType::rpop,
+                            tid == kLPop ? "LPOP" : "RPOP", args);
       break;
     }
 
@@ -1722,7 +1926,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      switch (store.lset(key, command.index(), value)) {
+      const auto result = store.lset(key, command.index(), value);
+      switch (result) {
         case Store::ListSetResult::Stored:
           reply_status(out, "OK");
           break;
@@ -1733,14 +1938,24 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
           reply_error(out, "ERR", "index out of range");
           break;
       }
+      if (result == Store::ListSetResult::Stored) {
+        const std::string index = std::to_string(command.index());
+        const std::string_view args[]{key, index, value};
+        replicate_sbe_command(options, store, CommandType::lset, "LSET", args);
+      }
       break;
     }
 
     case kLTrim: {
       sbe::LTrim command;
       command.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      store.ltrim(command.getKeyAsStringView(), command.start(), command.stop());
+      const auto key = command.getKeyAsStringView();
+      store.ltrim(key, command.start(), command.stop());
       reply_status(out, "OK");
+      const std::string start = std::to_string(command.start());
+      const std::string stop = std::to_string(command.stop());
+      const std::string_view args[]{key, start, stop};
+      replicate_sbe_command(options, store, CommandType::ltrim, "LTRIM", args);
       break;
     }
 
@@ -1750,6 +1965,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto key = command.getKeyAsStringView();
       const auto value = command.getValueAsStringView();
       reply_int(out, static_cast<long long>(store.lrem(key, command.count(), value)));
+      const std::string count = std::to_string(command.count());
+      const std::string_view args[]{key, count, value};
+      replicate_sbe_command(options, store, CommandType::lrem, "LREM", args);
       break;
     }
 
@@ -1763,7 +1981,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, store.linsert(key, command.before() != 0, pivot, value));
+      const bool before = command.before() != 0;
+      reply_int(out, store.linsert(key, before, pivot, value));
+      const std::string_view args[]{key, before ? "BEFORE" : "AFTER", pivot,
+                                    value};
+      replicate_sbe_command(options, store, CommandType::linsert, "LINSERT",
+                            args);
       break;
     }
 
@@ -1800,6 +2023,14 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       } else {
         reply_int(out, store.hset_many(key, entries));
       }
+      static thread_local std::vector<std::string_view> fields;
+      fields.clear();
+      fields.reserve(entries.size());
+      for (const auto& [field, value] : entries) {
+        (void)value;
+        fields.push_back(field);
+      }
+      replicate_sbe_hash_fields(options, store, key, fields);
       break;
     }
 
@@ -1814,7 +2045,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, store.hsetnx(key, field, value));
+      const bool changed = store.hsetnx(key, field, value);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) {
+        const std::string_view fields[]{field};
+        replicate_sbe_hash_fields(options, store, key, fields);
+      }
       break;
     }
 
@@ -1887,6 +2123,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = h.getKeyAsStringView();  // key trails the group
       if (wrong_type(store, KeyType::Hash, key, out)) break;
       reply_int(out, static_cast<long long>(store.hdel_many(key, fields)));
+      replicate_sbe_hash_fields(options, store, key, fields);
       break;
     }
 
@@ -1964,6 +2201,8 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto result = store.hincrby(key, field, delta);
       if (result) {
         reply_int(out, *result);
+        const std::string_view fields[]{field};
+        replicate_sbe_hash_fields(options, store, key, fields);
       } else {
         reply_error(out, "ERR", "hash value is not an integer or out of range");
       }
@@ -2026,6 +2265,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = z.getKeyAsStringView();  // key trails the group
       if (wrong_type(store, KeyType::Zset, key, out)) break;
       reply_int(out, store.zrem(key, std::span<const std::string_view>(members)));
+      replicate_sbe_zset_members(options, store, key, members);
       break;
     }
 
@@ -2038,6 +2278,13 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const bool max_excl = z.maxExclusive() != 0;
       const std::string_view key = z.getKeyAsStringView();
       reply_int(out, store.zremrangebyscore(key, min, min_excl, max, max_excl));
+      std::string min_text = format_score(min);
+      std::string max_text = format_score(max);
+      if (min_excl) min_text.insert(min_text.begin(), '(');
+      if (max_excl) max_text.insert(max_text.begin(), '(');
+      const std::string_view args[]{key, min_text, max_text};
+      replicate_sbe_command(options, store, CommandType::zremrangebyscore,
+                            "ZREMRANGEBYSCORE", args);
       break;
     }
 
@@ -2063,6 +2310,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto len = store.setrange(key, static_cast<std::size_t>(offset), value);
       if (len) {
         reply_int(out, static_cast<long long>(*len));
+        replicate_sbe_string(options, store, key);
       } else {
         reply_error(out, "ERR", kValueTooLargeMsg);
       }
@@ -2089,6 +2337,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       for (const auto& [k, v] : pairs) store.set(k, v);
       reply_status(out, "OK");
+      for (const auto& [key, value] : pairs) {
+        (void)value;
+        replicate_sbe_string(options, store, key);
+      }
       break;
     }
 
@@ -2134,7 +2386,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view token = g.getTokenAsStringView();
-      reply_int(out, store.compare_and_delete(key, token) ? 1 : 0);
+      const bool changed = store.compare_and_delete(key, token);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -2150,7 +2404,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "invalid expire time");
         break;
       }
-      reply_int(out, store.compare_and_expire(key, token, *when, now) ? 1 : 0);
+      const bool changed = store.compare_and_expire(key, token, *when, now);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) replicate_sbe_ttl(options, store, key);
       break;
     }
 
@@ -2166,6 +2422,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       if (store.compare_and_set(key, token, value)) {
         reply_status(out, "OK");  // KEEPTTL swap
+        replicate_sbe_string(options, store, key);
       } else {
         reply_int(out, 0);  // token did not match
       }
@@ -2236,7 +2493,9 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "invalid expire time");
         break;
       }
-      reply_int_or_range_error(out, store.incr_expire(key, *when, now));
+      const auto result = store.incr_expire(key, *when, now);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -2259,7 +2518,17 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         break;
       }
       const double cutoff = now_v - window;
-      reply_int(out, store.zwindow(key, now_v, cutoff, limit, member, *when, clock) ? 1 : 0);
+      const bool changed =
+          store.zwindow(key, now_v, cutoff, limit, member, *when, clock);
+      reply_int(out, changed ? 1 : 0);
+      const std::string now_text = format_score(now_v);
+      const std::string window_text = format_score(window);
+      const std::string limit_text = std::to_string(limit);
+      const std::string_view args[]{key, now_text, window_text, limit_text,
+                                    member};
+      replicate_sbe_command(options, store, CommandType::goblin_zwindow,
+                            "GOBLIN.ZWINDOW", args);
+      replicate_sbe_ttl(options, store, key);
       break;
     }
 
@@ -2268,14 +2537,20 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const long long delta = g.delta();
       const long long max = g.max();
-      reply_int_or_range_error(out, store.incr_bound(g.getKeyAsStringView(), delta, max));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.incr_bound(key, delta, max);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
     case kGoblinDecrPos: {
       sbe::GoblinDecrPos g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      reply_int_or_range_error(out, store.decr_positive(g.getKeyAsStringView()));
+      const auto key = g.getKeyAsStringView();
+      const auto result = store.decr_positive(key);
+      reply_int_or_range_error(out, result);
+      if (result) replicate_sbe_string(options, store, key);
       break;
     }
 
@@ -2285,7 +2560,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const std::string_view key = g.getKeyAsStringView();
       const std::string_view field = g.getFieldAsStringView();
       const std::string_view expected = g.getExpectedAsStringView();
-      reply_int(out, store.hash_compare_and_delete(key, field, expected) ? 1 : 0);
+      const bool changed = store.hash_compare_and_delete(key, field, expected);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) {
+        const std::string_view fields[]{field};
+        replicate_sbe_hash_fields(options, store, key, fields);
+      }
       break;
     }
 
@@ -2309,6 +2589,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         break;
       }
       reply_int(out, *result ? 1 : 0);
+      if (*result) {
+        const std::string_view fields[]{field};
+        replicate_sbe_hash_fields(options, store, key, fields);
+      }
       break;
     }
 
@@ -2336,6 +2620,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto outcome = store.claim(claim_key, result_key, token, *when, now);
       if (outcome.claimed) {
         reply_bulk(out, "CLAIMED");
+        replicate_sbe_string(options, store, claim_key);
       } else if (outcome.result_wrongtype) {
         reply_error(out, "WRONGTYPE", kWrongTypeMsg);
       } else if (outcome.result) {
@@ -2502,6 +2787,7 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       reply_int(out, tid == kSAdd ? store.sadd(key, members)
                                   : store.srem(key, members));
+      replicate_sbe_set_members(options, store, key, members);
       break;
     }
 
@@ -2564,14 +2850,25 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const auto count = m.count();
       const auto key = m.getKeyAsStringView();
       if (count == -1) {
-        reply_bulk_or_nil(out, store.spop(key));
+        const auto popped = store.spop(key);
+        reply_bulk_or_nil(out, popped);
+        if (popped) {
+          const std::string_view members[]{*popped};
+          replicate_sbe_set_members(options, store, key, members);
+        }
         break;
       }
       if (count < 0) {
         reply_error(out, "ERR", kErrNotInteger);
         break;
       }
-      reply_array(out, store.spop(key, static_cast<std::size_t>(count)));
+      const auto popped = store.spop(key, static_cast<std::size_t>(count));
+      reply_array(out, popped);
+      static thread_local std::vector<std::string_view> members;
+      members.clear();
+      members.reserve(popped.size());
+      for (const auto& member : popped) members.push_back(member);
+      replicate_sbe_set_members(options, store, key, members);
       break;
     }
 
@@ -2607,7 +2904,13 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kValueTooLargeMsg);
         break;
       }
-      reply_int(out, store.smove(source, dest, member));
+      const bool changed = store.smove(source, dest, member);
+      reply_int(out, changed ? 1 : 0);
+      if (changed) {
+        const std::string_view members[]{member};
+        replicate_sbe_set_members(options, store, source, members);
+        replicate_sbe_set_members(options, store, dest, members);
+      }
       break;
     }
 
@@ -2699,10 +3002,26 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         }
       }
       if (bad) break;
-      reply_int(out, tid == kSInterStore ? store.sinterstore(dest, keys)
-                     : tid == kSUnionStore
-                         ? store.sunionstore(dest, keys)
-                         : store.sdiffstore(dest, keys));
+      const auto cardinality = tid == kSInterStore
+                                   ? store.sinterstore(dest, keys)
+                               : tid == kSUnionStore
+                                   ? store.sunionstore(dest, keys)
+                                   : store.sdiffstore(dest, keys);
+      reply_int(out, cardinality);
+      static thread_local std::vector<std::string_view> replication_args;
+      replication_args.clear();
+      replication_args.reserve(keys.size() + 1);
+      replication_args.push_back(dest);
+      replication_args.insert(replication_args.end(), keys.begin(), keys.end());
+      replicate_sbe_command(
+          options, store,
+          tid == kSInterStore   ? CommandType::sinterstore
+          : tid == kSUnionStore ? CommandType::sunionstore
+                                : CommandType::sdiffstore,
+          tid == kSInterStore   ? "SINTERSTORE"
+          : tid == kSUnionStore ? "SUNIONSTORE"
+                                : "SDIFFSTORE",
+          replication_args);
       break;
     }
 

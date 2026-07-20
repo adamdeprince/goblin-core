@@ -9,6 +9,7 @@
 #include "goblin/core/luau_script.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/replication.hpp"
 #include "goblin/core/ring_buffer.hpp"
 #ifdef GOBLIN_HAS_RDMA
 #include "goblin/core/rdma_ring.hpp"
@@ -32,6 +33,7 @@
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
 #include "pubsub.hpp"
+#include "replication_follower.hpp"
 #include "transaction.hpp"
 #ifdef GOBLIN_HAS_SBE
 #include "pubsub_listener.hpp"
@@ -48,6 +50,7 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <netdb.h>
@@ -56,6 +59,7 @@
 #include <string>
 #include <string_view>
 #include <stdexcept>
+#include <thread>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -70,42 +74,6 @@ namespace goblin::core {
 namespace {
 
 constexpr std::size_t kOutputCompactThreshold = 64 * 1024;
-
-#ifdef GOBLIN_HAS_KAFKA
-struct KafkaReplicationRuntime {
-  KafkaJournal* journal{nullptr};
-  bool failed{false};
-  std::string error;
-
-  static void replicate(void* context, Store& store, const Command& command,
-                        std::string_view response) noexcept {
-    auto& self = *static_cast<KafkaReplicationRuntime*>(context);
-    if (self.failed || self.journal == nullptr) return;
-    try {
-      auto mutations = build_replication_mutations(store, command, response);
-      for (const auto& mutation : mutations) {
-        const auto current_offset = store.replication_state().offset;
-        if (current_offset == std::numeric_limits<std::uint64_t>::max()) {
-          throw std::overflow_error("replication offset exhausted");
-        }
-        const auto offset = current_offset + 1;
-        if (!self.journal->publish(store.replication_state().id, offset,
-                                   mutation, self.error)) {
-          self.failed = true;
-          return;
-        }
-        store.set_replication_offset(offset);
-      }
-    } catch (const std::exception& exception) {
-      self.error = exception.what();
-      self.failed = true;
-    } catch (...) {
-      self.error = "unknown replication journal failure";
-      self.failed = true;
-    }
-  }
-};
-#endif
 
 #ifdef GOBLIN_HAS_TLS
 enum class TlsWant : std::uint8_t {
@@ -158,6 +126,8 @@ struct EndpointSession : detail::PubSubSession {
   std::vector<ReplyBoundary> replies;
   std::size_t reply_index{0};
   std::optional<BlockedListRequest> blocked_list;
+  bool firehose{false};
+  std::unique_ptr<detail::UnsolicitedOutputQueue> firehose_output;
 
   void record_reply(std::size_t prior_size) {
     if (output.size() != prior_size) {
@@ -188,8 +158,198 @@ struct EndpointSession : detail::PubSubSession {
     next_output_sequence = 1;
     close_requested = false;
     blocked_list.reset();
+    firehose = false;
+    firehose_output.reset();
     transaction.reset();
   }
+};
+
+class ReplicationRuntime {
+ public:
+  using SubscriberSet = ankerl::unordered_dense::set<EndpointSession*>;
+
+#ifdef GOBLIN_HAS_KAFKA
+  ReplicationRuntime(KafkaJournal* journal, std::size_t buffer_bytes)
+      : buffer_bytes_(buffer_bytes), journal_(journal) {}
+#else
+  explicit ReplicationRuntime(std::size_t buffer_bytes)
+      : buffer_bytes_(buffer_bytes) {}
+#endif
+
+  class Scope {
+   public:
+    Scope(ReplicationRuntime& runtime, Store& store) noexcept
+        : runtime_(runtime), store_(store) {
+      runtime_.begin();
+    }
+    ~Scope() noexcept { runtime_.finish(store_); }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+   private:
+    ReplicationRuntime& runtime_;
+    Store& store_;
+  };
+
+  [[nodiscard]] bool subscribe(EndpointSession& session, Store& store,
+                               std::string& error) {
+    remove(session);
+    try {
+      session.firehose_output =
+          std::make_unique<detail::UnsolicitedOutputQueue>(buffer_bytes_);
+    } catch (const std::bad_alloc&) {
+      error = "ERR unable to map the replication output buffer";
+      return false;
+    }
+    session.firehose = true;
+    session.blocked_list.reset();
+    session.transaction.reset();
+    const auto hello = encode_firehose_hello(store.replication_state());
+    session.output.append(hello);
+    subscribers_.insert(&session);
+    return true;
+  }
+
+  void remove(EndpointSession& session) noexcept {
+    if (session.firehose) {
+      (void)subscribers_.erase(&session);
+      session.firehose = false;
+      session.clear_unsolicited_front_cache();
+      session.firehose_output.reset();
+    }
+  }
+
+  void begin() noexcept { ++batch_depth_; }
+
+  void finish(Store& store) noexcept {
+    if (batch_depth_ == 0 || --batch_depth_ != 0 || pending_.empty() || failed_) {
+      return;
+    }
+    commit(store);
+  }
+
+  static void replicate(void* context, Store& store, const Command& command,
+                        std::string_view response) noexcept {
+    auto& self = *static_cast<ReplicationRuntime*>(context);
+    if (self.failed_) return;
+    try {
+      auto mutations = build_replication_mutations(store, command, response);
+      if (self.batch_depth_ == 0) {
+        self.pending_ = std::move(mutations);
+        self.commit(store);
+      } else {
+        self.pending_.insert(self.pending_.end(),
+                             std::make_move_iterator(mutations.begin()),
+                             std::make_move_iterator(mutations.end()));
+      }
+    } catch (const std::exception& exception) {
+      self.fail(exception.what());
+    } catch (...) {
+      self.fail("unknown replication serialization failure");
+    }
+  }
+
+  [[nodiscard]] bool failed() const noexcept { return failed_; }
+  [[nodiscard]] const std::string& error() const noexcept { return error_; }
+  [[nodiscard]] std::size_t subscriber_count() const noexcept {
+    return subscribers_.size();
+  }
+
+  [[nodiscard]] bool apply_received(Store& store,
+                                    const ReplicationBatch& batch,
+                                    std::string& error) {
+    const auto prior_offset = store.replication_state().offset;
+    if (!apply_firehose_batch(store, batch, error)) return false;
+    if (store.replication_state().offset > prior_offset) broadcast(batch);
+    return true;
+  }
+
+ private:
+  void fail(std::string_view message) noexcept {
+    if (failed_) return;
+    failed_ = true;
+    try {
+      error_.assign(message);
+    } catch (...) {
+    }
+  }
+
+  void commit(Store& store) noexcept {
+    if (pending_.empty() || failed_) return;
+    try {
+      auto state = store.replication_state();
+      if (!state.valid || state.id.empty()) {
+        store.reset_replication_identity();
+        state = store.replication_state();
+      }
+      if (pending_.size() >
+          std::numeric_limits<std::uint64_t>::max() - state.offset) {
+        throw std::overflow_error("replication offset exhausted");
+      }
+
+      ReplicationBatch batch{.id = state.id,
+                             .offset = state.offset + 1,
+                             .mutations = std::move(pending_)};
+      pending_.clear();
+      auto offset = state.offset;
+      for (const auto& mutation : batch.mutations) {
+        ++offset;
+#ifdef GOBLIN_HAS_KAFKA
+        if (journal_ != nullptr &&
+            !journal_->publish(batch.id, offset, mutation, error_)) {
+          failed_ = true;
+          return;
+        }
+#endif
+        store.set_replication_offset(offset);
+      }
+
+      broadcast(batch);
+    } catch (const std::exception& exception) {
+      pending_.clear();
+      fail(exception.what());
+    } catch (...) {
+      pending_.clear();
+      fail("unknown replication commit failure");
+    }
+  }
+
+  void broadcast(const ReplicationBatch& batch) noexcept {
+    if (subscribers_.empty()) return;
+    try {
+      const auto wire = encode_firehose_batch(batch);
+      for (auto* subscriber : subscribers_) {
+        if (subscriber->firehose_output == nullptr ||
+            !subscriber->firehose_output->push(
+                subscriber->next_output_sequence, wire)) {
+          subscriber->close_requested = true;
+          overflowed_.push_back(subscriber);
+          continue;
+        }
+        ++subscriber->next_output_sequence;
+      }
+      for (auto* subscriber : overflowed_) {
+        remove(*subscriber);
+      }
+      overflowed_.clear();
+    } catch (const std::exception& exception) {
+      fail(exception.what());
+    } catch (...) {
+      fail("unknown firehose broadcast failure");
+    }
+  }
+
+  SubscriberSet subscribers_;
+  std::vector<EndpointSession*> overflowed_;
+  std::vector<ReplicationMutation> pending_;
+  std::size_t batch_depth_{0};
+  std::size_t buffer_bytes_{0};
+#ifdef GOBLIN_HAS_KAFKA
+  KafkaJournal* journal_{nullptr};
+#endif
+  bool failed_{false};
+  std::string error_;
 };
 
 class BlockingListRegistry {
@@ -238,7 +398,7 @@ class BlockingListRegistry {
 
   void modified() noexcept { dirty_ = true; }
 
-  void serve_ready(Store& store) {
+  void serve_ready(Store& store, ReplicationRuntime& replication) {
     if (!dirty_ && !deadline_due(BlockedListRequest::Clock::now())) {
       return;
     }
@@ -261,11 +421,14 @@ class BlockingListRegistry {
 
       const auto parsed = parse_command(session.fields);
       const std::size_t prior_size = session.output.size();
+      ReplicationRuntime::Scope replication_scope(replication, store);
       if (!parsed.ok()) {
         resp::append_error(session.output, parsed.error);
       } else {
         CommandExecutionOptions options;
         options.resp_version = &session.resp_version;
+        options.replication_context = &replication;
+        options.replicate_write = &ReplicationRuntime::replicate;
         options.blocking_lists = BlockingListDispatch{
             .context = nullptr,
             .park = [](void*, const Command&) { return true; }};
@@ -765,7 +928,7 @@ struct TransportIoResult {
   }
 #endif
   short events = 0;
-  if (!client.read_backpressured) {
+  if (!client.firehose && !client.read_backpressured) {
 #ifdef GOBLIN_HAS_TLS
     events |= client.tls != nullptr ? tls_want_event(client.tls_read_want)
                                     : POLLIN;
@@ -862,8 +1025,21 @@ struct TransportIoResult {
   return session.reply_index < session.replies.size();
 }
 
+[[nodiscard]] const detail::UnsolicitedOutputQueue& unsolicited_queue(
+    const EndpointSession& session) noexcept {
+  return session.firehose_output ? *session.firehose_output
+                                 : session.unsolicited;
+}
+
+[[nodiscard]] detail::UnsolicitedOutputQueue& unsolicited_queue(
+    EndpointSession& session) noexcept {
+  return session.firehose_output ? *session.firehose_output
+                                 : session.unsolicited;
+}
+
 [[nodiscard]] bool has_pending_output(const EndpointSession& session) noexcept {
-  return has_pending_regular_output(session) || !session.unsolicited.empty();
+  return has_pending_regular_output(session) ||
+         !unsolicited_queue(session).empty();
 }
 
 // Peek the unsolicited head, caching the mmap view across partial writes.
@@ -873,7 +1049,7 @@ struct TransportIoResult {
     out = session.unsolicited_front;
     return true;
   }
-  auto front = session.unsolicited.front();
+  auto front = unsolicited_queue(session).front();
   if (!front) {
     return false;
   }
@@ -885,7 +1061,7 @@ struct TransportIoResult {
 
 void consume_unsolicited_front(EndpointSession& session) noexcept {
   const std::size_t payload_len = session.unsolicited_front.bytes.size();
-  session.unsolicited.pop_front(payload_len);
+  unsolicited_queue(session).pop_front(payload_len);
   session.clear_unsolicited_front_cache();
 }
 
@@ -893,8 +1069,10 @@ void consume_unsolicited_front(EndpointSession& session) noexcept {
     const EndpointSession& session) noexcept {
   const std::size_t regular = session.output.size() - session.output_offset;
   const std::size_t unsolicited =
-      session.unsolicited.payload_bytes() >= session.unsolicited_front_offset
-          ? session.unsolicited.payload_bytes() - session.unsolicited_front_offset
+      unsolicited_queue(session).payload_bytes() >=
+              session.unsolicited_front_offset
+          ? unsolicited_queue(session).payload_bytes() -
+                session.unsolicited_front_offset
           : 0;
   return regular + unsolicited;
 }
@@ -1460,6 +1638,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                            detail::PubSubRegistry& pubsub,
                            detail::WatchRegistry& watches,
                            BlockingListRegistry& blocking_lists,
+                           ReplicationRuntime& replication,
                            std::span<const std::string_view> fields,
                            const CommandExecutionOptions& exec_options) {
   const std::size_t prior_size = session.output.size();
@@ -1476,6 +1655,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   }
 
   const auto& command = *parsed.command;
+  ReplicationRuntime::Scope replication_scope(replication, store);
   if (session.transaction.in_multi && command.type == CommandType::unknown) {
     if (session.transaction.failure != detail::TransactionFailure::buffer_limit) {
       session.transaction.failure = detail::TransactionFailure::command_error;
@@ -1514,8 +1694,16 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                 : detail::WireMode::resp2;
       }
       session.record_reply(prior_size);
-      blocking_lists.serve_ready(store);
+      blocking_lists.serve_ready(store, replication);
       return;
+    }
+  } else if (command.type == CommandType::goblin_firehose) {
+    pubsub.remove(session);
+    watches.remove(session.transaction);
+    blocking_lists.remove(session);
+    std::string error;
+    if (!replication.subscribe(session, store, error)) {
+      resp::append_error(session.output, error);
     }
   } else if (is_pubsub_command(command.type)) {
     pubsub.execute(session, command, session.output);
@@ -1530,13 +1718,14 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                             : detail::WireMode::resp2;
   }
   session.record_reply(prior_size);
-  blocking_lists.serve_ready(store);
+  blocking_lists.serve_ready(store, replication);
 }
 
 #ifdef GOBLIN_HAS_SBE
 [[nodiscard]] std::size_t dispatch_sbe_command(
     EndpointSession& session, Store& store, detail::PubSubRegistry& pubsub,
-    std::string_view bytes, const CommandExecutionOptions& exec_options) {
+    ReplicationRuntime& replication, std::string_view bytes,
+    const CommandExecutionOptions& exec_options) {
   if (bytes.size() < kSbeLenPrefix) {
     return 0;
   }
@@ -1551,6 +1740,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
   }
 
   char* buffer = const_cast<char*>(bytes.data()) + kSbeLenPrefix;
+  ReplicationRuntime::Scope replication_scope(replication, store);
   try {
     goblin_sbe::MessageHeader header(buffer, message_length);
     const auto template_id = header.templateId();
@@ -1661,9 +1851,10 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                              QuickJsEngine& quickjs_engine,
                                              const ServerConfig& config,
                                              const AuthDatabase* auth_database,
+                                             ReplicationRuntime& replication,
                                              const NestedCommandDispatch&
                                                  nested_dispatch) {
-  if (client.blocked_list) {
+  if (client.blocked_list || client.firehose) {
     return true;
   }
   compact_output_if_needed(client);
@@ -1684,6 +1875,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       .quit_requested = &client.close_after_write,
       .replication_context = nested_dispatch.replication_context,
       .replicate_write = nested_dispatch.replicate_write,
+      .read_only = nested_dispatch.read_only,
       .blocking_lists = BlockingListDispatch{.context = &park_context,
                                              .park = park_blocking_list},
       .script_engine = &script_engine,
@@ -1729,13 +1921,13 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     while (!client.read_backpressured) {
       const std::size_t prior_size = client.output.size();
       const std::size_t consumed = dispatch_sbe_command(
-          client, store, pubsub, std::string_view(client.inbuf).substr(off),
-          exec_options);
+          client, store, pubsub, replication,
+          std::string_view(client.inbuf).substr(off), exec_options);
       if (consumed == 0) {
         break;
       }
       client.record_reply(prior_size);
-      blocking_lists.serve_ready(store);
+      blocking_lists.serve_ready(store, replication);
       off += consumed;
       compact_output_if_needed(client);
       update_read_backpressure(client, config);
@@ -1756,8 +1948,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       break;
     }
     dispatch_resp_command(client, store, pubsub, watches, blocking_lists,
-                          client.fields, exec_options);
-    if (client.close_after_write) {
+                          replication, client.fields, exec_options);
+    if (client.close_after_write || client.firehose) {
       break;
     }
     compact_output_if_needed(client);
@@ -1774,6 +1966,11 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     update_read_backpressure(client, config);
   }
 
+  if (client.firehose) {
+    client.parser.clear();
+    client.inbuf.clear();
+  }
+
   return true;
 }
 
@@ -1782,7 +1979,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 // Drives the post-backpressure drain loop; a partial SBE frame returns false so that
 // loop cannot spin.
 [[nodiscard]] bool has_buffered_work(const Client& client) {
-  if (client.blocked_list) {
+  if (client.blocked_list || client.firehose) {
     return false;
   }
 #ifdef GOBLIN_HAS_SBE
@@ -1810,6 +2007,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                QuickJsEngine& quickjs_engine,
                                const ServerConfig& config,
                                const AuthDatabase* auth_database,
+                               ReplicationRuntime& replication,
                                const NestedCommandDispatch& nested_dispatch) {
   const std::size_t bufsize = config.client_read_buffer_bytes != 0 ? config.client_read_buffer_bytes : 16 * 1024;
   static thread_local std::vector<char> buffer;
@@ -1829,11 +2027,12 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                        blocking_lists, script_engine,
                                        luau_engine, wren_engine, tcl_engine,
                                        upython_engine, quickjs_engine, config,
-                                       auth_database, nested_dispatch)) {
+                                       auth_database, replication,
+                                       nested_dispatch)) {
           return false;
         }
       }
-      if (client.close_after_write) {
+      if (client.close_after_write || client.firehose) {
         return true;
       }
       continue;
@@ -1989,7 +2188,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 // listeners in their literal command-line order, then process one fragment from
 // the highest-priority non-empty target and restart the scan. Only when every
 // target is empty do we run one non-blocking plain-socket pass and cpu_relax().
-template <class NetFn>
+template <class ReplicaFn, class NetFn>
 [[nodiscard]] bool run_polled_targets(
     const ServerConfig& config, Store& store, std::atomic_bool& running,
     detail::PubSubRegistry& pubsub, detail::WatchRegistry& watches,
@@ -1998,7 +2197,9 @@ template <class NetFn>
     LuauEngine& luau_engine, WrenEngine& wren_engine, TclEngine& tcl_engine,
     UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
     const AuthDatabase* auth_database,
+    ReplicationRuntime& replication,
     const NestedCommandDispatch& nested_dispatch,
+    ReplicaFn&& replica_iteration,
     NetFn&& network_iteration) {
   // macOS: same QoS as the client so both busy-pollers stay on P-cores. No-op
   // on Linux (pinning is done by the bench via taskset).
@@ -2203,6 +2404,9 @@ template <class NetFn>
     if (ep.close_requested || has_pending_output(ep)) {
       return output_progress;
     }
+    if (ep.firehose) {
+      return output_progress;
+    }
     if (ep.blocked_list) {
       return output_progress;
     }
@@ -2222,6 +2426,7 @@ template <class NetFn>
         .quit_requested = &ep.quit_after_write,
         .replication_context = nested_dispatch.replication_context,
         .replicate_write = nested_dispatch.replicate_write,
+        .read_only = nested_dispatch.read_only,
         .blocking_lists = BlockingListDispatch{.context = &park_context,
                                                .park = park_blocking_list},
         .script_engine = &script_engine,
@@ -2276,13 +2481,13 @@ template <class NetFn>
         for (;;) {
           const std::size_t prior_size = ep.output.size();
           const std::size_t consumed = dispatch_sbe_command(
-              ep, store, pubsub, std::string_view(*record).substr(off),
-              exec_options);
+              ep, store, pubsub, replication,
+              std::string_view(*record).substr(off), exec_options);
           if (consumed == 0) {
             break;
           }
           ep.record_reply(prior_size);
-          blocking_lists.serve_ready(store);
+          blocking_lists.serve_ready(store, replication);
           off += consumed;
         }
         if (off == record->size()) {
@@ -2312,13 +2517,13 @@ template <class NetFn>
         for (;;) {
           const std::size_t prior_size = ep.output.size();
           const std::size_t consumed = dispatch_sbe_command(
-              ep, store, pubsub, std::string_view(ep.inbuf).substr(off),
-              exec_options);
+              ep, store, pubsub, replication,
+              std::string_view(ep.inbuf).substr(off), exec_options);
           if (consumed == 0) {
             break;
           }
           ep.record_reply(prior_size);
-          blocking_lists.serve_ready(store);
+          blocking_lists.serve_ready(store, replication);
           off += consumed;
         }
         if (off > 0) {
@@ -2334,10 +2539,14 @@ template <class NetFn>
       ep.inbuf.clear();
       while (!ep.blocked_list && ep.parser.pop_into(ep.fields)) {
         dispatch_resp_command(ep, store, pubsub, watches, blocking_lists,
-                              ep.fields, exec_options);
-        if (ep.quit_after_write || ep.blocked_list) {
+                              replication, ep.fields, exec_options);
+        if (ep.quit_after_write || ep.blocked_list || ep.firehose) {
           break;
         }
+      }
+      if (ep.firehose) {
+        ep.parser.clear();
+        ep.inbuf.clear();
       }
       if (!ep.blocked_list && ep.parser.has_error()) {
         const std::size_t prior_size = ep.output.size();
@@ -2356,6 +2565,7 @@ template <class NetFn>
     // predecessor abandoned before it starts using the SPSC ring.
     if (const std::uint64_t epoch = ep.mapping.requested_epoch();
         epoch != ep.acked_epoch) {
+      replication.remove(ep);
       pubsub.remove(ep);
       watches.remove(ep.transaction);
       blocking_lists.remove(ep);
@@ -2404,6 +2614,7 @@ template <class NetFn>
         std::cerr << "goblin-core: RDMA peer closed after error: "
                   << endpoint.connection->error() << '\n';
       }
+      replication.remove(endpoint);
       pubsub.remove(endpoint);
       watches.remove(endpoint.transaction);
       blocking_lists.remove(endpoint);
@@ -2462,6 +2673,7 @@ template <class NetFn>
       const std::size_t index = i - 1;
       auto& client = *target.clients[index];
       if (client.close_requested && !has_pending_output(client)) {
+        replication.remove(client);
         pubsub.remove(client);
         watches.remove(client.transaction);
         blocking_lists.remove(client);
@@ -2502,14 +2714,14 @@ template <class NetFn>
             client, store, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config,
-            auth_database, nested_dispatch);
+            auth_database, replication, nested_dispatch);
         did_work = true;
       }
 
       // Non-blocking readiness probe (timeout 0) so we only enter read_client
       // when the socket has data -- matches the ring/RDMA "one fragment" unit.
       pollfd pfd{.fd = client.fd, .events = 0, .revents = 0};
-      if (keep && !client.read_backpressured) {
+      if (keep && !client.firehose && !client.read_backpressured) {
         pfd.events |= POLLIN;
       }
       if (keep && has_pending_output(client)) {
@@ -2523,7 +2735,7 @@ template <class NetFn>
         keep = read_client(client, store, pubsub, watches, blocking_lists,
                            script_engine, luau_engine, wren_engine, tcl_engine,
                            upython_engine, quickjs_engine, config,
-                           auth_database, nested_dispatch);
+                           auth_database, replication, nested_dispatch);
         did_work = true;
       }
       if (keep && (pfd.revents & POLLOUT) != 0 && has_pending_output(client)) {
@@ -2532,6 +2744,7 @@ template <class NetFn>
       }
 
       if (!keep || client.close_requested) {
+        replication.remove(client);
         pubsub.remove(client);
         watches.remove(client.transaction);
         blocking_lists.remove(client);
@@ -2572,6 +2785,10 @@ template <class NetFn>
   // wait parks the other side of the handoff when the peer is stalled.
   unsigned idle_spins = 0;
   while (running.load(std::memory_order_relaxed)) {
+    if (replica_iteration()) {
+      idle_spins = 0;
+      continue;
+    }
     bool progressed = false;
     for (auto& target : targets) {
       bool target_progress = false;
@@ -2625,6 +2842,7 @@ template <class NetFn>
   }
   for (auto& target : targets) {
     if (target.ring_endpoint) {
+      replication.remove(*target.ring_endpoint);
       pubsub.remove(*target.ring_endpoint);
       watches.remove(target.ring_endpoint->transaction);
       blocking_lists.remove(*target.ring_endpoint);
@@ -2632,6 +2850,7 @@ template <class NetFn>
 #ifdef GOBLIN_HAS_EXASOCK
     if (target.exasock_target) {
       for (auto& client : target.exasock_target->clients) {
+        replication.remove(*client);
         pubsub.remove(*client);
         watches.remove(client->transaction);
         blocking_lists.remove(*client);
@@ -2645,6 +2864,7 @@ template <class NetFn>
 #ifdef GOBLIN_HAS_RDMA
     if (target.rdma_target) {
       for (auto& endpoint : target.rdma_target->endpoints) {
+        replication.remove(*endpoint);
         pubsub.remove(*endpoint);
         watches.remove(endpoint->transaction);
         blocking_lists.remove(*endpoint);
@@ -2672,6 +2892,9 @@ Server::Server(ServerConfig config, Store& store)
   };
   config_.unsolicited_output_buffer_bytes =
       page_round(config_.unsolicited_output_buffer_bytes);
+  config_.replication_buffer_bytes = page_round(
+      config_.replication_buffer_bytes == 0 ? 1024U * 1024U
+                                            : config_.replication_buffer_bytes);
   config_.transaction_buffer_bytes =
       page_round(config_.transaction_buffer_bytes);
   if (config_.max_output_buffer_bytes == 0) {
@@ -2760,6 +2983,34 @@ int Server::run() {
   }
   const AuthDatabase* auth = auth_database ? &*auth_database : nullptr;
 
+  std::unique_ptr<ReplicationFollowerRuntime> replica;
+  if (config_.replica_source) {
+    try {
+      replica = std::make_unique<ReplicationFollowerRuntime>(
+          *config_.replica_source, config_.replication_buffer_bytes);
+    } catch (const std::exception& error) {
+      std::cerr << "goblin-core: replica setup failed: " << error.what() << '\n';
+      return 1;
+    }
+    const auto& hello = replica->hello();
+    const auto state = store_.replication_state();
+    if (state.valid && state.id != hello.id) {
+      std::cerr << "goblin-core: replica snapshot lineage " << state.id.hex()
+                << " does not match upstream " << hello.id.hex() << '\n';
+      return 1;
+    }
+    if (!state.valid) {
+      store_.set_replication_state(ReplicationState{
+          .id = hello.id,
+          .offset = 0,
+          .kafka_acknowledged_offset = -1,
+          .valid = true});
+    }
+    std::cout << "goblin-core: connected replica source "
+              << replica->description() << " at replication offset "
+              << hello.offset << " (lineage " << hello.id.hex() << ")\n";
+  }
+
 #ifdef GOBLIN_HAS_KAFKA
   std::unique_ptr<KafkaIngestor> kafka;
   std::unique_ptr<KafkaJournal> kafka_journal;
@@ -2783,7 +3034,12 @@ int Server::run() {
     KafkaReplayStats replay;
     std::cout << "goblin-core: replaying Kafka " << kafka->description()
               << " before opening listeners\n" << std::flush;
-    if (!kafka->catch_up(store_, replay, error)) {
+    const auto buffer_replica = [](void* context, std::string& observer_error) {
+      return static_cast<ReplicationFollowerRuntime*>(context)
+          ->buffer_available(observer_error);
+    };
+    if (!kafka->catch_up(store_, replay, error, replica.get(),
+                         replica ? buffer_replica : nullptr)) {
       std::cerr << "goblin-core: Kafka startup replay failed: " << error << '\n';
       return 1;
     }
@@ -2793,11 +3049,13 @@ int Server::run() {
     if (!store_.replication_state().valid) {
       store_.reset_replication_identity();
     }
-    kafka_journal =
-        KafkaJournal::connect(config_.kafka->connection, error);
-    if (!kafka_journal) {
-      std::cerr << "goblin-core: Kafka journal setup failed: " << error << '\n';
-      return 1;
+    if (!replica) {
+      kafka_journal =
+          KafkaJournal::connect(config_.kafka->connection, error);
+      if (!kafka_journal) {
+        std::cerr << "goblin-core: Kafka journal setup failed: " << error << '\n';
+        return 1;
+      }
     }
   }
 #else
@@ -2806,6 +3064,81 @@ int Server::run() {
     return 1;
   }
 #endif
+
+  if (replica) {
+    std::string error;
+    bool kafka_handoff = false;
+#ifdef GOBLIN_HAS_KAFKA
+    if (kafka) {
+      kafka_handoff = true;
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(30);
+      while (store_.replication_state().offset < replica->hello().offset) {
+        if (!replica->buffer_available(error)) {
+          std::cerr << "goblin-core: replica catch-up buffering failed: "
+                    << error << '\n';
+          return 1;
+        }
+        auto result = kafka->poll(store_, 4096);
+        if (!result.ok()) {
+          std::cerr << "goblin-core: replica Kafka handoff failed: "
+                    << result.error << '\n';
+          return 1;
+        }
+        if (result.stats.records == 0) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            std::cerr << "goblin-core: Kafka did not reach upstream replication "
+                         "offset "
+                      << replica->hello().offset << " within 30 seconds\n";
+            return 1;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+    }
+#endif
+    const bool handoff_offset_invalid = kafka_handoff
+                                            ? store_.replication_state().offset <
+                                                  replica->hello().offset
+                                            : store_.replication_state().offset !=
+                                                  replica->hello().offset;
+    if (handoff_offset_invalid) {
+      std::cerr << "goblin-core: upstream is at replication offset "
+                << replica->hello().offset << ", but the loaded snapshot is at "
+                << store_.replication_state().offset
+                << "; configure Kafka recovery or load a current snapshot\n";
+      return 1;
+    }
+
+    if (!replica->buffer_available(error)) {
+      std::cerr << "goblin-core: replica handoff buffering failed: " << error
+                << '\n';
+      return 1;
+    }
+    for (;;) {
+      ReplicationBatch batch;
+      bool available = false;
+      if (!replica->try_next(batch, available, error)) {
+        std::cerr << "goblin-core: replica handoff failed: " << error << '\n';
+        return 1;
+      }
+      if (!available) break;
+      if (!apply_firehose_batch(store_, batch, error)) {
+        std::cerr << "goblin-core: replica handoff apply failed: " << error
+                  << '\n';
+        return 1;
+      }
+    }
+    std::cout << "goblin-core: replica is live at replication offset "
+              << store_.replication_state().offset << '\n';
+    store_.set_replica_mode(replica->description());
+#ifdef GOBLIN_HAS_KAFKA
+    // The firehose connection was established before replay. Once its buffered
+    // suffix is applied it is the sole upstream; keeping Kafka active would race
+    // the same logical records down two inputs.
+    kafka.reset();
+#endif
+  }
 
   auto listeners_result = create_socket_listeners(config_);
   if (!listeners_result) {
@@ -2840,7 +3173,10 @@ int Server::run() {
   running_ = true;
 
 #ifdef GOBLIN_HAS_KAFKA
-  KafkaReplicationRuntime kafka_replication{.journal = kafka_journal.get()};
+  ReplicationRuntime replication(kafka_journal.get(),
+                                 config_.replication_buffer_bytes);
+#else
+  ReplicationRuntime replication(config_.replication_buffer_bytes);
 #endif
   const NestedCommandDispatch nested_dispatch{
       .context = &pubsub,
@@ -2849,11 +3185,9 @@ int Server::run() {
         return static_cast<detail::PubSubRegistry*>(context)->publish(channel,
                                                                       payload);
       },
-#ifdef GOBLIN_HAS_KAFKA
-      .replication_context = kafka_journal ? &kafka_replication : nullptr,
-      .replicate_write = kafka_journal ? &KafkaReplicationRuntime::replicate
-                                       : nullptr
-#endif
+      .replication_context = &replication,
+      .replicate_write = &ReplicationRuntime::replicate,
+      .read_only = replica != nullptr,
   };
 
   // One engine per interpreter for the process. Each holds its own script cache
@@ -2865,6 +3199,35 @@ int Server::run() {
   TclEngine tcl_engine(store_, nested_dispatch);
   UPythonEngine upython_engine(store_, nested_dispatch);
   QuickJsEngine quickjs_engine(store_, nested_dispatch);
+
+  const auto replica_iteration = [&]() -> bool {
+    if (!replica) return false;
+    ReplicationBatch batch;
+    bool available = false;
+    std::string error;
+    if (!replica->try_next(batch, available, error)) {
+      std::cerr << "goblin-core: upstream replication failed: " << error
+                << '\n';
+      kafka_failed = true;
+      running_ = false;
+      return true;
+    }
+    if (!available) return false;
+    try {
+      if (!replication.apply_received(store_, batch, error)) {
+        std::cerr << "goblin-core: upstream replication apply failed: " << error
+                  << '\n';
+        kafka_failed = true;
+        running_ = false;
+      }
+    } catch (const std::exception& exception) {
+      std::cerr << "goblin-core: upstream replication apply failed: "
+                << exception.what() << '\n';
+      kafka_failed = true;
+      running_ = false;
+    }
+    return true;
+  };
 
   for (const auto& listener : listeners) {
     std::cout << "goblin-core listening on " << listener.description << '\n';
@@ -2905,15 +3268,22 @@ int Server::run() {
   // service ready clients and new connections. In polled mode this is invoked only
   // when every ring/RDMA target is empty, always with timeout 0 (never blocking).
   const auto network_iteration = [&](int max_timeout_ms) {
+    bool replica_progress = false;
+    for (std::size_t i = 0; i < 1024 && replica_iteration(); ++i) {
+      replica_progress = true;
+      if (!running_.load(std::memory_order_relaxed)) return;
+    }
 #ifdef GOBLIN_HAS_KAFKA
     if (!poll_kafka_journal()) return;
-    if (kafka_replication.failed) {
-      std::cerr << "goblin-core: Kafka replication failed: "
-                << kafka_replication.error << '\n';
+#endif
+    if (replication.failed()) {
+      std::cerr << "goblin-core: replication failed: "
+                << replication.error() << '\n';
       kafka_failed = true;
       running_ = false;
       return;
     }
+#ifdef GOBLIN_HAS_KAFKA
     if (kafka && kafka_may_have_more && !drain_kafka()) {
       return;
     }
@@ -2930,6 +3300,7 @@ int Server::run() {
     }
 
     int poll_timeout = max_timeout_ms;
+    if (replica_progress) poll_timeout = 0;
 #ifdef GOBLIN_HAS_KAFKA
     if (kafka_may_have_more) poll_timeout = 0;
 #endif
@@ -2939,7 +3310,7 @@ int Server::run() {
         poll_timeout = 0;  // batch full -- more are likely due, sweep again now
       }
     }
-    blocking_lists.serve_ready(store_);
+    blocking_lists.serve_ready(store_, replication);
     poll_timeout = blocking_lists.clamp_poll_timeout(poll_timeout);
 
     std::vector<pollfd> pollfds;
@@ -2950,7 +3321,10 @@ int Server::run() {
 #else
         0U;
 #endif
-    pollfds.reserve(clients.size() + listener_count + kafka_fd_count);
+    const std::size_t replica_fd_count =
+        replica && replica->notification_fd() >= 0 ? 1U : 0U;
+    pollfds.reserve(clients.size() + listener_count + kafka_fd_count +
+                    replica_fd_count);
     for (const auto& listener : listeners) {
       pollfds.push_back(
           pollfd{.fd = listener.fd, .events = POLLIN, .revents = 0});
@@ -2967,6 +3341,11 @@ int Server::run() {
                               .revents = 0});
     }
 #endif
+    if (replica_fd_count != 0) {
+      pollfds.push_back(pollfd{.fd = replica->notification_fd(),
+                              .events = POLLIN,
+                              .revents = 0});
+    }
     for (auto& client_ptr : clients) {
       auto& client = *client_ptr;
       update_read_backpressure(client, config_);
@@ -3006,11 +3385,20 @@ int Server::run() {
       return;
     }
 #endif
+    const std::size_t replica_event_index = listener_count + kafka_fd_count;
+    if (replica_fd_count != 0 &&
+        (pollfds[replica_event_index].revents &
+         (POLLIN | POLLERR | POLLHUP)) != 0) {
+      for (std::size_t i = 0; i < 1024 && replica_iteration(); ++i) {
+        if (!running_.load(std::memory_order_relaxed)) return;
+      }
+    }
     for (std::size_t i = 0; i < clients.size(); ++i) {
       bool keep = !clients[i]->close_requested;
       auto& client = *clients[i];
       const auto revents =
-          pollfds[listener_count + kafka_fd_count + i].revents;
+          pollfds[listener_count + kafka_fd_count + replica_fd_count + i]
+              .revents;
 
       if (keep && tls_handshake_ready(client, revents)) {
         keep = advance_tls_handshake(client);
@@ -3027,7 +3415,7 @@ int Server::run() {
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
-            auth, nested_dispatch);
+            auth, replication, nested_dispatch);
       }
 
       if (application_ready && keep && client_read_ready(client, revents) &&
@@ -3035,7 +3423,7 @@ int Server::run() {
         keep = read_client(client, store_, pubsub, watches, blocking_lists,
                            script_engine, luau_engine, wren_engine, tcl_engine,
                            upython_engine, quickjs_engine, config_, auth,
-                           nested_dispatch);
+                           replication, nested_dispatch);
       }
 
       if (application_ready && keep && has_pending_output(client) &&
@@ -3050,7 +3438,7 @@ int Server::run() {
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
-            auth, nested_dispatch);
+            auth, replication, nested_dispatch);
         if (keep && has_pending_output(client) &&
             !tls_read_retry_pending(client) &&
             !tls_write_retry_pending(client)) {
@@ -3071,6 +3459,7 @@ int Server::run() {
     for (std::size_t i = clients.size(); i > 0; --i) {
       const auto index = i - 1;
       if (close_client[index] != 0) {
+        replication.remove(*clients[index]);
         pubsub.remove(*clients[index]);
         watches.remove(clients[index]->transaction);
         blocking_lists.remove(*clients[index]);
@@ -3093,7 +3482,8 @@ int Server::run() {
     }
   };
 
-  if (config_.poll_targets.empty() && !config_.pubsub_listener) {
+  if (config_.poll_targets.empty() && !config_.pubsub_listener &&
+      !(replica && replica->polled())) {
     // No polled targets: the ordinary event-driven server. poll() blocks, so an idle
     // server costs no CPU.
     while (running_) {
@@ -3103,12 +3493,14 @@ int Server::run() {
                                  blocking_lists, script_engine, luau_engine,
                                  wren_engine,
                                  tcl_engine, upython_engine, quickjs_engine,
-                                 auth, nested_dispatch, network_iteration)) {
+                                 auth, replication, nested_dispatch,
+                                 replica_iteration, network_iteration)) {
     close_socket_listeners(listeners);
     return 1;
   }
 
   for (const auto& client : clients) {
+    replication.remove(*client);
     pubsub.remove(*client);
     watches.remove(client->transaction);
     blocking_lists.remove(*client);

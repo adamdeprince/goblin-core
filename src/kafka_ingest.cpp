@@ -731,10 +731,12 @@ std::unique_ptr<KafkaIngestor> KafkaIngestor::connect(
 }
 
 bool KafkaIngestor::catch_up(Store& store, KafkaReplayStats& stats,
-                             std::string& error) {
+                             std::string& error, void* observer_context,
+                             bool (*observer)(void*, std::string&)) {
   error.clear();
   auto last_progress = std::chrono::steady_clock::now();
   while (!impl_->startup_complete()) {
+    if (observer != nullptr && !observer(observer_context, error)) return false;
     impl_->drain_notification();
     std::unique_ptr<rd_kafka_message_t, decltype(&rd_kafka_message_destroy)>
         message(rd_kafka_consumer_poll(impl_->consumer, 100),
@@ -753,6 +755,7 @@ bool KafkaIngestor::catch_up(Store& store, KafkaReplayStats& stats,
       last_progress = std::chrono::steady_clock::now();
     }
   }
+  if (observer != nullptr && !observer(observer_context, error)) return false;
   impl_->drain_notification();
   return true;
 }

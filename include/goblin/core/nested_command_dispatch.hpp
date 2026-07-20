@@ -21,6 +21,7 @@ struct NestedCommandDispatch {
   Publish publish{nullptr};
   void* replication_context{nullptr};
   ReplicateWrite replicate_write{nullptr};
+  bool read_only{false};
 };
 
 }  // namespace goblin::core

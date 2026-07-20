@@ -384,6 +384,7 @@ int ScriptEngine::redis_call_impl(lua_State* L, bool raise_on_error) {
       CommandExecutionOptions{
           .replication_context = nested_dispatch_.replication_context,
           .replicate_write = nested_dispatch_.replicate_write,
+          .read_only = nested_dispatch_.read_only,
           .nested_dispatch = nested_dispatch_});
 
   bool is_error = false;

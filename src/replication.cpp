@@ -1,6 +1,7 @@
 #include "goblin/core/replication.hpp"
 
 #include "goblin/core/command.hpp"
+#include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
 #include "goblin/core/store.hpp"
 
@@ -58,7 +59,9 @@ void append_current_string(const Store& store, std::string_view key,
   }
   const std::string materialized = value->to_string();
   out.push_back(command_mutation({"SET", key, materialized}, compact_key));
-  append_current_ttl(store, key, out);
+  // Canonical SET already clears an absent TTL. Only append the absolute
+  // deadline when the source command preserved or established one.
+  if (store.expiretime_ms(key) >= 0) append_current_ttl(store, key, out);
 }
 
 void append_current_hash_field(const Store& store, std::string_view key,
@@ -104,6 +107,160 @@ void append_current_set_member(const Store& store, std::string_view key,
   fields.push_back(command.name);
   fields.insert(fields.end(), command.args.begin(), command.args.end());
   return fields;
+}
+
+[[nodiscard]] bool parse_u64_exact(std::string_view text,
+                                   std::uint64_t& value) noexcept {
+  if (text.empty()) return false;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  return error == std::errc{} && end == text.data() + text.size();
+}
+
+[[nodiscard]] bool parse_resp_integer_line(std::string_view bytes,
+                                           std::size_t& cursor,
+                                           char prefix,
+                                           long long& value) noexcept {
+  if (cursor >= bytes.size() || bytes[cursor] != prefix) return false;
+  const auto end = bytes.find("\r\n", cursor + 1);
+  if (end == std::string_view::npos) return false;
+  const char* first = bytes.data() + cursor + 1;
+  const char* last = bytes.data() + end;
+  const auto parsed = std::from_chars(first, last, value);
+  if (parsed.ec != std::errc{} || parsed.ptr != last) return false;
+  cursor = end + 2;
+  return true;
+}
+
+[[nodiscard]] bool parse_resp_bulk(std::string_view bytes, std::size_t& cursor,
+                                   std::optional<std::string_view>& value) noexcept {
+  long long length = 0;
+  if (!parse_resp_integer_line(bytes, cursor, '$', length) || length < -1) {
+    return false;
+  }
+  if (length == -1) {
+    value.reset();
+    return true;
+  }
+  const auto size = static_cast<std::size_t>(length);
+  if (size > bytes.size() - cursor || bytes.size() - cursor - size < 2 ||
+      bytes[cursor + size] != '\r' || bytes[cursor + size + 1] != '\n') {
+    return false;
+  }
+  value = bytes.substr(cursor, size);
+  cursor += size + 2;
+  return true;
+}
+
+// SPOP must replicate the selected members, not another random SPOP. Parse the
+// server's own bulk/array reply so replay becomes deterministic.
+[[nodiscard]] bool parse_spop_response(
+    std::string_view response,
+    std::vector<std::string_view>& members) noexcept {
+  members.clear();
+  if (response == "_\r\n") return true;
+  std::size_t cursor = 0;
+  if (!response.empty() && response.front() == '$') {
+    std::optional<std::string_view> member;
+    if (!parse_resp_bulk(response, cursor, member) || cursor != response.size()) {
+      return false;
+    }
+    if (member) members.push_back(*member);
+    return true;
+  }
+  long long count = 0;
+  if (!parse_resp_integer_line(response, cursor, '*', count) || count < 0) {
+    return false;
+  }
+  members.reserve(static_cast<std::size_t>(count));
+  for (long long i = 0; i < count; ++i) {
+    std::optional<std::string_view> member;
+    if (!parse_resp_bulk(response, cursor, member) || !member) return false;
+    members.push_back(*member);
+  }
+  return cursor == response.size();
+}
+
+[[nodiscard]] bool parse_firehose_frame(
+    std::string_view bytes, std::vector<std::string_view>& fields,
+    RespParser& parser, std::string& error) {
+  error.clear();
+  if (bytes.empty() || bytes.front() != '*') {
+    error = "firehose frame is not a RESP2 array";
+    return false;
+  }
+  parser.append(bytes);
+  if (parser.has_error()) {
+    error = parser.error();
+    return false;
+  }
+  if (parser.has_unparsed_input()) {
+    error = "incomplete firehose frame";
+    return false;
+  }
+  if (!parser.pop_into(fields) || parser.has_queued_frames()) {
+    error = "firehose record must contain exactly one RESP2 frame";
+    return false;
+  }
+  return true;
+}
+
+[[nodiscard]] bool validate_firehose_header(
+    std::span<const std::string_view> fields, std::string_view command,
+    std::size_t minimum_fields, ReplicationId& id, std::uint64_t& offset,
+    std::string& error) {
+  if (fields.size() < minimum_fields || fields[0] != command) {
+    error = "unexpected firehose frame";
+    return false;
+  }
+  std::uint64_t version = 0;
+  if (!parse_u64_exact(fields[1], version) ||
+      version != kReplicationProtocolVersion) {
+    error = "unsupported firehose protocol version";
+    return false;
+  }
+  const auto parsed_id = parse_replication_id(fields[2]);
+  if (!parsed_id || parsed_id->empty()) {
+    error = "invalid firehose replication id";
+    return false;
+  }
+  if (!parse_u64_exact(fields[3], offset)) {
+    error = "invalid firehose logical offset";
+    return false;
+  }
+  id = *parsed_id;
+  return true;
+}
+
+[[nodiscard]] bool apply_resp2_write(Store& store, std::string_view payload,
+                                     std::string& error) {
+  RespParser parser;
+  std::vector<std::string_view> fields;
+  if (!parse_firehose_frame(payload, fields, parser, error)) {
+    error = "invalid replicated RESP2 write: " + error;
+    return false;
+  }
+  auto parsed = parse_command(fields);
+  if (!parsed.ok()) {
+    error = parsed.error;
+    return false;
+  }
+  if (parsed.command->type == CommandType::unknown ||
+      !command_mutates_store(parsed.command->type)) {
+    error = "firehose payload is not a recognized write command";
+    return false;
+  }
+  std::string response;
+  execute_command_into(store, *parsed.command, response);
+  if (!response.empty() && response.front() == '-') {
+    const auto end = response.find("\r\n");
+    error = "replicated write failed: " +
+            std::string(response.substr(1, end == std::string::npos
+                                               ? response.size() - 1
+                                               : end - 1));
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -269,6 +426,17 @@ std::vector<ReplicationMutation> build_replication_mutations(
         }
       }
       return result;
+    case CommandType::spop: {
+      if (command.args.empty()) return result;
+      std::vector<std::string_view> popped;
+      if (!parse_spop_response(response, popped)) {
+        throw std::runtime_error("could not decode SPOP result for replication");
+      }
+      for (const auto member : popped) {
+        append_current_set_member(store, command.args[0], member, result);
+      }
+      return result;
+    }
 
     case CommandType::set:
     case CommandType::getset:
@@ -316,6 +484,20 @@ std::vector<ReplicationMutation> build_replication_mutations(
       if (!command.args.empty()) append_current_ttl(store, command.args[0], result);
       return result;
 
+    case CommandType::goblin_zwindow: {
+      auto fields = command_fields(command);
+      result.push_back(
+          {.kafka_key = {}, .payload = encode_resp2_command(fields)});
+      if (!command.args.empty()) append_current_ttl(store, command.args[0], result);
+      return result;
+    }
+
+    case CommandType::goblin_claim:
+      if (!command.args.empty() && response == "$7\r\nCLAIMED\r\n") {
+        append_current_string(store, command.args[0], result);
+      }
+      return result;
+
     default:
       break;
   }
@@ -351,6 +533,95 @@ std::string encode_firehose_hello(const ReplicationState& state) {
   const std::array<std::string_view, 4> fields{
       "GOBLIN.FIREHOSE", version, id, offset};
   return resp::array(fields);
+}
+
+std::optional<FirehoseHello> decode_firehose_hello(std::string_view bytes,
+                                                   std::string& error) {
+  RespParser parser;
+  std::vector<std::string_view> fields;
+  if (!parse_firehose_frame(bytes, fields, parser, error)) return std::nullopt;
+  if (fields.size() != 4) {
+    error = "firehose hello must contain exactly four fields";
+    return std::nullopt;
+  }
+  FirehoseHello hello;
+  if (!validate_firehose_header(fields, "GOBLIN.FIREHOSE", 4, hello.id,
+                                hello.offset, error)) {
+    return std::nullopt;
+  }
+  return hello;
+}
+
+std::optional<ReplicationBatch> decode_firehose_batch(std::string_view bytes,
+                                                      std::string& error) {
+  RespParser parser;
+  std::vector<std::string_view> fields;
+  if (!parse_firehose_frame(bytes, fields, parser, error)) return std::nullopt;
+  if (fields.size() < 5) {
+    error = "firehose batch must contain at least one mutation";
+    return std::nullopt;
+  }
+  ReplicationBatch batch;
+  if (!validate_firehose_header(fields, "GOBLIN.REPL", 5, batch.id,
+                                batch.offset, error)) {
+    return std::nullopt;
+  }
+  if (batch.offset == 0) {
+    error = "firehose batch logical offset is zero";
+    return std::nullopt;
+  }
+  if (fields.size() - 4 >
+      std::numeric_limits<std::uint64_t>::max() - batch.offset + 1) {
+    error = "firehose batch logical offsets overflow";
+    return std::nullopt;
+  }
+  batch.mutations.reserve(fields.size() - 4);
+  for (const auto payload : std::span(fields).subspan(4)) {
+    batch.mutations.push_back(
+        ReplicationMutation{.kafka_key = {}, .payload = std::string(payload)});
+  }
+  return batch;
+}
+
+bool apply_firehose_batch(Store& store, const ReplicationBatch& batch,
+                          std::string& error) {
+  error.clear();
+  if (batch.mutations.empty() || batch.offset == 0) {
+    error = "empty or zero-offset firehose batch";
+    return false;
+  }
+  const auto count = static_cast<std::uint64_t>(batch.mutations.size());
+  if (count - 1 > std::numeric_limits<std::uint64_t>::max() - batch.offset) {
+    error = "firehose batch logical offsets overflow";
+    return false;
+  }
+  const auto last_offset = batch.offset + count - 1;
+  const auto state = store.replication_state();
+  if (!state.valid || state.id != batch.id) {
+    error = "firehose replication lineage does not match the loaded state";
+    return false;
+  }
+  if (last_offset <= state.offset) return true;
+  if (state.offset == std::numeric_limits<std::uint64_t>::max() ||
+      batch.offset > state.offset + 1) {
+    error = "firehose logical offset gap: expected " +
+            std::to_string(state.offset + 1) + ", received " +
+            std::to_string(batch.offset);
+    return false;
+  }
+
+  std::size_t first = 0;
+  if (batch.offset <= state.offset) {
+    first = static_cast<std::size_t>(state.offset - batch.offset + 1);
+  }
+  auto next_offset = batch.offset + static_cast<std::uint64_t>(first);
+  for (std::size_t i = first; i < batch.mutations.size(); ++i, ++next_offset) {
+    if (!apply_resp2_write(store, batch.mutations[i].payload, error)) {
+      return false;
+    }
+    store.set_replication_offset(next_offset);
+  }
+  return true;
 }
 
 }  // namespace goblin::core

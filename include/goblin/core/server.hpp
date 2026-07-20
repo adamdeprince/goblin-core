@@ -71,6 +71,32 @@ using PubSubListenerConfig =
     std::variant<PubSubListenerRingConfig, PubSubListenerRdmaConfig,
                  PubSubListenerUdsConfig, PubSubListenerTcpConfig>;
 
+// One upstream GOBLIN.FIREHOSE source. Replication frames are RESP2-framed
+// internal records on every transport; version and lineage are checked before
+// any payload is applied.
+struct ReplicaRingConfig {
+  std::string path;
+};
+
+struct ReplicaRdmaConfig {
+  std::string address;
+  std::uint16_t port{0};
+  std::uint64_t bytes{0};
+};
+
+struct ReplicaUdsConfig {
+  std::string path;
+};
+
+struct ReplicaTcpConfig {
+  std::string address;
+  std::uint16_t port{0};
+};
+
+using ReplicaSourceConfig =
+    std::variant<ReplicaRingConfig, ReplicaRdmaConfig, ReplicaUdsConfig,
+                 ReplicaTcpConfig>;
+
 // Ordinary RESP/SBE socket listeners. These are intentionally separate from
 // polled ring, RDMA, and ExaSock targets: every configured socket participates
 // in the same sparse poll() pass.
@@ -127,6 +153,9 @@ struct ServerConfig {
   // Per-client anonymous mapping used only for unsolicited Pub/Sub delivery.
   // Zero selects one native page; non-zero values round up to a whole-page mapping.
   std::size_t unsolicited_output_buffer_bytes{0};
+  // Mapped lazily only for a downstream firehose or configured upstream
+  // replica. Rounded up to native pages; zero selects 1 MiB.
+  std::size_t replication_buffer_bytes{0};
   // Fixed anonymous mapping that holds queued MULTI commands. Zero selects one
   // native page; non-zero values round up to a whole-page mapping.
   std::size_t transaction_buffer_bytes{0};
@@ -142,6 +171,7 @@ struct ServerConfig {
   // client and therefore requires the exact same Goblin Core version.
   std::optional<PubSubListenerConfig> pubsub_listener{};
   std::string pubsub_listener_pattern{"*"};
+  std::optional<ReplicaSourceConfig> replica_source{};
   std::optional<KafkaConfig> kafka{};
   // Optional RESP credential database created by goblin-core-auth. When set,
   // TCP and UDS connections authenticate before accessing data commands.

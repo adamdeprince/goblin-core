@@ -335,6 +335,7 @@ add_library(goblin_core
   src/wren_script.cpp
   src/quickjs_script.cpp
   src/replication.cpp
+  src/replication_follower.cpp
   ${GOBLIN_RDMA_SOURCES})
 
 if(GOBLIN_HAS_KAFKA_BUILD)
@@ -727,6 +728,12 @@ if(GOBLIN_CORE_BUILD_TESTS)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
 
+  add_executable(goblin_core_replication_test tests/replication_test.cpp)
+  target_link_libraries(goblin_core_replication_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_replication_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_replication COMMAND goblin_core_replication_test)
+
   add_executable(goblin_core_auth_test tests/auth_test.cpp)
   target_link_libraries(goblin_core_auth_test PRIVATE goblin_core)
   set_target_properties(goblin_core_auth_test PROPERTIES
@@ -835,6 +842,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
 
   # SBE dispatch test (framed request -> Store -> generic reply).
   if(TARGET goblin_sbe_headers)
+    add_executable(goblin_core_replication_socket_test
+      tests/replication_socket_test.cpp)
+    target_link_libraries(goblin_core_replication_socket_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_replication_socket_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_replication_socket
+      COMMAND goblin_core_replication_socket_test
+              $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_replication_socket PROPERTIES TIMEOUT 60)
+
     add_executable(goblin_core_sbe_test tests/sbe_dispatch_test.cpp)
     target_link_libraries(goblin_core_sbe_test PRIVATE goblin_core goblin_sbe_headers)
     set_target_properties(goblin_core_sbe_test PROPERTIES

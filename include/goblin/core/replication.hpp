@@ -49,8 +49,14 @@ struct ReplicationMutation {
 
 struct ReplicationBatch {
   ReplicationId id{};
+  // Logical offset of mutations.front(); later mutations are consecutive.
   std::uint64_t offset{0};
   std::vector<ReplicationMutation> mutations;
+};
+
+struct FirehoseHello {
+  ReplicationId id{};
+  std::uint64_t offset{0};
 };
 
 [[nodiscard]] std::string encode_resp2_command(
@@ -70,6 +76,19 @@ struct ReplicationBatch {
 // Initial response to GOBLIN.FIREHOSE, before the connection becomes one-way.
 [[nodiscard]] std::string encode_firehose_hello(
     const ReplicationState& state);
+
+// Decode exactly one transport-neutral RESP2 firehose frame. Payloads are
+// copied because the returned object must outlive the parser's input buffer.
+[[nodiscard]] std::optional<FirehoseHello> decode_firehose_hello(
+    std::string_view bytes, std::string& error);
+[[nodiscard]] std::optional<ReplicationBatch> decode_firehose_batch(
+    std::string_view bytes, std::string& error);
+
+// Apply the non-duplicate suffix of one live batch. Unlike compacted Kafka
+// replay, a firehose is contiguous: a missing logical offset is fatal.
+[[nodiscard]] bool apply_firehose_batch(Store& store,
+                                        const ReplicationBatch& batch,
+                                        std::string& error);
 
 // Length-framed binary compaction key. Components may contain arbitrary bytes.
 [[nodiscard]] std::string make_replication_compaction_key(

@@ -609,6 +609,10 @@ void print_usage(std::string_view program) {
             << "       [--pubsub-listener-uds PATH]\n"
             << "       [--pubsub-listener-tcp HOST PORT]\n"
             << "       [--pubsub-listener-pattern GLOB] (default: *)\n"
+            << "       [--replica-ring PATH]\n"
+            << "       [--replica-rdma ADDRESS PORT SIZE]\n"
+            << "       [--replica-uds PATH] [--replica-tcp HOST PORT]\n"
+            << "       [--replication-buffer-bytes BYTES] (default: 1 MiB)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
             << "                               unsafe with fork-COW SAVE, so off by default)\n"
@@ -969,6 +973,85 @@ int main(int argc, char** argv) {
       }
       config.pubsub_listener_pattern = argv[++i];
       pubsub_listener_pattern_set = true;
+      continue;
+    }
+
+    if (arg == "--replica-ring") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-ring requires PATH\n";
+        return 2;
+      }
+      if (config.replica_source) {
+        std::cerr << "goblin-core: configure only one replica source\n";
+        return 2;
+      }
+      config.replica_source =
+          goblin::core::ReplicaRingConfig{.path = argv[++i]};
+      continue;
+    }
+
+    if (arg == "--replica-rdma") {
+#if defined(GOBLIN_HAS_RDMA)
+      if (i + 3 >= argc) {
+        std::cerr << "goblin-core: --replica-rdma requires ADDRESS, PORT, and "
+                     "SIZE\n";
+        return 2;
+      }
+      if (config.replica_source) {
+        std::cerr << "goblin-core: configure only one replica source\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const std::string_view size_text = argv[++i];
+      const auto port = parse_port(port_text);
+      const auto size = goblin::core::ring::parse_size(size_text);
+      if (!port || !size || *size == 0) {
+        std::cerr << "goblin-core: invalid --replica-rdma port or size\n";
+        return 2;
+      }
+      config.replica_source = goblin::core::ReplicaRdmaConfig{
+          .address = address, .port = *port, .bytes = *size};
+#else
+      std::cerr << "goblin-core: --replica-rdma is unavailable in this build\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--replica-uds") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-uds requires PATH\n";
+        return 2;
+      }
+      if (config.replica_source) {
+        std::cerr << "goblin-core: configure only one replica source\n";
+        return 2;
+      }
+      config.replica_source =
+          goblin::core::ReplicaUdsConfig{.path = argv[++i]};
+      continue;
+    }
+
+    if (arg == "--replica-tcp") {
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --replica-tcp requires HOST and PORT\n";
+        return 2;
+      }
+      if (config.replica_source) {
+        std::cerr << "goblin-core: configure only one replica source\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const auto port = parse_port(port_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --replica-tcp port: " << port_text
+                  << '\n';
+        return 2;
+      }
+      config.replica_source = goblin::core::ReplicaTcpConfig{
+          .address = address, .port = *port};
       continue;
     }
 
@@ -1504,6 +1587,20 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--replication-buffer-bytes") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto bytes = parse_positive_size(argv[++i]);
+      if (!bytes) {
+        std::cerr << "goblin-core: invalid replication buffer byte count\n";
+        return 2;
+      }
+      config.replication_buffer_bytes = *bytes;
+      continue;
+    }
+
     std::cerr << "goblin-core: unknown option: " << arg << '\n';
     print_usage(argv[0]);
     return 2;
@@ -1572,6 +1669,36 @@ int main(int argc, char** argv) {
           ring != nullptr && ring->path == listener->path) {
         std::cerr << "goblin-core: Pub/Sub listener ring must not be one of this "
                      "server's --ring paths\n";
+        return 2;
+      }
+    }
+  }
+
+  if (const auto* source =
+          config.replica_source
+              ? std::get_if<goblin::core::ReplicaRingConfig>(
+                    &*config.replica_source)
+              : nullptr) {
+    for (const auto& target : config.poll_targets) {
+      if (const auto* ring = std::get_if<goblin::core::RingConfig>(&target);
+          ring != nullptr && ring->path == source->path) {
+        std::cerr << "goblin-core: replica ring must not be one of this "
+                     "server's --ring paths\n";
+        return 2;
+      }
+    }
+  }
+  if (const auto* source =
+          config.replica_source
+              ? std::get_if<goblin::core::ReplicaUdsConfig>(
+                    &*config.replica_source)
+              : nullptr) {
+    for (const auto& configured : config.socket_listeners) {
+      const auto* uds =
+          std::get_if<goblin::core::UdsListenerConfig>(&configured);
+      if (uds != nullptr && uds->path == source->path) {
+        std::cerr << "goblin-core: replica UDS must not be one of this "
+                     "server's --uds-listen paths\n";
         return 2;
       }
     }
@@ -1648,6 +1775,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (config.replica_source && !load_path) {
+    // A fresh replica adopts the upstream lineage. Kafka replay then filters
+    // any retained prefix from an older primary before applying payloads.
+    store.clear_replication_identity();
+  }
+
   if (kafka_connection) {
     if (!load_path) {
       // With no snapshot there is no trusted lineage. The first Goblin-authored
@@ -1689,7 +1822,8 @@ int main(int argc, char** argv) {
         .connection = std::move(*kafka_connection),
         .start_timestamp_ms = start_timestamp_ms,
         .acknowledged_offset = acknowledged_offset,
-        .require_replication_metadata = acknowledged_offset.has_value()};
+        .require_replication_metadata =
+            acknowledged_offset.has_value() || config.replica_source.has_value()};
   }
 
   goblin::core::Server server(config, store);

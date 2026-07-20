@@ -312,6 +312,9 @@ struct CommandExecutionOptions {
   void (*replicate_write)(void*, Store&, const Command&, std::string_view) noexcept{
       nullptr};
   void (*render_role)(void*, std::string&, resp::Version){nullptr};
+  // Replica connections may read and subscribe but cannot mutate local state.
+  // Replication replay bypasses the live client dispatcher and leaves this false.
+  bool read_only{false};
   BlockingListDispatch blocking_lists{};
   // When set, EVAL / EVALSHA / SCRIPT are dispatched to this engine. Left null on
   // the redis.call re-entry path (so a script cannot nest EVAL) and by callers
