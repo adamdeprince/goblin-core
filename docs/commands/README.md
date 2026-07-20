@@ -64,9 +64,10 @@ behavior with `EVAL`, so choosing one is an explicit decision.
   network connections, or load host modules. See each command's page for the
   exact surface.
 
-- **No replication / determinism constraints.** Goblin Core is a single node, so
-  scripts are not required to be deterministic and non-deterministic library
-  functions are left enabled.
+- **Replication captures results.** A script runs once on the primary, and its
+  successful nested writes are emitted together as canonical post-state
+  mutations. Replicas do not rerun the script, so nondeterministic library
+  functions may remain enabled without producing a different result downstream.
 
 ## Return values
 

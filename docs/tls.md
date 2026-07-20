@@ -64,3 +64,27 @@ clients.
 transport behavior and do not use the ordinary TCP TLS context. See
 [Authentication and trust boundaries](authentication.md) before exposing any
 listener.
+
+## TLS replication clients
+
+`--replica-tcp HOST PORT` automatically enables TLS when `HOST` is not a
+loopback address. The follower requires TLS 1.2 or newer, verifies the upstream
+certificate, and uses the system/OpenSSL trust store by default:
+
+```sh
+goblin-core \
+  --replica-tcp 192.168.1.13 6379 \
+  --replica-tls-ca-file /etc/goblin/replication-ca.pem \
+  --replica-tls-server-name primary.example.net
+```
+
+`--replica-tls-ca-file` selects a PEM CA bundle. Without
+`--replica-tls-server-name`, certificate identity is checked against the
+numeric host passed to `--replica-tcp`; the override verifies a DNS identity and
+sends it as SNI. Use `--replica-tls` to opt into the same verified TLS client on
+a loopback source. TLS protects the transport, while
+`--replica-auth-user`/`--replica-auth-password-file` authenticate to a primary
+that uses `--auth-file`.
+
+See [Firehose replication and Kafka recovery](replication.md) for live and
+Kafka handoff semantics.

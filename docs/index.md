@@ -15,6 +15,7 @@ rings, and polled one-sided RDMA rings.
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
 - [List storage algorithms](../LISTS.md)
 - [Real-time and memory-efficient hash indexes](real-time-hashes.md)
+- [Firehose replication and Kafka recovery](replication.md)
 - [Kafka write-log ingestion](kafka.md)
 - [Authentication and trusted transports](authentication.md)
 - [TCP listeners and native TLS](tls.md)
@@ -37,12 +38,14 @@ requires TLS on non-loopback addresses. SBE requires `--enable-sbe` and is
 intentionally unauthenticated; see [Authentication](authentication.md) before
 exposing it.
 
-## Durability and replay
+## Replication, durability, and replay
 
-[`--kafka`](kafka.md) consumes one RESP2 write per Kafka record, restores from
-the earliest retained offset or a loaded snapshot's creation-time cutoff, and
-catches up before opening client listeners. Kafka owns the durable log; Goblin
-Core remains the compact serving layer.
+[`GOBLIN.FIREHOSE`](replication.md) provides transport-neutral live replication
+over TCP, UDS, shared-memory rings, or RDMA. A replica can load a native
+snapshot, replay the durable RESP2 mutation log from [Kafka](kafka.md), buffer
+the live firehose while it catches up, and open its listeners only after the
+handoff is complete. Kafka owns the durable history; Goblin Core remains the
+compact serving layer.
 
 ## Command reference
 
@@ -215,6 +218,8 @@ Operational extensions are collected in the
 [`GOBLIN.OPTIMIZE`](commands/goblin.md#goblin-optimize),
 [`GOBLIN.SAVE`](commands/goblin.md#goblin-save), and
 [`GOBLIN.LOAD`](commands/goblin.md#goblin-load).
+The same-version server stream is documented separately as
+[`GOBLIN.FIREHOSE`](commands/operational.md#goblinfirehose).
 
 ## Scripting
 

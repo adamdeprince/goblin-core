@@ -1,11 +1,14 @@
+#include "goblin/core/auth.hpp"
 #include "goblin/core/replication.hpp"
 #include "goblin/core/ring_client.hpp"
 #include "goblin/core/sbe_ring_client.hpp"
 
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <netinet/in.h>
@@ -54,10 +57,12 @@ struct Child {
   const pid_t pid = ::fork();
   assert(pid >= 0);
   if (pid == 0) {
-    const int null_fd = ::open("/dev/null", O_WRONLY);
-    if (null_fd >= 0) {
-      (void)::dup2(null_fd, STDOUT_FILENO);
-      (void)::dup2(null_fd, STDERR_FILENO);
+    if (::getenv("GOBLIN_TEST_LOG") == nullptr) {
+      const int null_fd = ::open("/dev/null", O_WRONLY);
+      if (null_fd >= 0) {
+        (void)::dup2(null_fd, STDOUT_FILENO);
+        (void)::dup2(null_fd, STDERR_FILENO);
+      }
     }
     std::vector<char*> argv;
     argv.reserve(args.size() + 2);
@@ -170,8 +175,21 @@ int main(int argc, char** argv) {
   const std::string primary_path = "/tmp/goblin-repl-primary-" + suffix + ".sock";
   const std::string replica_path = "/tmp/goblin-repl-replica-" + suffix + ".sock";
   const std::string chained_path = "/tmp/goblin-repl-chain-" + suffix + ".sock";
+  const std::string auth_path = "/tmp/goblin-repl-auth-" + suffix + ".conf";
+  const std::string password_path =
+      "/tmp/goblin-repl-password-" + suffix + ".txt";
   for (const auto* path : {&primary_path, &replica_path, &chained_path}) {
     (void)::unlink(path->c_str());
+  }
+  (void)::unlink(auth_path.c_str());
+  (void)::unlink((auth_path + ".lock").c_str());
+  (void)::unlink(password_path.c_str());
+  assert(upsert_auth_user(auth_path, "replicator", "secret") ==
+         AuthUserUpdate::added);
+  {
+    std::ofstream password(password_path, std::ios::binary);
+    password << "secret\n";
+    assert(password.good());
   }
 
   {
@@ -179,32 +197,46 @@ int main(int argc, char** argv) {
     const auto replica_port = std::to_string(reserve_tcp_port());
     const auto chained_port = std::to_string(reserve_tcp_port());
     auto primary = spawn_server(
-        argv[1], {"--enable-sbe", "--unixsocket", primary_path, "--port",
-                  primary_port});
+        argv[1], {"--enable-sbe", "--auth-file", auth_path, "--unixsocket",
+                  primary_path, "--port", primary_port});
     const int primary_client = wait_for_uds(primary_path);
     assert(primary_client >= 0);
 
     auto replica = spawn_server(
-        argv[1], {"--enable-sbe", "--unixsocket", replica_path, "--port",
-                  replica_port, "--replica-uds", primary_path});
+        argv[1], {"--enable-sbe", "--auth-file", auth_path, "--unixsocket",
+                  replica_path, "--port", replica_port, "--replica-uds",
+                  primary_path, "--replica-auth-user", "replicator",
+                  "--replica-auth-password-file", password_path});
     const int replica_client = wait_for_uds(replica_path);
     assert(replica_client >= 0);
 
     // Start a replica-of-replica before writes begin. Both downstream servers
     // adopt the primary lineage at offset zero, then relay the same batches.
     auto chained = spawn_server(
-        argv[1], {"--enable-sbe", "--unixsocket", chained_path, "--port",
-                  chained_port, "--replica-uds", replica_path});
+        argv[1], {"--enable-sbe", "--auth-file", auth_path, "--unixsocket",
+                  chained_path, "--port", chained_port, "--replica-uds",
+                  replica_path, "--replica-auth-user", "replicator",
+                  "--replica-auth-password-file", password_path});
     const int chained_client = wait_for_uds(chained_path);
     assert(chained_client >= 0);
 
     std::string primary_pending;
     std::string replica_pending;
     std::string chained_pending;
+    assert(request(primary_client, primary_pending,
+                   {"AUTH", "replicator", "secret"}) == "+OK\r\n");
+    assert(request(replica_client, replica_pending,
+                   {"AUTH", "replicator", "secret"}) == "+OK\r\n");
+    assert(request(chained_client, chained_pending,
+                   {"AUTH", "replicator", "secret"}) == "+OK\r\n");
 
     const int observer = connect_uds(primary_path);
     assert(observer >= 0);
     std::string observer_pending;
+    assert(request(observer, observer_pending, {"GOBLIN.FIREHOSE"}) ==
+           "-NOAUTH Authentication required.\r\n");
+    assert(request(observer, observer_pending,
+                   {"AUTH", "replicator", "secret"}) == "+OK\r\n");
     send_command(observer, {"GOBLIN.FIREHOSE"});
     std::string error;
     const auto hello = decode_firehose_hello(
@@ -283,6 +315,9 @@ int main(int argc, char** argv) {
   for (const auto* path : {&primary_path, &replica_path, &chained_path}) {
     (void)::unlink(path->c_str());
   }
+  (void)::unlink(auth_path.c_str());
+  (void)::unlink((auth_path + ".lock").c_str());
+  (void)::unlink(password_path.c_str());
   std::cout << "Primary, chained replica, transaction, and SBE replication OK\n";
   return 0;
 }

@@ -830,6 +830,17 @@ if(GOBLIN_CORE_BUILD_TESTS)
       COMMAND goblin_core_tls_socket_test
               $<TARGET_FILE:goblin_core_server>)
     set_tests_properties(goblin_core_tls_socket PROPERTIES TIMEOUT 60)
+
+    add_executable(goblin_core_replication_tls_socket_test
+      tests/replication_tls_socket_test.cpp)
+    target_link_libraries(goblin_core_replication_tls_socket_test PRIVATE
+      goblin_core OpenSSL::SSL OpenSSL::Crypto)
+    set_target_properties(goblin_core_replication_tls_socket_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_replication_tls_socket
+      COMMAND goblin_core_replication_tls_socket_test
+              $<TARGET_FILE:goblin_core_server>)
+    set_tests_properties(goblin_core_replication_tls_socket PROPERTIES TIMEOUT 60)
   endif()
 
   add_executable(goblin_core_pubsub_socket_test tests/pubsub_socket_test.cpp)

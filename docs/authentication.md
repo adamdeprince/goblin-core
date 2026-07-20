@@ -92,3 +92,24 @@ and authenticates the server; it does not replace `--auth-file` or authenticate
 clients with certificates. The password file limits the damage of a file
 disclosure; it does not protect a password crossing an observable plaintext
 network.
+
+## Replica credentials
+
+An authenticated upstream firehose uses a normal RESP login before the
+connection becomes one-way:
+
+```sh
+goblin-core \
+  --replica-uds /run/goblin/primary.sock \
+  --replica-auth-user replicator \
+  --replica-auth-password-file /etc/goblin/replicator.password
+```
+
+The password file must contain exactly one non-empty line. Reading the secret
+from a file keeps it out of the process argument list; Goblin clears its startup
+copy after establishing the upstream connection. The username and password-file
+options must be supplied together. Ring or RDMA firehoses can omit credentials
+when the upstream deliberately uses `--no-auth-ring` or `--no-auth-rdma`.
+
+See [Firehose replication and Kafka recovery](replication.md) for the complete
+follower configuration.

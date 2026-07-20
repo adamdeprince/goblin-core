@@ -301,6 +301,8 @@ class ReplicationRuntime {
           failed_ = true;
           return;
         }
+#else
+        (void)mutation;
 #endif
         store.set_replication_offset(offset);
       }
@@ -2987,7 +2989,13 @@ int Server::run() {
   if (config_.replica_source) {
     try {
       replica = std::make_unique<ReplicationFollowerRuntime>(
-          *config_.replica_source, config_.replication_buffer_bytes);
+          *config_.replica_source, config_.replication_buffer_bytes,
+          config_.replica_auth ? &*config_.replica_auth : nullptr);
+      if (config_.replica_auth) {
+        std::fill(config_.replica_auth->password.begin(),
+                  config_.replica_auth->password.end(), '\0');
+        config_.replica_auth->password.clear();
+      }
     } catch (const std::exception& error) {
       std::cerr << "goblin-core: replica setup failed: " << error.what() << '\n';
       return 1;

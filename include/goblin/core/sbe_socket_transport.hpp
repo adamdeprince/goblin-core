@@ -169,6 +169,9 @@ class SocketSbeTransport {
     return buffer_size_;
   }
   [[nodiscard]] int native_handle() const noexcept { return fd_; }
+  [[nodiscard]] int release_native_handle() noexcept {
+    return std::exchange(fd_, -1);
+  }
 
  private:
   SocketSbeTransport(int fd, std::size_t buffer_size)

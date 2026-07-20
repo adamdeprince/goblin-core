@@ -58,9 +58,12 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Persistence is fast too: `GOBLIN.SAVE`/`--load` snapshots dump and restore the
   packed indexes, so at 9.5M members they save about `5x` and load about `5.7x`
   faster than a Redis RDB (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
-- Durable replay belongs to Kafka: [`--kafka`](docs/kafka.md) consumes one RESP2
-  write per record, catches up before any listener opens, and starts from either
-  the earliest retained offset or a loaded snapshot's creation-time cutoff.
+- Live replication is transport-neutral: [`GOBLIN.FIREHOSE`](docs/replication.md)
+  streams canonical writes over TCP, UDS, shared-memory rings, or RDMA, and
+  replicas can feed replicas.
+- Durable replay belongs to Kafka: [`--kafka`](docs/kafka.md) journals primary
+  writes as canonical RESP2 mutations and recovers from the exact broker and
+  logical offsets saved in a native snapshot.
 - Hardware intrinsics, selected at compile time (no runtime CPU dispatch): the
   swiss-table member-index probe is a SIMD group scan (SSE2 on x86, NEON on
   AArch64); snapshot checksums use the CRC32C instruction (SSE4.2 on x86 —
@@ -234,11 +237,12 @@ embedded for modern programmers, with Lua, Luau, Wren, and Tcl available when
 another runtime fits the job.
 
 The deliberate boundary is infrastructure policy. Goblin Core does not provide
-an append-only write log, replication, or cluster mode. Point-in-time
-`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts; [`--kafka`](docs/kafka.md)
-consumes the durable RESP2 write log from Kafka, where logging is the product. A
-Redis `dump.rdb` can be imported to migrate sorted sets and lists (see
-"Migrating from Redis" below).
+an append-only write log or cluster mode. Point-in-time
+`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts;
+[`GOBLIN.FIREHOSE`](docs/replication.md) provides live primary/replica streams;
+and [`--kafka`](docs/kafka.md) journals and replays the durable RESP2 mutation
+log, where logging is the product. A Redis `dump.rdb` can be imported to migrate
+sorted sets and lists (see "Migrating from Redis" below).
 
 Following Redis's single-namespace keyspace, a key holds at most one type. A
 type-specific command against a key of another type returns the standard
@@ -608,9 +612,12 @@ into the selected final representation without duplicating them in the file.
 Other lists are still restored with one bulk build from ordered snapshot views,
 rather than one mutation per element; Redis RDB list imports use the same bulk
 construction path.
-Persistence is explicit and client-driven: a crash loses writes made since the
-last successful `GOBLIN.SAVE`, so drive saves from your operations and `--load`
-on startup.
+Snapshots are explicit and client-driven. Without Kafka, a crash loses writes
+made since the last successful `GOBLIN.SAVE`, so drive saves from your
+operations and `--load` on startup. With Kafka, the snapshot's saved lineage,
+logical offset, and acknowledged broker offset provide the restart point for
+inclusive replay; see [Firehose replication and Kafka
+recovery](docs/replication.md).
 
 By design, Goblin Core does not — and will not — offer an append-only write log
 (AOF) or an internal snapshot scheduler, for two different reasons.
@@ -618,8 +625,8 @@ By design, Goblin Core does not — and will not — offer an append-only write 
 An append-only log adds latency to every write and still makes you choose an
 `fsync` interval that can lose data on a crash anyway — a real hot-path cost for
 a durability guarantee that is only ever partial. If you need durable, replayable
-writes, that belongs in a system built for it: run them through Kafka (or
-similar) ahead of Goblin Core, which replays them. This is the same principle as
+writes, that belongs in a system built for it: configure Kafka as Goblin Core's
+durable journal and replay source. This is the same principle as
 the 64 KiB member cap — do the core sorted-set operations better than Redis
 rather than reimplement a weaker version of a peripheral feature.
 

@@ -11,7 +11,8 @@ namespace goblin::core {
 class ReplicationFollowerRuntime {
  public:
   ReplicationFollowerRuntime(const ReplicaSourceConfig& config,
-                             std::size_t buffer_bytes);
+                             std::size_t buffer_bytes,
+                             const ReplicaAuthConfig* auth = nullptr);
   ~ReplicationFollowerRuntime();
 
   ReplicationFollowerRuntime(const ReplicationFollowerRuntime&) = delete;

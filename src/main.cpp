@@ -112,6 +112,30 @@ parse_tcp_listener(std::string_view endpoint, std::string& error) {
          IN6_IS_ADDR_LOOPBACK(&ipv6);
 }
 
+[[nodiscard]] std::optional<std::string> read_password_file(
+    std::string_view path, std::string& error) {
+  std::ifstream input(std::string(path), std::ios::binary);
+  if (!input) {
+    error = "cannot open replica password file";
+    return std::nullopt;
+  }
+  std::string password((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+  if (input.bad() || password.size() > 64 * 1024) {
+    error = "cannot read replica password file or file is too large";
+    return std::nullopt;
+  }
+  if (!password.empty() && password.back() == '\n') {
+    password.pop_back();
+    if (!password.empty() && password.back() == '\r') password.pop_back();
+  }
+  if (password.empty() || password.find_first_of("\r\n") != std::string::npos) {
+    error = "replica password file must contain one non-empty line";
+    return std::nullopt;
+  }
+  return password;
+}
+
 [[nodiscard]] bool add_tcp_listener(
     goblin::core::ServerConfig& config,
     goblin::core::TcpListenerConfig listener) {
@@ -612,6 +636,9 @@ void print_usage(std::string_view program) {
             << "       [--replica-ring PATH]\n"
             << "       [--replica-rdma ADDRESS PORT SIZE]\n"
             << "       [--replica-uds PATH] [--replica-tcp HOST PORT]\n"
+            << "       [--replica-auth-user USER --replica-auth-password-file FILE]\n"
+            << "       [--replica-tls] [--replica-tls-ca-file FILE]\n"
+            << "       [--replica-tls-server-name NAME]\n"
             << "       [--replication-buffer-bytes BYTES] (default: 1 MiB)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
@@ -658,6 +685,11 @@ int main(int argc, char** argv) {
   bool pubsub_listener_pattern_set = false;
   std::optional<std::string> tls_certificate_chain;
   std::optional<std::string> tls_private_key;
+  std::optional<std::string> replica_auth_user;
+  std::optional<std::string> replica_auth_password_file;
+  std::optional<std::string> replica_tls_ca_file;
+  std::optional<std::string> replica_tls_server_name;
+  bool replica_tls_requested = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -676,6 +708,65 @@ int main(int argc, char** argv) {
         return 2;
       }
       config.auth_file = argv[++i];
+      continue;
+    }
+
+    if (arg == "--replica-auth-user") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-auth-user requires a username\n";
+        return 2;
+      }
+      if (replica_auth_user) {
+        std::cerr << "goblin-core: configure only one replica auth user\n";
+        return 2;
+      }
+      replica_auth_user = argv[++i];
+      continue;
+    }
+
+    if (arg == "--replica-auth-password-file") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-auth-password-file requires a path\n";
+        return 2;
+      }
+      if (replica_auth_password_file) {
+        std::cerr << "goblin-core: configure only one replica password file\n";
+        return 2;
+      }
+      replica_auth_password_file = argv[++i];
+      continue;
+    }
+
+    if (arg == "--replica-tls") {
+      replica_tls_requested = true;
+      continue;
+    }
+
+    if (arg == "--replica-tls-ca-file") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-tls-ca-file requires a path\n";
+        return 2;
+      }
+      if (replica_tls_ca_file) {
+        std::cerr << "goblin-core: configure only one replica TLS CA file\n";
+        return 2;
+      }
+      replica_tls_ca_file = argv[++i];
+      replica_tls_requested = true;
+      continue;
+    }
+
+    if (arg == "--replica-tls-server-name") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --replica-tls-server-name requires a name\n";
+        return 2;
+      }
+      if (replica_tls_server_name) {
+        std::cerr << "goblin-core: configure only one replica TLS server name\n";
+        return 2;
+      }
+      replica_tls_server_name = argv[++i];
+      replica_tls_requested = true;
       continue;
     }
 
@@ -1635,6 +1726,53 @@ int main(int argc, char** argv) {
     std::cerr << "goblin-core: non-loopback endpoints require "
                  "--tls-cert-file and --tls-key-file\n";
     return 2;
+  }
+
+  if (replica_auth_user.has_value() !=
+      replica_auth_password_file.has_value()) {
+    std::cerr << "goblin-core: replica authentication requires both "
+                 "--replica-auth-user and --replica-auth-password-file\n";
+    return 2;
+  }
+  if (replica_auth_user && !config.replica_source) {
+    std::cerr << "goblin-core: replica authentication requires a "
+                 "--replica-* source\n";
+    return 2;
+  }
+  if (replica_auth_user) {
+    std::string error;
+    auto password = read_password_file(*replica_auth_password_file, error);
+    if (!password) {
+      std::cerr << "goblin-core: " << error << ": "
+                << *replica_auth_password_file << '\n';
+      return 2;
+    }
+    config.replica_auth = goblin::core::ReplicaAuthConfig{
+        .username = std::move(*replica_auth_user),
+        .password = std::move(*password)};
+  }
+
+  auto* replica_tcp =
+      config.replica_source
+          ? std::get_if<goblin::core::ReplicaTcpConfig>(&*config.replica_source)
+          : nullptr;
+  if ((replica_tls_requested || replica_tls_ca_file ||
+       replica_tls_server_name) &&
+      replica_tcp == nullptr) {
+    std::cerr << "goblin-core: replica TLS options require --replica-tcp\n";
+    return 2;
+  }
+  if (replica_tcp != nullptr &&
+      (replica_tls_requested || !is_loopback_address(replica_tcp->address))) {
+#ifdef GOBLIN_HAS_TLS
+    replica_tcp->tls = goblin::core::ReplicaTlsConfig{
+        .ca_file = replica_tls_ca_file.value_or(""),
+        .server_name = replica_tls_server_name.value_or("")};
+#else
+    std::cerr << "goblin-core: TLS TCP replication requires a build configured "
+                 "with -DGOBLIN_CORE_ENABLE_TLS=ON\n";
+    return 2;
+#endif
   }
 
   if (kafka_time_buffer_set && !kafka_connection) {

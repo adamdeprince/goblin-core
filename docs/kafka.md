@@ -3,8 +3,14 @@
 Goblin Core deliberately does not implement an append-only log. If an
 application needs a durable write history, Kafka should own that log and Goblin
 Core should remain the compact serving layer. `--kafka` makes that arrangement a
-startup and runtime feature: Goblin consumes RESP2 writes from the topic and
-journals writes accepted through its RESP command path back to the same topic.
+startup and runtime feature: Goblin consumes RESP2 mutations from the topic and,
+when it is a primary, journals successful writes accepted through either RESP
+or SBE back to the same topic. Replicas may consume Kafka for recovery but never
+produce a second copy of an upstream write.
+
+Kafka recovery composes with transport-neutral live replication. See [Firehose
+replication and Kafka recovery](replication.md) for the snapshot -> Kafka ->
+firehose handoff.
 
 ## Start a server
 
@@ -39,8 +45,8 @@ Kafka support is enabled by default. Configure with
 
 ## Record contract
 
-One Kafka record value contains exactly one complete RESP2 array. This record
-carries `SET key value`:
+One Kafka record value contains exactly one complete canonical RESP2 mutation.
+This record carries `SET key value`:
 
 ```text
 *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
@@ -48,7 +54,9 @@ carries `SET key value`:
 
 Inline commands, RESP3 values, empty/tombstone records, partial frames, and
 multiple commands in one record are rejected. The strict one-record/one-command
-boundary makes a Kafka offset identify one atomic Goblin mutation.
+boundary makes each Kafka record independently replayable. One atomic client
+command, transaction, or script may yield several consecutive records; its live
+firehose batch retains the enclosing atomic boundary.
 
 Records produced by Goblin carry `goblin-replication-version`,
 `goblin-replication-id`, and `goblin-replication-offset` headers. The replication
@@ -115,6 +123,13 @@ creates TCP, UDS, shared-memory-ring, ExaSock, and RDMA listeners. Clients canno
 observe the snapshot before its initial Kafka catch-up completes. Records that
 arrive after the captured mark remain queued for the normal server loop.
 
+When an upstream `--replica-*` source is also configured, Goblin connects its
+firehose before Kafka replay and buffers that live suffix in a fixed page-backed
+mapping. Kafka catches up to at least the logical offset reported by the
+firehose hello; overlapping live frames are skipped by logical offset, the
+Kafka consumer closes, and the firehose becomes the sole upstream before client
+listeners open.
+
 ## Runtime behavior
 
 librdkafka fetches on its own I/O threads, but those threads never touch the
@@ -132,6 +147,10 @@ Primary-side production is asynchronous and uses Kafka's idempotent producer,
 the Goblin server thread. A successful callback advances the broker offset that
 the next snapshot captures; a permanent delivery failure stops the server rather
 than allowing the serving state and durable log to diverge silently.
+
+A server with an upstream firehose does not create a Kafka producer. This is
+true for replicas of replicas as well: only the origin primary owns the durable
+journal.
 
 Transient broker and leader changes are left to librdkafka's reconnect logic.
 Permanent consumer errors and invalid write records stop serving with a nonzero

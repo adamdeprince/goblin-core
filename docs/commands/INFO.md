@@ -25,10 +25,14 @@ the full payload.
 
 | field | meaning |
 |---|---|
-| `role` | `master` until an upstream firehose is configured |
+| `role` | `master`, or `slave` when an upstream firehose is configured |
 | `master_replid` | the 128-bit replication lineage ID, rendered as 32 hexadecimal digits |
 | `master_repl_offset` | highest logical mutation offset represented by this server |
 | `kafka_acknowledged_offset` | last broker offset acknowledged by Kafka and eligible for inclusive snapshot recovery; `-1` until one is known |
+
+The logical and Kafka offsets are different coordinate systems. See [Firehose
+replication and Kafka recovery](../replication.md) before using them in restart
+automation.
 
 ## `# Memory`
 

@@ -88,9 +88,22 @@ struct ReplicaUdsConfig {
   std::string path;
 };
 
+struct ReplicaTlsConfig {
+  // Empty uses the platform/OpenSSL default trust store.
+  std::string ca_file;
+  // Empty verifies the address passed to --replica-tcp.
+  std::string server_name;
+};
+
 struct ReplicaTcpConfig {
   std::string address;
   std::uint16_t port{0};
+  std::optional<ReplicaTlsConfig> tls;
+};
+
+struct ReplicaAuthConfig {
+  std::string username;
+  std::string password;
 };
 
 using ReplicaSourceConfig =
@@ -172,6 +185,7 @@ struct ServerConfig {
   std::optional<PubSubListenerConfig> pubsub_listener{};
   std::string pubsub_listener_pattern{"*"};
   std::optional<ReplicaSourceConfig> replica_source{};
+  std::optional<ReplicaAuthConfig> replica_auth{};
   std::optional<KafkaConfig> kafka{};
   // Optional RESP credential database created by goblin-core-auth. When set,
   // TCP and UDS connections authenticate before accessing data commands.

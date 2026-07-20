@@ -1,9 +1,8 @@
 # Operational compatibility commands
 
 Goblin Core exposes a deliberately small operational surface for clients and
-health checks. These replies describe capabilities that actually exist; they do
-not synthesize replication, persistence, or database settings that the server
-does not implement.
+health checks. These replies describe capabilities that actually exist rather
+than synthesizing unsupported database settings.
 
 ## TIME
 
@@ -20,17 +19,46 @@ of the current second.
 ROLE
 ```
 
-Goblin Core is currently a single-node primary. `ROLE` therefore returns the
-Redis-compatible master shape with replication offset zero and no replicas:
+A primary returns the Redis-compatible master shape with its current logical
+replication offset:
 
 ```text
 1) "master"
-2) (integer) 0
+2) (integer) <offset>
 3) (empty array)
 ```
 
-This is intentionally not a claim that replication exists. The reply remains
-`master` until Goblin Core gains a real replication role model.
+The downstream array is currently empty even when internal firehose subscribers
+are connected; Goblin does not describe those transport-neutral connections as
+Redis replica descriptors.
+
+A server configured with one `--replica-*` source returns:
+
+```text
+1) "slave"
+2) "<upstream transport description>"
+3) (integer) 0
+4) "connected"
+5) (integer) <offset>
+```
+
+The third element is zero because a ring, UDS, RDMA, or TLS source does not
+necessarily have one meaningful Redis TCP port. The transport and endpoint are
+included in the second element. See [Firehose replication and Kafka
+recovery](../replication.md) for setup and recovery semantics.
+
+## GOBLIN.FIREHOSE
+
+```text
+GOBLIN.FIREHOSE
+```
+
+Turn the live connection into a one-way replication stream. The initial reply
+identifies the replication protocol version, lineage ID, and current logical
+offset; subsequent internal frames contain canonical RESP2 mutations. This is a
+same-version Goblin server protocol, not a general client API. Authentication,
+transport setup, buffering, and failure behavior are documented in [Firehose
+replication and Kafka recovery](../replication.md).
 
 ## CONFIG GET
 
