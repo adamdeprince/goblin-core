@@ -465,20 +465,22 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
     }
   } else {
 #ifdef GOBLIN_HAS_RDMA
-    const auto& source = std::get<ReplicaRdmaConfig>(config);
+    const auto& rdma_source = std::get<ReplicaRdmaConfig>(config);
     std::string error;
-    auto client = rdma::RdmaClient::open(source.address, source.port,
-                                         source.bytes, connect_timeout, &error);
+    auto client = rdma::RdmaClient::open(rdma_source.address, rdma_source.port,
+                                         rdma_source.bytes, connect_timeout,
+                                         &error);
     if (!client) {
       throw std::runtime_error("could not connect to upstream RDMA " +
-                               source.address + ':' +
-                               std::to_string(source.port) +
+                               rdma_source.address + ':' +
+                               std::to_string(rdma_source.port) +
                                (error.empty() ? "" : ": " + error));
     }
     impl_->rdma_client =
         std::make_unique<rdma::RdmaClient>(std::move(*client));
     impl_->description =
-        "RDMA " + source.address + ':' + std::to_string(source.port);
+        "RDMA " + rdma_source.address + ':' +
+        std::to_string(rdma_source.port);
 #else
     throw std::runtime_error("RDMA replication is unavailable in this build");
 #endif
