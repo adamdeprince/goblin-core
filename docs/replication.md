@@ -155,9 +155,12 @@ monotonic ordering, not adjacency.
 
 Without Kafka, the loaded state must be at exactly the offset reported by the
 upstream hello. A fresh empty replica can therefore join an upstream only while
-that upstream is still at offset zero. Goblin does not currently transfer a
-full snapshot over the firehose; load a current snapshot or configure Kafka to
-bootstrap an established server.
+that upstream is still at offset zero. Goblin does not automatically transfer a
+full snapshot over the firehose. An authenticated bootstrap client can request a
+fork-time native image with
+[`GOBLIN.DUMPWORLD`](commands/goblin.md#goblin-dumpworld), install it on the new
+replica, and restart with `--load`; alternatively configure Kafka to bootstrap
+an established server.
 
 ## Kafka ownership
 
@@ -209,9 +212,10 @@ On reconnect:
   replay abandons that attempt and retries without applying an unverified gap;
 - a downstream that fills its fixed output queue is disconnected.
 
-Full-snapshot transfer is not implemented. A lineage change therefore requires
-an operator-supplied snapshot from the new lineage. `GOBLIN.LOAD` is rejected on
-a running replicated server; restart with `--load` so the durable boundary is
+Automatic full-snapshot installation is not implemented. A lineage change
+therefore requires a snapshot from the new lineage, obtained through
+`GOBLIN.DUMPWORLD` or another operator-controlled path. `GOBLIN.LOAD` is rejected
+on a running replicated server; restart with `--load` so the durable boundary is
 validated before the replica can become ready.
 
 ## Observe the role

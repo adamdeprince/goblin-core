@@ -98,6 +98,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `QUIT`
 - `ECHO message`
 - `TIME`, `ROLE`
+- `GOBLIN.DUMPWORLD [ACCEL|NOACCEL]` (RESP3 streamed native snapshot)
 - `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`
 - `DBSIZE`, `RANDOMKEY`, `TOUCH key [key ...]`
 - `RENAME source destination`, `RENAMENX source destination`
@@ -652,6 +653,14 @@ no real gain.
 `GOBLIN.LOAD` and `--load` auto-detect the file by magic: a native Goblin
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
 "Migrating from Redis" below.
+
+`GOBLIN.DUMPWORLD [ACCEL|NOACCEL]` is the network form of the same native save.
+After `HELLO 3`, it forks the same copy-on-write snapshot child but writes the
+GCSN bytes to a pipe instead of a named file. The response is one RESP3 streamed
+blob string, so the receiver writes each chunk payload consecutively to obtain a
+byte-for-byte loadable snapshot without either process buffering the whole image.
+The command dedicates and closes its connection after the stream terminator.
+See [`GOBLIN.DUMPWORLD`](docs/commands/goblin.md#goblin-dumpworld).
 
 The default (`GOBLIN.SAVE <path>`) is the everyday restart path: it dumps the
 packed indexes so a same-build restart loads about `5.7×` faster than Redis by

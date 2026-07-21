@@ -32,6 +32,7 @@ UNWATCH, goblin::core::CommandType::unwatch
 TIME, goblin::core::CommandType::time
 ROLE, goblin::core::CommandType::role
 GOBLIN.FIREHOSE, goblin::core::CommandType::goblin_firehose
+GOBLIN.DUMPWORLD, goblin::core::CommandType::goblin_dumpworld
 SUBSCRIBE, goblin::core::CommandType::subscribe
 UNSUBSCRIBE, goblin::core::CommandType::unsubscribe
 PSUBSCRIBE, goblin::core::CommandType::psubscribe

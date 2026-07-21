@@ -3521,7 +3521,7 @@ bool Store::save_to_file(const std::string& path,
 
 Store::SaveStart Store::start_background_save(std::string path,
                                              bool with_accelerator) {
-  if (background_save_child_ > 0 || background_save_sync_pending_) {
+  if (background_snapshot_in_progress()) {
     return SaveStart::AlreadyRunning;
   }
 
@@ -3555,6 +3555,75 @@ Store::SaveStart Store::start_background_save(std::string path,
   return SaveStart::Started;
 }
 
+Store::DumpStart Store::start_background_dump(bool with_accelerator) {
+  if (background_snapshot_in_progress()) {
+    return {.status = DumpStartStatus::AlreadyRunning};
+  }
+  if (hugetlb::arena_enabled()) {
+    return {.status = DumpStartStatus::HugeTlbUnsafe};
+  }
+
+  int pipe_fds[2] = {-1, -1};
+  if (::pipe(pipe_fds) != 0) {
+    return {.status = DumpStartStatus::PipeFailed};
+  }
+  const auto close_pipe = [&] {
+    if (pipe_fds[0] >= 0) (void)::close(pipe_fds[0]);
+    if (pipe_fds[1] >= 0) (void)::close(pipe_fds[1]);
+  };
+  for (const int fd : pipe_fds) {
+    const int descriptor_flags = ::fcntl(fd, F_GETFD, 0);
+    if (descriptor_flags < 0 ||
+        ::fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC) != 0) {
+      close_pipe();
+      return {.status = DumpStartStatus::PipeFailed};
+    }
+  }
+  const int read_flags = ::fcntl(pipe_fds[0], F_GETFL, 0);
+  if (read_flags < 0 ||
+      ::fcntl(pipe_fds[0], F_SETFL, read_flags | O_NONBLOCK) != 0) {
+    close_pipe();
+    return {.status = DumpStartStatus::PipeFailed};
+  }
+
+  const pid_t child = ::fork();
+  if (child < 0) {
+    close_pipe();
+    return {.status = DumpStartStatus::ForkFailed};
+  }
+  if (child == 0) {
+    (void)::close(pipe_fds[0]);
+    FdOutputStreambuf sink(pipe_fds[1]);
+    std::ostream out(&sink);
+    bool ok = true;
+    try {
+      save(out, with_accelerator);
+      out.flush();
+    } catch (...) {
+      ok = false;
+    }
+    if (!out) ok = false;
+    if (::close(pipe_fds[1]) != 0) ok = false;
+    _exit(ok ? 0 : 1);
+  }
+
+  (void)::close(pipe_fds[1]);
+  background_dump_child_ = child;
+  return {.status = DumpStartStatus::Started, .read_fd = pipe_fds[0]};
+}
+
+std::optional<bool> Store::reap_background_dump() noexcept {
+  if (background_dump_child_ <= 0) return std::nullopt;
+  int status = 0;
+  const pid_t result = ::waitpid(background_dump_child_, &status, WNOHANG);
+  if (result == 0) return std::nullopt;
+  if (result < 0 && errno == EINTR) return std::nullopt;
+  const bool ok = result == background_dump_child_ && WIFEXITED(status) &&
+                  WEXITSTATUS(status) == 0;
+  background_dump_child_ = -1;
+  return ok;
+}
+
 std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
   if (background_save_sync_pending_) {
     // The synchronous (huge-page) save already finished inside start_background_save.
@@ -3571,6 +3640,9 @@ std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
   const pid_t result = ::waitpid(background_save_child_, &status, WNOHANG);
   if (result == 0) {
     return std::nullopt;  // still running
+  }
+  if (result < 0 && errno == EINTR) {
+    return std::nullopt;
   }
   const bool ok = result == background_save_child_ && WIFEXITED(status) &&
                   WEXITSTATUS(status) == 0;

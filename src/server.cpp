@@ -46,6 +46,7 @@
 
 #include <cerrno>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstring>
@@ -131,6 +132,7 @@ struct EndpointSession : detail::PubSubSession {
   std::size_t reply_index{0};
   std::optional<BlockedListRequest> blocked_list;
   bool firehose{false};
+  bool dump_world{false};
   std::unique_ptr<detail::UnsolicitedOutputQueue> firehose_output;
   std::uint64_t next_reply_kafka_offset{0};
 
@@ -195,6 +197,7 @@ struct EndpointSession : detail::PubSubSession {
     close_requested = false;
     blocked_list.reset();
     firehose = false;
+    dump_world = false;
     firehose_output.reset();
     next_reply_kafka_offset = 0;
     transaction.reset();
@@ -1167,7 +1170,8 @@ struct TransportIoResult {
   }
 #endif
   short events = 0;
-  if (!input_paused && !client.firehose && !client.read_backpressured) {
+  if (!input_paused && !client.firehose && !client.dump_world &&
+      !client.read_backpressured) {
 #ifdef GOBLIN_HAS_TLS
     events |= client.tls != nullptr ? tls_want_event(client.tls_read_want)
                                     : POLLIN;
@@ -1382,6 +1386,142 @@ void compact_output_if_needed(EndpointSession& session) {
     session.output_offset = 0;
   }
 }
+
+// One process-wide streamed snapshot. The child writes the native GCSN image to
+// a blocking pipe while the parent forwards one bounded RESP3 streamed-string
+// chunk at a time. Keeping the pipe and session association here lets every
+// transport share the same serializer without putting a database-sized object
+// in a client output buffer.
+class DumpWorldRuntime {
+ public:
+  ~DumpWorldRuntime() {
+    if (read_fd_ >= 0) (void)::close(read_fd_);
+  }
+
+  DumpWorldRuntime(const DumpWorldRuntime&) = delete;
+  DumpWorldRuntime& operator=(const DumpWorldRuntime&) = delete;
+  DumpWorldRuntime() = default;
+
+  [[nodiscard]] bool start(EndpointSession& session, Store& store,
+                           bool with_accelerator, std::string& error) {
+    const auto started = store.start_background_dump(with_accelerator);
+    switch (started.status) {
+      case Store::DumpStartStatus::Started:
+        break;
+      case Store::DumpStartStatus::AlreadyRunning:
+        error = "ERR background snapshot already in progress";
+        return false;
+      case Store::DumpStartStatus::PipeFailed:
+        error = "ERR cannot create background snapshot pipe";
+        return false;
+      case Store::DumpStartStatus::ForkFailed:
+        error = "ERR cannot fork for background snapshot";
+        return false;
+      case Store::DumpStartStatus::HugeTlbUnsafe:
+        error = "ERR streamed snapshots are unavailable with HugeTLB arenas; "
+                "fork COW can exhaust the huge-page pool";
+        return false;
+    }
+
+    session_ = &session;
+    read_fd_ = started.read_fd;
+    bytes_ = 0;
+    pipe_eof_ = false;
+    read_failed_ = false;
+    orphaned_ = false;
+    session.dump_world = true;
+    session.output.append("$?\r\n");
+    return true;
+  }
+
+  void remove(EndpointSession& session) noexcept {
+    if (session_ != &session) return;
+    if (read_fd_ >= 0) {
+      (void)::close(read_fd_);
+      read_fd_ = -1;
+    }
+    session.dump_world = false;
+    session_ = nullptr;
+    pipe_eof_ = true;
+    orphaned_ = true;
+  }
+
+  [[nodiscard]] int notification_fd() const noexcept {
+    return read_fd_ >= 0 && session_ != nullptr &&
+                   !has_pending_output(*session_)
+               ? read_fd_
+               : -1;
+  }
+  [[nodiscard]] bool needs_reap() const noexcept {
+    return pipe_eof_ || orphaned_;
+  }
+  [[nodiscard]] bool active_for(const EndpointSession& session) const noexcept {
+    return session_ == &session;
+  }
+
+  [[nodiscard]] bool pump(Store& store) {
+    if (session_ == nullptr) {
+      if (!store.background_dump_in_progress()) return false;
+      if (!store.reap_background_dump()) return false;
+      orphaned_ = false;
+      pipe_eof_ = false;
+      return true;
+    }
+    if (has_pending_output(*session_)) return false;
+
+    if (!pipe_eof_) {
+      static thread_local std::array<char, 64U * 1024U> buffer;
+      const auto received = ::read(read_fd_, buffer.data(), buffer.size());
+      if (received > 0) {
+        const auto size = static_cast<std::size_t>(received);
+        const std::size_t prior_size = session_->output.size();
+        session_->output.push_back(';');
+        session_->output.append(std::to_string(size));
+        session_->output.append("\r\n");
+        session_->output.append(buffer.data(), size);
+        session_->output.append("\r\n");
+        bytes_ += size;
+        session_->record_reply(prior_size);
+        return true;
+      }
+      if (received < 0 && errno == EINTR) return true;
+      if (received < 0 && would_block()) return false;
+      if (received < 0) read_failed_ = true;
+      (void)::close(read_fd_);
+      read_fd_ = -1;
+      pipe_eof_ = true;
+    }
+
+    const auto outcome = store.reap_background_dump();
+    if (!outcome) return false;
+    EndpointSession* completed = session_;
+    session_ = nullptr;
+    pipe_eof_ = false;
+    if (*outcome && !read_failed_) {
+      const std::size_t prior_size = completed->output.size();
+      completed->output.append(";0\r\n");
+      completed->record_reply(prior_size);
+      completed->quit_after_write = true;
+      std::cout << "goblin-core: streamed " << bytes_
+                << " snapshot bytes\n" << std::flush;
+    } else {
+      // A streamed blob has no legal in-band error after its first chunk. Close
+      // without the terminator so the receiver must reject the partial image.
+      completed->close_requested = true;
+      std::cerr << "goblin-core: streamed snapshot FAILED after " << bytes_
+                << " bytes\n";
+    }
+    return true;
+  }
+
+ private:
+  EndpointSession* session_{nullptr};
+  int read_fd_{-1};
+  std::uint64_t bytes_{0};
+  bool pipe_eof_{false};
+  bool read_failed_{false};
+  bool orphaned_{false};
+};
 
 [[nodiscard]] bool set_nonblocking(int fd) {
   const int flags = ::fcntl(fd, F_GETFL, 0);
@@ -1895,6 +2035,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                            detail::WatchRegistry& watches,
                            BlockingListRegistry& blocking_lists,
                            ReplicationRuntime& replication,
+                           DumpWorldRuntime& dump_world,
                            std::span<const std::string_view> fields,
                            const CommandExecutionOptions& exec_options) {
   const std::size_t prior_size = session.output.size();
@@ -1960,6 +2101,33 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     std::string error;
     if (!replication.subscribe(session, store, error)) {
       resp::append_error(session.output, error);
+    }
+  } else if (command.type == CommandType::goblin_dumpworld) {
+    if (session.resp_version != resp::Version::resp3) {
+      resp::append_error(session.output,
+                         "ERR GOBLIN.DUMPWORLD requires HELLO 3");
+    } else {
+      bool with_accelerator = true;
+      bool valid = true;
+      if (!command.args.empty()) {
+        if (equals_ascii_ci(command.args.front(), "NOACCEL")) {
+          with_accelerator = false;
+        } else if (!equals_ascii_ci(command.args.front(), "ACCEL")) {
+          valid = false;
+          resp::append_error(
+              session.output,
+              "ERR syntax error, expected ACCEL or NOACCEL");
+        }
+      }
+      if (valid) {
+        pubsub.remove(session);
+        watches.remove(session.transaction);
+        blocking_lists.remove(session);
+        std::string error;
+        if (!dump_world.start(session, store, with_accelerator, error)) {
+          resp::append_error(session.output, error);
+        }
+      }
     }
   } else if (is_pubsub_command(command.type)) {
     pubsub.execute(session, command, session.output);
@@ -2108,9 +2276,10 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                              const ServerConfig& config,
                                              const AuthDatabase* auth_database,
                                              ReplicationRuntime& replication,
+                                             DumpWorldRuntime& dump_world,
                                              const NestedCommandDispatch&
                                                  nested_dispatch) {
-  if (client.blocked_list || client.firehose ||
+  if (client.blocked_list || client.firehose || client.dump_world ||
       replication.input_backpressured()) {
     return true;
   }
@@ -2208,8 +2377,8 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
       break;
     }
     dispatch_resp_command(client, store, pubsub, watches, blocking_lists,
-                          replication, client.fields, exec_options);
-    if (client.close_after_write || client.firehose) {
+                          replication, dump_world, client.fields, exec_options);
+    if (client.close_after_write || client.firehose || client.dump_world) {
       break;
     }
     compact_output_if_needed(client);
@@ -2226,7 +2395,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
     update_read_backpressure(client, config);
   }
 
-  if (client.firehose) {
+  if (client.firehose || client.dump_world) {
     client.parser.clear();
     client.inbuf.clear();
   }
@@ -2239,7 +2408,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 // Drives the post-backpressure drain loop; a partial SBE frame returns false so that
 // loop cannot spin.
 [[nodiscard]] bool has_buffered_work(const Client& client) {
-  if (client.blocked_list || client.firehose) {
+  if (client.blocked_list || client.firehose || client.dump_world) {
     return false;
   }
 #ifdef GOBLIN_HAS_SBE
@@ -2268,6 +2437,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                const ServerConfig& config,
                                const AuthDatabase* auth_database,
                                ReplicationRuntime& replication,
+                               DumpWorldRuntime& dump_world,
                                const NestedCommandDispatch& nested_dispatch) {
   const std::size_t bufsize = config.client_read_buffer_bytes != 0 ? config.client_read_buffer_bytes : 16 * 1024;
   static thread_local std::vector<char> buffer;
@@ -2287,12 +2457,12 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
                                        blocking_lists, script_engine,
                                        luau_engine, wren_engine, tcl_engine,
                                        upython_engine, quickjs_engine, config,
-                                       auth_database, replication,
+                                       auth_database, replication, dump_world,
                                        nested_dispatch)) {
           return false;
         }
       }
-      if (client.close_after_write || client.firehose ||
+      if (client.close_after_write || client.firehose || client.dump_world ||
           replication.input_backpressured()) {
         return true;
       }
@@ -2462,6 +2632,7 @@ template <class ReplicaFn, class NetFn>
     UPythonEngine& upython_engine, QuickJsEngine& quickjs_engine,
     const AuthDatabase* auth_database,
     ReplicationRuntime& replication,
+    DumpWorldRuntime& dump_world,
     const NestedCommandDispatch& nested_dispatch,
     ReplicaFn&& replica_iteration,
     NetFn&& network_iteration) {
@@ -2662,7 +2833,11 @@ template <class ReplicaFn, class NetFn>
                                            EndpointSession& ep,
                                            Consumer& consumer,
                                            Producer& producer) -> bool {
-    const bool output_progress = flush_polled_output(ep, producer);
+    bool output_progress = flush_polled_output(ep, producer);
+    if (dump_world.active_for(ep) && !has_pending_output(ep)) {
+      output_progress = dump_world.pump(store) || output_progress;
+      output_progress = flush_polled_output(ep, producer) || output_progress;
+    }
     if (ep.quit_after_write && !has_pending_output(ep)) {
       ep.close_requested = true;
       return true;
@@ -2671,6 +2846,9 @@ template <class ReplicaFn, class NetFn>
       return output_progress;
     }
     if (ep.firehose) {
+      return output_progress;
+    }
+    if (ep.dump_world) {
       return output_progress;
     }
     if (ep.blocked_list) {
@@ -2809,12 +2987,13 @@ template <class ReplicaFn, class NetFn>
       ep.inbuf.clear();
       while (!ep.blocked_list && ep.parser.pop_into(ep.fields)) {
         dispatch_resp_command(ep, store, pubsub, watches, blocking_lists,
-                              replication, ep.fields, exec_options);
-        if (ep.quit_after_write || ep.blocked_list || ep.firehose) {
+                              replication, dump_world, ep.fields, exec_options);
+        if (ep.quit_after_write || ep.blocked_list || ep.firehose ||
+            ep.dump_world) {
           break;
         }
       }
-      if (ep.firehose) {
+      if (ep.firehose || ep.dump_world) {
         ep.parser.clear();
         ep.inbuf.clear();
       }
@@ -2836,6 +3015,7 @@ template <class ReplicaFn, class NetFn>
     if (const std::uint64_t epoch = ep.mapping.requested_epoch();
         epoch != ep.acked_epoch) {
       replication.remove(ep);
+      dump_world.remove(ep);
       pubsub.remove(ep);
       watches.remove(ep.transaction);
       blocking_lists.remove(ep);
@@ -2885,6 +3065,7 @@ template <class ReplicaFn, class NetFn>
                   << endpoint.connection->error() << '\n';
       }
       replication.remove(endpoint);
+      dump_world.remove(endpoint);
       pubsub.remove(endpoint);
       watches.remove(endpoint.transaction);
       blocking_lists.remove(endpoint);
@@ -2944,6 +3125,7 @@ template <class ReplicaFn, class NetFn>
       auto& client = *target.clients[index];
       if (client.close_requested && !has_pending_output(client)) {
         replication.remove(client);
+        dump_world.remove(client);
         pubsub.remove(client);
         watches.remove(client.transaction);
         blocking_lists.remove(client);
@@ -2985,7 +3167,7 @@ template <class ReplicaFn, class NetFn>
             client, store, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config,
-            auth_database, replication, nested_dispatch);
+            auth_database, replication, dump_world, nested_dispatch);
         did_work = true;
       }
 
@@ -2993,6 +3175,7 @@ template <class ReplicaFn, class NetFn>
       // when the socket has data -- matches the ring/RDMA "one fragment" unit.
       pollfd pfd{.fd = client.fd, .events = 0, .revents = 0};
       if (keep && !replication.input_backpressured() && !client.firehose &&
+          !client.dump_world &&
           !client.read_backpressured) {
         pfd.events |= POLLIN;
       }
@@ -3008,7 +3191,8 @@ template <class ReplicaFn, class NetFn>
         keep = read_client(client, store, pubsub, watches, blocking_lists,
                            script_engine, luau_engine, wren_engine, tcl_engine,
                            upython_engine, quickjs_engine, config,
-                           auth_database, replication, nested_dispatch);
+                           auth_database, replication, dump_world,
+                           nested_dispatch);
         did_work = true;
       }
       if (keep && (pfd.revents & POLLOUT) != 0 &&
@@ -3023,6 +3207,7 @@ template <class ReplicaFn, class NetFn>
 
       if (!keep || client.close_requested) {
         replication.remove(client);
+        dump_world.remove(client);
         pubsub.remove(client);
         watches.remove(client.transaction);
         blocking_lists.remove(client);
@@ -3066,6 +3251,9 @@ template <class ReplicaFn, class NetFn>
     if (replica_iteration()) {
       idle_spins = 0;
       continue;
+    }
+    if (dump_world.pump(store)) {
+      idle_spins = 0;
     }
     bool progressed = false;
     for (auto& target : targets) {
@@ -3121,6 +3309,7 @@ template <class ReplicaFn, class NetFn>
   for (auto& target : targets) {
     if (target.ring_endpoint) {
       replication.remove(*target.ring_endpoint);
+      dump_world.remove(*target.ring_endpoint);
       pubsub.remove(*target.ring_endpoint);
       watches.remove(target.ring_endpoint->transaction);
       blocking_lists.remove(*target.ring_endpoint);
@@ -3129,6 +3318,7 @@ template <class ReplicaFn, class NetFn>
     if (target.exasock_target) {
       for (auto& client : target.exasock_target->clients) {
         replication.remove(*client);
+        dump_world.remove(*client);
         pubsub.remove(*client);
         watches.remove(client->transaction);
         blocking_lists.remove(*client);
@@ -3143,6 +3333,7 @@ template <class ReplicaFn, class NetFn>
     if (target.rdma_target) {
       for (auto& endpoint : target.rdma_target->endpoints) {
         replication.remove(*endpoint);
+        dump_world.remove(*endpoint);
         pubsub.remove(*endpoint);
         watches.remove(endpoint->transaction);
         blocking_lists.remove(*endpoint);
@@ -3532,6 +3723,7 @@ int Server::run() {
   ReplicationRuntime replication(config_.replication_buffer_bytes,
                                  store_.replication_state().offset);
 #endif
+  DumpWorldRuntime dump_world;
   replication.set_firehose_available(!config_.replica_source ||
                                      store_.replica_runtime_status().ready());
   const NestedCommandDispatch nested_dispatch{
@@ -3867,6 +4059,7 @@ int Server::run() {
 #ifdef GOBLIN_HAS_KAFKA
     if (!poll_kafka_journal()) return;
 #endif
+    const bool dump_progress = dump_world.pump(store_);
     if (replication.failed()) {
       std::cerr << "goblin-core: replication failed: "
                 << replication.error() << '\n';
@@ -3892,7 +4085,10 @@ int Server::run() {
     }
 
     int poll_timeout = max_timeout_ms;
-    if (replica_progress) poll_timeout = 0;
+    if (replica_progress || dump_progress) poll_timeout = 0;
+    if (dump_world.needs_reap()) {
+      poll_timeout = 0;
+    }
 #ifdef GOBLIN_HAS_KAFKA
     if (kafka_may_have_more) poll_timeout = 0;
 #endif
@@ -3924,8 +4120,10 @@ int Server::run() {
 #endif
     const std::size_t replica_fd_count =
         replica && replica->notification_fd() >= 0 ? 1U : 0U;
+    const std::size_t dump_fd_count =
+        dump_world.notification_fd() >= 0 ? 1U : 0U;
     pollfds.reserve(clients.size() + listener_count + kafka_fd_count +
-                    replica_fd_count);
+                    replica_fd_count + dump_fd_count);
     for (const auto& listener : listeners) {
       pollfds.push_back(
           pollfd{.fd = listener.fd, .events = POLLIN, .revents = 0});
@@ -3944,6 +4142,11 @@ int Server::run() {
 #endif
     if (replica_fd_count != 0) {
       pollfds.push_back(pollfd{.fd = replica->notification_fd(),
+                              .events = POLLIN,
+                              .revents = 0});
+    }
+    if (dump_fd_count != 0) {
+      pollfds.push_back(pollfd{.fd = dump_world.notification_fd(),
                               .events = POLLIN,
                               .revents = 0});
     }
@@ -4001,11 +4204,19 @@ int Server::run() {
         }
       }
     }
+    const std::size_t dump_event_index =
+        listener_count + kafka_fd_count + replica_fd_count;
+    if (dump_fd_count != 0 &&
+        (pollfds[dump_event_index].revents & (POLLIN | POLLERR | POLLHUP)) !=
+            0) {
+      (void)dump_world.pump(store_);
+    }
     for (std::size_t i = 0; i < clients.size(); ++i) {
       bool keep = !clients[i]->close_requested;
       auto& client = *clients[i];
       const auto revents =
-          pollfds[listener_count + kafka_fd_count + replica_fd_count + i]
+          pollfds[listener_count + kafka_fd_count + replica_fd_count +
+                  dump_fd_count + i]
               .revents;
 
       if (keep && tls_handshake_ready(client, revents)) {
@@ -4024,7 +4235,7 @@ int Server::run() {
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
-            auth, replication, nested_dispatch);
+            auth, replication, dump_world, nested_dispatch);
       }
 
       if (application_ready && keep && client_read_ready(client, revents) &&
@@ -4032,7 +4243,7 @@ int Server::run() {
         keep = read_client(client, store_, pubsub, watches, blocking_lists,
                            script_engine, luau_engine, wren_engine, tcl_engine,
                            upython_engine, quickjs_engine, config_, auth,
-                           replication, nested_dispatch);
+                           replication, dump_world, nested_dispatch);
       }
 
       if (application_ready && keep && has_writable_output(client) &&
@@ -4047,7 +4258,7 @@ int Server::run() {
             client, store_, pubsub, watches, blocking_lists, script_engine,
             luau_engine,
             wren_engine, tcl_engine, upython_engine, quickjs_engine, config_,
-            auth, replication, nested_dispatch);
+            auth, replication, dump_world, nested_dispatch);
         if (keep && has_writable_output(client) &&
             !tls_read_retry_pending(client) &&
             !tls_write_retry_pending(client)) {
@@ -4073,6 +4284,7 @@ int Server::run() {
       const auto index = i - 1;
       if (close_client[index] != 0) {
         replication.remove(*clients[index]);
+        dump_world.remove(*clients[index]);
         pubsub.remove(*clients[index]);
         watches.remove(clients[index]->transaction);
         blocking_lists.remove(*clients[index]);
@@ -4110,7 +4322,7 @@ int Server::run() {
                                  blocking_lists, script_engine, luau_engine,
                                  wren_engine,
                                  tcl_engine, upython_engine, quickjs_engine,
-                                 auth, replication, nested_dispatch,
+                                 auth, replication, dump_world, nested_dispatch,
                                  replica_iteration, network_iteration)) {
     close_socket_listeners(listeners);
     return 1;
@@ -4118,6 +4330,7 @@ int Server::run() {
 
   for (const auto& client : clients) {
     replication.remove(*client);
+    dump_world.remove(*client);
     pubsub.remove(*client);
     watches.remove(client->transaction);
     blocking_lists.remove(*client);

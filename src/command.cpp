@@ -1481,6 +1481,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       }
       command.type = looked_up_type;
       return {.command = std::move(command)};
+    case CommandType::goblin_dumpworld:
+      if (command.args.size() > 1) {
+        return parse_error(wrong_arity("goblin.dumpworld"));
+      }
+      command.type = looked_up_type;
+      return {.command = std::move(command)};
     case CommandType::subscribe:
       if (command.args.empty()) {
         return parse_error(wrong_arity("subscribe"));
@@ -2738,6 +2744,8 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::dbsize:
     case CommandType::randomkey:
       return 1;
+    case CommandType::goblin_dumpworld:
+      return -1;
     case CommandType::select:
     case CommandType::echo:
     case CommandType::get:
@@ -3521,6 +3529,10 @@ void execute_command_into_impl(Store& store,
     case CommandType::goblin_firehose:
       resp::append_error(out,
                          "ERR GOBLIN.FIREHOSE requires a live connection");
+      return;
+    case CommandType::goblin_dumpworld:
+      resp::append_error(out,
+                         "ERR GOBLIN.DUMPWORLD requires a live RESP3 connection");
       return;
     case CommandType::subscribe:
     case CommandType::unsubscribe:

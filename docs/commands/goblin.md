@@ -22,6 +22,7 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, list, set, or array. |
 | `GOBLIN.OPTIMIZE` | Compact a zset, hash, or list in place. |
 | `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
+| [`GOBLIN.DUMPWORLD`](#goblin-dumpworld) | Stream a fork-time native snapshot to the requesting client. |
 | `GOBLIN.LOAD` | Load a snapshot (or a Redis `dump.rdb`) from disk. |
 
 ## GOBLIN.CAD
@@ -237,6 +238,45 @@ the writing, so the server keeps serving). `ACCEL` (the default) writes an extra
 read-accelerator section for faster loads; `NOACCEL` omits it for a smaller file.
 Replies `Background saving started`, or an error if a save is already in progress
 or the fork fails.
+
+## GOBLIN.DUMPWORLD
+
+```
+HELLO 3
+GOBLIN.DUMPWORLD [ACCEL | NOACCEL]
+```
+
+Returns the entire database as one **RESP3 streamed blob string**. Concatenating
+the payload of each streamed-string chunk produces exactly the same native GCSN
+image as `GOBLIN.SAVE`: all persistent value types, TTLs, replication lineage,
+logical replication offset, and exact Kafka cursor are included. Store the
+result as a file and supply that path to `GOBLIN.LOAD` or `--load`.
+
+The command forks a copy-on-write child at the command boundary. That child
+serializes `Store::save()` directly into a blocking pipe; the parent forwards at
+most one 64 KiB chunk through its normal output path and continues serving other
+clients. A slow receiver therefore backpressures the child rather than allocating
+a database-sized response in the server. The image is the state at `fork()`: a
+write accepted after the stream begins is not part of it.
+
+The RESP3 wire begins with `$?\r\n`, carries one or more
+`;length\r\n<bytes>\r\n` chunks, and completes with `;0\r\n`. The zero-length
+terminator is sent only after the snapshot child exits successfully. If the child
+or pipe fails, Goblin closes the connection without that terminator; the receiver
+must discard the partial image. The connection is dedicated to this one stream
+and closes after successful completion as well.
+
+`ACCEL` is the default and includes same-build load accelerators. `NOACCEL` emits
+the smaller canonical image intended for version or architecture changes. Only
+one fork-time snapshot may run at once, so `GOBLIN.SAVE` and
+`GOBLIN.DUMPWORLD` reject one another while either is active.
+
+The command requires authentication when the listener requires authentication,
+then requires `HELLO 3`; it is a RESP command and has no SBE template. RESP3 can
+run over TCP, TLS, UDS, shared-memory rings, or RDMA. HugeTLB-backed data arenas
+reject streamed dumps because continued parent writes could COW whole huge pages
+and exhaust the reserved pool; use `GOBLIN.SAVE`'s synchronous HugeTLB-safe path
+and transfer the resulting file instead.
 
 ## GOBLIN.LOAD
 

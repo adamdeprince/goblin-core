@@ -2503,7 +2503,8 @@ class Store {
   // --arena-hugetlb is set, fork+COW is unsafe (2 MiB COW granularity), so the save
   // runs synchronously in-process, blocking the event loop for its duration. Either
   // way returns a start status immediately; call reap_background_save() from the
-  // event loop to collect the result. Only one save runs at a time.
+  // event loop to collect the result. File saves and streamed dumps share one
+  // background-snapshot slot.
   enum class SaveStart { Started, AlreadyRunning, ForkFailed };
   [[nodiscard]] SaveStart start_background_save(std::string path,
                                                 bool with_accelerator = true);
@@ -2517,6 +2518,33 @@ class Store {
   [[nodiscard]] std::optional<SaveOutcome> reap_background_save() noexcept;
   [[nodiscard]] bool background_save_in_progress() const noexcept {
     return background_save_child_ > 0 || background_save_sync_pending_;
+  }
+
+  // Fork a copy-on-write child that writes the same native snapshot bytes to a
+  // pipe instead of a file. The returned read descriptor is non-blocking in the
+  // parent; the child keeps its write side blocking so transport backpressure
+  // naturally stops serialization without accumulating a database-sized buffer.
+  // HugeTLB arenas deliberately reject this path because serving writes after
+  // fork can COW whole huge pages and exhaust the reserved pool.
+  enum class DumpStartStatus {
+    Started,
+    AlreadyRunning,
+    PipeFailed,
+    ForkFailed,
+    HugeTlbUnsafe,
+  };
+  struct DumpStart {
+    DumpStartStatus status{DumpStartStatus::PipeFailed};
+    int read_fd{-1};
+  };
+  [[nodiscard]] DumpStart start_background_dump(
+      bool with_accelerator = true);
+  [[nodiscard]] std::optional<bool> reap_background_dump() noexcept;
+  [[nodiscard]] bool background_dump_in_progress() const noexcept {
+    return background_dump_child_ > 0;
+  }
+  [[nodiscard]] bool background_snapshot_in_progress() const noexcept {
+    return background_save_in_progress() || background_dump_in_progress();
   }
 
   // Replace all current data with the snapshot read from `in`. Auto-detects a
@@ -2638,6 +2666,7 @@ class Store {
   // the next reap_background_save(), leaving the caller's start/reap flow unchanged.
   bool background_save_sync_pending_ = false;
   bool background_save_sync_ok_ = false;
+  int background_dump_child_ = -1;  // pid of an in-flight pipe writer, or -1
   // Write the snapshot to `path` via a temp file + fsync + atomic rename. Shared by
   // the forked child and the synchronous save path; returns false on any error.
   [[nodiscard]] bool save_to_file(const std::string& path,

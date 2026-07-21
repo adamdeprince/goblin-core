@@ -39,6 +39,7 @@ enum class CommandType {
   time,
   role,
   goblin_firehose,
+  goblin_dumpworld,
   subscribe,
   unsubscribe,
   psubscribe,
