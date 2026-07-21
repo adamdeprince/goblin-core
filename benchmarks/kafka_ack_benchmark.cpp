@@ -59,6 +59,7 @@ struct Config {
   std::size_t transaction_operations{50'000};
   std::vector<std::size_t> pipeline_depths{8, 32, 128, 512};
   std::vector<std::size_t> transaction_sizes{1, 8, 32, 128};
+  std::size_t transaction_buffer_bytes{64U * 1024U};
   int server_core{0};
   int client_core{4};
   int linger_ms{0};
@@ -117,6 +118,7 @@ void print_help(const char* program) {
       << "  --pipeline-depths CSV        default 8,32,128,512\n"
       << "  --transaction-operations N   per size; default 50000 writes\n"
       << "  --transaction-sizes CSV      default 1,8,32,128\n"
+      << "  --transaction-buffer-bytes N server buffer; default 65536\n"
       << "  --server-core N              default 0\n"
       << "  --client-core N              default 4\n"
       << "  --linger-ms N                Kafka producer linger; default 0\n";
@@ -153,6 +155,9 @@ Config parse_args(int argc, char** argv) {
       config.transaction_operations = parse_size(next_arg(argc, argv, i), arg);
     } else if (arg == "--transaction-sizes") {
       config.transaction_sizes = parse_sizes(next_arg(argc, argv, i));
+    } else if (arg == "--transaction-buffer-bytes") {
+      config.transaction_buffer_bytes =
+          parse_size(next_arg(argc, argv, i), arg);
     } else if (arg == "--server-core") {
       config.server_core = std::stoi(next_arg(argc, argv, i));
     } else if (arg == "--client-core") {
@@ -243,7 +248,8 @@ class ServerProcess {
     std::vector<std::string> arguments{
         config.server,       "--uds-listen", socket_path_,
         "--port",           port,           "--cpu",
-        std::to_string(config.server_core)};
+        std::to_string(config.server_core), "--transaction-buffer-bytes",
+        std::to_string(config.transaction_buffer_bytes)};
     if (config.mode != "none") {
       arguments.emplace_back("--kafka");
       arguments.emplace_back("kafka://" + config.brokers + '/' + config.topic +

@@ -16,6 +16,7 @@ PIPELINE_OPERATIONS=${PIPELINE_OPERATIONS:-200000}
 PIPELINE_DEPTHS=${PIPELINE_DEPTHS:-8,32,128,512}
 TRANSACTION_OPERATIONS=${TRANSACTION_OPERATIONS:-50000}
 TRANSACTION_SIZES=${TRANSACTION_SIZES:-1,8,32,128}
+TRANSACTION_BUFFER_BYTES=${TRANSACTION_BUFFER_BYTES:-65536}
 SERVER_CORE=${SERVER_CORE:-0}
 CLIENT_CORE=${CLIENT_CORE:-4}
 LINGER_MS=${LINGER_MS:-0}
@@ -68,6 +69,7 @@ trap cleanup EXIT INT TERM
   echo "pipeline_depths=$PIPELINE_DEPTHS"
   echo "transaction_operations_per_size=$TRANSACTION_OPERATIONS"
   echo "transaction_sizes=$TRANSACTION_SIZES"
+  echo "transaction_buffer_bytes=$TRANSACTION_BUFFER_BYTES"
   echo "server_core=$SERVER_CORE"
   echo "client_core=$CLIENT_CORE"
   echo "linger_ms=$LINGER_MS"
@@ -109,6 +111,7 @@ run_one() {
     --pipeline-depths "$PIPELINE_DEPTHS"
     --transaction-operations "$TRANSACTION_OPERATIONS"
     --transaction-sizes "$TRANSACTION_SIZES"
+    --transaction-buffer-bytes "$TRANSACTION_BUFFER_BYTES"
     --server-core "$SERVER_CORE"
     --client-core "$CLIENT_CORE"
     --linger-ms "$LINGER_MS"
