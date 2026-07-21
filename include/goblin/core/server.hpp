@@ -136,6 +136,11 @@ struct TlsConfig {
   std::string private_key_file;
 };
 
+enum class KafkaAckMode : std::uint8_t {
+  queued,
+  broker,
+};
+
 // One Kafka topic carrying exactly one RESP2 command array per record. An exact
 // acknowledged broker offset from a native snapshot takes precedence over the
 // legacy timestamp fallback and is always resumed inclusively.
@@ -144,6 +149,12 @@ struct KafkaConfig {
   std::optional<std::int64_t> start_timestamp_ms;
   std::optional<std::int64_t> acknowledged_offset;
   bool require_replication_metadata{false};
+  // queued: reply after librdkafka accepts the record into its local queue.
+  // broker: reply and release the firehose batch only after broker delivery.
+  KafkaAckMode ack_mode{KafkaAckMode::queued};
+  // Broker mode pauses all command input once retained, unacknowledged
+  // replication payloads reach this bound. One atomic command may cross it.
+  std::size_t pending_bytes{16U * 1024U * 1024U};
 };
 
 struct ServerConfig {

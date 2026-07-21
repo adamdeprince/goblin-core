@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <fcntl.h>
 #include <limits>
 #include <memory>
@@ -800,17 +801,35 @@ std::string_view KafkaIngestor::description() const noexcept {
 }
 
 struct KafkaJournal::Impl {
+  struct Delivery {
+    std::uint64_t logical_offset{0};
+    std::size_t bytes{0};
+  };
+
   rd_kafka_t* producer{nullptr};
   rd_kafka_queue_t* producer_queue{nullptr};
   int notify_read_fd{-1};
   int notify_write_fd{-1};
   std::string topic;
   std::int64_t acknowledged_offset{-1};
+  std::uint64_t acknowledged_logical_offset{0};
+  std::size_t pending_records{0};
+  std::size_t pending_bytes{0};
+  std::deque<std::chrono::steady_clock::time_point> pending_times;
   std::array<char, 512> delivery_error{};
 
   static void delivery_report(rd_kafka_t*, const rd_kafka_message_t* message,
                               void* opaque) noexcept {
     auto& self = *static_cast<Impl*>(opaque);
+    std::unique_ptr<Delivery> delivery(
+        static_cast<Delivery*>(message->_private));
+    if (delivery != nullptr) {
+      if (self.pending_records != 0) --self.pending_records;
+      self.pending_bytes = delivery->bytes <= self.pending_bytes
+                               ? self.pending_bytes - delivery->bytes
+                               : 0;
+      if (!self.pending_times.empty()) self.pending_times.pop_front();
+    }
     if (message->err != RD_KAFKA_RESP_ERR_NO_ERROR) {
       if (self.delivery_error.front() == '\0') {
         const auto* text = rd_kafka_message_errstr(message);
@@ -821,6 +840,11 @@ struct KafkaJournal::Impl {
     }
     self.acknowledged_offset =
         std::max(self.acknowledged_offset, message->offset);
+    if (delivery != nullptr) {
+      self.acknowledged_logical_offset =
+          std::max(self.acknowledged_logical_offset,
+                   delivery->logical_offset);
+    }
   }
 
   ~Impl() {
@@ -853,12 +877,14 @@ KafkaJournal::KafkaJournal(std::unique_ptr<Impl> impl)
 KafkaJournal::~KafkaJournal() = default;
 
 std::unique_ptr<KafkaJournal> KafkaJournal::connect(
-    std::string_view connection, std::string& error) {
+    std::string_view connection, std::string& error,
+    std::uint64_t initial_logical_offset) {
   auto options = parse_kafka_connection_string(connection, error);
   if (!options) return nullptr;
 
   auto impl = std::make_unique<Impl>();
   impl->topic = options->topic;
+  impl->acknowledged_logical_offset = initial_logical_offset;
   rd_kafka_conf_t* conf = rd_kafka_conf_new();
   rd_kafka_conf_set_opaque(conf, impl.get());
   rd_kafka_conf_set_dr_msg_cb(conf, &Impl::delivery_report);
@@ -946,6 +972,12 @@ bool KafkaJournal::publish(const ReplicationId& id,
   const std::string version = std::to_string(kReplicationProtocolVersion);
   const std::string id_text = id.hex();
   const std::string offset_text = std::to_string(logical_offset);
+  auto delivery = std::make_unique<Impl::Delivery>(Impl::Delivery{
+      .logical_offset = logical_offset,
+      .bytes = mutation.kafka_key.size() + mutation.payload.size()});
+  impl_->pending_times.push_back(std::chrono::steady_clock::now());
+  ++impl_->pending_records;
+  impl_->pending_bytes += delivery->bytes;
 
   const auto produce = [&](bool include_key) {
     if (include_key) {
@@ -963,6 +995,7 @@ bool KafkaJournal::publish(const ReplicationId& id,
                             id_text.size()),
           RD_KAFKA_V_HEADER(kKafkaReplicationOffsetHeader.data(),
                             offset_text.data(), offset_text.size()),
+          RD_KAFKA_V_OPAQUE(delivery.get()),
           RD_KAFKA_V_END);
     }
     return rd_kafka_producev(
@@ -976,6 +1009,7 @@ bool KafkaJournal::publish(const ReplicationId& id,
                           id_text.size()),
         RD_KAFKA_V_HEADER(kKafkaReplicationOffsetHeader.data(),
                           offset_text.data(), offset_text.size()),
+        RD_KAFKA_V_OPAQUE(delivery.get()),
         RD_KAFKA_V_END);
   };
 
@@ -985,10 +1019,14 @@ bool KafkaJournal::publish(const ReplicationId& id,
     result = produce(!mutation.kafka_key.empty());
   }
   if (result != RD_KAFKA_RESP_ERR_NO_ERROR) {
+    --impl_->pending_records;
+    impl_->pending_bytes -= delivery->bytes;
+    impl_->pending_times.pop_back();
     error = "cannot enqueue Kafka replication record: " +
             std::string(rd_kafka_err2str(result));
     return false;
   }
+  (void)delivery.release();
   return true;
 }
 #if defined(__clang__)
@@ -1017,6 +1055,20 @@ bool KafkaJournal::poll(Store& store, std::string& error) {
 
 int KafkaJournal::notification_fd() const noexcept {
   return impl_->notify_read_fd;
+}
+
+KafkaJournalStats KafkaJournal::stats() const noexcept {
+  KafkaJournalStats result{
+      .acknowledged_logical_offset = impl_->acknowledged_logical_offset,
+      .pending_records = impl_->pending_records,
+      .pending_bytes = impl_->pending_bytes};
+  if (!impl_->pending_times.empty()) {
+    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - impl_->pending_times.front());
+    result.oldest_pending_age_ms =
+        static_cast<std::uint64_t>(std::max<std::int64_t>(age.count(), 0));
+  }
+  return result;
 }
 
 }  // namespace goblin::core

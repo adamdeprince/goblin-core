@@ -64,6 +64,13 @@ struct KafkaPollResult {
   [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
 
+struct KafkaJournalStats {
+  std::uint64_t acknowledged_logical_offset{0};
+  std::size_t pending_records{0};
+  std::size_t pending_bytes{0};
+  std::uint64_t oldest_pending_age_ms{0};
+};
+
 class KafkaIngestor {
  public:
   KafkaIngestor(const KafkaIngestor&) = delete;
@@ -118,7 +125,8 @@ class KafkaJournal {
   ~KafkaJournal();
 
   [[nodiscard]] static std::unique_ptr<KafkaJournal> connect(
-      std::string_view connection, std::string& error);
+      std::string_view connection, std::string& error,
+      std::uint64_t initial_logical_offset = 0);
 
   [[nodiscard]] bool publish(const ReplicationId& id,
                              std::uint64_t logical_offset,
@@ -126,6 +134,7 @@ class KafkaJournal {
                              std::string& error);
   [[nodiscard]] bool poll(Store& store, std::string& error);
   [[nodiscard]] int notification_fd() const noexcept;
+  [[nodiscard]] KafkaJournalStats stats() const noexcept;
 
  private:
   struct Impl;

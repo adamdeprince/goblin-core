@@ -63,7 +63,9 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   replicas can feed replicas.
 - Durable replay belongs to Kafka: [`--kafka`](docs/kafka.md) journals primary
   writes as canonical RESP2 mutations and recovers from the exact broker and
-  logical offsets saved in a native snapshot.
+  logical offsets saved in a native snapshot. `--kafka-ack-mode broker` can
+  make successful write replies wait for the broker's configured durability
+  policy instead of merely reaching the local producer queue.
 - Hardware intrinsics, selected at compile time (no runtime CPU dispatch): the
   swiss-table member-index probe is a SIMD group scan (SSE2 on x86, NEON on
   AArch64); snapshot checksums use the CRC32C instruction (SSE4.2 on x86 —

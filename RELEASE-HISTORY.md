@@ -10,7 +10,11 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
-Nothing yet.
+- Added selectable Kafka acknowledgement semantics. `--kafka-ack-mode broker`
+  withholds client replies and firehose batches until every record in the
+  atomic mutation batch is broker-acknowledged; `queued` retains the original
+  lower-latency behavior. Pending payloads have a configurable bounded
+  backpressure watermark and `INFO` exposes delivery progress.
 
 ## v0.9.0 — July 20, 2026
 

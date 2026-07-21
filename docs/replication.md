@@ -166,6 +166,14 @@ recovery, but it never journals the writes it receives from its upstream. This
 prevents replica chains from duplicating one logical mutation in the durable
 log.
 
+With `--kafka-ack-mode broker`, the primary holds both the client reply and the
+live firehose batch until Kafka acknowledges every record in the atomic batch.
+A firehose client that connects during that interval receives a hello at the
+last released offset, then receives the retained batch after acknowledgement;
+it cannot mistake locally applied but not yet durable state for a completed
+replication prefix. The default `queued` mode releases the firehose as soon as
+the local producer queue accepts the records.
+
 Kafka record keys identify the smallest independently overwritten unit, which
 makes log compaction useful without merging unrelated state. For example,
 `ZADD leaderboard 1 alice` and a later score update for `alice` use a key built

@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -186,6 +187,20 @@ std::string read_reply(int fd, std::string& pending) {
   }
 }
 
+std::int64_t info_integer(std::string_view reply, std::string_view name) {
+  const std::string needle = std::string(name) + ':';
+  const auto begin_offset = reply.find(needle);
+  assert(begin_offset != std::string_view::npos);
+  const auto begin = reply.data() + begin_offset + needle.size();
+  const auto line_end = reply.find("\r\n", begin_offset + needle.size());
+  assert(line_end != std::string_view::npos);
+  const auto end = reply.data() + line_end;
+  std::int64_t value = 0;
+  const auto [parsed, error] = std::from_chars(begin, end, value);
+  assert(error == std::errc{} && parsed == end);
+  return value;
+}
+
 struct Child {
   pid_t pid{-1};
   ~Child() { stop(); }
@@ -242,12 +257,14 @@ int main(int argc, char** argv) {
 
   const std::string connection =
       "kafka://" + std::string(argv[2]) + '/' + argv[3];
+  const std::string broker_ack_connection = connection + "?linger.ms=500";
   {
     const auto tcp_port = goblin::test::reserve_loopback_tcp_port();
     assert(tcp_port != 0);
     auto server = spawn_server(
         argv[1], {"--uds-listen", socket, "--port", std::to_string(tcp_port),
-                  "--kafka", connection});
+                  "--kafka", broker_ack_connection, "--kafka-ack-mode",
+                  "broker", "--kafka-pending-bytes", "1mb"});
     const int client = wait_for_server(socket);
     assert(client >= 0);
     std::string pending;
@@ -266,20 +283,44 @@ int main(int argc, char** argv) {
     }
     assert(observed);
 
+    send_command(client, {"INFO"});
+    const auto before_info = read_reply(client, pending);
+    const auto before_broker_offset =
+        info_integer(before_info, "kafka_acknowledged_offset");
+    assert(info_integer(before_info, "kafka_acknowledged_logical_offset") ==
+           info_integer(before_info, "master_repl_offset"));
+
     send_command(client, {"SET", "journaled-key", "from-client"});
+    pollfd early_reply{.fd = client, .events = POLLIN, .revents = 0};
+    assert(::poll(&early_reply, 1, 100) == 0);
     assert(read_reply(client, pending) == "+OK\r\n");
 
-    // Force at least one later event-loop pass so the producer delivery callback
-    // has published its broker offset into the Store before the forked save.
-    bool acknowledged = false;
-    for (int attempt = 0; attempt < 500 && !acknowledged; ++attempt) {
-      send_command(client, {"INFO"});
-      const auto info = read_reply(client, pending);
-      acknowledged =
-          info.find("kafka_acknowledged_offset:-1\r\n") == std::string::npos;
-      if (!acknowledged) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    assert(acknowledged);
+    // Broker mode releases the reply only from the delivery callback. The next
+    // command therefore observes both the logical and physical broker cursors.
+    send_command(client, {"INFO"});
+    const auto after_info = read_reply(client, pending);
+    assert(info_integer(after_info, "kafka_acknowledged_offset") >
+           before_broker_offset);
+    assert(info_integer(after_info, "kafka_acknowledged_logical_offset") ==
+           info_integer(after_info, "master_repl_offset"));
+    assert(info_integer(after_info, "kafka_pending_records") == 0);
+
+    send_command(client, {"MULTI"});
+    assert(read_reply(client, pending) == "+OK\r\n");
+    send_command(client, {"HSET", "atomic-hash", "one", "1", "two", "2"});
+    assert(read_reply(client, pending) == "+QUEUED\r\n");
+    send_command(client, {"SET", "atomic-string", "present"});
+    assert(read_reply(client, pending) == "+QUEUED\r\n");
+    send_command(client, {"EXEC"});
+    early_reply = pollfd{.fd = client, .events = POLLIN, .revents = 0};
+    assert(::poll(&early_reply, 1, 100) == 0);
+    assert(read_reply(client, pending) == "*2\r\n:2\r\n+OK\r\n");
+    send_command(client, {"INFO"});
+    const auto transaction_info = read_reply(client, pending);
+    assert(info_integer(transaction_info,
+                        "kafka_acknowledged_logical_offset") ==
+           info_integer(transaction_info, "master_repl_offset"));
+    assert(info_integer(transaction_info, "kafka_pending_records") == 0);
 
     send_command(client, {"GOBLIN.SAVE", snapshot, "NOACCEL"});
     assert(read_reply(client, pending) == "+Background saving started\r\n");
@@ -474,6 +515,7 @@ int main(int argc, char** argv) {
   (void)::unlink(recovery_snapshot.c_str());
   (void)::unlink(live_snapshot.c_str());
   (void)::unlink(ahead_snapshot.c_str());
-  std::cout << "Kafka journal, lineage filtering, inclusive snapshot recovery, "
-               "runtime reconnect, live handoff, and RESP2 ingestion OK\n";
+  std::cout << "Kafka broker acknowledgements, journal recovery, lineage "
+               "filtering, runtime reconnect, live handoff, and RESP2 "
+               "ingestion OK\n";
 }

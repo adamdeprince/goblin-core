@@ -308,7 +308,7 @@ Type=simple
 User=adam
 Group=adam
 WorkingDirectory=/mnt/local/goblin-core
-ExecStart=/usr/local/bin/goblin-core --port 6379 --numa eno1 --load /mnt/local/goblin-core/state/goblin.snapshot --kafka kafka://192.168.1.49:9092/goblin-core-replication
+ExecStart=/usr/local/bin/goblin-core --port 6379 --numa eno1 --load /mnt/local/goblin-core/state/goblin.snapshot --kafka kafka://192.168.1.49:9092/goblin-core-replication --kafka-ack-mode broker
 Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=30s
@@ -337,6 +337,10 @@ With a native snapshot, the single `--kafka` option performs both halves of the
 workflow: it consumes the retained journal before readiness, then produces each
 new accepted write. The snapshot carries an exact broker offset, so this setup
 does not need the timestamp fallback provided by `--kafka-time-buffer`.
+`--kafka-ack-mode broker` makes the service recipe wait for Redpanda's delivery
+acknowledgement before reporting a write as successful. Omit it, or select
+`queued`, when local producer-queue acceptance is the intended lower-latency
+contract.
 
 Only the origin primary writes the Kafka journal. A Goblin process configured
 with an upstream firehose consumes Kafka for recovery but does not produce a

@@ -7,7 +7,7 @@ INFO [section]
 Returns a bulk string of server and memory statistics in the standard Redis
 `# Section` / `field:value` (CRLF-separated) format, so `redis-cli`, monitoring
 agents, and benchmark harnesses read it unchanged. Goblin Core emits a deliberately
-small subset: `# Server`, `# Replication`, and `# Memory`. The optional
+small subset: `# Server`, `# Replication`, `# Kafka`, and `# Memory`. The optional
 `section` argument is accepted but ignored: `INFO` and `INFO memory` both return
 the full payload.
 
@@ -45,6 +45,25 @@ The logical and Kafka offsets are different coordinate systems. See [Firehose
 replication and Kafka recovery](../replication.md) before using them in restart
 automation. The replica-only fields are omitted on a primary except for
 `goblin_ready`, which is always present.
+
+## `# Kafka`
+
+| field | meaning |
+|---|---|
+| `kafka_journal_enabled` | `1` when the server is producing its write journal to Kafka; otherwise `0` |
+| `kafka_ack_mode` | `queued`, `broker`, or `off`; broker mode withholds successful client replies and firehose delivery until Kafka acknowledges the corresponding write |
+| `kafka_acknowledged_logical_offset` | highest Goblin replication offset whose Kafka record has been acknowledged by the broker |
+| `kafka_pending_records` | produced records still awaiting a broker delivery result |
+| `kafka_pending_bytes` | command and key bytes retained for those pending records |
+| `kafka_oldest_pending_age_ms` | age of the oldest unacknowledged record |
+| `kafka_retained_batch_bytes` | mutation payload retained until a broker acknowledgement makes its firehose batch releasable |
+| `kafka_input_backpressured` | `1` while retained Kafka payload has reached `--kafka-pending-bytes` and command input is paused |
+
+The pending-byte ceiling bounds journal payload retained by the server, not
+librdkafka's own queue. A single atomic command, transaction, or script may cross
+the ceiling; Goblin then stops reading additional commands until acknowledgements
+release enough memory. See [Kafka write log and recovery](../kafka.md) for the
+acknowledgement contract and its retry implications.
 
 ## `# Memory`
 

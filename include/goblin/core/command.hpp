@@ -312,6 +312,7 @@ struct CommandExecutionOptions {
   void (*replicate_write)(void*, Store&, const Command&, std::string_view) noexcept{
       nullptr};
   void (*render_role)(void*, std::string&, resp::Version){nullptr};
+  void (*append_info)(void*, std::string&){nullptr};
   // Replica connections may read and subscribe but cannot mutate local state.
   // Replication replay bypasses the live client dispatcher and leaves this false.
   bool read_only{false};

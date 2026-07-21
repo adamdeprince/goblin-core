@@ -615,6 +615,8 @@ void print_usage(std::string_view program) {
             << "       [--use-lz4 BYTES] [--lz4-compress-level LEVEL]\n"
             << "       [--load SNAPSHOT]\n"
             << "       [--kafka CONNECTION] [--kafka-time-buffer SECONDS]\n"
+            << "       [--kafka-ack-mode queued|broker]"
+               " [--kafka-pending-bytes BYTES]\n"
             << "       [--auth-file FILE]\n"
             << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]\n"
             << "       [--max-output-buffer-mib MIB]\n"
@@ -668,6 +670,9 @@ void print_usage(std::string_view program) {
       << "Kafka CONNECTION is kafka://BROKER[,BROKER...]/TOPIC or\n"
       << "bootstrap.servers=BROKERS;topic=TOPIC[;PROPERTY=VALUE...]. The topic\n"
       << "must have one partition. Goblin replays it and journals RESP writes.\n"
+      << "--kafka-ack-mode broker withholds write replies and firehose batches\n"
+      << "until the broker acknowledges every record in the atomic batch; queued\n"
+      << "keeps the lower-latency local-enqueue contract (the default).\n"
       << "--auth-file protects RESP. SBE requires --enable-sbe and never\n"
       << "authenticates; --no-auth-ring/--no-auth-rdma explicitly trust RESP\n"
       << "on those fabrics.\n";
@@ -682,6 +687,11 @@ int main(int argc, char** argv) {
   std::optional<std::string> kafka_connection;
   std::uint64_t kafka_time_buffer_seconds = 0;
   bool kafka_time_buffer_set = false;
+  goblin::core::KafkaAckMode kafka_ack_mode =
+      goblin::core::KafkaAckMode::queued;
+  bool kafka_ack_mode_set = false;
+  std::size_t kafka_pending_bytes = 16U * 1024U * 1024U;
+  bool kafka_pending_bytes_set = false;
   std::optional<std::string> numa_selector;
   bool pubsub_listener_pattern_set = false;
   std::optional<std::string> tls_certificate_chain;
@@ -1618,6 +1628,40 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--kafka-ack-mode") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --kafka-ack-mode requires queued or broker\n";
+        return 2;
+      }
+      const std::string_view mode(argv[++i]);
+      if (mode == "queued") {
+        kafka_ack_mode = goblin::core::KafkaAckMode::queued;
+      } else if (mode == "broker") {
+        kafka_ack_mode = goblin::core::KafkaAckMode::broker;
+      } else {
+        std::cerr << "goblin-core: --kafka-ack-mode must be queued or broker\n";
+        return 2;
+      }
+      kafka_ack_mode_set = true;
+      continue;
+    }
+
+    if (arg == "--kafka-pending-bytes") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --kafka-pending-bytes requires a byte count\n";
+        return 2;
+      }
+      const auto bytes = goblin::core::ring::parse_size(argv[++i]);
+      if (!bytes || *bytes == 0 ||
+          *bytes > std::numeric_limits<std::size_t>::max()) {
+        std::cerr << "goblin-core: invalid --kafka-pending-bytes byte count\n";
+        return 2;
+      }
+      kafka_pending_bytes = static_cast<std::size_t>(*bytes);
+      kafka_pending_bytes_set = true;
+      continue;
+    }
+
     if (arg == "--score-string-cache") {
       store_options.score_string_cache = true;
       continue;
@@ -1798,6 +1842,11 @@ int main(int argc, char** argv) {
 
   if (kafka_time_buffer_set && !kafka_connection) {
     std::cerr << "goblin-core: --kafka-time-buffer requires --kafka\n";
+    return 2;
+  }
+  if ((kafka_ack_mode_set || kafka_pending_bytes_set) && !kafka_connection) {
+    std::cerr << "goblin-core: --kafka-ack-mode and --kafka-pending-bytes "
+                 "require --kafka\n";
     return 2;
   }
   if (kafka_time_buffer_set && !load_path) {
@@ -1990,7 +2039,9 @@ int main(int argc, char** argv) {
         .start_timestamp_ms = start_timestamp_ms,
         .acknowledged_offset = acknowledged_offset,
         .require_replication_metadata =
-            acknowledged_offset.has_value() || config.replica_source.has_value()};
+            acknowledged_offset.has_value() || config.replica_source.has_value(),
+        .ack_mode = kafka_ack_mode,
+        .pending_bytes = kafka_pending_bytes};
   }
 
   goblin::core::Server server(config, store);

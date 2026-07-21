@@ -19,7 +19,8 @@ string. Both forms identify one topic:
 
 ```bash
 goblin-core \
-  --kafka 'kafka://kafka-1:9092,kafka-2:9092/goblin-writes'
+  --kafka 'kafka://kafka-1:9092,kafka-2:9092/goblin-writes' \
+  --kafka-ack-mode broker
 
 goblin-core \
   --kafka 'bootstrap.servers=kafka-1:9092,kafka-2:9092;topic=goblin-writes;client.id=prices'
@@ -42,6 +43,50 @@ libraries happen to be installed on the build host.
 Kafka support is enabled by default. Configure with
 `-DGOBLIN_CORE_ENABLE_KAFKA=OFF` to omit the vendored client and reject the
 `--kafka` option.
+
+## Acknowledgement policy
+
+`--kafka-ack-mode queued|broker` selects what a successful write reply means.
+The default, `queued`, preserves the lowest-latency behavior: Goblin applies the
+atomic command, librdkafka accepts its records into the local producer queue,
+and Goblin releases the client reply and live firehose batch. Delivery remains
+asynchronous. A process or host failure in the interval before broker delivery
+can therefore lose a write whose client already saw success.
+
+`broker` makes the external log part of the acknowledgement boundary:
+
+```bash
+goblin-core \
+  --kafka 'kafka://kafka-1:9092,kafka-2:9092/goblin-writes' \
+  --kafka-ack-mode broker \
+  --kafka-pending-bytes 16mb
+```
+
+Goblin retains each reply and corresponding firehose batch until delivery
+callbacks confirm every Kafka record produced by that atomic command. `EXEC`
+and scripts may produce several consecutive records; their one reply is
+released only after the last record is acknowledged. Other clients continue to
+make progress while acknowledgements are pending, and pipelined replies remain
+in request order.
+
+Production uses an idempotent producer, `acks=all`, and one in-flight request
+per broker connection. The exact storage guarantee behind `acks=all` remains a
+Kafka/Redpanda cluster policy: replication factor, in-sync replica requirements,
+and disk flush policy belong to the broker. Broker mode means the configured
+broker policy accepted the record; it does not silently strengthen that policy
+to a physical `fsync` per message.
+
+`--kafka-pending-bytes` bounds retained, unacknowledged replication payloads and
+defaults to 16 MiB. At the watermark Goblin pauses command input while it keeps
+polling Kafka and draining output. The command already executing remains atomic
+and may take the retained total across the watermark. Input resumes as delivery
+callbacks release batches.
+
+`INFO` reports `kafka_ack_mode`, acknowledged logical offset, pending record and
+byte counts, oldest pending age, retained batch bytes, and whether Kafka input
+backpressure is active. A broker acknowledgement can still be followed by a
+lost client connection before the reply arrives; applications that retry
+non-idempotent operations need their usual idempotency key.
 
 ## Record contract
 
@@ -148,11 +193,12 @@ Goblin does not commit a consumer-group offset. The restart cursor belongs to th
 database snapshot, so copying a snapshot also copies its precise replay point.
 Without a snapshot Goblin starts at the earliest retained record.
 
-Primary-side production is asynchronous and uses Kafka's idempotent producer,
-`acks=all`, and one in-flight request per connection. Delivery callbacks run on
-the Goblin server thread. A successful callback advances the broker offset that
-the next snapshot captures; a permanent delivery failure stops the server rather
-than allowing the serving state and durable log to diverge silently.
+Primary-side production always uses Kafka's idempotent producer, `acks=all`, and
+one in-flight request per connection. Delivery callbacks run on the Goblin
+server thread. A successful callback advances the broker offset that the next
+snapshot captures. It also releases replies and firehose batches in `broker`
+mode. A permanent delivery failure stops the server rather than allowing the
+serving state and durable log to diverge silently.
 
 A server with an upstream firehose does not create a Kafka producer. This is
 true for replicas of replicas as well: only the origin primary owns the durable

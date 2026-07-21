@@ -3542,7 +3542,13 @@ void execute_command_into_impl(Store& store,
       resp::append_bulk_string(out, command.args.front());
       return;
     case CommandType::info:
-      resp::append_bulk_string(out, build_info_string(store));
+      {
+        auto info = build_info_string(store);
+        if (options.append_info != nullptr) {
+          options.append_info(options.replication_context, info);
+        }
+        resp::append_bulk_string(out, info);
+      }
       return;
 
     case CommandType::eval:
