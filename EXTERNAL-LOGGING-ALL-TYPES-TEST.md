@@ -157,3 +157,6 @@ the exact saved contents after startup replay, accepted another 500,000 logged
 writes, and retained a fully correct million-value result. This is the behavior
 the external-logging design promises: Goblin Core owns compact hot state and
 native snapshots; Redpanda owns the ordered durable history between them.
+
+The next test adds a live follower and kills both Goblin processes, one after
+the other: [Staggered Primary and Replica Crashes](EXTERNAL-LOGGING-PRIMARY-REPLICA-TEST.md).

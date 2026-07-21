@@ -180,3 +180,6 @@ show that the external-logging design works end to end under a real hard kill.
 
 The follow-up [all-types recovery test](EXTERNAL-LOGGING-ALL-TYPES-TEST.md)
 repeats the exercise for strings, hashes, sets, sorted sets, lists, and arrays.
+The [staggered primary/replica test](EXTERNAL-LOGGING-PRIMARY-REPLICA-TEST.md)
+then kills both Goblin processes, one at a time, and verifies the surviving and
+rebuilt copies after each death.

@@ -415,5 +415,24 @@ snapshotted 500,000 values in each of all six persistent types, recovered in
 million final reads. See [EXTERNAL-LOGGING-FIRST-TEST.md](EXTERNAL-LOGGING-FIRST-TEST.md)
 and [EXTERNAL-LOGGING-ALL-TYPES-TEST.md](EXTERNAL-LOGGING-ALL-TYPES-TEST.md).
 
+The staggered primary/replica runner is
+`benchmarks/primary_replica_recovery.sh`. It starts from that full baseline,
+refreshes and copies the snapshot, kills and holds down the primary while it
+checks the replica, restarts the primary, appends a logged suffix, then kills
+and holds down the replica while it checks the primary. It finally restarts the
+replica and checks every value on both processes:
+
+```sh
+benchmarks/primary_replica_recovery.sh \
+  --data-type all --baseline-count 1000000 --delta-count 1000 --pipeline 512
+```
+
+The matching systemd unit template is
+`benchmarks/goblin-core-replica-test.service`. Adapt its paths, broker address,
+and NUMA selector to the host before installation. The verified Thunder run
+sent `SIGKILL` to both processes, one at a time, and matched all 6,006,000 final
+values on each server. See
+[EXTERNAL-LOGGING-PRIMARY-REPLICA-TEST.md](EXTERNAL-LOGGING-PRIMARY-REPLICA-TEST.md).
+
 For a stronger storage check, produce with `acks=all`, restart Redpanda, and
 consume the record again. That test was also used during this installation.
