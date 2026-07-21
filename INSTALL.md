@@ -275,35 +275,68 @@ rpk -X brokers=192.168.1.49:9092 topic create goblin-core-replication \
   --partitions 1 --replicas 1
 ```
 
-`thunder` has network hardware on multiple NUMA nodes. Select `eno1` explicitly;
-this puts Goblin on node 0 with its Ethernet path to Redpanda. The verified
-deployment used a transient systemd unit so systemd could raise the memlock
-limit while still running Goblin as `adam`:
+Install the verified binary at a stable path. Before switching services, ask the
+currently running Kafka-backed primary to write a native snapshot. The snapshot
+contains both the keyspace and the acknowledged Kafka/replication offsets.
+`GOBLIN.SAVE` writes a temporary file, fsyncs it, and atomically renames it into
+place; wait for the final path to appear before stopping the old process.
 
 ```sh
-sudo systemd-run \
-  --unit=goblin-core-thunder \
-  --description='Goblin Core Kafka replication smoke deployment' \
-  --property=User=adam \
-  --property=WorkingDirectory=/mnt/local \
-  --property=Restart=on-failure \
-  --property=RestartSec=1s \
-  --property=LimitMEMLOCK=infinity \
+sudo install -o root -g root -m 0755 \
   /mnt/local/goblin-core-build-<commit>/goblin-core \
-    --port 6379 \
-    --numa eno1 \
-    --kafka 'kafka://192.168.1.49:9092/goblin-core-replication'
+  /usr/local/bin/goblin-core
+sudo install -d -o adam -g adam -m 0750 /mnt/local/goblin-core/state
 
-systemctl status goblin-core-thunder.service --no-pager --full
+redis-cli -h 127.0.0.1 -p 6379 \
+  GOBLIN.SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
+stat /mnt/local/goblin-core/state/goblin.snapshot
+```
+
+`thunder` has network hardware on multiple NUMA nodes. Selecting `eno1` puts
+Goblin on node 0 with its Ethernet path to Redpanda. Install the following as
+`/etc/systemd/system/goblin-core.service`:
+
+```ini
+[Unit]
+Description=Goblin Core with Redpanda replication journal
+Requires=redpanda.service
+After=network-online.target redpanda.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adam
+Group=adam
+WorkingDirectory=/mnt/local/goblin-core
+ExecStart=/usr/local/bin/goblin-core --port 6379 --numa eno1 --load /mnt/local/goblin-core/state/goblin.snapshot --kafka kafka://192.168.1.49:9092/goblin-core-replication
+Restart=on-failure
+RestartSec=1s
+TimeoutStopSec=30s
+LimitMEMLOCK=infinity
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Stop any bootstrap/transient process, then enable the permanent service:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl stop goblin-core-thunder.service
+sudo systemctl enable --now goblin-core.service
+
+systemctl status goblin-core.service --no-pager --full
 redis-cli -h 127.0.0.1 -p 6379 PING
 
-pid=$(systemctl show goblin-core-thunder.service --property=MainPID --value)
+pid=$(systemctl show goblin-core.service --property=MainPID --value)
 grep '^VmLck:' /proc/"$pid"/status
 ```
 
-This unit lives under `/run/systemd/transient` and is not enabled across a
-reboot. Convert the same command and limits into a permanent unit before using
-this as a standing service.
+With a native snapshot, the single `--kafka` option performs both halves of the
+workflow: it consumes the retained journal before readiness, then produces each
+new accepted write. The snapshot carries an exact broker offset, so this setup
+does not need the timestamp fallback provided by `--kafka-time-buffer`.
 
 Only the origin primary writes the Kafka journal. A Goblin process configured
 with an upstream firehose consumes Kafka for recovery but does not produce a
@@ -311,33 +344,47 @@ second copy of an upstream mutation.
 
 ## 7. Verify journal and replay
 
-Write through Goblin and confirm the value appears in both Goblin and the Kafka
-record stream:
+The service must load the snapshot first, resume at its inclusive broker offset,
+filter the boundary record already represented by the snapshot, and finish
+Kafka replay before opening the RESP listener. Confirm the restored state and
+offsets:
 
 ```sh
-redis-cli -h 127.0.0.1 -p 6379 SET thunder:replication-smoke alive
-redis-cli -h 127.0.0.1 -p 6379 GET thunder:replication-smoke
+redis-cli -h 127.0.0.1 -p 6379 INFO replication
+journalctl -u goblin-core.service --no-pager -n 30
+```
+
+Write a value after the snapshot, confirm that Goblin publishes its canonical
+RESP2 mutation to Kafka, then restart. The value can only be recovered from the
+journal because it is not in the snapshot used for this test.
+
+```sh
+redis-cli -h 127.0.0.1 -p 6379 \
+  SET thunder:replication-live redpanda
 rpk -X brokers=192.168.1.49:9092 topic consume goblin-core-replication \
-  --offset start --num 1 --format '%v\n'
+  --offset 1 --num 1 --format '%v\n'
 rpk -X brokers=192.168.1.49:9092 topic describe \
   goblin-core-replication -p
+
+sudo systemctl restart goblin-core.service
+redis-cli -h 127.0.0.1 -p 6379 GET thunder:replication-live
+redis-cli -h 127.0.0.1 -p 6379 INFO replication
 ```
 
-Finally, stop and restart Goblin without a snapshot. Its initial Kafka replay
-must finish before the RESP listener opens, the value must be restored, and the
-high watermark must remain unchanged:
+After that proof, refresh the normal startup snapshot and restart once more:
 
 ```sh
-sudo systemctl restart goblin-core-thunder.service
-redis-cli -h 127.0.0.1 -p 6379 GET thunder:replication-smoke
-rpk -X brokers=192.168.1.49:9092 topic describe \
-  goblin-core-replication -p
+redis-cli -h 127.0.0.1 -p 6379 \
+  GOBLIN.SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
+stat /mnt/local/goblin-core/state/goblin.snapshot
+sudo systemctl restart goblin-core.service
 ```
 
-The verified run consumed one canonical RESP2 `SET` record, restored `alive`
-after the restart, and kept partition 0's high watermark at `1`. Replay did not
-write a duplicate mutation back to Kafka. The running Goblin process reported
-about 469 MiB in `VmLck`, confirming that the systemd memlock limit took effect.
+The verified deployment loaded two keys from the refreshed snapshot, resumed
+inclusively at broker offset `1`, retained logical replication offset `2`, and
+did not append a duplicate record. Redpanda's high watermark remained `2`.
+The running Goblin process reported about 469 MiB in `VmLck`, confirming that
+the systemd memlock limit took effect.
 
 For a stronger storage check, produce with `acks=all`, restart Redpanda, and
 consume the record again. That test was also used during this installation.
