@@ -672,6 +672,17 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     target_compile_options(goblin_core_external_logging_recovery PRIVATE
       -Wall -Wextra -Wpedantic)
 
+    add_executable(goblin_core_kafka_ack_benchmark
+      benchmarks/kafka_ack_benchmark.cpp)
+    target_include_directories(goblin_core_kafka_ack_benchmark PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(goblin_core_kafka_ack_benchmark PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_kafka_ack_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+
     add_executable(goblin_core_list_work_queue_benchmark
       benchmarks/list_work_queue_benchmark.cpp)
     target_link_libraries(goblin_core_list_work_queue_benchmark PRIVATE
