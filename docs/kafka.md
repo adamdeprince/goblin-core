@@ -88,6 +88,9 @@ backpressure is active. A broker acknowledgement can still be followed by a
 lost client connection before the reply arrives; applications that retry
 non-idempotent operations need their usual idempotency key.
 
+The measured latency and batching tradeoffs are in the
+[Kafka durability benchmark](../KAFKA-DURABILITY-BENCHMARK.md).
+
 ## Record contract
 
 One Kafka record value contains exactly one complete canonical RESP2 mutation.
