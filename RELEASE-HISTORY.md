@@ -10,10 +10,39 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.9.0 — July 20, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.9.0)
+
+The durability, replication, and compatibility release. Native Kafka replay
+shipped one week ahead of its July 27 target.
+
+- Added native external journaling and recovery through Kafka-compatible
+  brokers using vendored Apache-2.0-compatible librdkafka. Only primaries
+  produce; snapshots retain the replication lineage, logical offset, and exact
+  acknowledged broker offset for inclusive, deduplicated recovery.
+- Added transport-neutral `GOBLIN.FIREHOSE` live replication over TCP, UDS,
+  shared-memory rings, and RDMA. Read-only replicas retain state across an
+  upstream outage, reconnect automatically, bridge gaps through Kafka, expose
+  explicit readiness and lag, and may feed downstream replicas.
+- Validated snapshot-plus-Redpanda recovery on every persistent object type,
+  then killed a primary and replica separately and exhaustively checked the
+  surviving and rebuilt copies after each hard process death.
+- Added libsodium-backed username/password authentication, an offline
+  `goblin-core-auth` editor, `AUTH`, extended `HELLO`, client metadata commands,
+  and explicit trusted-fabric authentication policy for SBE, rings, and RDMA.
+- Added `MULTI`, `EXEC`, `DISCARD`, `WATCH`, and `UNWATCH` with page-rounded,
+  preallocated per-client transaction buffers and atomic batched execution.
+- Added list work-queue commands including `LMOVE`, `RPOPLPUSH`, `BLPOP`,
+  `BRPOP`, `BLMOVE`, `LMPOP`, and `BLMPOP`, parking blocked clients without
+  blocking server command execution.
 - Added repeatable `--listen` IPv4/IPv6 endpoints and native nonblocking OpenSSL
   TLS for non-loopback ordinary TCP. Every configured TCP port retains a
   plaintext `127.0.0.1` companion; certificate/key configuration is shared by
-  all external listeners.
+  all external listeners, and replicas support authenticated,
+  certificate-verified TLS connections.
 - Added bounded `SCAN` and `HSCAN`, completing the cursor family alongside
   `SSCAN` and `ZSCAN`. Keyspace scans support `MATCH`, `COUNT`, and `TYPE`; hash
   scans support `MATCH`, `COUNT`, and `NOVALUES`, including qualified efficient
@@ -22,10 +51,20 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
   coverage against Redis for all four cursor commands.
 - Completed the Redis leaderboard command surface with conditional and
   incrementing `ZADD`, `ZINCRBY`, indexed score ranges, `ZCOUNT`, `ZMSCORE`,
-  `ZPOPMIN`/`ZPOPMAX`, and `ZSCAN` over RESP2, RESP3, and typed SBE.
+  `ZPOPMIN`/`ZPOPMAX`, `ZSCAN`, rank-range deletion, and union/intersection
+  stores over RESP2, RESP3, and typed SBE.
 - Added Redis differential coverage for option interactions, inclusive and
   exclusive bounds, infinities, reverse limits, tied scores, pops, scan
   traversal, wrong types, compact-to-full promotion, and every rank-cache mode.
+- Added hash, string, keyspace, and operational compatibility commands,
+  including hash float increments and scans, multi-key conditional writes,
+  rename/copy/random access, `TIME`, `ROLE`, and an honest bounded `CONFIG GET`.
+- Added a deterministic `--maxmemory` ceiling with pre-growth OOM rejection and
+  no eviction policy.
+- Added multi-listener Pub/Sub relays and cross-host delivery over ring, TCP,
+  UDS, and RDMA transports.
+- Statically linked the GNU C++ and GCC support runtimes by default so source
+  builds remain deployable across hosts with older runtime installations.
 
 ## v0.8.0 — July 16, 2026
 

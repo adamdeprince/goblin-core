@@ -551,7 +551,7 @@
         <p class="release-note">
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
-          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 27, 2026:</strong> native <a href="docs/kafka.html">Kafka replay</a></s><strong class="delivery-stamp">Delivered 9 days early</strong></span>
+          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 27, 2026:</strong> native <a href="docs/kafka.html">Kafka replay</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
@@ -700,7 +700,7 @@
           </article>
         </div>
         <p class="method"><strong>Comparison discipline:</strong> HSET is RESP2/UDS throughout. LIST, SET, and ZSET compare Goblin RESP/TCP with RESP/TCP incumbents, then show Goblin's equally pipelined SBE ring separately. ARRAY is RESP/TCP with native AR* commands throughout; unsupported engines receive an <code>X</code>, never a hash fallback. Runs are medians on the same dedicated AMD 5995WX host, with one serving core per engine and process RSS read from Linux rather than trusted server counters.</p>
-        <p class="method"><strong>More transport evidence:</strong> <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a></p>
+        <p class="method"><strong>More transport evidence:</strong> <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a> · <a href="NUMA-RING-LATENCY.html">same-node versus remote-ring NUMA cost</a></p>
       </div>
     </section>
 

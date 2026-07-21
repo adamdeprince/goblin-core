@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.8.0
+  VERSION 0.9.0
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
