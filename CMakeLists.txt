@@ -663,13 +663,13 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     target_compile_options(goblin_core_hset_benchmark PRIVATE
       -Wall -Wextra -Wpedantic)
 
-    add_executable(goblin_core_hset_kafka_recovery
-      benchmarks/hset_kafka_recovery.cpp)
-    set_target_properties(goblin_core_hset_kafka_recovery PROPERTIES
+    add_executable(goblin_core_external_logging_recovery
+      benchmarks/external_logging_recovery.cpp)
+    set_target_properties(goblin_core_external_logging_recovery PROPERTIES
       CXX_STANDARD 23
       CXX_STANDARD_REQUIRED ON
       CXX_EXTENSIONS OFF)
-    target_compile_options(goblin_core_hset_kafka_recovery PRIVATE
+    target_compile_options(goblin_core_external_logging_recovery PRIVATE
       -Wall -Wextra -Wpedantic)
 
     add_executable(goblin_core_list_work_queue_benchmark

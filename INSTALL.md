@@ -386,28 +386,34 @@ did not append a duplicate record. Redpanda's high watermark remained `2`.
 The running Goblin process reported about 469 MiB in `VmLck`, confirming that
 the systemd memlock limit took effect.
 
-The million-field crash-recovery test is kept in
-`benchmarks/hset_kafka_recovery.sh`. It creates fields `0` through `999999` in
-hash `foo`, starts a snapshot immediately before field `500000`, finishes the
-writes, waits one second, and sends `SIGKILL` to the unit's `MainPID`. The test
-does not construct a restart command. Systemd recreates the process from the
-unit's `ExecStart`. The test records that property and byte-compares the full
-unit definition plus the NUL-delimited `/proc/<pid>/cmdline` before and after
-the crash. After five minutes it verifies `HLEN` and every field/value pair.
+The configurable crash-recovery test is kept in
+`benchmarks/external_logging_recovery.sh`. `--data-type` accepts `string`,
+`hash`, `set`, `zset`, `list`, `array`, or `all`. The runner fills every selected
+type to the snapshot boundary, saves, sends `SIGKILL` to the unit's `MainPID`,
+and lets systemd recreate the process from its unchanged `ExecStart`. After
+startup replay it verifies the recovered half, writes the remaining half, and
+exhaustively verifies the final contents. The full unit definition and the
+NUL-delimited `/proc/<pid>/cmdline` are byte-compared across the crash.
 
 ```sh
-cmake --build build --target goblin_core_hset_kafka_recovery -j
-RECOVERY_WORKER="$PWD/build/goblin_core_hset_kafka_recovery" \
-  benchmarks/hset_kafka_recovery.sh
+cmake --build build --target goblin_core_external_logging_recovery -j
+RECOVERY_WORKER="$PWD/build/goblin_core_external_logging_recovery" \
+  benchmarks/external_logging_recovery.sh \
+    --data-type all --snapshot-at 500000 --count 1000000 --pipeline 512
 ```
 
-The Thunder validation populated the million fields in 5.09 seconds. After the
-hard crash, the replacement process loaded the 500,000-field snapshot and
-replayed the remaining writes from Redpanda. At the five-minute check, `HLEN`
-was `1000000` and all one million `HGET` results matched, with zero missing or
-mismatched values. The systemd unit and raw process command line were identical
-across the restart, and Goblin's logical offset and the Kafka high watermark
-both reached `2000004`.
+To isolate one native type, change only the selector:
+
+```sh
+benchmarks/external_logging_recovery.sh --data-type zset
+```
+
+The first Thunder HSET-only validation populated one million fields in 5.09
+seconds and recovered every field after a hard crash. The expanded validation
+snapshotted 500,000 values in each of all six persistent types, recovered in
+5.72 seconds, continued each type to one million values, and matched all six
+million final reads. See [EXTERNAL-LOGGING-FIRST-TEST.md](EXTERNAL-LOGGING-FIRST-TEST.md)
+and [EXTERNAL-LOGGING-ALL-TYPES-TEST.md](EXTERNAL-LOGGING-ALL-TYPES-TEST.md).
 
 For a stronger storage check, produce with `acks=all`, restart Redpanda, and
 consume the record again. That test was also used during this installation.
