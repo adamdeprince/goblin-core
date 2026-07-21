@@ -386,5 +386,28 @@ did not append a duplicate record. Redpanda's high watermark remained `2`.
 The running Goblin process reported about 469 MiB in `VmLck`, confirming that
 the systemd memlock limit took effect.
 
+The million-field crash-recovery test is kept in
+`benchmarks/hset_kafka_recovery.sh`. It creates fields `0` through `999999` in
+hash `foo`, starts a snapshot immediately before field `500000`, finishes the
+writes, waits one second, and sends `SIGKILL` to the unit's `MainPID`. The test
+does not construct a restart command. Systemd recreates the process from the
+unit's `ExecStart`. The test records that property and byte-compares the full
+unit definition plus the NUL-delimited `/proc/<pid>/cmdline` before and after
+the crash. After five minutes it verifies `HLEN` and every field/value pair.
+
+```sh
+cmake --build build --target goblin_core_hset_kafka_recovery -j
+RECOVERY_WORKER="$PWD/build/goblin_core_hset_kafka_recovery" \
+  benchmarks/hset_kafka_recovery.sh
+```
+
+The Thunder validation populated the million fields in 5.09 seconds. After the
+hard crash, the replacement process loaded the 500,000-field snapshot and
+replayed the remaining writes from Redpanda. At the five-minute check, `HLEN`
+was `1000000` and all one million `HGET` results matched, with zero missing or
+mismatched values. The systemd unit and raw process command line were identical
+across the restart, and Goblin's logical offset and the Kafka high watermark
+both reached `2000004`.
+
 For a stronger storage check, produce with `acks=all`, restart Redpanda, and
 consume the record again. That test was also used during this installation.
