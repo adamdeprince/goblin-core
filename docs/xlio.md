@@ -44,6 +44,8 @@ Upstream references:
 - [NVIDIA DPCP source](https://github.com/Mellanox/libdpcp)
 - [XLIO 3.61 documentation](https://docs.nvidia.com/networking/display/xliov361)
 - [XLIO Ultra API](https://docs.nvidia.com/networking/display/xliov361/xlio-ultra-api)
+- [ConnectX-5 firmware downloads](https://network.nvidia.com/support/firmware/connectx5en)
+- [ConnectX-5 firmware 16.35.8008 LTS release notes](https://docs.nvidia.com/networking/display/connectx5firmwarev16358008lts/release-notes-history)
 
 ## ConnectX-5 lab inventory
 
@@ -57,19 +59,56 @@ driver, `rdma-core` 39.0, and use NUMA node 1 for the target adapter.
 | Linux interface / verbs device | `enp68s0np0` / `rocep68s0` | `enp68s0np0` / `rocep68s0` |
 | Direct-link address | `10.100.0.1/30` | `10.100.0.2/30` |
 | Link | 100 Gb/s full duplex, DAC | 100 Gb/s full duplex, DAC |
-| Firmware at qualification | `16.33.1300` | `16.26.1040` |
+| Firmware before upgrade | `16.33.1300` | `16.26.1040` |
+| Qualified firmware | `16.35.8008` | `16.35.8008` |
 
-The direct link passed bidirectional IP traffic; a five-packet
-`butterfly`-to-`rain` ping averaged about 195 microseconds. That was a reachability
-check, not a latency benchmark.
+The direct link passed bidirectional IP traffic after the upgrade; a five-packet
+`butterfly`-to-`rain` ping averaged about 253 microseconds. That was a
+reachability check, not a latency benchmark.
 
 NVIDIA's XLIO 3.61 support matrix names newer ConnectX devices rather than
 ConnectX-5. The two cards are therefore empirically qualified here, not claimed
-as vendor-certified. [NVIDIA's firmware
-table](https://docs.nvidia.com/networking/display/MFT/Supported%2BAdapter%2BCards%2BFirmware%2BVersions)
-listed legacy ConnectX-5 firmware `16.35.4030` at the audit date, so both lab
-cards are behind that release. Do not flash either card without a separate
-PSID, backup, and rollback review.
+as vendor-certified.
+
+## Firmware qualification and upgrade
+
+Both adapters have PSID `MT_0000000011`. They were upgraded one at a time to
+NVIDIA's ConnectX-5 firmware `16.35.8008` LTS U8, released March 1, 2026. The
+selected image was the PSID-specific file:
+
+```text
+fw-ConnectX5-rel-16_35_8008-MCX515A-CCA_Ax_Bx-UEFI-14.29.15-FlexBoot-3.6.902.bin.zip
+```
+
+The downloaded archive matched NVIDIA's published SHA-256 digest
+`7f48e6ba919ac6fc9b63ff0414ee523f52476f444da69ea0e5abca1ac6ea0d91`.
+The extracted firmware image had SHA-256 digest
+`a378a4199e4ab36fb6a49a06435b90f3db89e2ca4714d59134fa1b608bfab855`.
+`mstflint` confirmed the image's PSID, FS4 format, firmware version, UEFI
+`14.29.15`, and FlexBoot `3.6.902` before either card was written.
+
+A full 16 MiB device image was captured from each card before the upgrade. The
+rollback artifacts live outside the repository in
+`$HOME/firmware/connectx5/backups/2026-07-22/`:
+
+| Host | Backup image | SHA-256 |
+|---|---|---|
+| `butterfly` | `butterfly-MT_0000000011-fw16.33.1300.bin` | `8a6df63180d59b6516c6b0ff44a34d7ef3ba606e68e98a463ce0a00e079e6a94` |
+| `rain` | `rain-MT_0000000011-fw16.26.1040.bin` | `c107e5a47a0ca6897315fa6bdcd72e40096f8bf865321d771104f0bd9a00581b` |
+
+Each backup was parsed independently before proceeding and retained its host's
+original firmware, PSID, base GUID, and base MAC. Each card was then burned and
+activated before the other host was changed. The old systems required a full
+power cycle rather than a warm reboot to return reliably.
+
+After activation, `mstflint` reported running and stored firmware `16.35.8008`
+on both hosts. The original PSID, GUID, and MAC remained intact. The direct-link
+addresses are persisted in `/etc/netplan/70-connectx5-direct.yaml`; DHCP, IPv6
+router advertisements, and DHCPv6 are disabled on that isolated `/30` link.
+Both interfaces negotiated 100 Gb/s full duplex after reboot. The target
+device's firmware, fatal-firmware, TX, and RX devlink health reporters were
+healthy with zero errors and recoveries, and the matching `ethtool` hardware
+error counters remained zero.
 
 ## Mixed-fabric discovery patch
 
@@ -144,6 +183,12 @@ case exchanged the literal TCP payloads `ping\n` and `pong\n`; the peer labeled
 This proves the required asymmetric compatibility in both roles on both cards:
 an XLIO-speaking endpoint remains a normal TCP peer on the wire. It does not yet
 measure Goblin command latency or throughput.
+
+After the firmware upgrade, the server direction was repeated with an XLIO
+Ultra server on `butterfly` and a kernel TCP client on `rain`. The client
+direction was repeated with a kernel TCP server on `butterfly` and an XLIO Ultra
+client on `rain`. Both exchanged the expected payloads, and XLIO reported
+zero-copy completion on the accelerated endpoint.
 
 ## Integration gates
 
