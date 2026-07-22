@@ -1,0 +1,1009 @@
+Version 3.61.2-1:
+Date + Time 2025-01-21
+=============================================================
+Fixed:
+        - RM #4050516 revert Fix TCP segment leak in SYN flood
+
+Version 3.61.1-1:
+Date + Time 2025-01-08
+=============================================================
+Fixed:
+	- RM #4807454 Using DPCP for max SQ WQEBBs
+	- RM #4639355 Fix cpu_affinity validation
+	- RM #4745207 display negative config values
+	- RM #4669908 Fix leak in xlio_get_api()
+	- RM #4809280 Add dpcp dependency to the DEB/RPM specs
+	- RM #4809498 Remove auto-generated json_config.h
+	- RM #4583806 Inline configuration anomalies detection
+	- RM #4050516 Fix TCP segment leak in SYN flood
+	- RM #4219010 XLIO support for kernel 6.10
+	- RM #4687559 Add simple communication protocol and refactor the code
+	- RM #4687559 Add TX buffer pool to the Ultra API example
+	- RM #4583806 Fix Coverity issues
+
+Version 3.61.0-1:
+Date + Time 2025-12-14
+=============================================================
+Fixed:
+	-RM #4745056 Explicit madvise fork protection
+	-RM #4432879 Start event handler thread during XLIO init
+	-RM #4728517 Fix credit prediction mismatch in hw_queue_tx
+	-RM #4556521 Unified Configuration: missing fields
+	-RM #4669942 Don't increase error counter on TCP EOF
+	-RM #4680622 Fix pktinfo test EINTR failures
+	-RM #4693625 Fixing rx.sz_payload sync with threads mode
+	-RM #4720794 Fix leak in worker threads mode
+	-RM #4642229 sockperf SIGINT leak
+	-RM #4392235 Fixing SQ corruption on full SQ completion
+	-RM #4636978 add clang-format pre-commit hook
+	-RM #4642229 Valgrind leak suppression
+	-RM #4664603 fix rx ring fast-path pointer
+	-RM #4669986 Fix integer underflow on EINTR
+	-RM #4680622 Fix sporadic udp_connect fails
+	-RM #4642229 fix memory leaks during termination
+	-RM #3886011 Removing UDP RX callback API
+	-RM #4664781 Fix job_queue_test.cpp style
+	-RM #4649652 fix exception config var display
+	-RM #4669087 fix resource leaks- ultra API tests
+
+Version 3.60.4-1:
+Date + Time 2025-10-09
+=============================================================
+Added:
+        - RM #4655843 Add doxygen description to the public headers
+        - RM #4649710 Add XLIO Ultra API example application
+Fixed:
+        - RM #4551257 standardize enum - disable/enable
+        - RM #4625345 Fix Coverity uninitialized use
+        - RM #4649652 fix config parameter display
+        - RM #4578714 Remove "all" and 6 from profiles
+        - RM #4583806 config inline loader strict
+        - RM #4633470 fix generate_docs.py +update README
+        - RM #4367367 Polish Ultra API documentation
+        - RM #4603449 Guarantee TERMINATED event after xlio_socket_destroy()
+        - RM #4315534 Ultra API remove unused functions
+        - RM #4555151 fix XLIO_USE_NEW_CONFIG env check
+        - RM #4545376 reject JSON keys containing dots
+        - RM #4578243 remove support for cpu_affinity in inline config
+        - RM #4642277 Reorder socket cleanup in poll_group::close_socket
+        - RM #4640792 Fix incorrect type definitions in config file
+        - RM #4552090 add power-of-2-or-zero validation in config file
+        - RM #4578243 add unsupported parameter check in config file
+        - RM #4561511 remove obsolete global_array_size
+        - RM #4561820 Fix type validation for integers in config file
+        - RM #4551257 improve display clarity
+        - RM #4579042 Fix new/old defaults discrepancy in config file
+        - RM #4578714 standardize XLIO spec profile names
+        - RM #4570015 standardize boolean display values
+        - RM #4551255 fix any_cast error - exception mode in config file
+        - RM #4634818 fix mismatches from unknown keys
+        - RM #4555854 fix bad any_cast error -striding_rq in config file
+        - RM #4567877 fix multicast L2 rules config path
+        - RM #4550864 add minimum for nodelay_threshold in config file
+        - RM #4633383 add x-memory-size to buf config
+
+Version 3.60.3-1:
+Date + Time 2025-09-18
+=============================================================
+Fixed:
+        - RM #4315534 Fix --disable-nginx compilation flavor issue
+
+Version 3.60.2-1:
+Date + Time 2025-09-10
+=============================================================
+Added:
+        - RM #4315534 Optimize XLIO for Multithreaded Applications
+        - RM #4493519 NGINX Dual port support
+        - RM #4315534 Improve buffer management in the Threads mode
+        - RM #4624249 Remove deadcode in rx_read_ready_packets 
+        - RM #4610737 Skip Ultra API rings in CQ moderation
+        - RM #4367367 Handle passthrough in XLIO Ultra API
+Fixed:
+        - RM #4624249 Fix Coverity issues
+        - RM #4573723 Fix XLIO double init
+        - RM #4553157 Release RX ready buffers in ~sockinfo_tcp
+
+Version 3.60.1-1:
+Date + Time 2025-08-18
+=============================================================
+Added:
+        - RM #4367367 XLIO Ultra API Stabilization
+        - RM #4367367 Add support of listen sockets to XLIO Ultra API
+        - RM #4207451 Move from env params to config file
+        - RM #4397660 Add 'AUTO' mode to XLIO_PRINT_REPORT
+	- RM #4397660 Add CQ rx_drop_counter
+        - RM #4446408 Add openssl version to the debug logs
+Fixed:
+        - RM #4424775 Skip kernel setsockopt() for TCP_ULP
+        - RM #4551503 Fix HW tls counters
+        - RM #4424629 Suppress duplicate IP warning for link-local IPv6
+        - RM #4503824 Fix UDP RX Offload socket stats
+        - RM #4409248 Fix RoCE LAG warning
+        - RM #4532810 Fix PCB last_unacked in SYN_SENT state
+        - RM #4502938 Fixing TLS RX ZC buffer tcp_tx_pbuf_alloc
+        - RM #4415379 TLS RX offload encryption fix
+        - RM #4238452 Fixing RX interrupt event handling
+        - RM #4238452 Fixing blocking TCP rx_wait_helper deadlock
+        - RM #4213201 Remove memset for the next hot WQE
+        - RM #4397660 Fix reading flow_tag from CQE
+        - RM #4043235 TCP_USER_TIMER wrong RTO behavior
+        - RM #4347777 Replace thread-local dummy lock
+        - RM #4297240 Disable retransmission timer
+        - RM #4379306 Remove reduandant lock
+        - RM #4479538 Release pipeline is broken
+        - RM #4432537 Replace linux list with BSD list
+Removed:
+        - RM #3886011 Removing ring_tap support
+        - RM #3886011 Removing internal thread arm CQ
+        - RM #3886011 Removing SO_XLIO_ISOLATE
+        - RM #3886011 Removing TCP control thread mode
+        - RM #3886011 Removing dummy message support
+        - RM #3886011 Removing XLIO extra ioctl API
+        - RM #3886011 Removing limited POSIX ZC TX
+        - RM #3886011 Removing TX ZC with mkey
+        - RM #3886011 Removing NVME TX CRC Offload
+        - RM #3886011 Removing RX Zero Copy API
+        - RM #3886011 Removing Socketxtreme API
+        - RM #3886011 Removing TCP RX callback API
+        - RM #4262473 Deprecate XLIO_SELECT_POLL_OS_FORCE
+
+Version 3.50.3-1:
+Date + Time 2025-03-26
+=============================================================
+Fixed:
+        - RM #4371009 Update copyright layout
+
+Version 3.50.2-1:
+Date + Time 2025-03-11
+=============================================================
+Fixed:
+        - RM #4308042 Added a barrier before accessing CQE data
+
+Version 3.50.1-1:
+Date + Time 2025-02-12
+=============================================================
+Fixed:
+        - RM #4287937 Getting init_worker() bind() error on Nginx Func tests
+        - RM #4288036 On Nginx Func check Traffic was not offloaded
+
+Version 3.50.0-1:
+Date + Time 2025-02-04
+=============================================================
+Added:
+        - RM #4203242 dump wqe to log in case of ecqe
+        - RM #4232341 Align vNext copyrights to 2025
+        - RM #3782717 Improve XLIO Fairness for NGINX High Concurrency
+        - RM #3884801 Check for resident hugepages to avoid SIGBUS
+        - RM #4124248 Don't update consumer index in CQ
+
+Fixed:
+        - RM #4183221 propagate socket errors
+        - RM #4023262 Handle IP conflicts between multiple interfaces
+        - RM #3914075 CQ Moderation with small payloads
+        - RM #4039879 Handling partial read packets when clearing RX buffer
+        - RM #4154286 Fix print report logic
+
+Version 3.40.2-1:
+Date + Time 2024-10-07
+=============================================================
+Fixed:
+        - RM #4082058 3.40.1 is causing a performance degradation with multiple nginx scenarios
+        - RM #4071902 Getting low CPS Performance and wrong duration when running PKA with XLIO
+        - RM #4021863 XLIO with wrk while enabling multiple threads fails with a seg fault
+
+Version 3.40.1-1:
+Date + Time 2024-09-11
+=============================================================
+Added:
+        - RM #4033654 Rotten test folder cleanup
+        - RM #4034865 XLIO parameters and specs cleanup
+        - RM #4034844: Manage SPDK/OCI parameters with nvme_bf3 XLIO_SPEC
+
+Fixed:
+        - RM #4014486 Missing ack for partial TSO segments after retransmission
+        - RM #4014504 RTO after fast retransmission puts TCP segments in wrong order in unsent list
+        - RM #3382805 XLIO shows warning: "could not figure out source ip for rtv"
+        - RM #3594311 Segmentation fault in nginx scenario - unlock_tcp_con
+        - RM #4043152 Sockperf with multiple IPv6 sockets fails with XLIO warning and an error
+        - RM #4039462 XLIO crashes on stats with thread_local dummy
+        - RM #3502635 Instability with Nginx performance results on BF3
+
+Version 3.40.0-1:
+Date + Time 2024-08-08
+=============================================================
+Added:
+        - RM #3992651 Allow XLIO socket queue to grow for non-zc sends
+        - RM #3928453 XLIO_PRINT_REPORT prints report unconditionally
+        - RM #4019192 Always build TCP_OVERSIZE
+        - RM #4019192 Remove max_tcp_snd_queuelen
+        - RM #4019192 Refactor oversized pbufs feature
+        - RM #HPCINFRA-1798 Update code base to clang-format-15
+
+Fixed:
+        - RM #3502635 Avoid epoll OS polling through internal thread
+        - RM #3857909 Fix iomux sleep without draining the CQ
+
+Removed:
+        - RM #3857909 Clean deprecated XLIO_RX_POLL_OS_RATIO XLIO_RX_SKIP_OS
+        - RM #3857909 Removing DEFINED_FORCE_TX_POLLING
+        - RM #3928006 Remove unused XLIO_BF
+
+Version 3.31.2-1:
+Date + Time 2024-07-15
+=============================================================
+Added:
+        - RM #3925885 Adjusting XLIO default allocation logic
+        - RM #3807308 Add Ring TSO statistics
+
+Fixed:
+        - RM #3958757 Change error message to warning when reading FS files
+        - RM #3848340 HPCINFRA-1734 Coverity: upgrade to v2023.12
+        - RM #3964910 Align ring size to cache line
+        - RM #3976537 Avoid TX polling in XLIO Socket flush
+        - RM #3976537 Remove leftover closed socket from the dirty list
+        - RM #3949975 Fix -Wtemplate-id-cdtor in xlio_list
+        - RM #3777769 Fix No traffic with VLAN tagged packets
+        - RM #3981627 Print early logs to stderr
+        - RM #3784248 Nginx UDP reuseport for IPv6
+        - RM #3976544 Don't close epfd for event_handler_manager_local
+
+Version 3.31.1-1:
+Date + Time 2024-06-18
+=============================================================
+Added:
+        - RM #3947680 Improve performance of StorageAPI
+        - RM #3947690 Improve stability of storage API
+
+Fixed:
+        - RM #3933912 high CPU usage impacting the connections establishment
+
+Version 3.31.0-1:
+Date + Time 2024-05-01
+=============================================================
+Added:
+        - RM #3832212 Print a deprecation warning for XLIO_TX/RX_BUFS
+
+Fixed:
+        - RM #3857909 Missed interrupts when high RX traffic rate stops
+        - RM #3598943 higher CPU util then kernel with Nginx with high payloads
+        - RM #3854806 Tx buffer pool leak with sockperf scenarios enabling zcopy
+        - RM #3858121 Issues with XLIO stats functionality
+
+Version 3.30.5-1:
+Date + Time 2024-0-09
+=============================================================
+Fixed:
+        - RM #3795997 OCI degradation IO operations with 8k conn, block size of 256k
+        - RM #3855390 http CPS test with IPv6 is reporting XLIO warning
+        - RM #3788164 Nginx Degradation 10MB with a low number of workers.
+
+Version 3.30.4-1:
+Date + Time 2024-04-04
+=============================================================
+Fixed:
+        - RM #3792798 Do code cleanup for new storage API
+        - RM #3829626 Nginx http CPS tests report error
+        - RM #3818038 I/O errors during FIO
+
+Version 3.30.3-1:
+Date + Time 2024-03-20
+=============================================================
+Added:
+        - RM #3788369 New Storage API
+        - RM #3777348 Improve sockinfo cache utilization
+
+Fixed:
+        - RM #3829626 Nginx http CPS tests report XLIO ERROR
+        - RM #3808935 SNAP4 static build error
+
+Version 3.30.2-1:
+Date + Time 2024-03-11
+=============================================================
+Added:
+        - RM #3792777 provide new storage API headers
+        - RM #3792789 provide new storage API implementation, integration level
+        - RM #3770816 Modernize C++ source code
+        - RM #3813802 Fix warnings from newer cppcheck version
+        - RM #3795922 Remove pbuf_split_64k() and refused_data
+
+Fixed:
+        - RM #3781322 higher CPU loads when loaded with Nginx responding to http requests of high payloads.
+        - RM #3792731 False positive Walloc-size-larger-than warning
+
+Version 3.30.1-1:
+Date + Time 2024-02-22
+=============================================================
+Fixed:
+        - RM #3786434 C++ or C23 feature in xlio_extra.h breaks compilation of some C programs
+
+Version 3.30.0-1:
+Date + Time 2024-02-12
+=============================================================
+Added:
+        - RM #3724170 Static compilation with LTO and PGO support
+        - RM #3668182 productize LwIP express data path
+        - RM #3664594 Backport TCP_KEEPALIVE from VMA
+        - RM #3514044 XLIO DPCP Only - Remove legacy code and legacy flows
+
+Fixed:
+        - RM #3771283 Fix function pointer check
+        - RM #3690535 Remove leftover after Multi Packet RQ removal
+        - RM #3678579 Fix last_unacked and last_unsent
+        - RM #3704820 XLIO error when enabling UDP listen socket
+
+Version 3.21.2-1:
+Date + Time 2024-01-11
+=============================================================
+Fixed:
+        - RM #3723558 Update the copyright statement to 2024
+
+Version 3.21.1-1:
+Date + Time 2023-12-14
+=============================================================
+Added:
+        - RM #3698316 Remove legacy rdtsc/time instrumentation
+        - RM #3414980 Add envoy enable_reuse_port=true support
+        - RM #3664594 Full TCP keepalive support
+        - RM #3698403 Optimize SocketXtreme TCP RX buffers release
+        - RM #3698256 Add socket isolation extra API feature
+        - RM #3705189 Update DEK usage to dpcp 1.1.44 API
+
+Fixed:
+        - RM #3645103 Treat negative listen backlog as maximum allowed
+        - RM #3684889 Fix poll() for offloaded sockets with events=0
+        - RM #3183915 Fix clang-analyzer warnings
+        - RM #3574064 Allow TX segment split on ACK receive
+
+Version 3.20.8-1:
+Date + Time 2023-11-16
+=============================================================
+Added:
+        - RM #3672338 Add missed BlueField-3 to README.md
+
+Fixed:
+        - RM #3656233 Fix buffer double free in SocketXtreme TCP flow
+
+Version 3.20.7-1:
+Date + Time 2023-10-23
+=============================================================
+Fixed:
+        - RM #3612954 Fix TCP data misplace after a fast retransmission
+
+Version 3.20.6-1:
+Date + Time 2023-10-17
+=============================================================
+Fixed:
+        - RM #3600396 Handle empty IP list
+        - RM #3486961 Connection creation time improvement
+        - RM #3588192 Blocking API hanging with delegated TCP timers
+        - RM #3580073 Print XLIO_MEMORY_LIMIT_USER in the XLIO header
+
+Version 3.20.5-1:
+Date + Time 2023-10-05
+=============================================================
+Fixed:
+        - RM #3611687 Initialization in case XLIO_NGINX_UDP_POOL_SIZE
+        - RM #3615483 Corruption during ring release
+        - RM #3580073 Fixes for XLIO_MEMORY_LIMIT
+
+Version 3.20.4-1:
+Date + Time 2023-09-21
+=============================================================
+Added:
+        - RM #3602243 Recover neigh after link down/up
+        - RM #3395514 Improve process destroy flow
+        - RM #3414980 Add envoy support
+        - RM #3580073 Implement xlio_allocator_heap
+        - RM #3580084 Print report at exit on buffer errors
+
+Fixed:
+        - RM #3604029 Fix releasing ring flow
+
+Version 3.20.3-1:
+Date + Time 2023-09-12
+=============================================================
+Added:
+        - RM #3580058 64K page kernel support
+        - RM #3209984 Nginx proxy mode support
+        - RM #3491136 External vlan-tag socket option
+        - RM #3580073 option_size for size parameters
+        - RM #3486961 Profiling ability
+
+Fixed:
+        - RM #3591210 Wrong lwip seqno wrap around condition
+        - RM #3427021 Removed reg_mem generic warning
+        - RM #3592264 clang compilation
+        - RM #3433495 RX ring migration race
+        - RM #3286324 Stuck empty rx ring cleanup
+
+Version 3.20.2-1:
+Date + Time 2023-08-22
+=============================================================
+Fixed:
+        - RM #3531436 socketxtreme polling and GRO flush segfaults
+        - RM #3574901 Unlock sockinfo_tcp before destruction
+        - RM #3575217 Choose ipv4 source ip according to subnet
+        - RM #3531436 gtest/socketxtreme_poll tests
+
+Version 3.20.1-1:
+Date + Time 2023-08-09
+=============================================================
+Added:
+        - RM #3531436 Socketxtreme GRO
+        - RM #3465972 SocketXtreme improvements
+        - RM #3541126 Aggregate zerocopy buffers in a single segment
+        - RM #3531441 Termination socket cleanup for delegated TCP timers
+        - RM #3526588 Make xlio_exit symbol visible
+        - RM #3506903 CSV stats printer + debug coutners
+Fixed:
+        - RM #3531871 Socketxtreme latency
+        - RM #3522495 CI for dpcp configuration
+        - RM #3217860 UDP checksum zero
+
+Version 3.20.0-1:
+Date + Time 2023-07-20
+=============================================================
+Added:
+        - RM #3531441 Delegated TCP timers and lockless ring/socket
+
+Version 3.10.5-1:
+Date + Time 2023-07-13
+=============================================================
+Fixed:
+        - RM #3532666 Wrong zero return from recv_zcopy with GRO
+        - RM #3536018 Socket destruction race
+        - RM #3530566 Socketxtreme with regular RQ.
+
+Version 3.10.4-1:
+Date + Time 2023-07-10
+=============================================================
+Added:
+        - RM #3518069 Add multilock support
+Fixed:
+        - RM #3465972 Fix socketxtreme buffers leak
+
+Version 3.10.3-1:
+Date + Time 2023-06-30
+=============================================================
+Fixed:
+        - RM #3465972 Fix backward compatibility for extra API
+
+Version 3.10.2-1:
+Date + Time 2023-06-29
+=============================================================
+Added:
+        - RM #3388776 Improve systemd check for chroot environment
+        - RM #3465989 Received packet notification callback API
+        - RM #3465972 Introduce SocketXtream
+
+Version 3.10.1-1:
+Date + Time 2023-06-22
+=============================================================
+Added:
+        - RM #3496306 Adding ring TCP segment cache
+Fixed:
+        - RM #3506903 Remove deferred timers logic
+        - RM #3506903 Improve locking mechanism
+        - RM #3506903 Improve timers efficiency
+        - RM #3506903 Do not fail getpeername if possible
+        - RM #3440429 WA for race between rfs destruction and port/fd reuse
+
+Version 3.10.0-1:
+Date + Time 2023-06-14
+=============================================================
+Added:
+        - RM #3377639 Separate NVMe from TLS xlio_tis/r
+        - RM #3472589 Add RTC timestamp format
+        - RM #3495435 Add XLIO_TCP_NODELAY_TRESHOLD
+        - RM #3497651 Use ConnectX-7 in CI by default
+        - RM #3500110 Avoid outgoing TCP header dereference in tcp_receive
+        - RM #3500109 Disable debug logs in the release builds
+        - RM #3500111 Remove partial inline from SEND WQEs
+Fixed:
+        - RM #3373882 Fix compilation issue with gcc 13
+        - RM #3502107 Fix missed sockets in the stats file
+
+Version 3.1.1-1:
+Date + Time 2023-05-23
+=============================================================
+Added:
+        - RM #3473570 Use stack for RX stride cache
+        - RM #3465969 Remove dynamic_cast in the TCP timers
+        - RM #3465969 L2 cache improvements
+Fixed:
+        - RM #3473570 Fixed RX No-Batching mode to reclaim buffers immediately
+        - RM #3465969 Free refused_data on socket recycle
+
+Version 3.1.0-1:
+Date + Time 2023-05-22
+=============================================================
+Added:
+        - RM #3461282 Add GRO aggregation statistics
+Fixed:
+        - RM #3433756 Fix ASAN warning
+        - RM #3432189 Fix --disable-utls compilation issues
+        - RM #3455917 Fix crash in IPv6 MC when device not found
+        - RM #3455924 Don't treat ethernet padding as payload
+
+Version 3.0.2-1:
+Date + Time 2023-04-18
+=============================================================
+Added:
+        - RM #3411072 Enable flow-tag with GRO
+        - RM #3409166 Add option to skip CQ poll in Rx for TCP sockets
+
+Version 3.0.1-1:
+Date + Time 2023-02-22
+=============================================================
+Fixed:
+        - RM #3257479 NVME TX offload tx completions and performance
+        - RM #3360012 Fix tis objects leak
+        - RM #3360125 Nginx performance degradation with https cps
+
+Version 3.0.0-1:
+Date + Time 2023-02-02
+=============================================================
+Added:
+        - RM #3257479 NVMEoTCP TX offload
+Fixed:
+        - RM #3291178 Incorrect pbuf chain split
+
+Version 2.1.4-1:
+Date + Time 2023-01-19
+=============================================================
+Fixed:
+        - RM #3336161 Fix XLIO LICENSE file
+
+Version 2.1.3-1:
+Date + Time 2023-01-17
+=============================================================
+Fixed:
+        - RM #3231710 Fix Zero Copy Tx Notification and Rx ref count for mem_buf chains
+        - RM #3302217 Fixing incorrect handling of routing src field for IPv6
+
+Version 2.1.2-1:
+Date + Time 2023-01-10
+=============================================================
+Fixed:
+        - RM #3308350 Prevent CQ overflow
+        - RM #3319895 Improve TX completions processing
+        - RM #3318396 Update the copyright statement to 2023
+
+Version 2.1.1-1:
+Date + Time 2022-12-19
+=============================================================
+Added:
+        - RM #3194032 Credit System
+        - RM #3290993 New nvme_bf2 SPEC for NVMEoTCP BF2
+        - RM #3254123 Listen socket statistics
+        - RM #3254123 Dump routing table on xlio_stats request
+
+Fixed:
+        - RM #3263352 Don't override MSS from TCP options
+        - RM #3290995 Removing legacy SPECs
+
+Version 2.1.0-1:
+Date + Time 2022-12-08
+=============================================================
+Added:
+        - RM #3240274 Move to C++14 Add support for C++17
+Fixed:
+        - RM #3226553 IPv6 MC SO_BINDTODEVICE on connected socket
+        - RM #3068125 Support a single nexthop per multipath route
+        - RM #3213178 Offload MC traffic for local table entries
+
+Version 2.0.7-1:
+Date + Time 2022-11-14
+=============================================================
+Fixed:
+        - RM #3253852 Support only systemctl for xlio service setup/removal
+
+Version 2.0.6-1:
+Date + Time 2022-10-06
+=============================================================
+Fixed:
+        - RM #3217614 Fix IPv6 MC address check in neigh_eth
+        - RM #3132299 Fix buffer length in zero copy
+        - RM #3202977 Fix type overflow during trimming TCP seg
+        - RM #3139461 Implement TCP_CONGESTION option
+        - RM #3217442 Handle IPV6_RECVPKTINFO setsockopt option
+        - RM #2842211 Don't leave unacked empty on send failure
+
+Version 2.0.5-1:
+Date + Time 2022-09-22
+=============================================================
+Added:
+        - RM #3120089 Rename vma string by xlio
+Fixed:
+        - RM #3215653 Fix corrupted TLS1.3 zerocopy records
+        - RM #3190144 Fix TCP timer timeout calculation
+        - RM #3213178 Not to choose IPv4-Mapped as src
+        - RM #3197112 Fixing IPv6 addr selection longest prefix match
+
+Version 2.0.4-1:
+Date + Time 2022-09-14
+=============================================================
+Added:
+        - RM #3120089 Remove Sockextreme|Callback APIs and non-mlnx5 support
+        - RM #3064947 Rename /vma directory with /core
+Fixed:
+        - RM #3183546 Fixing the handling of null elements in tx iov
+        - RM #3068125 Ignore multipath routes
+        - RM #3206778 Fix TLS1.3 broken in SSL_sendfile
+        - RM #3207336 MC IPv6 - Fix for if_index=0
+        - RM #3209278 Fix IPv6 frag offset
+
+Version 2.0.3-1:
+Date + Time 2022-09-08
+=============================================================
+Added:
+        - RM #2667588 IPv6 Mapped IPv4
+        - RM #2667588 IPv6 Multicast
+        - RM #3097181 SSL_sendfile
+        - RM #3139461 Remove shadow socket for incoming TCP connections
+
+Version 2.0.2-1:
+Date + Time 2022-09-06
+=============================================================
+Added:
+        - RM #3179050 Change license agreement
+        - RM #3179050 Align with dpcp 1.1.30 API
+
+Version 2.0.1-1:
+Date + Time 2022-08-24
+=============================================================
+Added:
+        - RM #2667588 IPv6 source address selection algorithm
+        - RM #3071816 Implement TCP_USER_TIMEOUT
+
+Version 2.0.0-1:
+Date + Time 2022-08-15
+=============================================================
+Added:
+        - RM #3079802 Add UDP SW Checksum
+        - RM #2667588 support for ipv6 udp fragmentation
+        - RM #2621445 TLS 1.3 support in RX path
+Fixed:
+        - RM #3113450 Fix socket in SOCKINFO_UNDEFINED state
+
+Version 1.3.5-1:
+Date + Time 2022-07-14
+=============================================================
+Fixed:
+        - RM #3137171 Updating coverity version to 2021.12
+        - RM #3137171 Fixing coverity 2021.12 findings
+
+Version 1.3.4-1:
+Date + Time 2022-07-13
+=============================================================
+Fixed:
+        - RM #3100949 Fix a warning on a socket destruction with zcopy receive
+        - RM #3092555 Fix pcb resources leak for failed blocking connect
+
+Version 1.3.3-1:
+Date + Time 2022-07-06
+=============================================================
+Fixed:
+        - RM #3100949 Fix SYN retransmits for blocking connect()
+        - RM #2398936 Fix send zerocopy split operation
+        - RM #2678393 Fix return value on partial write when SIGINT is handled
+        - RM #2678856 Close all but incoming TCP sockets immediately on close()
+        - RM #3113450 Fix race between socket close and ZC completion callback
+        - RM #3130360 Fix destructor of cq_strides_cache
+
+Version 1.3.2-1:
+Date + Time 2022-06-25
+=============================================================
+Added:
+        - RM #3115378 Print verbose info on error CQE
+        - RM #2866014 Hide default params startup log when using STRQ
+        - RM #3048432 Add statistics for rx cqe error
+Fixed:
+        - RM #3100949 Fix blocking socket connect timer race
+        - RM #3100979 Use XLIO_HANDLE_SIGINTR for signal() API
+        - RM #2685979 Fix refcount for 2nd steering rule
+        - RM #3115495 Fix compilation error with disabled debug logs
+
+Version 1.3.1-1:
+Date + Time 2022-06-08
+=============================================================
+Added:
+        - RM #2982776 DEK cache and Modify
+        - RM #2982776 Adding pending sockets statistics
+        - RM #3077408 Make xlio_get_api not interfering with vma_get_api
+Fixed:
+        - RM #3077676 fix calc of max_udp_payload_size
+
+Version 1.3.0-1:
+Date + Time 2022-05-20
+=============================================================
+Added:
+        - RM #3055604 Add support of TCP_INFO option
+        - RM #2667588 Add IPv6 support for daemon
+Fixed:
+        - RM #2648131 Force 5T rules for outgoing TCP sockets
+        - RM #3073693 Avoid float for number of workers calculation
+
+Version 1.2.10-1:
+Date + Time 2022-04-28
+=============================================================
+Added:
+        - RM #2982769 Add XLIO_TX_SEGS_BATCH_TCP env variable
+Fixed:
+        - RM #2737656 Disable communication with service by default
+        - RM #3045735 Fix no traffic during disabled sriov (azure)
+        - RM #3048432 reuse buff for udp socket pool
+        - RM #3048433 add rx buffers compensation after cqe error
+        - RM #2885753 Fixing reusing socket in process of closing
+        - RM #3036032 Fix misaligned address access in IPv6 spec
+        - RM #3046720 Nginx worker thread crash recovery
+        - RM #3016626 Fixing TLS1.3 resync
+        - RM #3015420 Update Copyright notice
+
+Version 1.2.9-1:
+Date + Time 2022-04-06
+=============================================================
+Fixed:
+        - RM #3032222 Fix no offload traffic issue for nginx
+
+Version 1.2.8-1:
+Date + Time 2022-04-04
+=============================================================
+Fixed:
+        - RM #2783472 Recreating rdma channel in case of rdma_create_id failure
+        - RM #3008661 Handling IPv4 IPv6 dual stack listen
+        - RM #3018068 Fix stats output logic
+        - RM #3019742 Fix debian/copyright file
+
+Version 1.2.7-1:
+Date + Time 2022-03-25
+=============================================================
+Fixed:
+        - RM #3005039 IPv6 support for ring generate_id
+        - RM #2858875 Fix fork() - Use correct blocking state
+        - RM #2667588 Fixing IPv6 packet classification and prefix check
+        - RM #3010282 Send NDP manually if rdma_resolve_addr() fails
+
+Version 1.2.6-1:
+Date + Time 2022-03-15
+=============================================================
+Fixed:
+        - RM #2824810 Increase length of bytes counters
+        - RM #2875358 Fix incorrect output
+        - RM #2972951 Fix hypervisor check under x86_64
+        - RM #2945718 Show warning in visibility check
+        - RM #2667588 Support IPV6_V6ONLY sockopt for listen all
+        - RM #2982769 Fixing null mem_buf access on retransmission
+        - RM #2991762 Fix netlink source of IPv6 neighbors
+        - RM #2982769 Add XLIO_TX_BUFS_BATCH_TCP env variable
+        - RM #3000532 Fix seg fault and remove TODOs
+        - RM #2992772 Fix inlining lso data
+        - RM #2824810 Increase length of bytes counters
+
+Version 1.2.5-1:
+Date + Time 2022-02-28
+=============================================================
+Added:
+        - RM #2667588 The third stage of IPv6 support
+
+Version 1.2.4-1:
+Date + Time 2022-02-17
+=============================================================
+Added:
+        - RM #2667588 The second stage of IPv6 support
+
+Version 1.2.3-1:
+Date + Time 2022-02-04
+=============================================================
+Added:
+        - RM #2667588 The first stage of IPv6 support
+
+Version 1.2.2-1:
+Date + Time 2022-01-27
+=============================================================
+Added:
+        - RM #2563722 Removed unsupported code as non-tso and ipoib
+        - RM #928148 Export symbols from socket api only
+        - RM #2329439 Update gtest to support IPV6
+        - RM #2933472 Update License date to 2022
+        - RM #22943262 Optimize fill_wqe_send() function
+
+Version 1.2.1-1:
+Date + Time 2022-01-10
+=============================================================
+Fixed:
+        - RM #2903631 Fix a race condition on accepted socket
+
+Version 1.2.0-1:
+Date + Time 2021-12-23
+=============================================================
+Fixed:
+        - RM #2342345 Improve number of concurrent connections
+
+Version 1.1.8-1:
+Date + Time 2021-11-04
+=============================================================
+Fixed:
+        - RM #2842211 Split rexmit segment into single-pbuf segments
+        - RM #2842211 TLS data corruption, preventing redundant resyncs
+
+Version 1.1.7-1:
+Date + Time 2021-11-03
+=============================================================
+Fixed:
+        - RM #2842211 TLS data corruption fix for ring silent dropped wqes
+        - RM #2833527 Limit strides in STRQ to 512
+
+Version 1.1.6-1:
+Date + Time 2021-11-01
+=============================================================
+Fixed:
+        - RM #2621445 Reset TLS layer only after close()
+        - RM #2688021 Insert fence after TLS configuration
+        - RM #2355757 Add numeric value support for XLIO_LRO and XLIO_STRQ
+
+Version 1.1.5-1:
+Date + Time 2021-10-29
+=============================================================
+Fixed:
+        - RM #2621445 Improve TLS RX flow
+        - RM #2838719 Fix segfault in sendmsg() for empty iov
+        - RM #2833836 Fix compilation issue --disable-tso --with-dpcp
+
+Version 1.1.4-1:
+Date + Time 2021-10-25
+=============================================================
+Added:
+        - RM #2621445 Support Rx TLS HW offload
+        - RM #2811477 Support of TLS v1.3 in TX path
+Fixed:
+        - RM #2355757 Changing XLIO_STRQ_ENABLED env var to XLIO_STRQ
+
+Version 1.1.3-1:
+Date + Time 2021-10-25
+=============================================================
+Fixed:
+        - RM #2821060 Fix for NGINX quic with non-power of 2 workers
+        - RM #2824476 Fix for unsafe m_pendig_to_remove_lst processing
+        - RM #2436876 Remove C++ Technical Report 1 (TR1) usage
+
+Version 1.1.2-1:
+Date + Time 2021-10-20
+=============================================================
+Added:
+        - RM #2355757 Striding-RQ support
+        - RM #2621445 Move knowledge of DevX out of sockets
+        - RM #2436876 Add C++11 Support requirement to a compiler
+Fixed:
+        - RM #2822230 Suppress unwanted error when cq fd is removed
+
+Version 1.1.1-1:
+Date + Time 2021-10-11
+=============================================================
+Added:
+        - RM #2649476 Add support for NGINX Proxy mode
+        - RM #2568769 Add QUIC support for NGINX
+Fixed:
+        - RM #2737636 Fixing TCP hanging CLOSED sockets
+
+Version 1.1.0-1:
+Date + Time 2021-10-07
+=============================================================
+Added:
+        - RM #2355713 Add HW LRO support
+        - RM #2756765 Add AES-256 cipher support to uTLS
+Fixed:
+        - RM #2740920 Add support for fortified glibc functions
+        - RM #2580679 Fix handling socket close flow
+        - RM #2801220 Don't miss ready EPOLLERR event
+        - RM #2789330 XLIO_UDP_3T_RULES flag is not taken into account
+        - RM #2722518 Merge only pbufs of the same type in a segment
+        - RM #2732799 delete dst_entry if already exists in udp connect
+        - RM #2716793 Handle SYN-ACK on TIME-WAIT sockets
+        - RM #2736737 Resolve crash during finalization
+        - RM #2690914 Fix data corruption in shrink operation
+
+Version 1.0.6-1:
+Date + Time 2021-06-10
+=============================================================
+Fixed:
+        - RM #2686808 Don't set TCP PSH flag for throughput profiles
+        - RM #2685998 Don't mask nor create 2nd rule for UDP
+
+Version 1.0.5-1:
+Date + Time 2021-06-08
+=============================================================
+Fixed:
+        - RM #2682063 Update output with vmad
+        - RM #2683954 Make TCP segs batching configurable
+        - RM #2047225 Improve socket state reset on reuse
+        - RM #2680431 Fallback to SW TLS when TIS/DEK fails
+
+Version 1.0.4-1:
+Date + Time 2021-06-03
+=============================================================
+Fixed:
+        - RM #2342345 Distribute processes across different IRQ vectors
+        - RM #2679474 Fix segfault during termination phase
+        - RM #2679482 Handle buffer allocation error in TLS
+        - RM #2678990 Remove asserts in mapping_cache destructor
+        - RM #2647722 Check requested TLS version/cipher
+
+Version 1.0.3-1:
+Date + Time 2021-06-01
+=============================================================
+Added:
+        - RM #2654385 Introduce XLIO environment variables and Extra API
+Fixed:
+        - RM #2647722 Fix corner cases for TLS blocking socket
+        - RM #2672303 Fix sendfile zerocopy TX flow
+        - RM #2668320 Fix m_p_n_rx_channel_fds update on bond ring restart
+
+Version 1.0.2-1:
+Date + Time 2021-05-28
+=============================================================
+Fixed:
+        - RM #2670696 Dump statistics of closed sockets
+
+Version 1.0.1-1:
+Date + Time 2021-05-27
+=============================================================
+Fixed:
+        - RM #2647722 Fix compilation error in uTLS code
+
+Version 1.0.0-1:
+Date + Time 2021-05-26
+=============================================================
+Added:
+        - RM #2647722 Add Tx TLS offload
+        - RM #2092860 Add TCP extra option support for Tx zero copy
+        - RM #2047225 RFC 6191 Reuse TIME-WAIT sockets
+
+Version 0.1.4-1:
+Date + Time 2021-05-20
+=============================================================
+Added:
+        - RM #2658995 Add ioctl() extra api
+        - RM #2510071 Clean up extra API
+        - RM #2436876 Improve --enable-debug configuration option
+        - RM #2575576 Add zero copy send operation using external mkey
+Fixed:
+        - RM #1714768 Fix issue in vma_recvfrom_zcopy()
+        - RM #2628370 Fix incorrect error message for fork()
+
+Version 0.1.3-1:
+Date + Time 2021-05-12
+=============================================================
+Added:
+        - RM #2654385 Rebrand all files inside library package
+
+Version 0.1.2-1:
+Date + Time 2021-04-21
+=============================================================
+Added:
+        - RM #2625717 Configure library to use TSO and NGINX code by default
+Fixed:
+        - RM #2357009 Fix wrong flow in DEFINED_NGINX configuration
+        - RM #2625704 Fix fork() processing for NGINX case
+
+Version 0.1.1-1:
+Date + Time 2021-04-19
+=============================================================
+Added:
+        - RM #2568298 Fix coverity scan 2020.06 issues
+        - RM #2497142 Move to google test 1.7 version
+        - RM #2583763 Extend CI ability
+        - RM #2563722 Remove MP-QP support from library as deprecated
+Fixed:
+        - RM #2233904 Improve ROCE LAG detection
+        - RM #2368612 Align rpm spec with last requirements
+        - RM #2130901 Fix issue in logic VMA_PROGRESS_ENGINE_WCE_MAX=0
+        - RM #2280628 Add missed TIMESTAMP option
+
+Version 0.1.0-1:
+Date + Time 2021-02-20
+=============================================================
+Added:
+        - RM #2405040 Add initial version on top of VMA 9.2.2
+          that includes send zero copy functionality and nginx
+          specific capabilities

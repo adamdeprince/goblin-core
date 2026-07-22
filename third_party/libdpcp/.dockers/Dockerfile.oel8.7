@@ -1,0 +1,68 @@
+ARG ARCH=x86_64
+FROM nbu-harbor.gtm.nvidia.com/rivermax/dpcp/${ARCH}/oel8.7/core:8.7
+ARG WEBREPO_URL=webrepo.gtm.nvidia.com
+ARG ARCH
+ARG _UID=6213
+ARG _GID=101
+ARG _LOGIN=swx-jenkins
+ARG _HOME=/var/home/$_LOGIN
+
+RUN yum-config-manager --disable \* && \
+    echo "[nv_webrepo_ol8.7_baseos]" > /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "name=Nvidia Webrepo - Oracle Linux 8.7 BaseOS" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "baseurl=http://${WEBREPO_URL}/OEL/8.7/${ARCH}/BaseOS/" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "gpgcheck=0" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "enabled=1" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "[nv_webrepo_ol8.7_appstream]" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "name=Nvidia Webrepo - Oracle Linux 8.7 Application Stream" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "baseurl=http://${WEBREPO_URL}/OEL/8.7/${ARCH}/AppStream/" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "gpgcheck=0" >> /etc/yum.repos.d/nvidia-webrepo.repo && \
+    echo "enabled=1 " >> /etc/yum.repos.d/nvidia-webrepo.repo
+
+RUN yum install --nogpgcheck --allowerasing -y \
+    atk \
+    autoconf \
+    automake \
+    cairo \
+    gcc-gfortran \
+    gcc-c++ \
+    git \
+    gtk2 \
+    libnl3 \
+    libtool \
+    libusbx \
+    fuse-libs \
+    lsof make \
+    pciutils perl \
+    rpm-build sudo tcl \
+    tcsh \
+    tk \
+    wget \
+    environment-modules \
+    net-tools \
+    numactl-libs libmnl \
+    ethtool \
+    python36
+
+RUN echo "${_LOGIN} ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
+    echo "root ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers && \
+    mkdir -p ${_HOME} && \
+    groupadd -f -g "$_GID" "$_LOGIN" && \
+    useradd -u "$_UID" -g "$_GID" -s /bin/bash -m -d ${_HOME} "${_LOGIN}" && \
+    chown -R ${_LOGIN} ${_HOME}
+
+# W/A for RHEL/CentOS 7 to allow sudo (by commenting out "session required pam_limits.so")
+RUN for FILE in sudo-i sudo system-auth; do sed -i 's/session.*required.*pam_limits.so/#&/' /etc/pam.d/$FILE; done
+
+# Install DOCA
+COPY .ci/scripts/doca_install.sh /tmp/doca_install.sh
+RUN chmod +x /tmp/doca_install.sh && \
+    /tmp/doca_install.sh && \
+    rm -f /tmp/doca_install.sh /tmp/GPG-KEY-Mellanox.pub
+
+ENV MODULEPATH /hpc/local/etc/modulefiles
+SHELL ["/bin/bash"]
+
+USER "$_LOGIN"
+ENTRYPOINT [ "/bin/bash", "--login", "--rcfile", "/etc/bashrc", "-c" ]

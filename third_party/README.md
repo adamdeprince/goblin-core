@@ -16,12 +16,35 @@ remain isolated from `goblin_core`'s strict warning flags.
 | `xxhash/`          | xxHash (XXH3) | 0.8.3 | BSD-2-Clause | https://github.com/Cyan4973/xxHash |
 | `fast_float/`      | fast_float (header-only) | 8.0.2 | MIT OR Apache-2.0 | https://github.com/fastfloat/fast_float |
 | `librdkafka/`      | librdkafka | 2.15.0 | BSD-2-Clause | https://github.com/confluentinc/librdkafka |
+| `xlio/`            | NVIDIA XLIO | 3.61.2 (`ae821447`) | GPL-2.0-only OR BSD-2-Clause; BSD selected | https://github.com/Mellanox/libxlio |
+| `libdpcp/`         | NVIDIA DPCP | 1.1.61 (`4cc43b30`) | BSD-3-Clause | https://github.com/Mellanox/libdpcp |
 
 `librdkafka/` contains the upstream C client, its CMake support, license files,
 and the small C++ wrapper directory expected by upstream CMake. Examples, tests,
 packaging, and repository metadata are omitted. Goblin Core links only the C
 static library and disables optional system-dependent TLS/SASL, curl, zlib, and
 zstd integrations; librdkafka's bundled Snappy and LZ4 support remains enabled.
+
+`xlio/` and `libdpcp/` are complete pinned upstream source trees with repository
+metadata omitted. At the July 22, 2026 dependency audit, XLIO 3.61.2 was the
+latest non-prerelease line with the server-side Ultra API. DPCP is its mandatory
+packet-control dependency; 1.1.61 satisfies XLIO's minimum 1.1.58 requirement.
+Goblin Core uses XLIO under its BSD-2-Clause option. XLIO's small event-worker
+file set uses the alternative BSD-3-Clause option, its bundled json-c is MIT
+licensed, and DPCP is BSD-3-Clause (with Apache-2.0 CMake support). All are
+compatible with Goblin Core's Apache-2.0 distribution. XLIO's retained lwIP,
+FreeBSD-derived TCP congestion-control, and test-only GoogleTest sources also
+use permissive BSD-style licenses.
+
+One XLIO source patch is carried locally: device discovery skips verbs devices
+whose physical ports are all InfiniBand link-layer ports. XLIO supports Ethernet,
+and attempting to open an unrelated InfiniBand-only Connect-IB device through
+DPCP otherwise aborts startup on a mixed-fabric host before XLIO reaches the
+ConnectX Ethernet adapter.
+
+The pinned dependency and ConnectX-5 qualification record are documented in
+[`docs/xlio.md`](../docs/xlio.md). XLIO is vendored but is not yet wired into
+the Goblin Core build or runtime.
 
 Lua 5.1 was chosen deliberately: it is the language dialect Redis scripts target
 (so existing scripts port unchanged), it is pure ANSI C that builds on every ISA

@@ -1,0 +1,86 @@
+# Object files
+*.o
+*.lo
+*.la
+
+# Libraries
+.libs
+*.lib
+*.a
+
+# Shared objects
+*.so
+*.so.*
+
+# Dependencies
+.dirstamp
+.deps
+
+# Automake
+Makefile.in
+Makefile
+aclocal.m4
+autom4te.cache/
+xlio_config_schema.h
+/config.h
+config.h.in
+config.h.in~
+config.log
+config.status
+third_party/json-c/json_config.h
+config/aux/config.guess
+config/aux/config.sub
+config/aux/install-sh
+config/aux/missing
+config/aux/decomp
+config/aux/ltmain.sh
+config/aux/compile
+config/aux/depcomp
+config/m4/libtool.m4
+config/m4/ltoptions.m4
+config/m4/ltsugar.m4
+config/m4/ltversion.m4
+config/m4/lt~obsolete.m4
+configure
+libtool
+stamp-h1
+
+# Tool
+cov-int/
+jenkins/
+
+# IDE files
+.cproject
+.project
+tags
+.vs/
+obj/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.swp
+VTune Profiler Results/
+.exrc
+
+# XLIO specific
+src/utils/timetest
+src/stats/xlio_stats
+src/vlogger/vlogger_test
+src/state_machine/state_machine_test
+tests/gtest/gtest
+
+# build products
+build/libxlio.spec
+debian/changelog
+contrib/scripts/libxlio.spec
+contrib/scripts/xlio.init
+contrib/scripts/xlio.service
+docs/doxygen
+docs/man/xlio.7
+docs/man/xlio_stats.8
+docs/man/xliod.8
+tools/daemon/xliod
+
+tests/unit_tests/unit_tests
+*.pyc

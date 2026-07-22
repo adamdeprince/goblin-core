@@ -1,0 +1,97 @@
+/*
+ * SPDX-FileCopyrightText: NVIDIA CORPORATION & AFFILIATES
+ * Copyright (c) 2001-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: GPL-2.0-only or BSD-3-Clause
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and/or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#ifndef ENTITY_CONTEXT_H
+#define ENTITY_CONTEXT_H
+
+#include "event/poll_group.h"
+#include "event/job_queue.h"
+#include "util/xlio_stats.h"
+#include "event/event_handler_manager_local.h"
+
+class sockinfo;
+class mem_buf_desc_t;
+
+class entity_context : public poll_group {
+public:
+    enum job_type {
+        JOB_TYPE_SOCK_ADD_AND_CONNECT,
+        JOB_TYPE_SOCK_TX,
+        JOB_TYPE_SOCK_RX_DATA_RECVD,
+        JOB_TYPE_SOCK_ADD_AND_LISTEN,
+        JOB_TYPE_SOCK_CLOSE
+    };
+
+    enum job_flag {
+        JOB_FLAG_TX_LAST_CHUNK = 0x0001,
+    };
+
+    struct job_desc {
+        job_type job_id;
+        int flags;
+        sockinfo *sock;
+        mem_buf_desc_t *buf;
+        uint32_t offset;
+        uint32_t tot_size;
+    };
+
+    entity_context(size_t index);
+    ~entity_context();
+
+    size_t get_index() const { return m_index; }
+    void process();
+    void add_job(const job_desc &job);
+
+    // Called only by the XLIO thread executing this context.
+    void add_incoming_socket(sockinfo *sock);
+
+private:
+    void connect_socket_job(const job_desc &job);
+    void tx_data_job(const job_desc &job);
+    void rx_data_recvd_job(const job_desc &job);
+    void listen_socket_job(const job_desc &job);
+    void close_socket_job(const job_desc &job);
+
+    static void entity_context_comp_cb(xlio_socket_t sock, uintptr_t userdata_sq,
+                                       uintptr_t userdata_op);
+
+    job_queue<job_desc> m_job_queue;
+    size_t m_index;
+    size_t m_last_job_size = 0U;
+    event_handler_manager_local::time_point m_prev_proc_time;
+    bool m_last_poll_hit = false;
+    entity_context_stats_t m_stats;
+};
+
+#endif

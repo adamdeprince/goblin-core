@@ -45,6 +45,25 @@ Kafka command-log ingestion uses the vendored librdkafka C client:
                             https://github.com/confluentinc/librdkafka
                             third_party/librdkafka/LICENSE
 
+XLIO Ultra networking uses pinned NVIDIA XLIO and Direct Packet Control Plane
+sources. Goblin Core elects XLIO's permissive BSD license option rather than its
+GPL option:
+
+  NVIDIA XLIO 3.61.2       Copyright (c) 2020-2026 NVIDIA Corporation and
+                           affiliates (GPL-2.0-only OR BSD-2-Clause; selected
+                           BSD-2-Clause, with a small BSD-3-Clause file set)
+                           https://github.com/Mellanox/libxlio
+                           third_party/xlio/LICENSE
+  NVIDIA DPCP 1.1.61       Copyright (c) 2020-2025 NVIDIA Corporation and
+                           affiliates (BSD-3-Clause; CMake support is Apache-2.0)
+                           https://github.com/Mellanox/libdpcp
+                           third_party/libdpcp/LICENSE
+
+XLIO also carries permissively licensed upstream components: json-c (MIT),
+lwIP and its FreeBSD-derived TCP congestion-control code (BSD-style), and a
+test-only GoogleTest copy (BSD-3-Clause). Their copyright and license notices
+are retained in the corresponding files under third_party/xlio/.
+
 RESP credential files use the system-linked libsodium password-hashing API:
 
   libsodium                  Copyright (c) 2013-2026 Frank Denis (ISC)

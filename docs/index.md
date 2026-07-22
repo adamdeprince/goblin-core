@@ -30,6 +30,7 @@ rings, and polled one-sided RDMA rings.
 | [Polled RDMA rings](rdma-rings.md) | RC queue-pair setup, sequence-word slots, cached credits, memory registration, mixed-target priority, and RESP/SBE clients. |
 | [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
 | [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
+| [XLIO Ultra qualification](xlio.md) | Pinned XLIO/DPCP sources, ConnectX-5 lab inventory, mixed-fabric patch, build recipe, kernel-TCP interoperability, and remaining integration gates. |
 | [SBE protocol](sbe-protocol.md) | Handshake, framing, schema generation, message and reply types, compatibility rules, and typed-client usage. |
 
 Protocol and transport are independent. RESP and opt-in SBE can each run over TCP

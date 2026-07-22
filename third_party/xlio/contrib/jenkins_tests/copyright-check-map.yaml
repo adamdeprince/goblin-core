@@ -1,0 +1,53 @@
+general:
+    exclude:
+        - "\\.git.*"
+        - "\\.ci.*"
+        - "\\.dockers.*"
+        - "build.*"
+        - "third_party\\.*"
+        - "contrib/jenkins_tests.*"
+        - "contrib/valgrind.*"
+        - "contrib/xlio-bench.*"
+        - "debian.*"
+        - ".*\\.pdf"
+        - ".*Makefile\\.am"
+        - ".*CHANGES"
+        - ".*LICENSE"
+        - ".*NOTICE"
+        - ".*README"
+        - ".*COPYING"
+        - ".*TODO"
+        - ".*license"
+        - ".*Doxyfile"
+        - ".*\\.md"
+        - ".*\\.sh"
+        - ".*configure\\.ac"
+        - ".*Jenkinsfile"
+        - ".*\\.docx"
+        - ".*\\.json"
+        - ".*\\.py"
+        - ".*\\.txt"
+        - ".*\\.log"
+        - ".*\\.cmake"
+        - ".*\\.png"
+        - ".*\\.conf"
+        - "tests/nginx/constant_reply_module/config"
+        - "jenkins/.*"
+        #
+        # Auto generated files
+        #
+        - ".*src/core/config_parser.*"
+        - ".*src/core/config_scanner\\.c"
+
+dual_gpl_2_bsd_2_no_license:
+    validate-spdx-license: True
+    include:
+        - ".*"
+    exclude:
+        - ".*src/core/lwip/.*"
+        - ".*tests/gtest/common/tap\\.h"
+        - ".*tests/gtest/googletest/.*"
+        - ".*src/core/util/list\\.h"
+        - ".*contrib/scripts/libxlio\\.spec\\.in"
+        - ".*contrib/scripts/xlio\\.service\\.in"
+        - ".*docs/man/.*\\.in"

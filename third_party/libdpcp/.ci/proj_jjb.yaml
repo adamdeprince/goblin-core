@@ -1,0 +1,103 @@
+- job-template:
+    name: "{jjb_proj}"
+    project-type: pipeline
+    folder: dpcp
+    properties:
+        - github:
+            url: "https://github.com/Mellanox/dpcp/"
+        - build-discarder:
+            days-to-keep: 50
+            num-to-keep: 20
+        - inject:
+            keep-system-variables: true
+            properties-content: |
+              jjb_proj={jjb_proj}
+    description: Do NOT edit this job through the Web GUI !
+    concurrent: true
+    sandbox: true
+    parameters:
+        - string:
+            name: "sha1"
+            default: "master"
+            description: "Commit to be checked, usually set by PR"
+        - string:
+            name: "RELEASE_VERSION"
+            default: ""
+            description: "(not enabled yet) DPCP release version (auto detection with 'git describe' if empty)"
+        - string:
+            name: "release_dir"
+            default: "/auto/sw/release/sw_acceleration/dpcp"
+            description: "(not enabled yet) Location to release rpm/deb packages"
+        - bool:
+            name: "do_copyrights"
+            default: true
+            description: "Check copyrights in source headers"
+        - bool:
+            name: "do_secretscan"
+            default: true
+            description: "Check for secrets in source code"
+        - bool:
+            name: "do_coverity"
+            default: true
+            description: "Run Coverity Static Analysis and generate local report"
+        - bool:
+            name: "do_coverity_diff"
+            default: false
+            description: "Compare Coverity Static Analysis with the latest snapshot (disable if Coverity Web Service is not available)"
+        - bool:
+            name: "do_coverity_snapshot"
+            default: false
+            description: "Submit Coverity Static Analysis as a snapshot (normally it should be checked only for master branch after proper defects review)"
+        - string:
+            name: "conf_file"
+            default: ".ci/job_matrix.yaml"
+            description: "Regex to select job config file"
+        - string:
+            name: "script"
+            default: "{jjb_jenkinsfile}"
+            description: "Jenkinsfile to load on trigger"
+        - bool:
+            name: "build_dockers"
+            default: false
+            description: "Rebuild base docker containers"
+        - string:
+            name: "DEBUG"
+            default: 0
+            description: "Enable debug prints and traces, valid values are 0-9"
+    triggers:
+        - github-pull-request:
+            cron: 'H/5 * * * *'
+            trigger-phrase: '.*\bbot:retest\b.*'
+            status-context: "{jjb_proj}"
+            success-status: "[PASS]"
+            failure-status: "[FAIL]"
+            error-status:   "[FAIL]"
+            status-add-test-results: true
+            auth-id: 'svc-nbu-swx-media_GHPRB_ID'
+            org-list: ["Mellanox"]
+            allow-whitelist-orgs-as-admins: true
+            cancel-builds-on-update: true
+    pipeline-scm:
+        scm:
+            - git:
+                url: "{jjb_git}"
+                credentials-id: 'svc-nbu-swx-media_ssh_key'
+                branches: ['$sha1']
+                shallow-clone: false
+                # depth: 10
+                do-not-fetch-tags: false
+                # honor-refspec: true
+                refspec: "+refs/heads/*:refs/remotes/origin/* +refs/pull/*:refs/remotes/origin/pr/* +refs/tags/*:refs/remotes/origin/tags/*"
+                browser: githubweb
+                browser-url: "{jjb_git}"
+        script-path: "$script"
+
+- project:
+    name: dpcp
+    jjb_email: 'nwolfer@nvidia.com'
+    jjb_proj: 'dpcp-ci-linux'
+    jjb_git: 'git@github.com:Mellanox/dpcp.git'
+    jjb_owner: 'Nir Wolfer'
+    jjb_jenkinsfile: '.ci/Jenkinsfile.shlib'
+    jobs:
+        - "{jjb_proj}"
