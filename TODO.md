@@ -3,9 +3,9 @@
 Deliberately-deferred work, and a starting point for contributors. The design
 stance behind the persistence items lives in the [README](README.md).
 
-Kafka-backed journaling, exact snapshot cursors, recovery replay, and selectable
-broker-acknowledged replies shipped in v0.9.0 and the following development
-cycle. See [Kafka write log and recovery](docs/kafka.md).
+Kafka-backed journaling, exact snapshot cursors, and recovery replay shipped in
+v0.9.0. Selectable broker-acknowledged replies shipped in v0.10.0. See
+[Kafka write log and recovery](docs/kafka.md).
 
 ## Deferred
 

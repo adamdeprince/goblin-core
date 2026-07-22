@@ -10,11 +10,29 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.10.0 — July 22, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.0)
+
+The broker-acknowledged durability, streamed-bootstrap, and accelerated-TCP
+release.
+
 - Added selectable Kafka acknowledgement semantics. `--kafka-ack-mode broker`
   withholds client replies and firehose batches until every record in the
   atomic mutation batch is broker-acknowledged; `queued` retains the original
   lower-latency behavior. Pending payloads have a configurable bounded
   backpressure watermark and `INFO` exposes delivery progress.
+- Added `GOBLIN.DUMPWORLD`, which forks at one point in time and returns the
+  entire database as a RESP3 streamed blob in native GCSN snapshot format. A
+  receiving node can install the stream directly for new-replica bootstrap
+  without blocking writes on the primary.
+- Added native NVIDIA XLIO Ultra TCP listeners and clients for RESP and SBE.
+  XLIO targets participate in literal strict poll priority alongside rings,
+  RDMA, and ExaSock while remaining compatible with ordinary kernel TCP peers.
+  On the NUMA-bound 100 Gb/s ConnectX-5 test pair, native XLIO delivered
+  4.98-8.37 microsecond median round trips across seven Redis-shaped commands.
 
 ## v0.9.0 — July 20, 2026
 

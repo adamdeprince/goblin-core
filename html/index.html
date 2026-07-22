@@ -173,39 +173,14 @@
     }
     .release-note strong { color: var(--acid-dark); }
     .release-note > span { display: block; }
-    .release-note > span + span { margin-top: 4px; }
-    .release-delivered { margin-bottom: 9px; }
-    .crossed-plan {
-      position: relative;
-      display: inline-block;
-      color: #73756d;
-      text-decoration: none;
-    }
-    .crossed-plan strong { color: #73756d; }
-    .crossed-plan::before,
-    .crossed-plan::after {
-      content: "";
-      position: absolute;
-      z-index: 1;
-      top: calc(50% - 2px);
-      right: -7px;
-      left: -7px;
-      height: 4px;
-      background: #c52222;
-      pointer-events: none;
-    }
-    .crossed-plan::before { transform: rotate(4deg); }
-    .crossed-plan::after { transform: rotate(-4deg); }
-    .delivery-stamp {
-      display: inline-block;
-      margin-left: 12px;
-      padding: 2px 7px;
-      border: 2px solid #c52222;
-      color: #a91818 !important;
+    .release-note > span + span { margin-top: 6px; }
+    .release-note .release-note-heading {
+      margin-bottom: 9px;
+      color: var(--acid-dark);
       font-weight: 900;
       text-transform: uppercase;
-      transform: rotate(-2deg);
     }
+    .release-note a { color: inherit; text-decoration-color: var(--orange); }
     .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
     .button {
       display: inline-flex;
@@ -478,7 +453,6 @@
       .hero-inner { padding-top: 112px; }
       h1 { font-size: clamp(3.6rem, 19vw, 5.8rem); }
       .hero-copy { margin-top: 22px; font-size: 1.07rem; }
-      .delivery-stamp { display: table; margin: 8px 0 0; }
       .hero-note { display: none; }
       .hero-chicken { right: -87px; bottom: -66px; width: 470px; height: 470px; }
       .proof { min-height: 128px; padding: 24px 17px; }
@@ -548,10 +522,11 @@
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
         <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <p class="release-note">
-          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
-          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
-          <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 27, 2026:</strong> native <a href="docs/kafka.html">Kafka replay</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
+        <p class="release-note" aria-label="New in Goblin Core 0.10.0">
+          <span class="release-note-heading">New in v0.10.0</span>
+          <span><strong>Durability:</strong> <a href="docs/kafka.html">broker-acknowledged Kafka writes</a> with bounded pending-data backpressure.</span>
+          <span><strong>Replica bootstrap:</strong> <a href="docs/commands/goblin.html#goblin-dumpworld">stream the entire database</a> in native snapshot format.</span>
+          <span><strong>100 GbE:</strong> <a href="XLIO-LATENCY.html">native XLIO Ultra TCP</a> at 4.98–8.37 µs median across seven commands.</span>
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#start">
