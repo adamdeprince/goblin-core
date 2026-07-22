@@ -3525,13 +3525,10 @@ Store::SaveStart Store::start_background_save(std::string path,
     return SaveStart::AlreadyRunning;
   }
 
-  if (hugetlb::arena_enabled()) {
-    // Huge pages make fork+COW unsafe: a huge-page mapping copies-on-write at 2 MiB
-    // granularity, so one post-fork write duplicates a whole 2 MiB page and pulls a
-    // fresh huge page from the small fixed pool -- amplifying RSS and SIGBUS-ing the
-    // parent once the pool exhausts. Save synchronously in-process instead: the event
-    // loop blocks for the duration, but nothing is written after a fork so nothing
-    // copies-on-write. reap_background_save() returns the outcome on its next call.
+  if (hugetlb::arena_enabled() || !background_fork_enabled_) {
+    // Huge pages make fork+COW unsafe, and some native polling runtimes cannot
+    // survive a fork once their groups exist. Save synchronously in-process in
+    // either case. reap_background_save() returns the outcome on its next call.
     background_save_sync_ok_ = save_to_file(path, with_accelerator);
     background_save_path_ = std::move(path);
     background_save_sync_pending_ = true;
@@ -3561,6 +3558,9 @@ Store::DumpStart Store::start_background_dump(bool with_accelerator) {
   }
   if (hugetlb::arena_enabled()) {
     return {.status = DumpStartStatus::HugeTlbUnsafe};
+  }
+  if (!background_fork_enabled_) {
+    return {.status = DumpStartStatus::ForkUnsafe};
   }
 
   int pipe_fds[2] = {-1, -1};
@@ -3626,7 +3626,7 @@ std::optional<bool> Store::reap_background_dump() noexcept {
 
 std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
   if (background_save_sync_pending_) {
-    // The synchronous (huge-page) save already finished inside start_background_save.
+    // The synchronous save already finished inside start_background_save().
     background_save_sync_pending_ = false;
     SaveOutcome outcome{.path = std::move(background_save_path_),
                         .ok = background_save_sync_ok_};

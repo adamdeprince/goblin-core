@@ -188,7 +188,9 @@ void materialize_legacy_listener(goblin::core::ServerConfig& config) {
   std::vector<std::uint16_t> tcp_ports;
   for (auto& configured : config.socket_listeners) {
     if (auto* tcp = std::get_if<goblin::core::TcpListenerConfig>(&configured)) {
-      tcp->tls = tcp->tls || !is_loopback_address(tcp->bind_address);
+      tcp->tls = tcp->tls ||
+                 (!tcp->trusted_plaintext &&
+                  !is_loopback_address(tcp->bind_address));
       if (std::find(tcp_ports.begin(), tcp_ports.end(), tcp->port) ==
           tcp_ports.end()) {
         tcp_ports.push_back(tcp->port);
@@ -476,6 +478,13 @@ void lock_server_memory() noexcept {
                                std::to_string(exa->port))) {
         return false;
       }
+    } else if (const auto* xlio =
+                   std::get_if<goblin::core::XlioConfig>(&target)) {
+      if (!collect_address(xlio->bind_address,
+                           "XLIO Ultra bind " + xlio->bind_address + ':' +
+                               std::to_string(xlio->port))) {
+        return false;
+      }
     }
   }
 
@@ -584,7 +593,8 @@ void lock_server_memory() noexcept {
 
 void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
-            << " [--listen ADDRESS:PORT]... [--uds-listen PATH]...\n"
+            << " [--listen ADDRESS:PORT]... [--trusted-listen ADDRESS:PORT]...\n"
+            << "       [--uds-listen PATH]...\n"
             << "       [--tls-cert-file FILE --tls-key-file FILE]\n"
             << "       [--tcp-listen ADDRESS:PORT]... (compatibility alias)\n"
             << "       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...\n"
@@ -618,7 +628,8 @@ void print_usage(std::string_view program) {
             << "       [--kafka-ack-mode queued|broker]"
                " [--kafka-pending-bytes BYTES]\n"
             << "       [--auth-file FILE]\n"
-            << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]\n"
+            << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]"
+               " [--no-auth-xlio]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
@@ -628,6 +639,9 @@ void print_usage(std::string_view program) {
             << "       [--exasock ADDRESS PORT]..."
                " (priority TCP; -DGOBLIN_CORE_ENABLE_EXASOCK=ON;\n"
             << "                               run under `exasock` for SmartNIC bypass)\n"
+            << "       [--xlio ADDRESS PORT]..."
+               " (native XLIO Ultra TCP; repeatable;\n"
+            << "                               requires -DGOBLIN_CORE_ENABLE_XLIO=ON)\n"
             << "       [--rdma ADDRESS PORT SIZE]..."
                " (e.g. --rdma 10.88.88.1 6380 1mb; repeatable;\n"
             << "                               requires -DGOBLIN_CORE_ENABLE_RDMA=ON)\n"
@@ -652,16 +666,17 @@ void print_usage(std::string_view program) {
             << "\n"
             << "Polled-target order is literal CLI order and is the busy-poll priority\n"
             << "before plain sockets. Example:\n"
-            << "  --ring /tmp/a 64kb --exasock 10.99.99.1 6379 --rdma 10.88.88.1 6380 1mb\n"
+            << "  --ring /tmp/a 64kb --xlio 10.100.0.1 6379 --rdma 10.88.88.1 6380 1mb\n"
             << "  --ring /tmp/b 1mb\n"
-            << "scans A, ExaSock, RDMA, B, then the sparse plain-socket pass.\n"
+            << "scans A, XLIO, RDMA, B, then the sparse plain-socket pass.\n"
             << "\n"
             << "Every configured TCP port also has a plaintext 127.0.0.1 listener.\n"
             << "With no explicit TCP endpoint, the default is 127.0.0.1:6379.\n"
             << "Listeners are repeatable and may be mixed. :PORT means\n"
             << "127.0.0.1:PORT; IPv6 uses\n"
-            << "[ADDRESS]:PORT. Non-loopback listeners require TLS. --tcp-listen\n"
-            << "is an alias for --listen.\n"
+            << "[ADDRESS]:PORT. Non-loopback --listen endpoints require TLS;\n"
+            << "--trusted-listen is an explicit plaintext exception for isolated\n"
+            << "fabrics. --tcp-listen is an alias for --listen.\n"
             << "--tls-cert-file and --tls-key-file provide the shared identity.\n"
             << "Legacy --bind/--port selects one TCP listener only when no explicit\n"
             << "socket listener is configured; legacy\n"
@@ -674,7 +689,8 @@ void print_usage(std::string_view program) {
       << "until the broker acknowledges every record in the atomic batch; queued\n"
       << "keeps the lower-latency local-enqueue contract (the default).\n"
       << "--auth-file protects RESP. SBE requires --enable-sbe and never\n"
-      << "authenticates; --no-auth-ring/--no-auth-rdma explicitly trust RESP\n"
+      << "authenticates; --no-auth-ring/--no-auth-rdma/--no-auth-xlio"
+         " explicitly trust RESP\n"
       << "on those fabrics.\n";
 }
 
@@ -842,6 +858,11 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--no-auth-xlio") {
+      config.no_auth_xlio = true;
+      continue;
+    }
+
     if (arg == "--bind") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
@@ -865,7 +886,8 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    if (arg == "--listen" || arg == "--tcp-listen") {
+    if (arg == "--listen" || arg == "--tcp-listen" ||
+        arg == "--trusted-listen") {
       if (i + 1 >= argc) {
         std::cerr << "goblin-core: " << arg << " requires ADDRESS:PORT\n";
         return 2;
@@ -877,6 +899,13 @@ int main(int argc, char** argv) {
         std::cerr << "goblin-core: invalid " << arg << " '" << endpoint
                   << "': " << error << '\n';
         return 2;
+      }
+      if (arg == "--trusted-listen") {
+        listener->trusted_plaintext = true;
+        listener->tls = false;
+        std::cerr << "goblin-core: warning: trusted plaintext TCP listener "
+                  << format_tcp_endpoint(listener->bind_address, listener->port)
+                  << " has no transport encryption\n";
       }
       if (!add_tcp_listener(config, std::move(*listener))) {
         return 2;
@@ -949,6 +978,31 @@ int main(int argc, char** argv) {
       std::cerr << "goblin-core: --exasock is unavailable in this build"
                    " (configure with -DGOBLIN_CORE_ENABLE_EXASOCK=ON and an"
                    " installed ExaSock SDK)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--xlio") {
+#if defined(GOBLIN_HAS_XLIO)
+      // Two tokens: bind address and port. Each occurrence is one native Ultra
+      // polling group at this exact position in the strict priority sequence.
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --xlio requires ADDRESS and PORT\n";
+        return 2;
+      }
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const auto port = parse_port(port_text);
+      if (!port) {
+        std::cerr << "goblin-core: invalid --xlio port: " << port_text << '\n';
+        return 2;
+      }
+      config.poll_targets.emplace_back(goblin::core::XlioConfig{
+          .bind_address = address, .port = *port});
+#else
+      std::cerr << "goblin-core: --xlio is unavailable in this build"
+                   " (configure with -DGOBLIN_CORE_ENABLE_XLIO=ON)\n";
       return 2;
 #endif
       continue;

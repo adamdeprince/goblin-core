@@ -14,6 +14,9 @@
 #ifdef GOBLIN_HAS_RDMA
 #include "goblin/core/rdma_ring.hpp"
 #endif
+#ifdef GOBLIN_HAS_XLIO
+#include "goblin/core/xlio_transport.hpp"
+#endif
 #include "goblin/core/exasock.hpp"
 #include "goblin/core/script.hpp"
 #ifdef GOBLIN_HAS_SBE
@@ -891,6 +894,31 @@ struct ExasockRuntimeTarget {
 };
 #endif
 
+#ifdef GOBLIN_HAS_XLIO
+struct XlioEndpoint : EndpointSession {
+  XlioEndpoint(std::unique_ptr<xlio::Connection> xlio_connection,
+               std::size_t unsolicited_output_bytes,
+               std::size_t transaction_buffer_bytes,
+               std::uint64_t assigned_connection_id,
+               bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
+        connection(std::move(xlio_connection)) {}
+
+  std::unique_ptr<xlio::Connection> connection;
+  bool teardown_started{false};
+};
+
+// Listener precedes endpoints so it outlives their Connection wrappers. The
+// listener owns the Ultra polling group and XLIO callback state.
+struct XlioRuntimeTarget {
+  std::unique_ptr<xlio::ServerListener> listener;
+  std::vector<std::unique_ptr<XlioEndpoint>> endpoints;
+  std::size_t next_endpoint{0};
+  bool listener_error_reported{false};
+};
+#endif
+
 struct PolledRuntimeTarget {
   std::unique_ptr<RingEndpoint> ring_endpoint;
 #ifdef GOBLIN_HAS_RDMA
@@ -898,6 +926,9 @@ struct PolledRuntimeTarget {
 #endif
 #ifdef GOBLIN_HAS_EXASOCK
   std::unique_ptr<ExasockRuntimeTarget> exasock_target;
+#endif
+#ifdef GOBLIN_HAS_XLIO
+  std::unique_ptr<XlioRuntimeTarget> xlio_target;
 #endif
 };
 
@@ -1421,6 +1452,10 @@ class DumpWorldRuntime {
         error = "ERR streamed snapshots are unavailable with HugeTLB arenas; "
                 "fork COW can exhaust the huge-page pool";
         return false;
+      case Store::DumpStartStatus::ForkUnsafe:
+        error = "ERR streamed snapshots are unavailable while a transport "
+                "that cannot survive fork is active";
+        return false;
     }
 
     session_ = &session;
@@ -1598,7 +1633,9 @@ void normalize_socket_listeners(ServerConfig& config) {
   std::vector<std::uint16_t> tcp_ports;
   for (auto& configured : config.socket_listeners) {
     if (auto* tcp = std::get_if<TcpListenerConfig>(&configured)) {
-      tcp->tls = tcp->tls || !is_loopback_address(tcp->bind_address);
+      tcp->tls = tcp->tls ||
+                 (!tcp->trusted_plaintext &&
+                  !is_loopback_address(tcp->bind_address));
       if (std::find(tcp_ports.begin(), tcp_ports.end(), tcp->port) ==
           tcp_ports.end()) {
         tcp_ports.push_back(tcp->port);
@@ -2618,7 +2655,7 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 }
 #endif
 
-// Polled mode. Create shared-memory rings, ExaSock TCP listeners, and RDMA
+// Polled mode. Create shared-memory rings, XLIO/ExaSock TCP listeners, and RDMA
 // listeners in their literal command-line order, then process one fragment from
 // the highest-priority non-empty target and restart the scan. Only when every
 // target is empty do we run one non-blocking plain-socket pass and cpu_relax().
@@ -2725,19 +2762,49 @@ template <class ReplicaFn, class NetFn>
       continue;
     }
 
-    const auto& rc = std::get<RdmaConfig>(configured_target);
+    if (const auto* xc = std::get_if<XlioConfig>(&configured_target)) {
+#ifdef GOBLIN_HAS_XLIO
+      std::string error;
+      auto listener =
+          xlio::ServerListener::create(xc->bind_address, xc->port, error);
+      if (!listener) {
+        std::cerr << "goblin-core: failed to create XLIO Ultra listener "
+                  << xc->bind_address << ':' << xc->port << ": " << error
+                  << '\n';
+        return false;
+      }
+      std::cout << "goblin-core: XLIO Ultra " << xc->bind_address << ':'
+                << xc->port << " ready (native busy-polled TCP)\n";
+      PolledRuntimeTarget target;
+      target.xlio_target = std::make_unique<XlioRuntimeTarget>();
+      target.xlio_target->listener = std::move(listener);
+      targets.push_back(std::move(target));
+#else
+      (void)xc;
+      std::cerr << "goblin-core: this build cannot create an XLIO Ultra poll "
+                   "target (-DGOBLIN_CORE_ENABLE_XLIO=ON required)\n";
+      return false;
+#endif
+      continue;
+    }
+
+    const auto* rc = std::get_if<RdmaConfig>(&configured_target);
+    if (rc == nullptr) {
+      std::cerr << "goblin-core: unsupported polled target configuration\n";
+      return false;
+    }
 #ifdef GOBLIN_HAS_RDMA
     std::string error;
     auto listener = rdma::ServerListener::create(
-        rc.bind_address, rc.port, rc.bytes, config.backlog, config.numa_node,
+        rc->bind_address, rc->port, rc->bytes, config.backlog, config.numa_node,
         error);
     if (!listener) {
       std::cerr << "goblin-core: failed to create RDMA listener "
-                << rc.bind_address << ':' << rc.port << ": " << error << '\n';
+                << rc->bind_address << ':' << rc->port << ": " << error << '\n';
       return false;
     }
-    std::cout << "goblin-core: RDMA " << rc.bind_address << ':' << rc.port
-              << " ready (" << rc.bytes << " slot bytes/peer/direction)\n";
+    std::cout << "goblin-core: RDMA " << rc->bind_address << ':' << rc->port
+              << " ready (" << rc->bytes << " slot bytes/peer/direction)\n";
     PolledRuntimeTarget target;
     target.rdma_target = std::make_unique<RdmaRuntimeTarget>();
     target.rdma_target->listener = std::move(listener);
@@ -3108,6 +3175,86 @@ template <class ReplicaFn, class NetFn>
   };
 #endif
 
+#ifdef GOBLIN_HAS_XLIO
+  const auto detach_xlio_endpoint = [&](XlioEndpoint& endpoint) {
+    if (endpoint.teardown_started) return;
+    replication.remove(endpoint);
+    dump_world.remove(endpoint);
+    pubsub.remove(endpoint);
+    watches.remove(endpoint.transaction);
+    blocking_lists.remove(endpoint);
+    endpoint.connection->close();
+    endpoint.teardown_started = true;
+  };
+
+  const auto process_xlio_target = [&](XlioRuntimeTarget& target) -> bool {
+    bool progressed = false;
+    auto event = target.listener->poll();
+    progressed = event.progressed;
+    if (!target.listener->error().empty() && !target.listener_error_reported) {
+      std::cerr << "goblin-core: XLIO Ultra listener error: "
+                << target.listener->error() << '\n';
+      target.listener_error_reported = true;
+      running = false;
+      return true;
+    }
+    if (event.connection) {
+      try {
+        target.endpoints.push_back(std::make_unique<XlioEndpoint>(
+            std::move(event.connection), config.unsolicited_output_buffer_bytes,
+            config.transaction_buffer_bytes, next_connection_id(),
+            auth_database != nullptr && !config.no_auth_xlio));
+      } catch (const std::bad_alloc&) {
+        std::cerr << "goblin-core: unable to allocate XLIO endpoint state\n";
+        running = false;
+      }
+      progressed = true;
+    }
+
+    for (std::size_t i = target.endpoints.size(); i > 0; --i) {
+      const std::size_t index = i - 1;
+      auto& endpoint = *target.endpoints[index];
+      if ((endpoint.connection->failed() || endpoint.connection->closed() ||
+           (endpoint.close_requested && !has_pending_output(endpoint))) &&
+          !endpoint.teardown_started) {
+        if (endpoint.connection->failed() &&
+            !endpoint.connection->error().empty()) {
+          std::cerr << "goblin-core: XLIO peer closed after error: "
+                    << endpoint.connection->error() << '\n';
+        }
+        detach_xlio_endpoint(endpoint);
+        progressed = true;
+      }
+      if (!endpoint.connection->terminated()) continue;
+      detach_xlio_endpoint(endpoint);
+      target.endpoints.erase(target.endpoints.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+      if (target.next_endpoint > index) --target.next_endpoint;
+      progressed = true;
+    }
+    if (target.endpoints.empty()) {
+      target.next_endpoint = 0;
+      return progressed;
+    }
+    target.next_endpoint %= target.endpoints.size();
+
+    const std::size_t count = target.endpoints.size();
+    for (std::size_t offset = 0; offset < count; ++offset) {
+      const std::size_t index = (target.next_endpoint + offset) % count;
+      auto& endpoint = *target.endpoints[index];
+      if (endpoint.teardown_started || !endpoint.connection->established()) {
+        continue;
+      }
+      if (process_polled_endpoint(endpoint, *endpoint.connection,
+                                  *endpoint.connection)) {
+        target.next_endpoint = (index + 1) % count;
+        return true;
+      }
+    }
+    return progressed;
+  };
+#endif
+
 #ifdef GOBLIN_HAS_EXASOCK
   // One unit of work on a priority ExaSock TCP target: drain accepts, then
   // service one client that has readable/writable progress (round-robin).
@@ -3266,6 +3413,11 @@ template <class ReplicaFn, class NetFn>
         target_progress = process_exasock_target(*target.exasock_target);
       }
 #endif
+#ifdef GOBLIN_HAS_XLIO
+      else if (target.xlio_target) {
+        target_progress = process_xlio_target(*target.xlio_target);
+      }
+#endif
 #ifdef GOBLIN_HAS_RDMA
       else if (target.rdma_target) {
         target_progress = process_rdma_target(*target.rdma_target);
@@ -3340,6 +3492,13 @@ template <class ReplicaFn, class NetFn>
       }
     }
 #endif
+#ifdef GOBLIN_HAS_XLIO
+    if (target.xlio_target) {
+      for (auto& endpoint : target.xlio_target->endpoints) {
+        detach_xlio_endpoint(*endpoint);
+      }
+    }
+#endif
   }
   return true;
 }
@@ -3349,6 +3508,16 @@ template <class ReplicaFn, class NetFn>
 Server::Server(ServerConfig config, Store& store)
     : config_(std::move(config)), store_(store) {
   normalize_socket_listeners(config_);
+#ifdef GOBLIN_HAS_XLIO
+  const bool has_xlio = std::any_of(
+      config_.poll_targets.begin(), config_.poll_targets.end(),
+      [](const auto& target) { return std::holds_alternative<XlioConfig>(target); });
+  if (has_xlio) {
+    // XLIO 3.61 permits fork only while no Ultra polling group exists. SAVE
+    // remains available synchronously; GOBLIN.DUMPWORLD reports a clear error.
+    store_.set_background_fork_enabled(false);
+  }
+#endif
   const std::size_t page = static_cast<std::size_t>(ring::page_size());
   const auto page_round = [page](std::size_t requested) {
     if (requested == 0) {

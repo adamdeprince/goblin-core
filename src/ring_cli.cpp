@@ -1,9 +1,10 @@
-// redis-cli-ring: RESP client for goblin-core over ring, RDMA, or ExaSock TCP.
+// redis-cli-ring: RESP client for Goblin's polled transports.
 //
 //   redis-cli-ring /tmp/a SET foo bar                 # shared-memory ring
 //   redis-cli-ring --ring /tmp/a PING
 //   redis-cli-ring --rdma 10.88.88.1 6380 1mb PING    # needs GOBLIN_HAS_RDMA
 //   redis-cli-ring --exasock 10.99.99.1 6379 PING     # needs GOBLIN_HAS_EXASOCK
+//   redis-cli-ring --xlio 10.100.0.1 6379 PING         # needs GOBLIN_HAS_XLIO
 //   redis-cli-ring /tmp/a                             # interactive
 //   redis-cli-ring /tmp/a -f cmds.txt                 # stream file (like --pipe)
 //
@@ -16,6 +17,9 @@
 #endif
 #if defined(GOBLIN_HAS_EXASOCK)
 #include "goblin/core/exasock_client.hpp"
+#endif
+#if defined(GOBLIN_HAS_XLIO)
+#include "goblin/core/xlio_client.hpp"
 #endif
 
 #include <cctype>
@@ -235,6 +239,10 @@ class AnyClient {
   explicit AnyClient(goblin::core::exasock::ExasockClient client)
       : backend_(std::move(client)) {}
 #endif
+#if defined(GOBLIN_HAS_XLIO)
+  explicit AnyClient(goblin::core::xlio::XlioClient client)
+      : backend_(std::move(client)) {}
+#endif
 
   [[nodiscard]] std::optional<std::string> command(
       std::span<const std::string_view> args) {
@@ -280,6 +288,10 @@ class AnyClient {
 #if defined(GOBLIN_HAS_EXASOCK)
       ,
       goblin::core::exasock::ExasockClient
+#endif
+#if defined(GOBLIN_HAS_XLIO)
+      ,
+      goblin::core::xlio::XlioClient
 #endif
       >;
   Backend backend_;
@@ -384,6 +396,9 @@ void print_usage() {
 #if defined(GOBLIN_HAS_EXASOCK)
       << "  redis-cli-ring --exasock <host> <port> [COMMAND ARG ...]\n"
 #endif
+#if defined(GOBLIN_HAS_XLIO)
+      << "  redis-cli-ring --xlio <host> <port> [COMMAND ARG ...]\n"
+#endif
       << "  redis-cli-ring <transport...> -f <file>|-\n"
       << "\n"
       << "Transports (server must expose a matching target):\n"
@@ -397,6 +412,11 @@ void print_usage() {
       << "  --exasock HOST PORT   priority TCP / ExaSock (run under `exasock` for bypass)\n"
 #else
       << "  --exasock ...         (unavailable: build with -DGOBLIN_CORE_ENABLE_EXASOCK=ON)\n"
+#endif
+#if defined(GOBLIN_HAS_XLIO)
+      << "  --xlio HOST PORT      native busy-polled XLIO Ultra TCP\n"
+#else
+      << "  --xlio ...            (unavailable: build with -DGOBLIN_CORE_ENABLE_XLIO=ON)\n"
 #endif
       << "\n"
       << "No COMMAND enters interactive mode. -f streams one command per line.\n";
@@ -510,6 +530,35 @@ struct Opened {
 #else
     std::cerr << "redis-cli-ring: --exasock unavailable in this build "
                  "(-DGOBLIN_CORE_ENABLE_EXASOCK=ON + ExaSock SDK)\n";
+    return opened;
+#endif
+  }
+
+  if (a1 == "--xlio") {
+#if defined(GOBLIN_HAS_XLIO)
+    if (argc < 4) {
+      std::cerr << "redis-cli-ring: --xlio requires HOST PORT\n";
+      return opened;
+    }
+    std::uint16_t port = 0;
+    if (!parse_u16(argv[3], port)) {
+      std::cerr << "redis-cli-ring: invalid --xlio port\n";
+      return opened;
+    }
+    std::string error;
+    auto client = goblin::core::xlio::XlioClient::open(
+        argv[2], port, std::chrono::seconds(5), {}, &error);
+    if (!client) {
+      std::cerr << "redis-cli-ring: XLIO Ultra open failed: " << error << '\n';
+      return opened;
+    }
+    opened.client.emplace(std::move(*client));
+    opened.label = std::string("xlio ") + argv[2] + ':' + argv[3];
+    opened.argc_consumed = 3;
+    return opened;
+#else
+    std::cerr << "redis-cli-ring: --xlio unavailable in this build "
+                 "(-DGOBLIN_CORE_ENABLE_XLIO=ON)\n";
     return opened;
 #endif
   }

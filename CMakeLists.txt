@@ -21,6 +21,9 @@ option(GOBLIN_CORE_ENABLE_RDMA
 option(GOBLIN_CORE_ENABLE_EXASOCK
   "Enable Cisco ExaSock / Nexus SmartNIC sockets support (requires installed ExaSock SDK; not vendored)"
   OFF)
+option(GOBLIN_CORE_ENABLE_XLIO
+  "Enable native NVIDIA XLIO Ultra polled TCP transport (Linux; runtime libxlio preload required)"
+  OFF)
 option(GOBLIN_CORE_ENABLE_KAFKA
   "Enable RESP2 write ingestion from Kafka using vendored librdkafka"
   ON)
@@ -334,6 +337,20 @@ if(GOBLIN_CORE_ENABLE_EXASOCK)
   set(GOBLIN_HAS_EXASOCK_BUILD ON)
 endif()
 
+set(GOBLIN_HAS_XLIO_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_XLIO)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR
+      "goblin-core: GOBLIN_CORE_ENABLE_XLIO=ON requires Linux")
+  endif()
+  if(NOT EXISTS
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xlio/src/core/xlio_extra.h)
+    message(FATAL_ERROR
+      "goblin-core: vendored XLIO Ultra headers are missing")
+  endif()
+  set(GOBLIN_HAS_XLIO_BUILD ON)
+endif()
+
 add_library(goblin_core
   src/auth.cpp
   src/command.cpp
@@ -355,6 +372,7 @@ add_library(goblin_core
   src/quickjs_script.cpp
   src/replication.cpp
   src/replication_follower.cpp
+  $<$<BOOL:${GOBLIN_HAS_XLIO_BUILD}>:src/xlio_transport.cpp>
   ${GOBLIN_RDMA_SOURCES})
 
 if(GOBLIN_HAS_KAFKA_BUILD)
@@ -414,6 +432,14 @@ if(GOBLIN_HAS_EXASOCK_BUILD)
   target_link_libraries(goblin_core PUBLIC ${EXASOCK_EXT_LIBRARY})
   message(STATUS
     "goblin-core: ExaSock support enabled (GOBLIN_HAS_EXASOCK); run under the exasock wrapper for acceleration")
+endif()
+
+if(GOBLIN_HAS_XLIO_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_XLIO=1)
+  target_include_directories(goblin_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xlio/src/core)
+  message(STATUS
+    "goblin-core: native XLIO Ultra polling enabled (GOBLIN_HAS_XLIO); preload the pinned libxlio.so at runtime")
 endif()
 
 # The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
@@ -566,6 +592,18 @@ set_target_properties(goblin_core_ring_cli PROPERTIES
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 
+if(GOBLIN_HAS_XLIO_BUILD AND GOBLIN_CORE_BUILD_TESTS AND
+   TARGET goblin_sbe_headers)
+  add_executable(goblin_core_xlio_roundtrip_test
+    tests/xlio_roundtrip_test.cpp)
+  target_link_libraries(goblin_core_xlio_roundtrip_test PRIVATE
+    goblin_core goblin_sbe_headers)
+  set_target_properties(goblin_core_xlio_roundtrip_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  target_compile_options(goblin_core_xlio_roundtrip_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+endif()
+
 if(GOBLIN_HAS_RDMA_BUILD)
   add_executable(goblin_core_rdma_cli src/rdma_cli.cpp)
   target_link_libraries(goblin_core_rdma_cli PRIVATE goblin_core)
@@ -655,6 +693,15 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
   endif()
 
   if(UNIX)
+    add_executable(goblin_core_xlio_latency_benchmark
+      benchmarks/xlio_latency_benchmark.cpp)
+    target_link_libraries(goblin_core_xlio_latency_benchmark PRIVATE
+      goblin_core)
+    set_target_properties(goblin_core_xlio_latency_benchmark PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_xlio_latency_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+
     add_executable(goblin_core_hset_benchmark benchmarks/hset_benchmark.cpp)
     set_target_properties(goblin_core_hset_benchmark PROPERTIES
       CXX_STANDARD 23

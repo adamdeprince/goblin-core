@@ -11,6 +11,9 @@
 #include "goblin/core/upython_script.hpp"
 #include "goblin/core/quickjs_script.hpp"
 #include "goblin/core/wren_script.hpp"
+#if defined(GOBLIN_HAS_XLIO)
+#include "goblin/core/xlio_transport.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -128,6 +131,14 @@ void append_info_value(std::string& out, std::string_view value) {
 #else
   s += "exasock_support:0\r\n";
   s += "exasock_loaded:0\r\n";
+#endif
+#if defined(GOBLIN_HAS_XLIO)
+  s += "xlio_support:1\r\n";
+  s += goblin::core::xlio::runtime_available() ? "xlio_loaded:1\r\n"
+                                                : "xlio_loaded:0\r\n";
+#else
+  s += "xlio_support:0\r\n";
+  s += "xlio_loaded:0\r\n";
 #endif
   s += "# Replication\r\n";
   s += std::string("role:") + (store.replica_mode() ? "slave" : "master") +

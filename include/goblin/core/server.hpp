@@ -39,11 +39,20 @@ struct ExasockConfig {
   std::uint16_t port{0};
 };
 
+// One native XLIO Ultra TCP listener from `--xlio <address> <port>`. Each
+// instance owns its own polling group so literal command-line order remains the
+// strict priority order across XLIO, ring, RDMA, and ExaSock targets.
+struct XlioConfig {
+  std::string bind_address;
+  std::uint16_t port{0};
+};
+
 // Polled targets retain their literal command-line order. A mixed sequence such
-// as `--ring A --exasock B --rdma C --ring D` is therefore scanned A, B, C, D,
-// followed by the sparse plain-socket pass.
+// as `--ring A --xlio B --rdma C --ring D` is therefore scanned A, B, C, D,
+// followed by the sparse plain-socket pass. Progress restarts the scan at A, so
+// a continuously ready earlier target intentionally can starve later targets.
 using PollTargetConfig =
-    std::variant<RingConfig, RdmaConfig, ExasockConfig>;
+    std::variant<RingConfig, RdmaConfig, ExasockConfig, XlioConfig>;
 
 // One outbound SBE Pub/Sub subscription. The local server subscribes to the
 // upstream Goblin Core instance and republishes received channel/payload pairs
@@ -118,6 +127,10 @@ struct TcpListenerConfig {
   std::uint16_t port{0};
   // Non-loopback listeners are normalized to TLS automatically.
   bool tls{false};
+  // Explicit operator assertion that this endpoint is inside a trusted,
+  // isolated boundary. Only --trusted-listen sets it; ordinary --listen keeps
+  // requiring TLS away from loopback.
+  bool trusted_plaintext{false};
 };
 
 struct UdsListenerConfig {
@@ -208,6 +221,7 @@ struct ServerConfig {
   // whole transport class as inside the operator's trusted boundary.
   bool no_auth_ring{false};
   bool no_auth_rdma{false};
+  bool no_auth_xlio{false};
   // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.

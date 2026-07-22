@@ -2508,6 +2508,11 @@ class Store {
   enum class SaveStart { Started, AlreadyRunning, ForkFailed };
   [[nodiscard]] SaveStart start_background_save(std::string path,
                                                 bool with_accelerator = true);
+  // Some polled runtimes cannot be inherited safely across fork(). Disabling
+  // background fork makes file SAVE synchronous and rejects streamed dumps.
+  void set_background_fork_enabled(bool enabled) noexcept {
+    background_fork_enabled_ = enabled;
+  }
 
   // Non-blocking: if the background save has finished, reap it and return its
   // outcome (clearing the in-progress state); otherwise return nullopt.
@@ -2532,6 +2537,7 @@ class Store {
     PipeFailed,
     ForkFailed,
     HugeTlbUnsafe,
+    ForkUnsafe,
   };
   struct DumpStart {
     DumpStartStatus status{DumpStartStatus::PipeFailed};
@@ -2666,6 +2672,7 @@ class Store {
   // the next reap_background_save(), leaving the caller's start/reap flow unchanged.
   bool background_save_sync_pending_ = false;
   bool background_save_sync_ok_ = false;
+  bool background_fork_enabled_ = true;
   int background_dump_child_ = -1;  // pid of an in-flight pipe writer, or -1
   // Write the snapshot to `path` via a temp file + fsync + atomic rename. Shared by
   // the forked child and the synchronous save path; returns false on any error.
