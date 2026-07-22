@@ -1,0 +1,5 @@
+label,transport,buffers,samples,warmup,protocol,pipeline_depth
+ring-resp,shared-memory-ring,sq=2097152;cq=2097152,1000000,100000,RESP2,1
+kernel-kernel,kernel-tcp,snd=87040;rcv=131072,1000000,100000,RESP2,1
+xlio-kernel,kernel-tcp,snd=87040;rcv=131072,1000000,100000,RESP2,1
+xlio-xlio,xlio-ultra-tcp,client-work=65536;tx=inline-copy;rx=xlio-owned;pipeline=1,1000000,100000,RESP2,1

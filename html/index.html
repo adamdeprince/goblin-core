@@ -547,7 +547,7 @@
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
-        <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
         <p class="release-note">
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="LISTS.html">lists</a></s><strong class="delivery-stamp">Delivered 1 week early</strong></span>
           <span class="release-delivered"><s class="crossed-plan"><strong>Coming July 20, 2026:</strong> Redis-compatible <a href="docs/commands/pubsub.html">Pub/Sub</a></s><strong class="delivery-stamp">Delivered 5 days early</strong></span>
@@ -566,7 +566,7 @@
           </a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP/TLS + UDS + Ringbuffer + RDMA</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP/TLS + XLIO Ultra + UDS + Ringbuffer + RDMA</span>
         </div>
       </div>
     </section>
@@ -584,14 +584,14 @@
       <div class="section-inner">
         <p class="section-label">Two roads into the same engine</p>
         <h2 class="section-title">Choose the overhead you are done paying.</h2>
-        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over <a href="docs/tls.html">TLS-capable TCP</a>, Unix-domain sockets, and shared-memory rings. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over <a href="docs/tls.html">TLS-capable TCP</a>, <a href="docs/xlio.html">native XLIO Ultra TCP</a>, Unix-domain sockets, shared-memory rings, and polled RDMA. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
         <div class="path-grid">
           <article class="path">
             <span class="path-num">01 / GROWING PRODUCTS</span>
             <h3>Your leaderboard should not become a fundraising event.</h3>
             <p class="path-lede">When sorted sets and hashes are scaling faster than the budget, packed layouts turn infrastructure growth back into a product problem instead of a RAM bill.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, or rings</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, or RDMA</dd></div>
               <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
               <div><dt>Measured</dt><dd>763.8 vs 1,486.7 MB: 48.6% less RSS than Redis 8.8 on Lichess</dd></div>
             </dl>
@@ -602,7 +602,7 @@
             <h3>Assemble real infrastructure before you invent a protocol.</h3>
             <p class="path-lede">Use the same Redis-shaped operations over any transport, then enable SBE over a trusted shared-memory ring for the lowest latency. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, or rings</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, or RDMA</dd></div>
               <div><dt>Best at</dt><dd>Market data and execution-adjacent state</dd></div>
               <div><dt>Measured</dt><dd>~220 ns HSET/ZADD round trip</dd></div>
             </dl>
@@ -635,7 +635,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">RESP and opt-in SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. The same sequence-word design extends between hosts through <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a>.</p>
+        <p class="section-intro">RESP and opt-in SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. Between hosts, choose <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a> or keep ordinary TCP on the wire while accelerating both endpoints with <a href="XLIO-LATENCY.html">native XLIO Ultra</a>.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -700,7 +700,7 @@
           </article>
         </div>
         <p class="method"><strong>Comparison discipline:</strong> HSET is RESP2/UDS throughout. LIST, SET, and ZSET compare Goblin RESP/TCP with RESP/TCP incumbents, then show Goblin's equally pipelined SBE ring separately. ARRAY is RESP/TCP with native AR* commands throughout; unsupported engines receive an <code>X</code>, never a hash fallback. Runs are medians on the same dedicated AMD 5995WX host, with one serving core per engine and process RSS read from Linux rather than trusted server counters.</p>
-        <p class="method"><strong>More transport evidence:</strong> <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a> · <a href="NUMA-RING-LATENCY.html">same-node versus remote-ring NUMA cost</a></p>
+        <p class="method"><strong>More transport evidence:</strong> <a href="XLIO-LATENCY.html">native XLIO Ultra over 100 Gb Ethernet</a> · <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a> · <a href="NUMA-RING-LATENCY.html">same-node versus remote-ring NUMA cost</a></p>
       </div>
     </section>
 

@@ -1,0 +1,68 @@
+timestamp_utc=20260722T181540Z
+git_commit=810df152395bbe2d7d296a25f4b4e25534675cca
+server_host=butterfly
+client_host=rain
+server_address=10.100.0.1
+client_address=10.100.0.2
+interface=enp68s0np0
+server_cpu=5
+ring_client_cpu=9
+network_client_cpu=5
+numa_node=1
+numa_binding=cpunodebind+membind+exact-taskset
+ring_size_per_direction=2mb
+samples=1000000
+warmup=100000
+xlio_version=3.61.2
+
+[butterfly]
+butterfly
+Linux 5.15.0-186-generic
+Model name:                              Intel(R) Xeon(R) CPU E5-4657L v2 @ 2.40GHz
+Socket(s):                               4
+NUMA node(s):                            4
+enp68s0np0       UP             10.100.0.1/30 fe80::1e34:daff:fe76:33f4/64
+nic_numa=1
+Speed: 100000Mb/s
+Duplex: Full
+Port: Direct Attach Copper
+Link detected: yes
+driver: mlx5_core
+firmware-version: 16.35.8008 (MT_0000000011)
+bus-info: 0000:44:00.0
+Adaptive RX: on  TX: on
+rx-usecs: 8
+rx-frames: 128
+tx-usecs: 8
+tx-frames: 128
+RX maximum: 8192
+TX maximum: 8192
+RX current: 1024
+TX current: 1024
+governor=schedutil
+
+[rain]
+rain
+Linux 5.15.0-186-generic
+Model name:                              Intel(R) Xeon(R) CPU E5-4657L v2 @ 2.40GHz
+Socket(s):                               4
+NUMA node(s):                            4
+enp68s0np0       UP             10.100.0.2/30 fe80::e42:a1ff:fe22:e4b6/64
+nic_numa=1
+Speed: 100000Mb/s
+Duplex: Full
+Port: Direct Attach Copper
+Link detected: yes
+driver: mlx5_core
+firmware-version: 16.35.8008 (MT_0000000011)
+bus-info: 0000:44:00.0
+Adaptive RX: on  TX: on
+rx-usecs: 8
+rx-frames: 128
+tx-usecs: 8
+tx-frames: 128
+RX maximum: 8192
+TX maximum: 8192
+RX current: 1024
+TX current: 1024
+governor=schedutil

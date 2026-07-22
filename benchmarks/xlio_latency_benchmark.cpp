@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <netdb.h>
@@ -330,6 +331,27 @@ template <class Client>
                                            "m5"};
   const std::vector<std::string_view> zscore{"ZSCORE", "xlio:lat:zset", "m5"};
 
+  const char* operation_environment =
+      std::getenv("GOBLIN_XLIO_BENCH_OPERATION");
+  const std::string_view selected_operation =
+      operation_environment == nullptr ? std::string_view{}
+                                       : std::string_view(operation_environment);
+  const auto selected = [&](std::string_view operation) {
+    return selected_operation.empty() || selected_operation == operation;
+  };
+  const bool known_operation =
+      selected_operation.empty() || selected_operation == "PING" ||
+      selected_operation == "SET" || selected_operation == "GET" ||
+      selected_operation == "HSET" || selected_operation == "HGET" ||
+      selected_operation == "ZADD" || selected_operation == "ZSCORE";
+  if (!known_operation) {
+    std::fprintf(stderr, "%.*s: unknown operation filter %.*s\n",
+                 static_cast<int>(label.size()), label.data(),
+                 static_cast<int>(selected_operation.size()),
+                 selected_operation.data());
+    return false;
+  }
+
   std::printf("META,%.*s,%.*s,%.*s,%zu,%zu,RESP2,1\n",
               static_cast<int>(label.size()), label.data(),
               static_cast<int>(transport.size()), transport.data(),
@@ -343,22 +365,29 @@ template <class Client>
                static_cast<int>(buffer_description.size()),
                buffer_description.data(), samples, warmup);
 
-  return measure(label, "PING", warmup, samples, [&] {
-           return status_reply(client.command(ping), "+PONG\r\n");
-         }) &&
-         measure(label, "SET", warmup, samples, [&] {
-           return status_reply(client.command(set), "+OK\r\n");
-         }) &&
-         measure(label, "GET", warmup, samples,
-                 [&] { return bulk_reply(client.command(get)); }) &&
-         measure(label, "HSET", warmup, samples,
-                 [&] { return integer_reply(client.command(hset)); }) &&
-         measure(label, "HGET", warmup, samples,
-                 [&] { return bulk_reply(client.command(hget)); }) &&
-         measure(label, "ZADD", warmup, samples,
-                 [&] { return integer_reply(client.command(zadd)); }) &&
-         measure(label, "ZSCORE", warmup, samples,
-                 [&] { return bulk_reply(client.command(zscore)); });
+  return (!selected("PING") ||
+          measure(label, "PING", warmup, samples, [&] {
+            return status_reply(client.command(ping), "+PONG\r\n");
+          })) &&
+         (!selected("SET") ||
+          measure(label, "SET", warmup, samples, [&] {
+            return status_reply(client.command(set), "+OK\r\n");
+          })) &&
+         (!selected("GET") ||
+          measure(label, "GET", warmup, samples,
+                  [&] { return bulk_reply(client.command(get)); })) &&
+         (!selected("HSET") ||
+          measure(label, "HSET", warmup, samples,
+                  [&] { return integer_reply(client.command(hset)); })) &&
+         (!selected("HGET") ||
+          measure(label, "HGET", warmup, samples,
+                  [&] { return bulk_reply(client.command(hget)); })) &&
+         (!selected("ZADD") ||
+          measure(label, "ZADD", warmup, samples,
+                  [&] { return integer_reply(client.command(zadd)); })) &&
+         (!selected("ZSCORE") ||
+          measure(label, "ZSCORE", warmup, samples,
+                  [&] { return bulk_reply(client.command(zscore)); }));
 }
 
 void usage(const char* program) {
@@ -370,6 +399,9 @@ void usage(const char* program) {
       "  %s xlio HOST PORT LABEL SAMPLES WARMUP [LOCAL-ADDRESS]\n"
       "\nAll modes use RESP2, pipeline depth 1, and the same seven operations.\n",
       program, program, program);
+  std::fprintf(stderr,
+               "Set GOBLIN_XLIO_BENCH_OPERATION to one operation for a "
+               "diagnostic-only run.\n");
 }
 
 }  // namespace

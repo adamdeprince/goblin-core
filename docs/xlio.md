@@ -1,12 +1,15 @@
-# XLIO Ultra qualification
+# Native XLIO Ultra TCP
 
-Goblin Core vendors a pinned NVIDIA XLIO Ultra stack as the dependency baseline
-for a future kernel-bypass TCP transport. This document records the source and
-license audit, the two-host ConnectX-5 qualification, and the constraints that
-must be resolved before XLIO is exposed as a Goblin Core runtime option.
+Goblin Core has a native NVIDIA XLIO Ultra transport for busy-polled TCP on
+NVIDIA Ethernet adapters. It uses the Ultra API directly, participates in the
+same literal command-line priority order as rings, RDMA, and ExaSock, and keeps
+ordinary TCP on the wire. An accelerated endpoint can therefore exchange RESP
+or SBE with another accelerated endpoint, while an ordinary kernel TCP client
+can still talk to an XLIO-backed Goblin server.
 
-XLIO is vendored but **not yet connected to the Goblin Core build or server**.
-The tests below qualify the dependency and hardware, not a released transport.
+The support is opt-in at build time because it requires the pinned XLIO/DPCP
+stack and Linux. This document covers the runtime contract, source and license
+audit, ConnectX-5 qualification, build, and measured command latency.
 
 ## Why XLIO Ultra
 
@@ -16,10 +19,10 @@ inventing a new wire protocol: the peer still sees an ordinary TCP stream. That
 property lets an accelerated Goblin server or client communicate with an
 unmodified kernel TCP peer using RESP or SBE.
 
-The intended Goblin integration will use the Ultra API directly rather than
-only applying XLIO's POSIX `LD_PRELOAD` interposer. A polling group can then join
-Goblin's existing ordered polling loop while preserving ordinary TCP on the
-wire.
+Goblin uses the Ultra API directly rather than routing socket calls through
+XLIO's POSIX interposer. Each `--xlio` target owns its own polling group, which
+preserves literal command-line priority across transport types. `libxlio.so`
+must still be preloaded so the Ultra symbols and runtime are available.
 
 ## Pinned source and license selection
 
@@ -157,6 +160,15 @@ make -C build/xlio -j"$(nproc)"
 make -C build/xlio install
 ```
 
+Configure Goblin Core against the native API headers:
+
+```bash
+cmake -S . -B build-xlio \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGOBLIN_CORE_ENABLE_XLIO=ON
+cmake --build build-xlio -j"$(nproc)"
+```
+
 The XLIO tree uses an Autotools-generated Makefile. Running `autogen.sh`
 generates build-system files inside the source tree; use a disposable source
 copy when verifying that the vendored tree still differs from upstream only by
@@ -166,6 +178,65 @@ XLIO needs `CAP_NET_RAW` or root to create the offloaded path. It also expects a
 sufficient locked-memory limit and normally uses huge pages. The smoke tests
 used `XLIO_MEM_ALLOC_TYPE=ANON` because they validated functionality rather than
 production memory placement.
+
+## Running Goblin Core over XLIO
+
+`--xlio ADDRESS PORT` adds one native XLIO listener and may be repeated. For
+example, on a host where CPU 5 and `10.100.0.1` are both on NUMA node 1:
+
+```bash
+prefix=/opt/goblin-xlio
+sudo env \
+  XLIO_MEM_ALLOC_TYPE=ANON \
+  LD_LIBRARY_PATH="$prefix/lib" \
+  LD_PRELOAD="$prefix/lib/libxlio.so" \
+  numactl --cpunodebind=1 --membind=1 taskset -c 5 \
+  ./build-xlio/goblin-core \
+    --cpu 5 --numa 1 --xlio 10.100.0.1 6379
+```
+
+The native client uses the same runtime:
+
+```bash
+sudo env \
+  XLIO_MEM_ALLOC_TYPE=ANON \
+  LD_LIBRARY_PATH="$prefix/lib" \
+  LD_PRELOAD="$prefix/lib/libxlio.so" \
+  numactl --cpunodebind=1 --membind=1 taskset -c 5 \
+  ./build-xlio/redis-cli-ring --xlio 10.100.0.1 6379 PING
+```
+
+RESP2 is the default. RESP3 is selected with `HELLO 3`. SBE uses the same TCP
+stream after the `GOBLINS!` handshake and requires `--enable-sbe`; SBE clients
+and servers must be exactly the same Goblin Core version.
+
+RESP authentication applies to XLIO listeners when `--auth-file` is present.
+`--no-auth-xlio` explicitly trusts RESP on this fabric. SBE is deliberately
+unauthenticated and must remain behind a trusted infrastructure boundary.
+
+## Polling, buffers, and snapshots
+
+Polled targets are scanned in literal command-line order. A sequence such as
+
+```text
+--ring /tmp/a 64kb --xlio 10.100.0.1 6379 \
+--rdma 10.88.88.1 6380 1mb --ring /tmp/b 1mb
+```
+
+scans the first ring, XLIO group, RDMA target, and second ring in that exact
+order. Progress restarts the scan at the first target. A continuously ready
+earlier target may therefore starve every later target by design. Ordinary
+kernel sockets receive their sparse pass only when all polled targets are idle.
+
+The server retains XLIO-owned receive buffers until command parsing and dispatch
+finish, so the common RX path is zero-copy. Replies use Ultra inline-copy TX.
+XLIO transports a TCP byte stream rather than fixed ring slots, so commands are
+not constrained by a local ring's message-size limit.
+
+XLIO 3.61 does not permit a process with a live Ultra polling group to use the
+normal fork-based snapshot path. Goblin Core therefore runs file `SAVE`
+synchronously while XLIO is active and rejects `GOBLIN.DUMPWORLD` with a clear
+fork-safety error.
 
 ## TCP interoperability result
 
@@ -181,8 +252,7 @@ case exchanged the literal TCP payloads `ping\n` and `pong\n`; the peer labeled
 | `rain` XLIO Ultra client | `butterfly` kernel TCP server | Pass |
 
 This proves the required asymmetric compatibility in both roles on both cards:
-an XLIO-speaking endpoint remains a normal TCP peer on the wire. It does not yet
-measure Goblin command latency or throughput.
+an XLIO-speaking endpoint remains a normal TCP peer on the wire.
 
 After the firmware upgrade, the server direction was repeated with an XLIO
 Ultra server on `butterfly` and a kernel TCP client on `rain`. The client
@@ -190,24 +260,15 @@ direction was repeated with a kernel TCP server on `butterfly` and an XLIO Ultra
 client on `rain`. Both exchanged the expected payloads, and XLIO reported
 zero-copy completion on the accelerated endpoint.
 
-## Integration gates
+## Goblin command latency
 
-The dependency baseline is ready. Runtime support still needs deliberate work:
+The native implementation was measured on the direct 100 Gb/s link above using
+the same C++ RESP2 client, fixtures, commands, warmup, sample count, and
+pipeline depth for every network mode. Both processes were hard-bound to NUMA
+node 1, which owns each ConnectX-5, and to exact node-local CPUs. Native XLIO on
+both endpoints delivered 4.98-8.37 microsecond median round trips across `PING`,
+`SET`, `GET`, `HSET`, `HGET`, `ZADD`, and `ZSCORE`.
 
-1. Add an opt-in CMake target that builds the pinned DPCP/XLIO stack without
-   changing ordinary Goblin builds.
-2. Wrap Ultra polling groups, sockets, callbacks, RX buffer release, registered
-   TX memory, and completion ownership behind a Goblin transport boundary.
-3. Put each XLIO polling target into the existing literal command-line poll
-   order, followed by the sparse ordinary-socket pass.
-4. Add RESP and SBE server/client tests plus mixed XLIO/kernel interoperability
-   tests using real Goblin commands.
-5. Resolve snapshot behavior before enabling the transport. XLIO 3.61 documents
-   `fork()` as supported only when no Ultra polling group exists, while
-   `GOBLIN.SAVE` and `GOBLIN.DUMPWORLD` currently fork after listeners are live.
-   The integration must define a safe snapshot path rather than relying on
-   undefined behavior.
-6. Tune memory registration and device selection. The default XLIO anonymous
-   allocator registered a 2 GiB virtual pool on every discovered Ethernet verbs
-   device on `rain`; production configuration should constrain that footprint
-   and avoid registering unused adapters.
+See [XLIO Ultra command latency](../XLIO-LATENCY.md) for the complete comparison
+against ordinary kernel TCP, the asymmetric compatibility case, local RESP
+rings, percentile tables, raw results, and reproduction command.

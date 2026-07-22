@@ -462,6 +462,16 @@ credits only when the sender's cached view says the remote ring is full. See
 **[docs/rdma-rings.md](docs/rdma-rings.md)** for the wire layout, NUMA rules,
 flow control, and C++ RESP/SBE clients.
 
+**Native XLIO Ultra TCP (the compatible fabric path).** Configure with
+`-DGOBLIN_CORE_ENABLE_XLIO=ON`, preload the pinned `libxlio.so`, and add a
+repeatable `--xlio <address> <port>` target. Goblin uses the Ultra API directly,
+but the peer still sees ordinary TCP: an unmodified kernel TCP client can talk
+to an XLIO-backed server. Native RESP and SBE clients use
+`redis-cli-ring --xlio <host> <port>`. See
+**[docs/xlio.md](docs/xlio.md)** for the build, runtime, security, poll-order,
+and snapshot contract, and **[XLIO-LATENCY.md](XLIO-LATENCY.md)** for the matched
+100 Gb/s command-latency benchmark.
+
 On Linux, Goblin resolves specific socket and RDMA bind addresses to their NICs
 and NUMA nodes. It selects the slice automatically only when every hardware
 endpoint agrees. If an ordinary NIC and an InfiniBand adapter are on different
@@ -470,12 +480,12 @@ devices. Choose deliberately with `--numa 1`, `--numa eth0`, `--numa mlx5_0`,
 or the exact-core form `--cpu 77`. Unknown device locality on a multi-node host
 also requires an explicit choice.
 
-Transport and protocol are independent: ordinary sockets, shared-memory rings,
-and RDMA rings support RESP and the SBE binary wire. SBE is disabled by default;
-start the server with `--enable-sbe` to accept the one-time `GOBLINS!` handshake.
-SBE is deliberately unauthenticated and belongs only on a trusted fabric.
-Otherwise an endpoint speaks RESP2 by default and may select RESP3 with
-`HELLO 3`.
+Transport and protocol are independent: ordinary sockets, XLIO Ultra TCP,
+shared-memory rings, and RDMA rings support RESP and the SBE binary wire. SBE is
+disabled by default; start the server with `--enable-sbe` to accept the one-time
+`GOBLINS!` handshake. SBE is deliberately unauthenticated and belongs only on a
+trusted fabric. Otherwise an endpoint speaks RESP2 by default and may select
+RESP3 with `HELLO 3`.
 
 With polled targets the server checks them in command-line order (the first can
 starve the second, by design) and pegs a core at 100%; without one it stays
