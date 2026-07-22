@@ -72,7 +72,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
   enabled automatically — the AArch64 CRC extension, or LoongArch); and range
   output uses two-stage software prefetch. Portable scalar fallbacks cover
   everything else, so it builds and runs anywhere.
-- Build locally with CMake; benchmark instructions live in
+- [Install from source](INSTALL.md) with CMake; benchmark instructions live in
   [BENCHMARKS.md](BENCHMARKS.md) (x86) and
   [LOONGSON_BENCHMARKS.md](LOONGSON_BENCHMARKS.md) (Loongson 3A6000).
 - A performance and architecture overview lives in
@@ -336,7 +336,9 @@ latency simply comes along for free.
 ## Build From Source
 
 Goblin Core is distributed as source. Build it locally with CMake
-and a C++23 compiler.
+and a C++23 compiler. The complete, platform-specific dependency list, CMake
+option reference, optional transport builds, installation paths, and verified
+smoke test are in [Installing Goblin Core from source](INSTALL.md).
 
 Prerequisites:
 

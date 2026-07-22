@@ -14,7 +14,9 @@ after the snapshot.
 
 ## TL;DR: a recoverable instance
 
-The complete, tested procedure is in [INSTALL.md](INSTALL.md). The short recipe
+The complete, tested lab procedure is in the
+[Thunder and Redpanda deployment record](docs/thunder-redpanda-deployment.md).
+The short recipe
 is:
 
 1. Run Redpanda in production mode on durable local storage.

@@ -10,7 +10,14 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
-Nothing yet.
+- Added a tested source installation guide with platform prerequisites, build
+  profiles, CMake option reference, installation, and an installed-binary smoke
+  test. The host-specific Thunder/Redpanda deployment record now lives under
+  `docs/`.
+- Added `redis-cli-ring` to the installed program set.
+- Hardened ring-client startup against observing a newly created backing file
+  before the server has sized it, avoiding a possible `SIGBUS` during an
+  immediate client/server launch.
 
 ## v0.10.0 — July 22, 2026
 

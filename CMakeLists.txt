@@ -1229,7 +1229,8 @@ endif()
 include(CMakePackageConfigHelpers)
 
 set(GOBLIN_CORE_INSTALL_TARGETS
-  goblin_core goblin_core_server goblin_core_auth goblin_lua goblin_luau_vm goblin_wren
+  goblin_core goblin_core_server goblin_core_auth goblin_core_ring_cli
+  goblin_lua goblin_luau_vm goblin_wren
   goblin_jim goblin_upy goblin_qjs)
 if(GOBLIN_HAS_KAFKA_BUILD)
   list(APPEND GOBLIN_CORE_INSTALL_TARGETS rdkafka)
@@ -1261,6 +1262,7 @@ install(
 
 install(
   FILES
+    INSTALL.md
     README.md
     BENCHMARKS.md
     MICROBENCHMARKS.md

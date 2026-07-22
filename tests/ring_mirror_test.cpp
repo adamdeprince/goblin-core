@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <string>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 using goblin::core::ring::Consumer;
@@ -77,6 +78,20 @@ std::size_t exercise_seam(Mapping& m, int iters) {
 
 int main() {
   const std::string base = "/tmp/goblin-ring-mirror-" + std::to_string(::getpid());
+
+  // O_CREAT publishes the pathname before the server can size and initialize the
+  // file. A client racing that window must retry rather than mmap past EOF and
+  // take SIGBUS while inspecting the header.
+  {
+    const std::string path = base + "-empty.ring";
+    ::unlink(path.c_str());
+    const int fd = ::open(path.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+    assert(fd >= 0);
+    assert(::close(fd) == 0);
+    assert(!Mapping::open(path.c_str()) &&
+           "an unsized ring file must not be mapped");
+    ::unlink(path.c_str());
+  }
 
   // (1) Default create: mirror where supported. Exercise seam-crossing traffic.
   {

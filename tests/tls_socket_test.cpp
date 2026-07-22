@@ -15,6 +15,9 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <poll.h>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 #include <span>
 #include <string>
 #include <string_view>
@@ -323,10 +326,17 @@ int main(int argc, char** argv) {
 
   TestIdentity identity;
   const auto port = reserve_dual_stack_port();
-  auto server = spawn_server(
-      argv[1], {"--listen", "[::]:" + std::to_string(port),
-                "--tls-cert-file", identity.certificate_path,
-                "--tls-key-file", identity.private_key_path});
+  std::vector<std::string> server_args{
+      "--listen",       "[::]:" + std::to_string(port),
+      "--tls-cert-file", identity.certificate_path,
+      "--tls-key-file", identity.private_key_path};
+#if defined(__linux__)
+  const int cpu = ::sched_getcpu();
+  assert(cpu >= 0);
+  server_args.emplace_back("--cpu");
+  server_args.emplace_back(std::to_string(cpu));
+#endif
+  auto server = spawn_server(argv[1], server_args);
 
   const int local =
       wait_for_connection([&] { return connect_ipv4(port); });

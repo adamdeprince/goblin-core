@@ -14,6 +14,9 @@
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <poll.h>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 #include <span>
 #include <string>
 #include <string_view>
@@ -251,11 +254,19 @@ int main(int argc, char** argv) {
   {
     const auto primary_port = reserve_dual_stack_port();
     const auto replica_port = reserve_ipv4_port();
-    auto primary = spawn_server(
-        argv[1], {"--auth-file", auth, "--listen",
-                  "[::]:" + std::to_string(primary_port), "--uds-listen",
-                  primary_uds, "--tls-cert-file", identity.certificate,
-                  "--tls-key-file", identity.private_key});
+    std::vector<std::string> primary_args{
+        "--auth-file", auth,
+        "--listen", "[::]:" + std::to_string(primary_port),
+        "--uds-listen", primary_uds,
+        "--tls-cert-file", identity.certificate,
+        "--tls-key-file", identity.private_key};
+#if defined(__linux__)
+    const int cpu = ::sched_getcpu();
+    assert(cpu >= 0);
+    primary_args.emplace_back("--cpu");
+    primary_args.emplace_back(std::to_string(cpu));
+#endif
+    auto primary = spawn_server(argv[1], primary_args);
     const int primary_client = wait_for_uds(primary_uds);
     assert(primary_client >= 0);
 

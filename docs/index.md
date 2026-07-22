@@ -9,6 +9,7 @@ rings, and polled one-sided RDMA rings.
 ## Start here
 
 - [Build, configure, and run Goblin Core](../README.md)
+- [Install Goblin Core from source](../INSTALL.md)
 - [Release history](../RELEASE-HISTORY.md)
 - [Performance architecture](../PERFORMANCE_BRIEF.md)
 - [Benchmark methodology and results](../BENCHMARKS.md)
@@ -50,6 +51,10 @@ snapshot, replay the durable RESP2 mutation log from [Kafka](kafka.md), buffer
 the live firehose while it catches up, and open its listeners only after the
 handoff is complete. Kafka owns the durable history; Goblin Core remains the
 compact serving layer.
+
+The [Thunder and Redpanda durability deployment record](thunder-redpanda-deployment.md)
+preserves the host-specific first production-style lab setup separately from
+the general [source installation guide](../INSTALL.md).
 
 ## Command reference
 

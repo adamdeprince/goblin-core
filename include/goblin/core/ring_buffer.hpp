@@ -845,6 +845,17 @@ class Mapping {
     // the client that follows a symlink into hugetlbfs must map the header at the
     // huge-page granularity too, since hugetlbfs refuses a sub-huge-page mmap length.
     const std::uint64_t granule = detect_granule(fd);
+    struct stat file_stat {};
+    // O_CREAT makes the path visible before the server's ftruncate(). Mapping a
+    // page from that transient zero-length file succeeds, but touching it raises
+    // SIGBUS. Treat an incomplete backing file like an unpublished header and let
+    // the client's existing open loop retry.
+    if (::fstat(fd, &file_stat) != 0 || file_stat.st_size < 0 ||
+        static_cast<std::uint64_t>(file_stat.st_size) < granule) {
+      ::close(fd);
+      return std::nullopt;
+    }
+    const auto file_size = static_cast<std::uint64_t>(file_stat.st_size);
     void* hp = ::mmap(nullptr, granule, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (hp == MAP_FAILED) {
       ::close(fd);
@@ -862,6 +873,12 @@ class Mapping {
     const std::uint64_t cq_cap = h->cq_capacity;
     const std::uint64_t sq_off = h->sq_offset;
     const std::uint64_t cq_off = h->cq_offset;
+    if (sq_off > file_size || sq_cap > file_size - sq_off ||
+        cq_off > file_size || cq_cap > file_size - cq_off) {
+      ::munmap(hp, granule);
+      ::close(fd);
+      return std::nullopt;
+    }
     // The producer and consumer must agree on whether fillers exist, so open the ring
     // in exactly the mode create() chose. If the server mirror-mapped but this client
     // cannot (map_all returns false), open fails rather than risk a wrap/mirror
