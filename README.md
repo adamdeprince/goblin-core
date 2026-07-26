@@ -55,9 +55,10 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Latency too: writing each reply immediately makes a depth-1 `ZSCORE`/`ZADD`
   round trip about `1` µs (~`5–8%`) faster than the Redis family — a small,
   consistent edge with no penalty at high fan-out (see Design Priorities).
-- Persistence is fast too: `GOBLIN.SAVE`/`--load` snapshots dump and restore the
-  packed indexes, so at 9.5M members they save about `5x` and load about `5.7x`
-  faster than a Redis RDB (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
+- Persistence is fast too: synchronous `SAVE`, background `BGSAVE`, and startup
+  `--load` use native snapshots with packed indexes. At 9.5M members they save
+  about `5x` and load about `5.7x` faster than a Redis RDB
+  (`0.78s`/`0.69s` vs `3.9s`/`4.0s`).
 - Live replication is transport-neutral: [`GOBLIN.FIREHOSE`](docs/replication.md)
   streams canonical writes over TCP, UDS, shared-memory rings, or RDMA, and
   replicas can feed replicas.
@@ -98,6 +99,8 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - `QUIT`
 - `ECHO message`
 - `TIME`, `ROLE`
+- `SAVE [path [ACCEL|NOACCEL]]` (synchronous; `OK` means the file is installed)
+- `BGSAVE [path [ACCEL|NOACCEL]]` (forked; completion is reported in the log)
 - `GOBLIN.DUMPWORLD [ACCEL|NOACCEL]` (RESP3 streamed native snapshot)
 - `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`
 - `DBSIZE`, `RANDOMKEY`, `TOUCH key [key ...]`
@@ -240,8 +243,8 @@ embedded for modern programmers, with Lua, Luau, Wren, and Tcl available when
 another runtime fits the job.
 
 The deliberate boundary is infrastructure policy. Goblin Core does not provide
-an append-only write log or cluster mode. Point-in-time
-`GOBLIN.SAVE`/`GOBLIN.LOAD` snapshots cover fast restarts;
+an append-only write log or cluster mode. Point-in-time `SAVE`/`BGSAVE`
+snapshots plus `GOBLIN.LOAD` cover fast restarts;
 [`GOBLIN.FIREHOSE`](docs/replication.md) provides live primary/replica streams;
 and [`--kafka`](docs/kafka.md) journals and replays the durable RESP2 mutation
 log, where logging is the product. Replicas automatically reconnect; Kafka
@@ -618,17 +621,18 @@ already use compact binary keys and values. Any `--use-lz4` or
 `-1..-8` selects `LZ4_compress_fast` with acceleration `1..8`. The compression
 level has no effect unless `--use-lz4` is present.
 
-`SAVE [path [ACCEL|NOACCEL]]` snapshots every supported key type and its TTL
-synchronously. Its success reply is sent only after the temporary file has been
-fsynced and atomically renamed into place. `BGSAVE` accepts the same arguments
-but forks a copy-on-write child, replies `Background saving started`, and keeps
-serving while the child writes; completion or failure is logged. The
-`GOBLIN.SAVE` and `GOBLIN.BGSAVE` names are equivalent aliases, and an omitted
-path defaults to `dump.gcsn`. Only one fork-time snapshot may run at once, and a
-synchronous save is rejected while one is active. Arena compaction is deferred
-until the background child is reaped, avoiding a maintenance pass that dirties
-most live pages and inflates copy-on-write memory. Ordinary writes and new arena
-block allocations continue while the snapshot runs. Streamed
+[`SAVE`](docs/commands/SAVE.md) `[path [ACCEL|NOACCEL]]` snapshots every
+supported key type and its TTL synchronously. Its success reply is sent only
+after the temporary file has been fsynced and atomically renamed into place.
+[`BGSAVE`](docs/commands/BGSAVE.md) accepts the same arguments but forks a
+copy-on-write child, replies `Background saving started`, and keeps serving
+while the child writes; completion or failure is logged. The `GOBLIN.SAVE` and
+`GOBLIN.BGSAVE` names are retained aliases, and an omitted path defaults to
+`dump.gcsn`. Only one fork-time snapshot may run at once, and a synchronous save
+is rejected while one is active. Arena compaction is deferred until the
+background child is reaped, avoiding a maintenance pass that dirties most live
+pages and inflates copy-on-write memory. Ordinary writes and new arena block
+allocations continue while the snapshot runs. Streamed
 `GOBLIN.DUMPWORLD` snapshots use the same guard; deferred maintenance becomes
 eligible again after the child is reaped.
 
@@ -731,14 +735,14 @@ The reader accepts RDB files from **Redis 2.6 through 7.2.x** (RDB versions
 6–11). It imports plain and compact sorted sets plus plain lists, ziplist lists,
 quicklists, and quicklist2/listpack lists. Strings, sets, and hashes are parsed
 and skipped; carry Goblin Core's own versions of those types between restarts
-with a native `GOBLIN.SAVE` snapshot. Streams and modules abort the load with a
+with a native `SAVE` snapshot. Streams and modules abort the load with a
 message. Infinite scores clamp to the largest finite double. A sorted-set member
 over 65,535 bytes, or a list value that cannot fit the configured shared value
 encoding, aborts the load atomically.
 
 Newer RDB versions (Redis 7.4+ / RDB 12+) are intentionally not read. Re-save the
 dump under Redis ≤ 7.2, or migrate over the wire (`SCAN` + `ZRANGE ... WITHSCORES`
-into `ZADD`). After a one-time import, `GOBLIN.SAVE` a native snapshot so
+into `ZADD`). After a one-time import, `SAVE` a native snapshot so
 subsequent restarts use the faster native `--load`.
 
 ## Benchmark

@@ -52,6 +52,13 @@ the live firehose while it catches up, and open its listeners only after the
 handoff is complete. Kafka owns the durable history; Goblin Core remains the
 compact serving layer.
 
+Use synchronous [`SAVE`](commands/SAVE.md) when the caller must know that the
+snapshot file is installed before continuing. Use forked
+[`BGSAVE`](commands/BGSAVE.md) to keep serving while an ordinary-page process
+writes a snapshot in the background. The command pages document accelerator
+formats, copy-on-write memory behavior, HugeTLB and transport restrictions, and
+the retained `GOBLIN.*` aliases.
+
 The [Thunder and Redpanda durability deployment record](thunder-redpanda-deployment.md)
 preserves the host-specific first production-style lab setup separately from
 the general [source installation guide](../INSTALL.md).
@@ -72,6 +79,8 @@ pages.
 - [`TIME`](commands/operational.md#time),
   [`ROLE`](commands/operational.md#role),
   [`CONFIG GET`](commands/operational.md#config-get)
+- [`SAVE`](commands/SAVE.md), [`BGSAVE`](commands/BGSAVE.md),
+  [`GOBLIN.LOAD`](commands/goblin.md#goblin-load)
 - [`MULTI`](commands/transactions.md#multi-and-exec),
   [`EXEC`](commands/transactions.md#multi-and-exec),
   [`DISCARD`](commands/transactions.md#discard),
@@ -225,10 +234,11 @@ Operational extensions are collected in the
 [`GOBLIN.*` command reference](commands/goblin.md):
 [`GOBLIN.MEMORY`](commands/goblin.md#goblin-memory),
 [`GOBLIN.OPTIMIZE`](commands/goblin.md#goblin-optimize),
-[`GOBLIN.SAVE`](commands/goblin.md#goblin-save),
-[`GOBLIN.BGSAVE`](commands/goblin.md#goblin-bgsave),
 [`GOBLIN.DUMPWORLD`](commands/goblin.md#goblin-dumpworld), and
 [`GOBLIN.LOAD`](commands/goblin.md#goblin-load).
+The legacy `GOBLIN.SAVE` and `GOBLIN.BGSAVE` spellings are exact aliases for
+the standard [`SAVE`](commands/SAVE.md) and [`BGSAVE`](commands/BGSAVE.md)
+commands.
 The same-version server stream is documented separately as
 [`GOBLIN.FIREHOSE`](commands/operational.md#goblinfirehose).
 

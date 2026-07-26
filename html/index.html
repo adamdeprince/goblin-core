@@ -525,7 +525,7 @@
         <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
         <p class="release-note" aria-label="New in Goblin Core 0.10.1">
           <span class="release-note-heading">New in v0.10.1</span>
-          <span><strong>Snapshot semantics:</strong> <a href="docs/commands/goblin.html#goblin-save">SAVE is synchronous; BGSAVE forks and returns.</a></span>
+          <span><strong>Snapshot semantics:</strong> <a href="docs/commands/SAVE.html">SAVE is synchronous</a>; <a href="docs/commands/BGSAVE.html">BGSAVE forks and returns</a>.</span>
           <span><strong>COW safety:</strong> arena compaction pauses while BGSAVE or DUMPWORLD owns snapshot pages.</span>
           <span><strong>Operations:</strong> faster bulk Pub/Sub cleanup, hardened ring startup, and a tested <a href="INSTALL.html">source installation path</a>.</span>
         </p>
@@ -718,7 +718,7 @@
           <p class="section-intro">Keys and encoded values use compact 16-bit lengths. Raw values hold up to 65,534 bytes; optional LZ4 admits larger compressible values while the encoded form fits. Everything larger belongs in purpose-built blob storage; <a href="https://goblin-store.dev">Goblin Store</a> provides a fast, cost-effective path for those objects.</p>
         </div>
         <div class="scope-lists">
-          <div class="scope-list fit"><h3>Available now</h3><ul><li>Strings, sets, sorted sets, and hashes</li><li>Segmented and Adaptive-PMA lists</li><li>Classic and real-time sparse arrays</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li><a href="docs/authentication.html">Libsodium-backed RESP authentication</a></li><li><a href="docs/replication.html">Firehose live replication</a></li><li><a href="docs/kafka.html">Kafka journaling and recovery</a></li><li>TTL keys, counters, and atomic idioms</li><li>JavaScript, Python, and more</li><li>Explicit save/load snapshots</li></ul></div>
+          <div class="scope-list fit"><h3>Available now</h3><ul><li>Strings, sets, sorted sets, and hashes</li><li>Segmented and Adaptive-PMA lists</li><li>Classic and real-time sparse arrays</li><li>Pub/Sub over RESP2, RESP3, and SBE</li><li><a href="docs/authentication.html">Libsodium-backed RESP authentication</a></li><li><a href="docs/replication.html">Firehose live replication</a></li><li><a href="docs/kafka.html">Kafka journaling and recovery</a></li><li>TTL keys, counters, and atomic idioms</li><li>JavaScript, Python, and more</li><li><a href="docs/commands/SAVE.html">Synchronous SAVE</a> and <a href="docs/commands/BGSAVE.html">background BGSAVE</a></li></ul></div>
           <div class="scope-list no"><h3>Deliberate boundaries</h3><ul><li>No append-only log</li><li>No cluster mode</li><li>No automatic failover</li><li>Kafka owns durable history</li><li>Save/load owns restart points</li></ul></div>
         </div>
       </div>

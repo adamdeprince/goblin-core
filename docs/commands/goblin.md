@@ -1,8 +1,9 @@
 # GOBLIN.* extension commands
 
-Commands under the `GOBLIN.` prefix are Goblin Core's own additions — they have
-no Redis equivalent. They cover memory introspection, on-demand compaction,
-snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
+Most commands under the `GOBLIN.` prefix are Goblin Core's own additions with
+no Redis equivalent. The persistence names `GOBLIN.SAVE` and `GOBLIN.BGSAVE`
+are retained aliases for the standard [`SAVE`](SAVE.md) and
+[`BGSAVE`](BGSAVE.md) commands. (The `GOBLIN.` scripting families —
 `QUICKJS.*` and the other interpreters — are listed separately in the
 [scripting index](README.md).)
 
@@ -21,8 +22,8 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.CLAIM`](GOBLIN.CLAIM.md) | Idempotency guard: claim work once with an expiring lease, else return the prior result. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, list, set, or array. |
 | `GOBLIN.OPTIMIZE` | Compact a zset, hash, or list in place. |
-| `GOBLIN.SAVE` | Write a synchronous point-in-time snapshot. |
-| `GOBLIN.BGSAVE` | Start a background point-in-time snapshot. |
+| [`GOBLIN.SAVE`](#goblin-save) | Alias for synchronous [`SAVE`](SAVE.md). |
+| [`GOBLIN.BGSAVE`](#goblin-bgsave) | Alias for background [`BGSAVE`](BGSAVE.md). |
 | [`GOBLIN.DUMPWORLD`](#goblin-dumpworld) | Stream a fork-time native snapshot to the requesting client. |
 | `GOBLIN.LOAD` | Load a snapshot (or a Redis `dump.rdb`) from disk. |
 
@@ -230,36 +231,24 @@ process-wide signal for
 
 ## GOBLIN.SAVE
 
-```
+```text
 GOBLIN.SAVE [path [ACCEL | NOACCEL]]
 ```
 
-Writes a point-in-time snapshot synchronously. `OK` means the temporary file was
-written, fsynced, and atomically renamed into place. `ACCEL` (the default) writes
-an extra read-accelerator section for faster loads; `NOACCEL` omits it for a
-smaller file. The path defaults to `dump.gcsn`. The standard name `SAVE` is an
-alias with the same arguments and behavior.
+An exact alias for [`SAVE`](SAVE.md), retained for clients written before the
+standard command name was added. `SAVE` is the canonical name and has the full
+completion, snapshot-format, error, HugeTLB, and SBE contract.
 
 ## GOBLIN.BGSAVE
 
-```
+```text
 GOBLIN.BGSAVE [path [ACCEL | NOACCEL]]
 ```
 
-Forks a copy-on-write child to write the same snapshot format, replies
-`Background saving started`, and keeps serving. The path defaults to
-`dump.gcsn`; `BGSAVE` is an equivalent alias. Only one background snapshot may
-run at a time. While the child owns its copy-on-write view, arena compaction is
-deferred so maintenance cannot dirty most live pages and multiply the parent's
-memory footprint. Writes continue normally, including allocating another arena
-block when an existing one fills; deferred compaction resumes after the child is
-reaped and a later maintenance trigger runs. Streamed `GOBLIN.DUMPWORLD`
-snapshots use the same protection.
-
-`BGSAVE` is rejected when `--arena-hugetlb` is active because post-fork writes
-could copy entire huge pages and exhaust the reserved pool. It is also rejected
-while a native transport runtime that cannot survive `fork()` is active. Use
-synchronous `SAVE` in either configuration.
+An exact alias for [`BGSAVE`](BGSAVE.md), retained for clients written before
+the standard command name was added. `BGSAVE` is the canonical name and has the
+full fork, copy-on-write, completion, error, HugeTLB, and transport-safety
+contract.
 
 ## GOBLIN.DUMPWORLD
 
@@ -270,7 +259,7 @@ GOBLIN.DUMPWORLD [ACCEL | NOACCEL]
 
 Returns the entire database as one **RESP3 streamed blob string**. Concatenating
 the payload of each streamed-string chunk produces exactly the same native GCSN
-image as `GOBLIN.SAVE`: all persistent value types, TTLs, replication lineage,
+image as `SAVE`: all persistent value types, TTLs, replication lineage,
 logical replication offset, and exact Kafka cursor are included. Store the
 result as a file and supply that path to `GOBLIN.LOAD` or `--load`.
 
@@ -290,15 +279,15 @@ and closes after successful completion as well.
 
 `ACCEL` is the default and includes same-build load accelerators. `NOACCEL` emits
 the smaller canonical image intended for version or architecture changes. Only
-one fork-time snapshot may run at once, so `GOBLIN.BGSAVE` and
-`GOBLIN.DUMPWORLD` reject one another while either is active. `GOBLIN.SAVE` also
-rejects a request while a background snapshot owns that slot.
+one fork-time snapshot may run at once, so `BGSAVE` and `GOBLIN.DUMPWORLD`
+reject one another while either is active. `SAVE` also rejects a request while
+a background snapshot owns that slot.
 
 The command requires authentication when the listener requires authentication,
 then requires `HELLO 3`; it is a RESP command and has no SBE template. RESP3 can
 run over TCP, TLS, UDS, shared-memory rings, or RDMA. HugeTLB-backed data arenas
 reject streamed dumps because continued parent writes could COW whole huge pages
-and exhaust the reserved pool; use `GOBLIN.SAVE`'s synchronous HugeTLB-safe path
+and exhaust the reserved pool; use `SAVE`'s synchronous HugeTLB-safe path
 and transfer the resulting file instead.
 
 ## GOBLIN.LOAD

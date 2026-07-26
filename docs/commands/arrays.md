@@ -99,7 +99,8 @@ must be re-established after loading an RT array.
 
 ## Persistence
 
-`GOBLIN.SAVE` / `GOBLIN.LOAD` include an **Array** snapshot section (type 7):
+`SAVE` / `BGSAVE` snapshots and `GOBLIN.LOAD` include an **Array** snapshot
+section (type 7):
 
 - Canonical payload: implementation, geometry, insert cursor, live `(index, value)` pairs
 - Leaf tables and the value arena rebuild on load (no accelerator yet)

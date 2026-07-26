@@ -20,9 +20,10 @@ The data-type commands that share this key space are documented separately:
 **[keys.md](keys.md)** (`DEL` / `EXISTS` / `TYPE`), and **[ttl.md](ttl.md)**
 (`EXPIRE` / `TTL` / `PERSIST` / …). The **[Pub/Sub reference](pubsub.md)**
 covers subscriptions, publishing, introspection, wire-mode behavior, and slow
-consumers. Goblin Core's own additions — memory introspection, compaction,
-snapshots, and the native `GOBLIN.CAD` compare-and-delete — are in
-**[goblin.md](goblin.md)**.
+consumers. Point-in-time persistence is documented under the standard
+**[SAVE](SAVE.md)** and **[BGSAVE](BGSAVE.md)** names. Goblin Core's own
+additions — memory introspection, compaction, streamed snapshots, and the native
+`GOBLIN.CAD` compare-and-delete — are in **[goblin.md](goblin.md)**.
 
 ## Why more than one?
 

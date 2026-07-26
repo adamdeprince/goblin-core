@@ -8,9 +8,10 @@ durable ordered storage, retention, inspection, compaction, and operational
 tooling. Goblin Core stays focused on serving hot state efficiently and depends
 on one of those systems when an application requires a durable write history.
 
-The resulting persistence model is simple: Goblin Core provides native
-`GOBLIN.SAVE`/`--load` snapshots, while Kafka or Redpanda owns everything written
-after the snapshot.
+The resulting persistence model is simple: Goblin Core provides synchronous
+[`SAVE`](docs/commands/SAVE.md), background
+[`BGSAVE`](docs/commands/BGSAVE.md), and startup `--load` for native snapshots,
+while Kafka or Redpanda owns everything written after the snapshot.
 
 ## TL;DR: a recoverable instance
 
@@ -24,7 +25,7 @@ is:
    order.
 3. Start Goblin Core with `--kafka kafka://BROKER/TOPIC`. On the first start,
    omit `--load` and let it consume the retained topic from the beginning.
-4. Create a native snapshot with `GOBLIN.SAVE /path/to/state.snapshot ACCEL`.
+4. Create a native snapshot with `SAVE /path/to/state.snapshot ACCEL`.
    Its `OK` reply means the snapshot has been fsynced and atomically installed.
 5. On subsequent starts, supply that snapshot and the same Kafka topic:
 
@@ -68,7 +69,7 @@ Create or refresh the snapshot through the normal RESP endpoint:
 
 ```sh
 redis-cli -h 127.0.0.1 -p 6379 \
-  GOBLIN.SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
+  SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
 ```
 
 Current native snapshots carry an exact Kafka cursor. `--kafka-time-buffer N`
@@ -140,9 +141,10 @@ HSET foo 999999 999999
 ```
 
 Commands were pipelined 512 deep. Immediately before field `500000`, the client
-requested an accelerated native snapshot. Snapshotting forked a stable view of
-the first 500,000 fields while the live server continued accepting the second
-half of the workload.
+requested an accelerated background snapshot. The development build used the
+name `GOBLIN.SAVE` for that forked operation; its current equivalent is
+`BGSAVE`. Snapshotting forked a stable view of the first 500,000 fields while
+the live server continued accepting the second half of the workload.
 
 The million logged updates completed in **5.09 seconds**, or **196,508 HSET/s**.
 The first half took 2.68 seconds and the second took 2.41 seconds, including the

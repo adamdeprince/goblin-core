@@ -81,8 +81,10 @@ published:
 | `maxmemory` | configured bytes, or `0` | Persistent-store ceiling selected by `--maxmemory`; `0` is unlimited. |
 | `maxmemory-policy` | `noeviction` | Capacity-growing writes are rejected rather than resolved by key eviction. |
 
-`CONFIG SET` and every other `CONFIG` subcommand are rejected. Snapshot and
-Kafka durability are configured through Goblin Core's own command-line and
-`GOBLIN.*` surfaces rather than being misrepresented as Redis configuration.
-See the [hard memory ceiling guide](../maxmemory.md) for the accounting boundary
-and OOM behavior.
+`CONFIG SET` and every other `CONFIG` subcommand are rejected. Create snapshots
+explicitly with synchronous [`SAVE`](SAVE.md) or forked
+[`BGSAVE`](BGSAVE.md); Goblin Core does not synthesize a periodic-save policy.
+Kafka durability is configured on the command line rather than being
+misrepresented as Redis configuration. See the
+[hard memory ceiling guide](../maxmemory.md) for the accounting boundary and
+OOM behavior.

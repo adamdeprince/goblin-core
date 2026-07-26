@@ -36,8 +36,11 @@ Plus Goblin-specific maintenance and persistence commands:
 - `GOBLIN.OPTIMIZE key [density]`: compacts a zset in place and repacks the
   member index to `density` (target load factor in `(0, 1]`, default `0.97`),
   returning the bytes reclaimed.
-- `GOBLIN.SAVE path` / `GOBLIN.LOAD path`: write/read a snapshot of all zsets
-  (also `--load path` at startup). The format is typed sections, each a small
+- `SAVE [path [ACCEL|NOACCEL]]`: synchronously write a snapshot; `BGSAVE`
+  accepts the same arguments and writes from a forked child while the parent
+  keeps serving. `GOBLIN.SAVE` and `GOBLIN.BGSAVE` are retained aliases.
+  `GOBLIN.LOAD path` reads a snapshot (also `--load path` at startup). The
+  format is typed sections, each a small
   instruction bytecode; a section carries a portable canonical layer (members +
   scores) plus a version- and hash-identity-gated accelerator (packed indexes
   dumped so load skips re-hashing/re-sorting). When the accelerator cannot be

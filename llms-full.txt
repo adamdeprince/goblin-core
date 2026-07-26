@@ -377,7 +377,7 @@ operation:
 - Sorted sets are imported; other key types (string/list/set/hash) are parsed
   and skipped. RDB hash import is not yet supported, so a Redis hash does not come
   across this way — move Goblin Core's own hashes between nodes with a native
-  `GOBLIN.SAVE` snapshot, or migrate a Redis hash over the wire (`HGETALL` ->
+  `SAVE` snapshot, or migrate a Redis hash over the wire (`HGETALL` ->
   `HSET`). Streams and modules abort the load with a message — migrate those
   separately (e.g. over the wire).
 - `+inf`/`-inf` scores clamp to the largest finite double; a member larger than
@@ -386,7 +386,7 @@ operation:
   Redis <= 7.2, or migrate over the wire: `SCAN` for keys, `ZRANGE key 0 -1
   WITHSCORES` (or `ZSCAN`), and `ZADD` into Goblin Core.
 
-After a one-time RDB import, `GOBLIN.SAVE` a native snapshot; later restarts then
+After a one-time RDB import, `SAVE` a native snapshot; later restarts then
 use the faster native `--load` (RDB parsing and full index rebuild happen once).
 
 ## Tuning: OPTIMIZE density

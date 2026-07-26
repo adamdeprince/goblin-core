@@ -278,8 +278,8 @@ rpk -X brokers=192.168.1.49:9092 topic create goblin-core-replication \
 Install the verified binary at a stable path. Before switching services, ask the
 currently running Kafka-backed primary to write a native snapshot. The snapshot
 contains both the keyspace and the acknowledged Kafka/replication offsets.
-`GOBLIN.SAVE` writes a temporary file, fsyncs it, and atomically renames it into
-place. Its `OK` reply means the final path is installed, so the old process can
+`SAVE` writes a temporary file, fsyncs it, and atomically renames it into place.
+Its `OK` reply means the final path is installed, so the old process can
 be stopped immediately after that reply.
 
 ```sh
@@ -289,7 +289,7 @@ sudo install -o root -g root -m 0755 \
 sudo install -d -o adam -g adam -m 0750 /mnt/local/goblin-core/state
 
 redis-cli -h 127.0.0.1 -p 6379 \
-  GOBLIN.SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
+  SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
 stat /mnt/local/goblin-core/state/goblin.snapshot
 ```
 
@@ -380,7 +380,7 @@ After that proof, refresh the normal startup snapshot and restart once more:
 
 ```sh
 redis-cli -h 127.0.0.1 -p 6379 \
-  GOBLIN.SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
+  SAVE /mnt/local/goblin-core/state/goblin.snapshot ACCEL
 stat /mnt/local/goblin-core/state/goblin.snapshot
 sudo systemctl restart goblin-core.service
 ```

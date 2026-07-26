@@ -151,6 +151,26 @@ Reprocessing a short overlap is safe; skipping one write is not. Kafka log
 compaction can create valid offset holes, so recovery requires monotonic offsets
 but does not require them to be adjacent.
 
+### Choosing SAVE or BGSAVE
+
+Use [`SAVE`](commands/SAVE.md) when an operator or deployment script must know
+that the snapshot and its exact Kafka cursor are installed before taking the
+next step. `SAVE` blocks the serving thread, then replies `OK` only after the
+file has been fsynced and atomically renamed.
+
+Use [`BGSAVE`](commands/BGSAVE.md) for a routine snapshot when the process uses
+ordinary pages and has enough copy-on-write headroom. The snapshot captures the
+Kafka and logical offsets visible at `fork()`, then the parent continues
+accepting and journaling newer writes. `Background saving started` confirms only
+that the child exists; file completion or failure appears in the server log.
+Arena compaction remains deferred until the child exits so a maintenance rewrite
+cannot multiply COW memory use.
+
+`BGSAVE` is unavailable with `--arena-hugetlb` and with active native transport
+runtimes that cannot survive `fork()`. Synchronous `SAVE` remains available in
+both cases. `GOBLIN.SAVE` and `GOBLIN.BGSAVE` are retained aliases, but new
+automation should use the standard names.
+
 Snapshots made before exact Kafka cursors were added fall back to the first
 record whose Kafka timestamp is at or after the snapshot file's creation time:
 

@@ -163,7 +163,9 @@ with `rev=1`.
 layout: mode bit 0 selects the accelerator and bit 1 selects background
 operation. A clear bit 1 is synchronous `SAVE` and replies only after the final
 file is installed; a set bit 1 is `BGSAVE` and replies after the snapshot child
-starts. HugeTLB arena mode rejects the background form.
+starts. HugeTLB arena mode rejects the background form. See the full
+[`SAVE`](commands/SAVE.md) and [`BGSAVE`](commands/BGSAVE.md) command contracts
+for completion, copy-on-write, and format behavior.
 
 The reply set is sixteen: the eight core replies plus `NullableArrayReply` (id 9,
 for `HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script
