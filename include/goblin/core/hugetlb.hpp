@@ -28,13 +28,14 @@
 namespace goblin::core::hugetlb {
 
 // Process-wide switch: back max-size arena blocks with huge pages. OFF by default,
-// enabled by --arena-hugetlb. It is opt-in, NOT default, because SAVE forks and relies
-// on 4 KiB copy-on-write: a huge-page mapping COWs at 2 MiB granularity, so one
+// enabled by --arena-hugetlb. It is opt-in, NOT default, because BGSAVE forks and
+// relies on 4 KiB copy-on-write: a huge-page mapping COWs at 2 MiB granularity, so one
 // post-fork write copies a whole 2 MiB page and must pull a fresh huge page from the
 // small fixed pool -- amplifying RSS ~512x and SIGBUS-ing the parent when the pool
-// exhausts mid-SAVE. So huge pages are only safe where the operator knows they are not
-// fork-COW-saving. Set once at startup before any server thread, so the freeze-path
-// read races nothing; best-effort (no pages reserved -> blocks stay on normal pages).
+// exhausts mid-BGSAVE. BGSAVE is disabled while this option is active; synchronous
+// SAVE remains available. Set once at startup before any server thread, so the
+// freeze-path read races nothing; best-effort (no pages reserved -> blocks stay on
+// normal pages).
 [[nodiscard]] inline bool& arena_enabled() noexcept {
   static bool enabled = false;
   return enabled;

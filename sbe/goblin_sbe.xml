@@ -497,8 +497,8 @@
   <sbe:message name="GoblinMemory" id="82" description="GOBLIN.MEMORY key -> MapReply | NilReply">
     <data name="key" id="1" type="varData"/>
   </sbe:message>
-  <!-- accel: 1 = with accelerator (the default), 0 = NOACCEL. -->
-  <sbe:message name="GoblinSave" id="83" description="GOBLIN.SAVE path [accel] -> StatusReply | ErrorReply">
+  <!-- mode bit 0: accelerator; bit 1: background (BGSAVE). -->
+  <sbe:message name="GoblinSave" id="83" description="SAVE/BGSAVE path [mode] -> StatusReply | ErrorReply">
     <field name="accel" id="1" type="uint8"/>
     <data  name="path"  id="2" type="varData"/>
   </sbe:message>

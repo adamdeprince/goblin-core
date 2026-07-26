@@ -464,9 +464,15 @@ class BasicPyClient {
     }
     if (cmd == "GOBLIN.OPTIMIZE")
       return ob(off_gil([&] { return c.optimize(at(1), a.size() > 2 ? to_d(a[2]) : 0.0, t); }));
-    if (cmd == "GOBLIN.SAVE") {
+    if (cmd == "SAVE" || cmd == "GOBLIN.SAVE") {
       const bool accel = !(a.size() > 2 && upper(a[2]) == "NOACCEL");
-      return py_bytes(off_gil([&] { return c.save(at(1), accel, t); }));
+      const std::string_view path = a.size() > 1 ? at(1) : "dump.gcsn";
+      return py_bytes(off_gil([&] { return c.save(path, accel, t); }));
+    }
+    if (cmd == "BGSAVE" || cmd == "GOBLIN.BGSAVE") {
+      const bool accel = !(a.size() > 2 && upper(a[2]) == "NOACCEL");
+      const std::string_view path = a.size() > 1 ? at(1) : "dump.gcsn";
+      return py_bytes(off_gil([&] { return c.bgsave(path, accel, t); }));
     }
     if (cmd == "GOBLIN.LOAD") return ob(off_gil([&] { return c.load(at(1), t); }));
 

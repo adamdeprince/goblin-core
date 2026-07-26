@@ -274,7 +274,10 @@ EXPIRETIME, goblin::core::CommandType::expiretime
 PEXPIRETIME, goblin::core::CommandType::pexpiretime
 GOBLIN.MEMORY, goblin::core::CommandType::goblin_memory
 GOBLIN.OPTIMIZE, goblin::core::CommandType::goblin_optimize
+SAVE, goblin::core::CommandType::goblin_save
+BGSAVE, goblin::core::CommandType::goblin_save
 GOBLIN.SAVE, goblin::core::CommandType::goblin_save
+GOBLIN.BGSAVE, goblin::core::CommandType::goblin_save
 GOBLIN.LOAD, goblin::core::CommandType::goblin_load
 GOBLIN.CAD, goblin::core::CommandType::goblin_cad
 GOBLIN.CAEXPIRE, goblin::core::CommandType::goblin_caexpire

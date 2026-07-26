@@ -234,9 +234,8 @@ XLIO transports a TCP byte stream rather than fixed ring slots, so commands are
 not constrained by a local ring's message-size limit.
 
 XLIO 3.61 does not permit a process with a live Ultra polling group to use the
-normal fork-based snapshot path. Goblin Core therefore runs file `SAVE`
-synchronously while XLIO is active and rejects `GOBLIN.DUMPWORLD` with a clear
-fork-safety error.
+normal fork-based snapshot path. Goblin Core therefore rejects `BGSAVE` and
+`GOBLIN.DUMPWORLD` while XLIO is active; synchronous `SAVE` remains available.
 
 ## TCP interoperability result
 

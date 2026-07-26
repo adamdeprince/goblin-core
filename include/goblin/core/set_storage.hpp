@@ -17,6 +17,7 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/page_arena.hpp"
 #include "goblin/core/string_encoding.hpp"
 
@@ -144,7 +145,7 @@ class SetStorage {
   // Id-stable reclaim: repack live encoded members in id order. Offsets change;
   // the Swiss index stays valid without a rebuild.
   void compact() {
-    if (dead_bytes_ == 0) {
+    if (!arena_compaction_allowed() || dead_bytes_ == 0) {
       return;
     }
     std::vector<std::shared_ptr<char[]>> fresh_chunks;

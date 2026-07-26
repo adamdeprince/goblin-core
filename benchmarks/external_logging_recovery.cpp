@@ -628,8 +628,7 @@ void prepare(const Config& config) {
 
   const auto save_reply =
       client.command({"GOBLIN.SAVE", config.snapshot, "ACCEL"});
-  if (save_reply.type != RespType::string ||
-      save_reply.string != "Background saving started") {
+  if (save_reply.type != RespType::string || save_reply.string != "OK") {
     fail("GOBLIN.SAVE returned an unexpected reply");
   }
   std::cout << "snapshot_reply=" << save_reply.string << '\n'

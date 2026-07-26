@@ -18,9 +18,10 @@ the TLB, and the walks go away. This note measures what that is worth.
 - It draws from the kernel's reserved huge-page pool (`vm.nr_hugepages`), which an operator
   must fill ahead of time. With an empty pool the allocator silently falls back to 4 KB
   pages, so the flag is safe to pass but does nothing until a pool exists.
-- Goblin's snapshot path (`SAVE`) forks, and copy-on-write on a 2 MB page copies the whole
-  2 MB on the first byte written — a write amplifier while a snapshot child is alive. So when
-  huge pages are on, goblin makes `SAVE`/`LOAD` synchronous (no fork) rather than risk that.
+- Goblin's background snapshot path (`BGSAVE`) forks, and copy-on-write on a 2 MB page
+  copies the whole 2 MB on the first byte written — a write amplifier while a snapshot
+  child is alive. Goblin therefore disables `BGSAVE` when huge-page arenas are on;
+  synchronous `SAVE` and `LOAD` remain available.
 
 Arena blocks default to a 2 MB chunk so each block is exactly one huge page. The huge-page
 promotion happens at the point a block freezes to full size; the swiss member index is

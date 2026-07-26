@@ -1,6 +1,7 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/chunked_sorted_list.hpp"
 #include "goblin/core/hash.hpp"
+#include "goblin/core/hugetlb.hpp"
 #include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/adaptive_pma.hpp"
 #include "goblin/core/list.hpp"
@@ -209,6 +210,22 @@ void test_command_perfect_hash() {
   assert(type_of({"GoBlIn.PmA.LiNdEx", "l", "0"}) == CT::pma_lindex);
   assert(type_of({"goblin.memory", "k"}) == CT::goblin_memory);
   assert(type_of({"Goblin.Optimize", "k"}) == CT::goblin_optimize);
+  assert(type_of({"SAVE"}) == CT::goblin_save);
+  assert(type_of({"BGSAVE"}) == CT::goblin_save);
+  assert(type_of({"GOBLIN.SAVE", "/tmp/snapshot"}) == CT::goblin_save);
+  assert(type_of({"GOBLIN.BGSAVE", "/tmp/snapshot"}) == CT::goblin_save);
+  for (const auto name : {"SAVE", "GOBLIN.SAVE"}) {
+    std::vector<std::string_view> fields{name};
+    const auto parsed = goblin::core::parse_command(fields);
+    assert(parsed.ok());
+    assert(!parsed.command->background_save);
+  }
+  for (const auto name : {"BGSAVE", "GOBLIN.BGSAVE"}) {
+    std::vector<std::string_view> fields{name};
+    const auto parsed = goblin::core::parse_command(fields);
+    assert(parsed.ok());
+    assert(parsed.command->background_save);
+  }
   // Unknowns, near-misses, the length boundary, an embedded NUL.
   assert(type_of({"PIN", "x"}) == CT::unknown);
   assert(type_of({"PINGG"}) == CT::unknown);
@@ -3908,6 +3925,110 @@ void test_hash_storage_bounded_compaction() {
   assert(stable.get("stable-4") == "short");
 }
 
+void test_arena_compaction_suspension() {
+  using goblin::core::ArenaCompactionSuspension;
+  using goblin::core::Array;
+  using goblin::core::HashStorage;
+  using goblin::core::List;
+  using goblin::core::ListImplementation;
+  using goblin::core::ListOptions;
+  using goblin::core::Set;
+  using goblin::core::SetOptions;
+  using goblin::core::ZSet;
+  using goblin::core::ZSetOptions;
+
+  HashStorage hash(HashStorage::kMinChunkBytes);
+  for (std::size_t id = 0; id < 8; ++id) {
+    assert(hash.push_back("field-" + std::to_string(id),
+                          std::string(30000, static_cast<char>('a' + id))) ==
+           id);
+  }
+  hash.set_value(0, "short");
+  const auto hash_dead = hash.dead_bytes();
+  assert(hash_dead > 0);
+
+  ListOptions list_options;
+  list_options.implementation = ListImplementation::Pma;
+  list_options.chunk_bytes = goblin::core::ListValueArena::kMinChunkBytes;
+  list_options.listpack_max_entries = 0;
+  List list(list_options);
+  const std::array<std::string_view, 2> list_values = {
+      std::string_view{"first-value-that-will-be-replaced"},
+      std::string_view{"second-value"}};
+  assert(list.push_back(list_values) == 2);
+  list.set(0, "x");
+  const auto list_dead = list.memory_stats().value_dead_bytes;
+  assert(list_dead > 0);
+
+  SetOptions set_options;
+  set_options.chunk_bytes = goblin::core::SetStorage::kMinChunkBytes;
+  set_options.listpack_max_entries = 0;
+  Set set(set_options);
+  const std::string removed_member(2000, 'r');
+  assert(set.add(removed_member) == 1);
+  assert(set.add("survivor") == 1);
+  assert(set.erase(removed_member));
+  const auto set_dead = set.memory_stats().member_dead_bytes;
+  assert(set_dead > 0);
+
+  Array array;
+  assert(array.set(0, std::string(2000, 'a')));
+  assert(!array.set(0, "short"));
+  const auto array_dead = array.memory_stats().value_dead_bytes;
+  assert(array_dead > 0);
+
+  ZSetOptions zset_options;
+  zset_options.member_chunk_bytes =
+      goblin::core::ZSetMemberStorage::kMinChunkBytes;
+  zset_options.listpack_max_entries = 0;
+  ZSet zset(&zset_options);
+  const std::string removed_zmember(2000, 'z');
+  assert(zset.add(1.0, removed_zmember, &zset_options) == 1);
+  assert(zset.add(2.0, "survivor", &zset_options) == 1);
+  assert(zset.remove(removed_zmember));
+  const auto zset_dead =
+      zset.memory_stats(&zset_options).member_storage_dead_bytes;
+  assert(zset_dead > 0);
+
+  assert(goblin::core::arena_compaction_allowed());
+  {
+    ArenaCompactionSuspension suspension;
+    assert(!goblin::core::arena_compaction_allowed());
+
+    const auto hash_chunks_before_append = hash.chunk_slot_count();
+    assert(hash.push_back("allocated-during-snapshot",
+                          std::string(30000, 'n')) == 8);
+    assert(hash.chunk_slot_count() > hash_chunks_before_append);
+
+    const auto hash_step = hash.compact_step();
+    assert(hash_step.work_done == 0);
+    hash.compact();
+    list.compact();
+    set.compact();
+    array.compact_storage();
+    zset.compact();
+
+    assert(hash.dead_bytes() == hash_dead);
+    assert(list.memory_stats().value_dead_bytes == list_dead);
+    assert(set.memory_stats().member_dead_bytes == set_dead);
+    assert(array.memory_stats().value_dead_bytes == array_dead);
+    assert(zset.memory_stats(&zset_options).member_storage_dead_bytes ==
+           zset_dead);
+  }
+
+  assert(goblin::core::arena_compaction_allowed());
+  hash.compact();
+  list.compact();
+  set.compact();
+  array.compact_storage();
+  zset.compact();
+  assert(hash.dead_bytes() == 0);
+  assert(list.memory_stats().value_dead_bytes == 0);
+  assert(set.memory_stats().member_dead_bytes == 0);
+  assert(array.memory_stats().value_dead_bytes == 0);
+  assert(zset.memory_stats(&zset_options).member_storage_dead_bytes == 0);
+}
+
 void test_adaptive_pma_rank_select() {
   using goblin::core::AdaptivePma;
   using goblin::core::ListValueRef;
@@ -5391,6 +5512,13 @@ void test_zset_arena_auto_compacts_on_removal() {
   }
   assert(removed == 15000);
   // ~1.5 MiB dead vs ~0.5 MiB live -> the store's post-batch trigger compacts.
+  const auto dead_before = z.memory_stats().member_storage_dead_bytes;
+  assert(dead_before > 0);
+  {
+    goblin::core::ArenaCompactionSuspension suspension;
+    assert(!z.compact_after_removal_if_needed(removed));
+    assert(z.memory_stats().member_storage_dead_bytes == dead_before);
+  }
   const bool compacted = z.compact_after_removal_if_needed(removed);
   assert(compacted);
   assert(z.memory_stats().total_allocated_bytes < before);
@@ -6117,25 +6245,59 @@ void test_member_arena_chunk_boundary() {
   }
 }
 
-// Background (fork/COW) save: the child writes the snapshot from a frozen copy
-// of the store while the parent could keep serving; it must reload identically.
+// SAVE installs the final file before replying; BGSAVE forks, and unsafe
+// fork configurations reject it without taking away synchronous persistence.
 void test_background_save() {
   using goblin::core::Store;
-  const std::string path = "/tmp/goblin_core_bgsave_test.gcsn";
-  std::remove(path.c_str());
+  const std::string sync_path = "/tmp/goblin_core_save_test.gcsn";
+  const std::string background_path = "/tmp/goblin_core_bgsave_test.gcsn";
+  const std::string hugetlb_path = "/tmp/goblin_core_hugetlb_save_test.gcsn";
+  const std::string fork_unsafe_path =
+      "/tmp/goblin_core_fork_unsafe_save_test.gcsn";
+  for (const auto* path : {sync_path.c_str(), background_path.c_str(),
+                           hugetlb_path.c_str(), fork_unsafe_path.c_str()}) {
+    std::remove(path);
+  }
 
   Store store;
   for (int i = 0; i < 1000; ++i) {
     (void)store.zadd("bg", static_cast<double>(i % 50) - 10.0,
                      "m" + std::to_string(i));
   }
+  for (int i = 0; i < 100; ++i) {
+    const std::string member = "m" + std::to_string(i);
+    const std::array<std::string_view, 1> members = {member};
+    assert(store.zrem("bg", members) == 1);
+  }
   (void)store.zadd("bg2", 3.5, "x");
   const auto expected = execute_fields(store, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"});
   const auto card = store.zcard("bg");
+  const auto fragmented = store.zset_memory_stats("bg");
+  assert(fragmented && fragmented->member_storage_dead_bytes > 0);
 
-  const auto started = store.start_background_save(path, /*with_accelerator=*/true);
-  assert(started == Store::SaveStart::Started);
+  assert(execute_fields(store, {"SAVE", sync_path}) == "+OK\r\n");
+  {
+    std::ifstream in(sync_path, std::ios::binary);
+    assert(in.good());
+    Store loaded;
+    const auto stats = loaded.load(in);
+    assert(stats.keys == 2);
+    assert(execute_fields(loaded, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"}) ==
+           expected);
+  }
+  assert(!store.background_save_in_progress());
+
+  assert(execute_fields(store, {"GOBLIN.BGSAVE", background_path}) ==
+         "+Background saving started\r\n");
   assert(store.background_save_in_progress());
+  assert(!goblin::core::arena_compaction_allowed());
+
+  const auto deferred = store.optimize("bg", 0.97);
+  assert(deferred && *deferred == 0);
+  const auto still_fragmented = store.zset_memory_stats("bg");
+  assert(still_fragmented);
+  assert(still_fragmented->member_storage_dead_bytes ==
+         fragmented->member_storage_dead_bytes);
 
   std::optional<Store::SaveOutcome> outcome;
   for (int i = 0; i < 5000 && !outcome; ++i) {
@@ -6144,21 +6306,53 @@ void test_background_save() {
   }
   assert(outcome.has_value());
   assert(outcome->ok);
-  assert(outcome->path == path);
+  assert(outcome->path == background_path);
   assert(!store.background_save_in_progress());
+  assert(goblin::core::arena_compaction_allowed());
 
-  // The parent's data is unchanged, and the file (written from the fork) reloads
-  // identically.
+  const auto reclaimed = store.optimize("bg", 0.97);
+  assert(reclaimed.has_value());
+  const auto compacted = store.zset_memory_stats("bg");
+  assert(compacted && compacted->member_storage_dead_bytes == 0);
+
   assert(store.zcard("bg") == card);
-  Store loaded;
-  std::ifstream in(path, std::ios::binary);
-  assert(in.good());
-  const auto stats = loaded.load(in);
-  assert(stats.keys == 2);
-  assert(loaded.zcard("bg") == card);
-  assert(execute_fields(loaded, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"}) == expected);
-  assert(loaded.zscore("bg2", "x") == 3.5);
-  std::remove(path.c_str());
+  {
+    Store loaded;
+    std::ifstream in(background_path, std::ios::binary);
+    assert(in.good());
+    const auto stats = loaded.load(in);
+    assert(stats.keys == 2);
+    assert(loaded.zcard("bg") == card);
+    assert(execute_fields(loaded, {"ZRANGE", "bg", "0", "-1", "WITHSCORES"}) ==
+           expected);
+    assert(loaded.zscore("bg2", "x") == 3.5);
+  }
+
+  const bool hugetlb_was_enabled = goblin::core::hugetlb::arena_enabled();
+  goblin::core::hugetlb::arena_enabled() = true;
+  const auto hugetlb_bgsave =
+      execute_fields(store, {"BGSAVE", hugetlb_path});
+  assert(hugetlb_bgsave.find("BGSAVE is unavailable with HugeTLB arenas") !=
+         std::string::npos);
+  assert(!std::ifstream(hugetlb_path, std::ios::binary).good());
+  assert(execute_fields(store, {"GOBLIN.SAVE", hugetlb_path, "NOACCEL"}) ==
+         "+OK\r\n");
+  assert(std::ifstream(hugetlb_path, std::ios::binary).good());
+  goblin::core::hugetlb::arena_enabled() = hugetlb_was_enabled;
+
+  store.set_background_fork_enabled(false);
+  const auto unsafe_bgsave =
+      execute_fields(store, {"GOBLIN.BGSAVE", fork_unsafe_path});
+  assert(unsafe_bgsave.find("transport that cannot survive fork") !=
+         std::string::npos);
+  assert(execute_fields(store, {"SAVE", fork_unsafe_path}) == "+OK\r\n");
+  assert(std::ifstream(fork_unsafe_path, std::ios::binary).good());
+  store.set_background_fork_enabled(true);
+
+  for (const auto* path : {sync_path.c_str(), background_path.c_str(),
+                           hugetlb_path.c_str(), fork_unsafe_path.c_str()}) {
+    std::remove(path);
+  }
 }
 
 // Hand-crafted RDB v11 bytes (no redis dependency). Real-encoding and CRC64
@@ -7513,6 +7707,7 @@ int main() {
   test_hash_keyspace_arena_storage();
   test_hash_bulk_reserve_growth();
   test_hash_storage_bounded_compaction();
+  test_arena_compaction_suspension();
   test_adaptive_pma_rank_select();
   test_list_listpack_and_pma();
   test_list_commands();

@@ -17,6 +17,7 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/page_arena.hpp"
 #include "goblin/core/string_encoding.hpp"
 
@@ -228,7 +229,8 @@ class ArrayStorage {
 
   // Id-stable reclaim: leaf-held ids stay valid.
   void compact() {
-    if (dead_bytes_ == 0 || realtime_reserved_) {
+    if (!arena_compaction_allowed() || dead_bytes_ == 0 ||
+        realtime_reserved_) {
       return;
     }
     std::vector<std::shared_ptr<char[]>> fresh_chunks;

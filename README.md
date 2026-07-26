@@ -618,27 +618,34 @@ already use compact binary keys and values. Any `--use-lz4` or
 `-1..-8` selects `LZ4_compress_fast` with acceleration `1..8`. The compression
 level has no effect unless `--use-lz4` is present.
 
-`GOBLIN.SAVE <path>` snapshots every supported key type and its TTL. Lists are
-written in canonical order rather than persisting PMA slots or arena addresses.
-It `fork()`s a
-copy-on-write child that writes the snapshot from a frozen image of the data, so
-the command returns immediately — replying `Background saving started` — and the
-server keeps serving while the child writes; completion or failure is logged, and
-only one background save runs at a time (a second returns an error). The child
-writes to a temp file and renames it into place, so a crash mid-save never
-corrupts the previous snapshot. `GOBLIN.LOAD <path>` (or `--load <path>` at
-startup) replaces the current data with a snapshot, replying with the number of
-keys loaded. Snapshots carry portable canonical data for zsets, hashes, strings,
-and lists plus version-gated accelerators for the indexed types; a snapshot loads
-on any build or machine, rebuilding indexes when an accelerator cannot be
-trusted (a different `std::hash`, a changed index format). For all-raw lists, a
-versioned two-byte accelerator marker lets the canonical bytes copy directly
-into the selected final representation without duplicating them in the file.
-Other lists are still restored with one bulk build from ordered snapshot views,
-rather than one mutation per element; Redis RDB list imports use the same bulk
-construction path.
+`SAVE [path [ACCEL|NOACCEL]]` snapshots every supported key type and its TTL
+synchronously. Its success reply is sent only after the temporary file has been
+fsynced and atomically renamed into place. `BGSAVE` accepts the same arguments
+but forks a copy-on-write child, replies `Background saving started`, and keeps
+serving while the child writes; completion or failure is logged. The
+`GOBLIN.SAVE` and `GOBLIN.BGSAVE` names are equivalent aliases, and an omitted
+path defaults to `dump.gcsn`. Only one fork-time snapshot may run at once, and a
+synchronous save is rejected while one is active. Arena compaction is deferred
+until the background child is reaped, avoiding a maintenance pass that dirties
+most live pages and inflates copy-on-write memory. Ordinary writes and new arena
+block allocations continue while the snapshot runs. Streamed
+`GOBLIN.DUMPWORLD` snapshots use the same guard; deferred maintenance becomes
+eligible again after the child is reaped.
+
+Lists are written in canonical order rather than persisting PMA slots or arena
+addresses. `GOBLIN.LOAD <path>` (or `--load <path>` at startup) replaces the
+current data with a snapshot, replying with the number of keys loaded. Snapshots
+carry portable canonical data for zsets, hashes, strings, and lists plus
+version-gated accelerators for the indexed types; a snapshot loads on any build
+or machine, rebuilding indexes when an accelerator cannot be trusted (a
+different `std::hash`, a changed index format). For all-raw lists, a versioned
+two-byte accelerator marker lets the canonical bytes copy directly into the
+selected final representation without duplicating them in the file. Other lists
+are still restored with one bulk build from ordered snapshot views, rather than
+one mutation per element; Redis RDB list imports use the same bulk construction
+path.
 Snapshots are explicit and client-driven. Without Kafka, a crash loses writes
-made since the last successful `GOBLIN.SAVE`, so drive saves from your
+made since the last successful `SAVE` or `BGSAVE`, so drive snapshots from your
 operations and `--load` on startup. With Kafka, the snapshot's saved lineage,
 logical offset, and acknowledged broker offset provide the restart point for
 inclusive replay; see [Firehose replication and Kafka
@@ -655,12 +662,12 @@ durable journal and replay source. This is the same principle as
 the 64 KiB member cap — do the core sorted-set operations better than Redis
 rather than reimplement a weaker version of a peripheral feature.
 
-Scheduled snapshots are a lighter matter: `GOBLIN.SAVE` forks and returns
-immediately, so it costs almost nothing and does not pause the server. Goblin
-Core simply does not own the *policy* of when and how often to run it — drive
-that from `cron` or your scheduler, where you already own the rest of your
-operations. An internal timer would only move that trigger inside the process for
-no real gain.
+Scheduled snapshots are a lighter matter: drive `BGSAVE` from `cron` or your
+scheduler when copy-on-write is appropriate. Goblin Core simply does not own the
+*policy* of when and how often to run it. With `--arena-hugetlb`, `BGSAVE` is
+disabled because fork-time writes can copy entire huge pages and exhaust the
+reserved pool; use synchronous `SAVE` instead. Transports whose native runtime
+cannot survive `fork()` similarly disable `BGSAVE` without disabling `SAVE`.
 
 `GOBLIN.LOAD` and `--load` auto-detect the file by magic: a native Goblin
 snapshot or a **Redis RDB file** (`dump.rdb`). This is the migration path — see
@@ -674,18 +681,19 @@ byte-for-byte loadable snapshot without either process buffering the whole image
 The command dedicates and closes its connection after the stream terminator.
 See [`GOBLIN.DUMPWORLD`](docs/commands/goblin.md#goblin-dumpworld).
 
-The default (`GOBLIN.SAVE <path>`) is the everyday restart path: it dumps the
-packed indexes so a same-build restart loads about `5.7×` faster than Redis by
-copying them back instead of rebuilding. `GOBLIN.SAVE <path> NOACCEL` is the
-upgrade/migration path — a smaller, canonical-only snapshot without the
-accelerator, for moving a snapshot across Goblin versions, architectures, or C++
-standard libraries, where the accelerator would be discarded and rebuilt on load
-anyway. Its load rebuilds every index (slower than the default, still faster than
-Redis). See BENCHMARKS.md for the numbers.
+The default accelerator mode is the everyday restart path: it dumps the packed
+indexes so a same-build restart loads about `5.7×` faster than Redis by copying
+them back instead of rebuilding. `NOACCEL` is the upgrade/migration path — a
+smaller, canonical-only snapshot without the accelerator, for moving a snapshot
+across Goblin versions, architectures, or C++ standard libraries, where the
+accelerator would be discarded and rebuilt on load anyway. Its load rebuilds
+every index (slower than the default, still faster than Redis). See BENCHMARKS.md
+for the numbers.
 
 ```sh
-redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn          # default (fast load)
-redis-cli -p 6379 GOBLIN.SAVE /var/lib/goblin/dump.gcsn NOACCEL  # upgrade/migration path
+redis-cli -p 6379 SAVE /var/lib/goblin/dump.gcsn                 # synchronous
+redis-cli -p 6379 BGSAVE /var/lib/goblin/dump.gcsn               # background
+redis-cli -p 6379 SAVE /var/lib/goblin/portable.gcsn NOACCEL     # migration
 ```
 
 `--score-string-cache` enables an experimental RESP-ready score text cache for
@@ -764,7 +772,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.10.0
+git checkout v0.10.1
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure

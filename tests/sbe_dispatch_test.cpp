@@ -106,6 +106,7 @@
 #undef NDEBUG
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -114,6 +115,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -563,9 +565,12 @@ std::string eval_frame(std::uint8_t lang, std::string_view script,
   z.putScript(script.data(), sv32(script));
   return fin(buf, z);
 }
-std::string save_frame(std::string_view path, bool accel) {
+std::string save_frame(std::string_view path, bool accel,
+                       bool background = false) {
   char buf[512]; sbe::GoblinSave z; z.wrapAndApplyHeader(buf, kSbeLenPrefix, sizeof(buf));
-  z.accel(accel ? 1 : 0); z.putPath(path.data(), sv32(path));
+  z.accel(static_cast<std::uint8_t>((accel ? 1U : 0U) |
+                                    (background ? 2U : 0U)));
+  z.putPath(path.data(), sv32(path));
   return fin(buf, z);
 }
 std::string load_frame(std::string_view path) {
@@ -1258,10 +1263,24 @@ int main() {
       assert(decode<sbe::ErrorReply>(h, m, l).getCodeAsStringView() == "ERR");
     });
   }
-  // GOBLIN.SAVE -> StatusReply (forks a background save; done last)
+  // SAVE is synchronous: the success reply means the final file exists.
   dispatch(store, save_frame("/tmp/goblin-sbe-test-save.gdb", true), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+    assert(decode<sbe::StatusReply>(h, m, l).getStatusAsStringView() == "OK");
+  });
+  assert(std::ifstream("/tmp/goblin-sbe-test-save.gdb", std::ios::binary).good());
+  std::remove("/tmp/goblin-sbe-test-save.gdb");
+
+  // Mode bit 1 selects BGSAVE while preserving the existing wire message.
+  dispatch(store, save_frame("/tmp/goblin-sbe-test-bgsave.gdb", true, true), [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
     assert(decode<sbe::StatusReply>(h, m, l).getStatusAsStringView() == "Background saving started");
   });
+  std::optional<Store::SaveOutcome> save_outcome;
+  for (int i = 0; i < 5000 && !save_outcome; ++i) {
+    save_outcome = store.reap_background_save();
+    if (!save_outcome) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  assert(save_outcome && save_outcome->ok);
+  std::remove("/tmp/goblin-sbe-test-bgsave.gdb");
 
   // Unknown templateId -> ErrorReply (not a crash): patch a ZCARD frame's id.
   {

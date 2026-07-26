@@ -226,6 +226,7 @@ Operational extensions are collected in the
 [`GOBLIN.MEMORY`](commands/goblin.md#goblin-memory),
 [`GOBLIN.OPTIMIZE`](commands/goblin.md#goblin-optimize),
 [`GOBLIN.SAVE`](commands/goblin.md#goblin-save),
+[`GOBLIN.BGSAVE`](commands/goblin.md#goblin-bgsave),
 [`GOBLIN.DUMPWORLD`](commands/goblin.md#goblin-dumpworld), and
 [`GOBLIN.LOAD`](commands/goblin.md#goblin-load).
 The same-version server stream is documented separately as

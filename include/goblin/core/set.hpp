@@ -336,7 +336,7 @@ class Set {
   }
 
   void compact(double member_index_density = kDefaultMemberIndexDensity) {
-    if (is_small()) {
+    if (!arena_compaction_allowed() || is_small()) {
       return;
     }
     full().storage->compact();
@@ -589,7 +589,8 @@ class Set {
       return;
     }
     if (full().storage->dead_bytes() >= kAutoCompactDeadFloor &&
-        full().storage->dead_bytes() >= full().storage->live_bytes()) {
+        full().storage->dead_bytes() >= full().storage->live_bytes() &&
+        arena_compaction_allowed()) {
       try {
         full().storage->compact();
         full().storage->shrink_to_fit();

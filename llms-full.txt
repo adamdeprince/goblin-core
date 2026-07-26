@@ -19,14 +19,13 @@ It implements only:
   `ZRANK`, `ZREVRANK`, `ZREM`
 - Hash commands: `HSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HGETALL`, `HKEYS`,
   `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, `HINCRBY`
-- Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`, `GOBLIN.SAVE`,
+- Admin commands: `GOBLIN.MEMORY`, `GOBLIN.OPTIMIZE`, `SAVE`, `BGSAVE`,
   `GOBLIN.LOAD`
 
 It does NOT implement, and you must not plan around:
 
-- Automatic/background persistence (no scheduled RDB, no AOF per-write log).
-  On-demand snapshots exist (`GOBLIN.SAVE`/`GOBLIN.LOAD`; see "Persistence"),
-  but between saves data is RAM-only.
+- Automatic snapshot scheduling or an internal AOF. On-demand synchronous and
+  background snapshots exist (`SAVE`/`BGSAVE`; see "Persistence").
 - Replication, clustering, or failover.
 - Pub/sub, Lua scripting, transactions (`MULTI`/`EXEC`), pipelining semantics
   beyond normal RESP, keyspace notifications.
@@ -167,14 +166,12 @@ Admin commands (Goblin Core extensions, not part of Redis):
   `(0, 1]` and defaults to `0.97`. Both types also auto-compact on their own (see
   "Tuning: fragmentation and auto-compaction"), so this is an optimization, not a
   requirement. See "Tuning: OPTIMIZE density".
-- `GOBLIN.SAVE path [NOACCEL]` — snapshot all zsets and hashes to `path`. Forks a
-  copy-on-write child that writes from a frozen image of the data, so it returns
-  immediately with `Background saving started` and the server keeps serving;
-  completion or failure is logged, and only one background save runs at a time (a
-  second returns an error). The child writes to a temp file and renames on
-  success, so a crash mid-save never corrupts the previous snapshot. `NOACCEL`
-  drops the packed-index accelerator for a smaller, portable file that rebuilds
-  indexes on load (see "Persistence").
+- `SAVE [path [ACCEL|NOACCEL]]` — synchronously snapshot the database. `OK`
+  means the temporary file has been fsynced and atomically renamed into place.
+  `GOBLIN.SAVE` is an alias.
+- `BGSAVE [path [ACCEL|NOACCEL]]` — fork a copy-on-write child, reply
+  `Background saving started`, and log its eventual outcome. `GOBLIN.BGSAVE` is
+  an alias. HugeTLB arenas reject this command; use `SAVE` instead.
 - `GOBLIN.LOAD path` — replace all current data with the snapshot at `path`.
   Replies with the number of keys loaded. Auto-detects the file by magic: a
   native Goblin snapshot or a Redis `dump.rdb` (see "Migrating from Redis"). On
@@ -262,9 +259,9 @@ Load-then-serve pattern (recommended):
 
 Durability and restarts:
 
-- Persistence is snapshot-based and on-demand (see "Persistence"). Between saves
-  data is RAM-only, so a crash loses writes since the last `GOBLIN.SAVE`. Take
-  snapshots on a schedule and before planned shutdowns.
+- Persistence is snapshot-based and on-demand (see "Persistence"). Without
+  external logging, a crash loses writes since the last successful `SAVE` or
+  `BGSAVE`. Take snapshots on a schedule and before planned shutdowns.
 - Restart with `--load SNAPSHOT` to come back with the last saved state instead
   of empty; gate traffic until load finishes (it is synchronous).
 - There is no replication or failover. If you need HA, run independent nodes
@@ -316,23 +313,20 @@ reasons. An append-only log adds latency to every write and still forces an
 only-partial durability; if you need durable, replayable writes, run them through
 a system built for it (Kafka, say) ahead of Goblin Core, which replays them (same
 principle as the 64 KiB member cap: do the core operations better than Redis
-rather than reimplement a weaker peripheral). Scheduled snapshots are lighter:
-`GOBLIN.SAVE` forks and returns immediately, so it costs almost nothing and does
-not pause the server; Goblin Core just does not own the policy of when and how
-often to run it -- drive that from `cron` or your scheduler.
+rather than reimplement a weaker peripheral). Goblin Core does not own snapshot
+policy: drive `BGSAVE` from `cron` or your scheduler when copy-on-write is
+appropriate, or use synchronous `SAVE` when the process uses HugeTLB arenas.
 
-- `GOBLIN.SAVE path` snapshots every zset and hash to `path`. It forks a copy-on-write
-  child that writes from a frozen image of the data, so the command returns
-  immediately with `Background saving started` and the server keeps serving while
-  the child writes; watch the log for `background save of <path> completed` (or a
-  `FAILED` line). Only one background save runs at a time. The child writes to a
-  temp file and renames it into place, so a crash mid-save never corrupts the
-  previous snapshot.
+- `SAVE [path [ACCEL|NOACCEL]]` writes synchronously and replies only after the
+  final path is installed. `BGSAVE` accepts the same arguments and forks; watch the
+  log for `background save of <path> completed` (or a `FAILED` line). Both
+  default to `dump.gcsn` and have `GOBLIN.*` aliases.
 - `GOBLIN.LOAD path` (or `--load path` at startup) replaces all current data
   with the snapshot. On any error — bad magic, checksum mismatch, truncation —
   it fails and leaves the store empty rather than half-loaded.
-- What you lose on a crash: everything written since the last successful
-  `GOBLIN.SAVE`. Choose a save cadence that bounds that window, and keep a
+- What you lose on a crash without external logging: everything written since
+  the last successful `SAVE` or `BGSAVE`. Choose a cadence that bounds that
+  window, and keep a
   system of record for a full rebuild.
 
 Format and portability: a snapshot has a portable canonical layer (zset members
@@ -346,7 +340,7 @@ accelerator cannot be trusted — a newer index format, or a different `std::has
 build) — the loader ignores it and rebuilds the indexes from canonical: a slower
 load, identical data. Checksums are CRC32C.
 
-Accelerator (default) vs canonical-only (`GOBLIN.SAVE path NOACCEL`): the default
+Accelerator (default) vs canonical-only (`SAVE path NOACCEL`): the default
 accelerated snapshot is the common path. A normal restart memcpy's the packed
 indexes back rather than rebuilding them, so at 9.5M members (avx10) it saves in
 0.78s (about 5x faster than Redis) and loads in 0.69s (about 5.7x faster than
@@ -362,7 +356,7 @@ libraries -- cases where a loader would discard the accelerator and rebuild the
 indexes anyway, so the smaller file costs nothing extra. For everyday restarts on
 the same build, use the default.
 
-Operationally: `GOBLIN.SAVE` before planned shutdowns and on a cron-like
+Operationally: use `SAVE` before planned shutdowns and `BGSAVE` on a cron-like
 schedule; `--load` the latest snapshot on startup. A snapshot is smaller than
 the live RSS (no index slack); `NOACCEL` is roughly the member bytes plus ~10
 bytes/member, the default adds the packed indexes on top.

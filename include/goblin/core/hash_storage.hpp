@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/page_arena.hpp"
 #include "goblin/core/simd_ops.hpp"
 #include "goblin/core/string_encoding.hpp"
@@ -419,6 +420,10 @@ class HashStorage {
       size_type work_budget = 256,
       size_type byte_budget = size_type{64} << 10) {
     CompactionStepResult result;
+    if (!arena_compaction_allowed()) {
+      result.progress = compaction_progress();
+      return result;
+    }
     if (work_budget == 0) {
       result.progress = compaction_progress();
       return result;
@@ -547,6 +552,9 @@ class HashStorage {
   // backed by a finite HugeTLB pool and replacing them while they are still live
   // forces the replacement blocks onto base pages.
   void compact() {
+    if (!arena_compaction_allowed()) {
+      return;
+    }
     constexpr auto kUnlimited = std::numeric_limits<size_type>::max();
     while (compaction_active() || dead_bytes_ != 0) {
       const auto dead_before = dead_bytes_;

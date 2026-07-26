@@ -279,7 +279,8 @@ Install the verified binary at a stable path. Before switching services, ask the
 currently running Kafka-backed primary to write a native snapshot. The snapshot
 contains both the keyspace and the acknowledged Kafka/replication offsets.
 `GOBLIN.SAVE` writes a temporary file, fsyncs it, and atomically renames it into
-place; wait for the final path to appear before stopping the old process.
+place. Its `OK` reply means the final path is installed, so the old process can
+be stopped immediately after that reply.
 
 ```sh
 sudo install -o root -g root -m 0755 \

@@ -302,7 +302,7 @@ int main(int argc, char** argv) {
 
     assert(request(primary_client, primary_pending,
                    {"GOBLIN.SAVE", ring_snapshot_path, "NOACCEL"}) ==
-           "+Background saving started\r\n");
+           "+OK\r\n");
     for (int attempt = 0; attempt < 1000 &&
                           !std::filesystem::exists(ring_snapshot_path);
          ++attempt) {
@@ -456,7 +456,7 @@ int main(int argc, char** argv) {
     // reconnects, so it cannot silently miss a recovery interval.
     assert(request(primary_client, primary_pending,
                    {"GOBLIN.SAVE", snapshot_path, "NOACCEL"}) ==
-           "+Background saving started\r\n");
+           "+OK\r\n");
     for (int attempt = 0; attempt < 1000 &&
                           !std::filesystem::exists(snapshot_path);
          ++attempt) {

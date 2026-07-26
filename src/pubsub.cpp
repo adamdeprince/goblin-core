@@ -755,9 +755,11 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
       append_ack(out, session, kind, std::nullopt);
       return;
     }
-    // Snapshot names: reverse is mutated as we remove each subscription.
-    std::vector<std::string> targets = reverse;
-    for (const auto& name : targets) {
+    // The reverse index is already the exact work list and owns names
+    // independently of the table. Keep it intact until all acknowledgements
+    // are encoded, then release the whole vector at once. This avoids quadratic
+    // erase_name() calls without losing cleanup information if encoding throws.
+    for (const auto& name : reverse) {
       bool empty = false;
       if (auto* subscribers = table.find(std::string_view(name))) {
         if (subscribers->erase(&session) != 0) {
@@ -765,7 +767,6 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
         }
         empty = subscribers->empty();
       }
-      erase_name(reverse, name);
       if (empty) {
         table.erase(std::string_view(name));
         if (patterns) {
@@ -774,6 +775,7 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
       }
       append_ack(out, session, kind, name);
     }
+    std::vector<std::string>{}.swap(reverse);
     return;
   }
 

@@ -2714,17 +2714,43 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kGoblinSave: {
       sbe::GoblinSave g;
       g.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      const bool accel = g.accel() != 0;
+      const std::uint8_t mode = g.accel();
+      const bool accel = (mode & 1U) != 0;
+      const bool background = (mode & 2U) != 0;
       const std::string_view path = g.getPathAsStringView();
+      if (!background) {
+        switch (store.save_file(std::string(path), accel)) {
+          case Store::SaveResult::Saved:
+            reply_status(out, "OK");
+            break;
+          case Store::SaveResult::AlreadyRunning:
+            reply_error(out, "ERR", "background snapshot already in progress");
+            break;
+          case Store::SaveResult::Failed:
+            reply_error(out, "ERR", "snapshot save failed");
+            break;
+        }
+        break;
+      }
       switch (store.start_background_save(std::string(path), accel)) {
         case Store::SaveStart::Started:
           reply_status(out, "Background saving started");
           break;
         case Store::SaveStart::AlreadyRunning:
-          reply_error(out, "ERR", "background save already in progress");
+          reply_error(out, "ERR", "background snapshot already in progress");
           break;
         case Store::SaveStart::ForkFailed:
           reply_error(out, "ERR", "cannot fork for background save");
+          break;
+        case Store::SaveStart::HugeTlbUnsafe:
+          reply_error(out, "ERR",
+                      "BGSAVE is unavailable with HugeTLB arenas; use SAVE");
+          break;
+        case Store::SaveStart::ForkUnsafe:
+          reply_error(
+              out, "ERR",
+              "BGSAVE is unavailable while a transport that cannot survive fork "
+              "is active; use SAVE");
           break;
       }
       break;

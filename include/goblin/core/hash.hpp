@@ -514,7 +514,7 @@ class Hash {
   // rebuild only the field index at the requested density. The full form may
   // demote back to listpack when small enough.
   void compact(double field_index_density = kDefaultFieldIndexDensity) {
-    if (is_small()) {
+    if (!arena_compaction_allowed() || is_small()) {
       return;  // listpack has no fragmentation
     }
     auto& fs = full();

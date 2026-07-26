@@ -3513,8 +3513,8 @@ Server::Server(ServerConfig config, Store& store)
       config_.poll_targets.begin(), config_.poll_targets.end(),
       [](const auto& target) { return std::holds_alternative<XlioConfig>(target); });
   if (has_xlio) {
-    // XLIO 3.61 permits fork only while no Ultra polling group exists. SAVE
-    // remains available synchronously; GOBLIN.DUMPWORLD reports a clear error.
+    // XLIO 3.61 permits fork only while no Ultra polling group exists. SAVE remains
+    // available synchronously; BGSAVE and GOBLIN.DUMPWORLD report clear errors.
     store_.set_background_fork_enabled(false);
   }
 #endif

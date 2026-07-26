@@ -659,7 +659,7 @@ void print_usage(std::string_view program) {
             << "       [--replication-buffer-bytes BYTES] (default: 1 MiB)\n"
             << "       [--ring-hugetlb]       (Linux: back rings with huge pages)\n"
             << "       [--arena-hugetlb]      (back arena blocks with huge pages;\n"
-            << "                               unsafe with fork-COW SAVE, so off by default)\n"
+            << "                               disables fork-COW BGSAVE)\n"
             << "       [--cpu N]              (Linux: pin to CPU N; ring must be NUMA-local)\n"
             << "       [--numa TARGET]        (Linux: node, NIC, InfiniBand device, or auto)\n"
             << "       [--numa-arena]         (Linux: also prefer that node for arenas)\n"
@@ -1244,9 +1244,10 @@ int main(int argc, char** argv) {
 
     if (arg == "--arena-hugetlb") {
       // Back max-size arena blocks with huge pages (OFF by default). Opt-in, not the
-      // default, because SAVE's fork+COW is unsafe with huge pages: 2 MiB COW
-      // granularity blows up RSS and SIGBUSes the parent if the pool exhausts mid-save.
-      // A no-op where huge pages are unavailable, so it is accepted on every platform.
+      // default, because BGSAVE's fork+COW is unsafe with huge pages: 2 MiB COW
+      // granularity blows up RSS and SIGBUSes the parent if the pool exhausts
+      // mid-save. A no-op where huge pages are unavailable, so it is accepted on
+      // every platform.
       goblin::core::hugetlb::arena_enabled() = true;
       continue;
     }

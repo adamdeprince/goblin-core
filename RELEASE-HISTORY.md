@@ -10,6 +10,30 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
+Nothing yet.
+
+## v0.10.1 — July 25, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.1)
+
+The snapshot-correctness and operational-hardening release.
+
+- Restored distinct Redis persistence semantics: `SAVE`/`GOBLIN.SAVE` block
+  until the snapshot has been fsynced and atomically installed, while
+  `BGSAVE`/`GOBLIN.BGSAVE` fork and return immediately. Both forms now default
+  to `dump.gcsn` and are available through RESP, typed SBE, and the Python
+  client.
+- Suspended keyspace, hash, list, set, array, and sorted-set arena compaction
+  while a `BGSAVE` or `GOBLIN.DUMPWORLD` child holds a copy-on-write view.
+  Ordinary writes and new arena blocks continue, avoiding whole-arena COW
+  amplification without stopping the server. HugeTLB arenas and fork-unsafe
+  transports reject `BGSAVE` and retain synchronous `SAVE`.
+- Reworked no-argument literal-channel `UNSUBSCRIBE` to release the reverse
+  subscription index in one batch instead of repeatedly erasing names, keeping
+  large broken-client cleanup bounded by the subscription-table work itself.
+- Added a C++/SBE market-feed Pub/Sub replay suite for wildcard and large
+  literal subscription tables, with simdjson channel extraction, one-MiB ring
+  support, delivery validation, and explicit subscribe/unsubscribe timing.
 - Added a tested source installation guide with platform prerequisites, build
   profiles, CMake option reference, installation, and an installed-binary smoke
   test. The host-specific Thunder/Redpanda deployment record now lives under

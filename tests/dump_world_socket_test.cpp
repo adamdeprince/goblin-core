@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
 
   const auto save_reply =
       request(control, control_pending, {"GOBLIN.SAVE", save_path});
-  assert(save_reply.find("background save already in progress") !=
+  assert(save_reply.find("background snapshot already in progress") !=
          std::string::npos);
   assert(request(control, control_pending, {"DEL", "frozen"}) == ":1\r\n");
   assert(request(control, control_pending, {"SET", "post-fork", "new"}) ==

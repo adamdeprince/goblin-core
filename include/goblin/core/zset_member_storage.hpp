@@ -13,6 +13,7 @@
 #include <string_view>
 #include <vector>
 
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/page_arena.hpp"
 #include "goblin/core/score_format.hpp"
 #include "goblin/core/score_width.hpp"
@@ -354,7 +355,7 @@ class ZSetMemberStorage {
   // fresh arena keeps every block but the last full; only the last is partial).
   // The caller must hold a unique arena (post-fork), as after a structural write.
   void compact() {
-    if (arena_->member_dead_bytes == 0) {
+    if (!arena_compaction_allowed() || arena_->member_dead_bytes == 0) {
       return;
     }
     ensure_memory_growth(sizeof(ZSetMemberByteArena));

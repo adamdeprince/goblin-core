@@ -219,7 +219,7 @@ if [[ -e "$primary_snapshot" ]]; then
 fi
 save_reply=$(redis-cli --raw -h "$primary_host" -p "$primary_port" \
   GOBLIN.SAVE "$primary_snapshot" ACCEL | tr -d '\r')
-[[ "$save_reply" == "Background saving started" ]] || \
+[[ "$save_reply" == "OK" ]] || \
   fail "unexpected GOBLIN.SAVE reply: $save_reply"
 
 snapshot_deadline=$((SECONDS + snapshot_timeout))

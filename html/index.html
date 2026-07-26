@@ -523,11 +523,11 @@
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
         <p class="hero-copy">A compact server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, and <strong>RDMA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <p class="release-note" aria-label="New in Goblin Core 0.10.0">
-          <span class="release-note-heading">New in v0.10.0</span>
-          <span><strong>Durability:</strong> <a href="docs/kafka.html">broker-acknowledged Kafka writes</a> with bounded pending-data backpressure.</span>
-          <span><strong>Replica bootstrap:</strong> <a href="docs/commands/goblin.html#goblin-dumpworld">stream the entire database</a> in native snapshot format.</span>
-          <span><strong>100 GbE:</strong> <a href="XLIO-LATENCY.html">native XLIO Ultra TCP</a> at 4.98–8.37 µs median across seven commands.</span>
+        <p class="release-note" aria-label="New in Goblin Core 0.10.1">
+          <span class="release-note-heading">New in v0.10.1</span>
+          <span><strong>Snapshot semantics:</strong> <a href="docs/commands/goblin.html#goblin-save">SAVE is synchronous; BGSAVE forks and returns.</a></span>
+          <span><strong>COW safety:</strong> arena compaction pauses while BGSAVE or DUMPWORLD owns snapshot pages.</span>
+          <span><strong>Operations:</strong> faster bulk Pub/Sub cleanup, hardened ring startup, and a tested <a href="INSTALL.html">source installation path</a>.</span>
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#start">

@@ -258,6 +258,9 @@ struct Command {
   bool range_has_limit{false};
   long long range_limit_offset{0};
   long long range_limit_count{-1};
+  // SAVE and BGSAVE share one command implementation but have deliberately
+  // different completion semantics.
+  bool background_save{false};
   // Parsed list move/pop shape. For LMPOP/BLMPOP, list_key_offset points to the
   // first key in args and list_key_count is the declared numkeys. Blocking
   // commands store a finite non-negative timeout in seconds; zero is indefinite.

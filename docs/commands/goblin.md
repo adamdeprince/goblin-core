@@ -21,7 +21,8 @@ snapshots, and a native atomic helper. (The `GOBLIN.` scripting families —
 | [`GOBLIN.CLAIM`](GOBLIN.CLAIM.md) | Idempotency guard: claim work once with an expiring lease, else return the prior result. |
 | `GOBLIN.MEMORY` | Per-key memory breakdown for a zset, hash, list, set, or array. |
 | `GOBLIN.OPTIMIZE` | Compact a zset, hash, or list in place. |
-| `GOBLIN.SAVE` | Start a background point-in-time snapshot. |
+| `GOBLIN.SAVE` | Write a synchronous point-in-time snapshot. |
+| `GOBLIN.BGSAVE` | Start a background point-in-time snapshot. |
 | [`GOBLIN.DUMPWORLD`](#goblin-dumpworld) | Stream a fork-time native snapshot to the requesting client. |
 | `GOBLIN.LOAD` | Load a snapshot (or a Redis `dump.rdb`) from disk. |
 
@@ -230,14 +231,35 @@ process-wide signal for
 ## GOBLIN.SAVE
 
 ```
-GOBLIN.SAVE path [ACCEL | NOACCEL]
+GOBLIN.SAVE [path [ACCEL | NOACCEL]]
 ```
 
-Starts a **background** point-in-time snapshot to `path` (the child process does
-the writing, so the server keeps serving). `ACCEL` (the default) writes an extra
-read-accelerator section for faster loads; `NOACCEL` omits it for a smaller file.
-Replies `Background saving started`, or an error if a save is already in progress
-or the fork fails.
+Writes a point-in-time snapshot synchronously. `OK` means the temporary file was
+written, fsynced, and atomically renamed into place. `ACCEL` (the default) writes
+an extra read-accelerator section for faster loads; `NOACCEL` omits it for a
+smaller file. The path defaults to `dump.gcsn`. The standard name `SAVE` is an
+alias with the same arguments and behavior.
+
+## GOBLIN.BGSAVE
+
+```
+GOBLIN.BGSAVE [path [ACCEL | NOACCEL]]
+```
+
+Forks a copy-on-write child to write the same snapshot format, replies
+`Background saving started`, and keeps serving. The path defaults to
+`dump.gcsn`; `BGSAVE` is an equivalent alias. Only one background snapshot may
+run at a time. While the child owns its copy-on-write view, arena compaction is
+deferred so maintenance cannot dirty most live pages and multiply the parent's
+memory footprint. Writes continue normally, including allocating another arena
+block when an existing one fills; deferred compaction resumes after the child is
+reaped and a later maintenance trigger runs. Streamed `GOBLIN.DUMPWORLD`
+snapshots use the same protection.
+
+`BGSAVE` is rejected when `--arena-hugetlb` is active because post-fork writes
+could copy entire huge pages and exhaust the reserved pool. It is also rejected
+while a native transport runtime that cannot survive `fork()` is active. Use
+synchronous `SAVE` in either configuration.
 
 ## GOBLIN.DUMPWORLD
 
@@ -268,8 +290,9 @@ and closes after successful completion as well.
 
 `ACCEL` is the default and includes same-build load accelerators. `NOACCEL` emits
 the smaller canonical image intended for version or architecture changes. Only
-one fork-time snapshot may run at once, so `GOBLIN.SAVE` and
-`GOBLIN.DUMPWORLD` reject one another while either is active.
+one fork-time snapshot may run at once, so `GOBLIN.BGSAVE` and
+`GOBLIN.DUMPWORLD` reject one another while either is active. `GOBLIN.SAVE` also
+rejects a request while a background snapshot owns that slot.
 
 The command requires authentication when the listener requires authentication,
 then requires `HELLO 3`; it is a RESP command and has no SBE template. RESP3 can

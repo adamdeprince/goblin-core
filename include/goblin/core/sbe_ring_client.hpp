@@ -1441,9 +1441,19 @@ class BasicSbeClient {
     finish(m, t);
     return as_int_or_nil();
   }
-  [[nodiscard]] std::string save(std::string_view path, bool accel = true, ms t = kDefaultTimeout) {
+  [[nodiscard]] std::string save(std::string_view path = "dump.gcsn",
+                                 bool accel = true, ms t = kDefaultTimeout) {
     auto m = build<goblin_sbe::GoblinSave>(path.size());
     m.accel(accel ? 1 : 0);
+    m.putPath(path.data(), u32(path.size()));
+    finish(m, t);
+    return as_status();
+  }
+  [[nodiscard]] std::string bgsave(std::string_view path = "dump.gcsn",
+                                   bool accel = true,
+                                   ms t = kDefaultTimeout) {
+    auto m = build<goblin_sbe::GoblinSave>(path.size());
+    m.accel(static_cast<std::uint8_t>((accel ? 1U : 0U) | 2U));
     m.putPath(path.data(), u32(path.size()));
     finish(m, t);
     return as_status();

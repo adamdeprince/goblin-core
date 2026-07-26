@@ -2,11 +2,13 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #undef NDEBUG
 #include <cassert>
 
 using goblin::core::detail::PubSubRegistry;
+using goblin::core::detail::PubSubSession;
 using goblin::core::detail::UnsolicitedOutputQueue;
 
 int main() {
@@ -86,4 +88,47 @@ int main() {
   assert(exact.front()->bytes.empty());
   exact.pop();
   assert(!exact.front().has_value());
+
+  // Unsubscribe-all drains the batch-cleared reverse-name index. A second
+  // subscriber on one channel must survive the subscription-table cleanup.
+  PubSubRegistry registry;
+  PubSubSession bulk_session(4096);
+  PubSubSession survivor(4096);
+  constexpr std::size_t kChannels = 4096;
+  std::vector<std::string> names;
+  std::vector<std::string_view> name_views;
+  names.reserve(kChannels);
+  name_views.reserve(kChannels);
+  for (std::size_t index = 0; index < kChannels; ++index) {
+    names.push_back("channel-" + std::to_string(index));
+  }
+  for (const auto& name : names) {
+    name_views.push_back(name);
+  }
+
+  std::string output;
+  registry.execute(
+      bulk_session,
+      {.type = goblin::core::CommandType::subscribe, .args = name_views},
+      output);
+  const std::string_view shared_channel = names[kChannels / 2];
+  registry.execute(
+      survivor,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&shared_channel, 1)},
+      output);
+  assert(bulk_session.literal_subscriptions == kChannels);
+  assert(bulk_session.channel_names.size() == kChannels);
+
+  output.clear();
+  registry.execute(
+      bulk_session,
+      {.type = goblin::core::CommandType::unsubscribe, .args = {}}, output);
+  assert(bulk_session.literal_subscriptions == 0);
+  assert(bulk_session.channel_names.empty());
+  assert(registry.publish(names.front(), "payload") == 0);
+  assert(registry.publish(shared_channel, "payload") == 1);
+
+  registry.remove(survivor);
+  assert(registry.publish(shared_channel, "payload") == 0);
 }

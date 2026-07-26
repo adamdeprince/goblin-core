@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
     assert(info_integer(transaction_info, "kafka_pending_records") == 0);
 
     send_command(client, {"GOBLIN.SAVE", snapshot, "NOACCEL"});
-    assert(read_reply(client, pending) == "+Background saving started\r\n");
+    assert(read_reply(client, pending) == "+OK\r\n");
     for (int attempt = 0; attempt < 500 && !std::filesystem::exists(snapshot);
          ++attempt) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -439,8 +439,7 @@ int main(int argc, char** argv) {
     // recovery must replay it inclusively, filter any older duplicates, drain
     // the firehose suffix, and return to ready without restarting the replica.
     send_command(primary_client, {"GOBLIN.SAVE", live_snapshot, "NOACCEL"});
-    assert(read_reply(primary_client, primary_pending) ==
-           "+Background saving started\r\n");
+    assert(read_reply(primary_client, primary_pending) == "+OK\r\n");
     for (int attempt = 0;
          attempt < 1000 && !std::filesystem::exists(live_snapshot);
          ++attempt) {

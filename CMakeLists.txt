@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.10.0
+  VERSION 0.10.1
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -766,6 +766,40 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
         CXX_EXTENSIONS OFF)
       target_compile_options(goblin_core_pubsub_benchmark PRIVATE
         -Wall -Wextra -Wpedantic)
+
+      add_executable(goblin_core_pubsub_jsonl_consumer
+        benchmarks/pubsub_jsonl_consumer.cpp)
+      target_link_libraries(goblin_core_pubsub_jsonl_consumer PRIVATE
+        goblin_sbe_headers)
+      target_include_directories(goblin_core_pubsub_jsonl_consumer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+      set_target_properties(goblin_core_pubsub_jsonl_consumer PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_pubsub_jsonl_consumer PRIVATE
+        -Wall -Wextra -Wpedantic)
+
+      # The 36 GB market-feed replay probe deliberately uses simdjson, but keep
+      # that benchmark-only dependency optional for ordinary source builds.
+      find_package(simdjson CONFIG QUIET)
+      if(TARGET simdjson::simdjson)
+        add_executable(goblin_core_pubsub_jsonl_publisher
+          benchmarks/pubsub_jsonl_publisher.cpp)
+        target_link_libraries(goblin_core_pubsub_jsonl_publisher PRIVATE
+          goblin_sbe_headers simdjson::simdjson)
+        target_include_directories(goblin_core_pubsub_jsonl_publisher PRIVATE
+          ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        set_target_properties(goblin_core_pubsub_jsonl_publisher PROPERTIES
+          CXX_STANDARD 23
+          CXX_STANDARD_REQUIRED ON
+          CXX_EXTENSIONS OFF)
+        target_compile_options(goblin_core_pubsub_jsonl_publisher PRIVATE
+          -Wall -Wextra -Wpedantic)
+      else()
+        message(STATUS
+          "simdjson not found; the Pub/Sub JSONL publisher will not be built")
+      endif()
 
       add_executable(goblin_core_pubsub_rebroadcast_benchmark
         benchmarks/pubsub_rebroadcast_benchmark.cpp)

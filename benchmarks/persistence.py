@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Persistence: save time, file size, and load time, on one host.
 
-For each engine: populate an N-member sorted set, save (Goblin Core's background
-GOBLIN.SAVE / Redis's blocking SAVE), then start a fresh server pointing at the
-saved file and time startup-to-ready minus an empty-start baseline. Reuses
-zset_benchmark.py's transport + parity config.
+For each engine: populate an N-member sorted set, run its synchronous SAVE, then
+start a fresh server pointing at the saved file and time startup-to-ready minus
+an empty-start baseline. Reuses zset_benchmark.py's transport + parity config.
 """
 from __future__ import annotations
 
@@ -78,8 +77,8 @@ def bench_goblin(binary: Path, members: int, batch: int, pipeline: int, accel: b
     t0 = time.monotonic()
     client.command("GOBLIN.SAVE", str(path)) if accel else \
         client.command("GOBLIN.SAVE", str(path), "NOACCEL")
-    while not path.exists():  # background fork renames into place on completion
-        time.sleep(0.001)
+    if not path.exists():
+        raise RuntimeError("GOBLIN.SAVE returned before the final file existed")
     save_time = time.monotonic() - t0
     client.close()
     proc.terminate()

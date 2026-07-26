@@ -159,6 +159,12 @@ sets occupy ids 102–118, the expanded sorted-set requests occupy ids 119–124
 and bounded key/hash iteration occupies ids 126–127. `ZREVRANGE` is `ZRange`
 with `rev=1`.
 
+`GoblinSave` (83) serves both persistence modes without changing the message
+layout: mode bit 0 selects the accelerator and bit 1 selects background
+operation. A clear bit 1 is synchronous `SAVE` and replies only after the final
+file is installed; a set bit 1 is `BGSAVE` and replies after the snapshot child
+starts. HugeTLB arena mode rejects the background form.
+
 The reply set is sixteen: the eight core replies plus `NullableArrayReply` (id 9,
 for `HMGET`/`MGET` per-element nils), `RespValueReply` (id 10, flattened script
 results), `MapReply` (id 11, key/value pairs), the two Pub/Sub replies, nullable

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "goblin/core/adaptive_pma.hpp"
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/list_listpack.hpp"
 #include "goblin/core/list_value_arena.hpp"
 #include "goblin/core/segmented_list.hpp"
@@ -416,7 +417,7 @@ class List {
   }
 
   void compact() {
-    if (is_small()) {
+    if (!arena_compaction_allowed() || is_small()) {
       return;
     }
     if (auto* segmented = segmented_ptr()) {
@@ -629,7 +630,7 @@ class List {
 
   void maybe_compact_values() {
     if (!is_small() && segmented_ptr() == nullptr &&
-        full().values.should_compact()) {
+        full().values.should_compact() && arena_compaction_allowed()) {
       try {
         compact_values();
       } catch (const MaxMemoryExceeded&) {
@@ -639,6 +640,9 @@ class List {
   }
 
   void compact_values() {
+    if (!arena_compaction_allowed()) {
+      return;
+    }
     auto& state = full();
     if (state.values.dead_bytes() == 0) {
       return;

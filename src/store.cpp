@@ -895,6 +895,9 @@ ZSetMemoryStats ZSet::memory_stats(const ZSetOptions* options) const noexcept {
 }
 
 void ZSet::compact(double member_index_density) {
+  if (!arena_compaction_allowed()) {
+    return;
+  }
   if (auto* lp = small_ptr()) {
     lp->optimize();  // re-derive the narrowest score width (demote)
     return;          // the blob is already structurally compact
@@ -984,7 +987,8 @@ bool ZSet::rehash_member_index_same_capacity() {
 }
 
 bool ZSet::compact_after_removal_if_needed(std::size_t removed_count) {
-  if (!should_compact_after_removal(removed_count)) {
+  if (!should_compact_after_removal(removed_count) ||
+      !arena_compaction_allowed()) {
     return false;
   }
 
@@ -3015,12 +3019,18 @@ std::optional<ZSetMemoryStats> Store::zset_memory_stats(std::string_view key) co
 std::optional<std::size_t> Store::optimize(std::string_view key,
                                            double member_index_density) {
   if (auto* zset = find_zset(key); zset != nullptr) {
+    if (!arena_compaction_allowed()) {
+      return 0;
+    }
     const auto before = zset->memory_stats(zset_options()).total_allocated_bytes;
     zset->compact(member_index_density);
     const auto after = zset->memory_stats(zset_options()).total_allocated_bytes;
     return before > after ? before - after : 0;
   }
   if (auto* hash = find_hash(key); hash != nullptr) {
+    if (!arena_compaction_allowed()) {
+      return 0;
+    }
     const auto before = hash->memory_stats().total_allocated_bytes;
     hash->compact(member_index_density);
     // Hand the freed arena/index pages back to the OS, matching ZSet::compact
@@ -3030,6 +3040,9 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
     return before > after ? before - after : 0;
   }
   if (auto* list = find_list(key); list != nullptr) {
+    if (!arena_compaction_allowed()) {
+      return 0;
+    }
     const auto before = list->memory_stats().total_allocated_bytes;
     list->compact();
     release_unused_heap_pages();
@@ -3037,6 +3050,9 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
     return before > after ? before - after : 0;
   }
   if (auto* set = find_set(key); set != nullptr) {
+    if (!arena_compaction_allowed()) {
+      return 0;
+    }
     const auto before = set->memory_stats().total_allocated_bytes;
     set->compact(member_index_density);
     release_unused_heap_pages();
@@ -3488,9 +3504,8 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
 
 bool Store::save_to_file(const std::string& path,
                          bool with_accelerator) const noexcept {
-  // Write to a temp file, fsync, and atomically rename into place. Used by both the
-  // forked child and the synchronous (huge-page) save; on the child path the caller
-  // _exit()s the result without running the parent's destructors.
+  // Write to a temp file, fsync, and atomically rename into place. On the background
+  // path the caller _exit()s the result without running the parent's destructors.
   const std::string temp = path + ".tmp";
   const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) {
@@ -3519,20 +3534,26 @@ bool Store::save_to_file(const std::string& path,
   return ok;
 }
 
+Store::SaveResult Store::save_file(std::string path,
+                                   bool with_accelerator) {
+  if (background_snapshot_in_progress()) {
+    return SaveResult::AlreadyRunning;
+  }
+  return save_to_file(path, with_accelerator) ? SaveResult::Saved
+                                              : SaveResult::Failed;
+}
+
 Store::SaveStart Store::start_background_save(std::string path,
                                              bool with_accelerator) {
   if (background_snapshot_in_progress()) {
     return SaveStart::AlreadyRunning;
   }
 
-  if (hugetlb::arena_enabled() || !background_fork_enabled_) {
-    // Huge pages make fork+COW unsafe, and some native polling runtimes cannot
-    // survive a fork once their groups exist. Save synchronously in-process in
-    // either case. reap_background_save() returns the outcome on its next call.
-    background_save_sync_ok_ = save_to_file(path, with_accelerator);
-    background_save_path_ = std::move(path);
-    background_save_sync_pending_ = true;
-    return SaveStart::Started;
+  if (hugetlb::arena_enabled()) {
+    return SaveStart::HugeTlbUnsafe;
+  }
+  if (!background_fork_enabled_) {
+    return SaveStart::ForkUnsafe;
   }
 
   const pid_t child = ::fork();
@@ -3549,6 +3570,7 @@ Store::SaveStart Store::start_background_save(std::string path,
 
   background_save_child_ = child;
   background_save_path_ = std::move(path);
+  background_snapshot_compaction_suspension_.emplace();
   return SaveStart::Started;
 }
 
@@ -3609,6 +3631,7 @@ Store::DumpStart Store::start_background_dump(bool with_accelerator) {
 
   (void)::close(pipe_fds[1]);
   background_dump_child_ = child;
+  background_snapshot_compaction_suspension_.emplace();
   return {.status = DumpStartStatus::Started, .read_fd = pipe_fds[0]};
 }
 
@@ -3621,18 +3644,11 @@ std::optional<bool> Store::reap_background_dump() noexcept {
   const bool ok = result == background_dump_child_ && WIFEXITED(status) &&
                   WEXITSTATUS(status) == 0;
   background_dump_child_ = -1;
+  background_snapshot_compaction_suspension_.reset();
   return ok;
 }
 
 std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
-  if (background_save_sync_pending_) {
-    // The synchronous save already finished inside start_background_save().
-    background_save_sync_pending_ = false;
-    SaveOutcome outcome{.path = std::move(background_save_path_),
-                        .ok = background_save_sync_ok_};
-    background_save_path_.clear();
-    return outcome;
-  }
   if (background_save_child_ <= 0) {
     return std::nullopt;
   }
@@ -3649,6 +3665,7 @@ std::optional<Store::SaveOutcome> Store::reap_background_save() noexcept {
   SaveOutcome outcome{.path = std::move(background_save_path_), .ok = ok};
   background_save_child_ = -1;
   background_save_path_.clear();
+  background_snapshot_compaction_suspension_.reset();
   return outcome;
 }
 

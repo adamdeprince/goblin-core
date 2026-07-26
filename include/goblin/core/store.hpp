@@ -17,6 +17,7 @@
 #include <variant>
 #include <vector>
 
+#include "goblin/core/arena_compaction.hpp"
 #include "goblin/core/array.hpp"
 #include "goblin/core/compact_listpack.hpp"
 #include "goblin/core/hash.hpp"
@@ -1398,7 +1399,7 @@ class Keyspace {
   }
 
   void maybe_compact() {
-    if (storage_.should_compact()) {
+    if (storage_.should_compact() && arena_compaction_allowed()) {
       try {
         compact_arena();
       } catch (const MaxMemoryExceeded&) {
@@ -1411,6 +1412,9 @@ class Keyspace {
   // order), so the index and object/type arrays stay valid -- only the arena and
   // each spilled value's tail address change.
   void compact_arena() {
+    if (!arena_compaction_allowed()) {
+      return;
+    }
     KeyspaceStorage fresh(storage_.chunk_bytes());
     fresh.reserve(types_.size());
     std::vector<std::optional<KeyspaceStorage::TailLocation>> relocations(
@@ -2498,18 +2502,27 @@ class Store {
   // snapshot_error on I/O trouble.
   void save(std::ostream& out, bool with_accelerator = true) const;
 
-  // Persist the snapshot to `path` (to a temp file renamed into place on success).
-  // Normally forks a copy-on-write child so the server keeps serving; but when
-  // --arena-hugetlb is set, fork+COW is unsafe (2 MiB COW granularity), so the save
-  // runs synchronously in-process, blocking the event loop for its duration. Either
-  // way returns a start status immediately; call reap_background_save() from the
-  // event loop to collect the result. File saves and streamed dumps share one
-  // background-snapshot slot.
-  enum class SaveStart { Started, AlreadyRunning, ForkFailed };
+  // Persist synchronously to `path`, including fsync + atomic rename, and report
+  // only after the final path is installed. A concurrent fork-time snapshot owns
+  // the shared snapshot slot and makes SAVE fail rather than racing its temp file.
+  enum class SaveResult { Saved, AlreadyRunning, Failed };
+  [[nodiscard]] SaveResult save_file(std::string path,
+                                     bool with_accelerator = true);
+
+  // Fork a copy-on-write child and return as soon as it owns a frozen snapshot.
+  // File saves and streamed dumps share one background-snapshot slot. HugeTLB
+  // arenas reject BGSAVE instead of silently turning it into a blocking SAVE.
+  enum class SaveStart {
+    Started,
+    AlreadyRunning,
+    ForkFailed,
+    HugeTlbUnsafe,
+    ForkUnsafe,
+  };
   [[nodiscard]] SaveStart start_background_save(std::string path,
                                                 bool with_accelerator = true);
   // Some polled runtimes cannot be inherited safely across fork(). Disabling
-  // background fork makes file SAVE synchronous and rejects streamed dumps.
+  // background fork rejects BGSAVE and streamed dumps; SAVE remains synchronous.
   void set_background_fork_enabled(bool enabled) noexcept {
     background_fork_enabled_ = enabled;
   }
@@ -2522,7 +2535,7 @@ class Store {
   };
   [[nodiscard]] std::optional<SaveOutcome> reap_background_save() noexcept;
   [[nodiscard]] bool background_save_in_progress() const noexcept {
-    return background_save_child_ > 0 || background_save_sync_pending_;
+    return background_save_child_ > 0;
   }
 
   // Fork a copy-on-write child that writes the same native snapshot bytes to a
@@ -2667,13 +2680,13 @@ class Store {
   ReplicaRuntimeStatus replica_runtime_status_{};
   int background_save_child_ = -1;  // pid of an in-flight fork(), or -1
   std::string background_save_path_;
-  // With --arena-hugetlb, fork+COW is unsafe (a huge-page mapping COWs at 2 MiB), so
-  // SAVE runs synchronously in-process. These carry its already-finished outcome to
-  // the next reap_background_save(), leaving the caller's start/reap flow unchanged.
-  bool background_save_sync_pending_ = false;
-  bool background_save_sync_ok_ = false;
   bool background_fork_enabled_ = true;
   int background_dump_child_ = -1;  // pid of an in-flight pipe writer, or -1
+  // Acquired only in the parent after fork succeeds. While the child owns a COW
+  // view, arena maintenance accumulates dead bytes instead of rewriting live
+  // pages; ordinary allocation and logical mutations continue.
+  std::optional<ArenaCompactionSuspension>
+      background_snapshot_compaction_suspension_;
   // Write the snapshot to `path` via a temp file + fsync + atomic rename. Shared by
   // the forked child and the synchronous save path; returns false on any error.
   [[nodiscard]] bool save_to_file(const std::string& path,

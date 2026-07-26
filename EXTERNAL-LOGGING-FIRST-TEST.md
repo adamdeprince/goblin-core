@@ -25,6 +25,7 @@ is:
 3. Start Goblin Core with `--kafka kafka://BROKER/TOPIC`. On the first start,
    omit `--load` and let it consume the retained topic from the beginning.
 4. Create a native snapshot with `GOBLIN.SAVE /path/to/state.snapshot ACCEL`.
+   Its `OK` reply means the snapshot has been fsynced and atomically installed.
 5. On subsequent starts, supply that snapshot and the same Kafka topic:
 
 ```ini

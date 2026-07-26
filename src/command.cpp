@@ -2437,10 +2437,12 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
       command.type = CommandType::goblin_optimize;
       return {.command = std::move(command)};
     case CommandType::goblin_save:
-      if (command.args.size() != 1 && command.args.size() != 2) {
-        return parse_error(wrong_arity("goblin.save"));
+      if (command.args.size() > 2) {
+        return parse_error(wrong_arity(command.name));
       }
       command.type = CommandType::goblin_save;
+      command.background_save = equals_ci(command.name, "bgsave") ||
+                                equals_ci(command.name, "goblin.bgsave");
       return {.command = std::move(command)};
     case CommandType::goblin_load:
       if (command.args.size() != 1) {
@@ -2867,6 +2869,7 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::hello:
     case CommandType::unsubscribe:
     case CommandType::punsubscribe:
+    case CommandType::goblin_save:
       return -1;
     case CommandType::auth:
     case CommandType::config:
@@ -2888,7 +2891,6 @@ constexpr std::string_view kCommandNames[] = {
     case CommandType::exists:
     case CommandType::scan:
     case CommandType::goblin_optimize:
-    case CommandType::goblin_save:
       return -2;
     case CommandType::eval:
     case CommandType::evalsha:
@@ -6211,16 +6213,42 @@ void execute_command_into_impl(Store& store,
           return;
         }
       }
-      switch (store.start_background_save(std::string(command.args[0]),
-                                          with_accelerator)) {
+      const std::string_view path =
+          command.args.empty() ? std::string_view{"dump.gcsn"} : command.args[0];
+      if (!command.background_save) {
+        switch (store.save_file(std::string(path), with_accelerator)) {
+          case Store::SaveResult::Saved:
+            resp::append_simple_string(out, "OK");
+            break;
+          case Store::SaveResult::AlreadyRunning:
+            resp::append_error(out, "ERR background snapshot already in progress");
+            break;
+          case Store::SaveResult::Failed:
+            resp::append_error(out, "ERR snapshot save failed");
+            break;
+        }
+        return;
+      }
+
+      switch (store.start_background_save(std::string(path), with_accelerator)) {
         case Store::SaveStart::Started:
           resp::append_simple_string(out, "Background saving started");
           break;
         case Store::SaveStart::AlreadyRunning:
-          resp::append_error(out, "ERR background save already in progress");
+          resp::append_error(out, "ERR background snapshot already in progress");
           break;
         case Store::SaveStart::ForkFailed:
           resp::append_error(out, "ERR cannot fork for background save");
+          break;
+        case Store::SaveStart::HugeTlbUnsafe:
+          resp::append_error(
+              out, "ERR BGSAVE is unavailable with HugeTLB arenas; use SAVE");
+          break;
+        case Store::SaveStart::ForkUnsafe:
+          resp::append_error(
+              out,
+              "ERR BGSAVE is unavailable while a transport that cannot survive "
+              "fork is active; use SAVE");
           break;
       }
       return;
