@@ -37,7 +37,7 @@ void header_round_trip() {
 }
 
 void hello_round_trip() {
-  constexpr std::string_view version = "0.10.1";
+  constexpr std::string_view version = "0.10.2";
   const std::array address{std::byte{1}, std::byte{2}, std::byte{3}};
   std::vector<std::byte> wire(hello_payload_bytes(version, address.size()));
   assert(encode_hello(wire, version, address, 64));

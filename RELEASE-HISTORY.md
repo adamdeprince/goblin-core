@@ -12,6 +12,36 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 Nothing yet.
 
+## v0.10.2 — July 26, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.2)
+
+The provider-neutral fabric and network-path qualification release.
+
+- Added a busy-polled libfabric `FI_EP_RDM` transport carrying RESP2 or typed
+  SBE through `FI_MSG`, `fi_send`/`fi_recv`, and completion queues. Production
+  deployments can select AWS EFA with `--efa`; `--libfabric` selects providers
+  such as `tcp` and `verbs;ofi_rxm` for local qualification.
+- Added independent 64-bit request and reply sequences for every logical
+  client, bounded out-of-order sequestering, exact-version handshakes, and
+  automatic PING heartbeats. One endpoint serves multiple clients without
+  weakening per-client command, reply, or Pub/Sub ordering.
+- Integrated libfabric targets into Goblin's literal strict-priority poll
+  order, added explicit trusted-fabric authentication policy, and provided
+  `--libfabric-force-send` to exercise the full transmit completion path
+  instead of eligible small-frame injection.
+- Vendored AWS libfabric `2.4.0amzn5.0` under its permissive BSD option and
+  added a reproducible static-library build helper, C++ client support,
+  transport tests, installation guidance, and operational documentation.
+- Published a 16-million-operation provider matrix over a direct 100 Gb/s
+  ConnectX-5 link. SBE over `verbs;ofi_rxm` averaged 6.39 microseconds at p50
+  and 156,498 sequential round trips per second across eight operations,
+  versus 90.33 microseconds and 11,170 for RESP2 over kernel TCP.
+- Removed a libfabric tail-latency defect by polling the TCP bootstrap listener
+  before calling `accept()`. The immediate SBE/RDM control reduced average
+  p99.99 from 857.47 to 29.47 microseconds; the independent full matrix
+  reproduced it at 30.83 microseconds.
+
 ## v0.10.1 — July 25, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.1)
