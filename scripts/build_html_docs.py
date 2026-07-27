@@ -652,12 +652,20 @@ def render_markdown(markdown: str, hero_href: str | None = None) -> str:
             index += 1
             continue
 
-        quote = re.match(r"^\s*>\s?(.+)$", line)
+        quote = re.match(r"^\s*>\s?(.*)$", line)
         if quote:
             flush_paragraph(out, paragraph)
             flush_list(out, list_items)
-            out.append(f"<blockquote>{render_inline(quote.group(1).strip())}</blockquote>")
-            index += 1
+            quote_lines: list[str] = []
+            while index < len(lines):
+                quote = re.match(r"^\s*>\s?(.*)$", lines[index])
+                if not quote:
+                    break
+                quote_lines.append(quote.group(1).strip())
+                index += 1
+            out.append(
+                f"<blockquote>{render_inline(' '.join(quote_lines).strip())}</blockquote>"
+            )
             continue
 
         flush_list(out, list_items)
