@@ -298,6 +298,7 @@ img {
 
 .doc-footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 30px;
   margin-top: 4.5rem;
@@ -309,6 +310,13 @@ img {
 
 .doc-footer a {
   font-weight: 760;
+}
+
+.doc-footer .trademark-notice {
+  flex-basis: 100%;
+  margin: -14px 0 0;
+  color: var(--muted);
+  font: 0.68rem/1.55 var(--sans);
 }
 
 @media (max-width: 800px) {
@@ -755,6 +763,11 @@ def render_page(page: Page, nav_pages: Sequence[Page], output_dir: Path) -> str:
         '<footer class="doc-footer">',
         '<span>GOBLIN CORE / APACHE-2.0</span>',
         f'<span>Source and issues on <a href="{REPO_URL}">GitHub</a>.</span>',
+        '<p class="trademark-notice">Redis® is a registered trademark of Redis Ltd. '
+        'Any rights therein are reserved to Redis Ltd. Goblin Core is an independent '
+        'project and is not affiliated with, sponsored, supported, certified, or '
+        'endorsed by Redis Ltd. References to Redis® are solely to identify the Redis '
+        'product and describe protocol and command compatibility.</p>',
         '</footer>',
         "</main>",
         "</body>",
