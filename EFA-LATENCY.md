@@ -16,8 +16,8 @@ result; every workload deliberately used pipeline depth one.
 > is not an AWS EFA hardware result. Native provider `efa` was unavailable on
 > the local machines. The measured providers were `tcp` and `verbs;ofi_rxm`
 > on a pair of 14-year-old, four-socket Intel Xeon E5-4657L v2 systems over a
-> direct 100 Gb/s Mellanox ConnectX-5 Ethernet link. An EFA instance still
-> needs its own run.
+> direct 100 Gb/s Mellanox ConnectX-5 Ethernet link. The
+> [native AWS EFA fast follow](AWS-EFA-LATENCY.md) is now published.
 
 ## Complete ranking
 

@@ -62,10 +62,10 @@ verify_numa_endpoint() {
   local host=$1
   local cpu=$2
   if ! remote "$host" \
-    "test \"\$(cat '/sys/class/net/$NIC/device/numa_node')\" = '$NUMA_NODE' && test -e '/sys/devices/system/cpu/cpu$cpu/node$NUMA_NODE' && command -v numactl >/dev/null"; then
+    "nic_node=\$(cat '/sys/class/net/$NIC/device/numa_node'); node_count=\$(find /sys/devices/system/node -maxdepth 1 -type d -name 'node[0-9]*' | wc -l); { test \"\$nic_node\" = '$NUMA_NODE' || { test \"\$nic_node\" = -1 && test '$NUMA_NODE' = 0 && test \"\$node_count\" = 1; }; } && test -e '/sys/devices/system/cpu/cpu$cpu/node$NUMA_NODE' && command -v numactl >/dev/null"; then
     log "$host: $NIC and CPU $cpu must both belong to NUMA node $NUMA_NODE"
     remote "$host" \
-      "printf 'nic node: '; cat '/sys/class/net/$NIC/device/numa_node'; lscpu -e=CPU,NODE,SOCKET,CORE | awk 'NR == 1 || \$1 == $cpu'" \
+      "printf 'nic node: '; cat '/sys/class/net/$NIC/device/numa_node'; printf 'system nodes: '; find /sys/devices/system/node -maxdepth 1 -type d -name 'node[0-9]*' | wc -l; lscpu -e=CPU,NODE,SOCKET,CORE | awk 'NR == 1 || \$1 == $cpu'" \
       >&2 || true
     exit 1
   fi

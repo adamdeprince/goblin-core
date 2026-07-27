@@ -1,0 +1,54 @@
+timestamp_utc=20260727T193212Z
+git_commit=96bcececd06a0983bb94ee12ec010dec9a9beb34
+server_host=AWS hpc7g endpoint A
+client_host=AWS hpc7g endpoint B
+server_address=private VPC endpoint A
+client_address=private VPC endpoint B
+interface=ens5
+server_cpu=8
+client_cpu=8
+numa_node=0
+instance_type=hpc7g.4xlarge
+availability_zone=us-east-1d
+placement_strategy=cluster
+architecture=aarch64
+physical_cores=16
+sockets=1
+numa_nodes=1
+shared_l3_mib=32
+efa_generation=EFA2
+efa_active_mtu=4096
+providers=efa,tcp
+send_modes=auto,send
+wires=resp,sbe
+endpoint=FI_EP_RDM
+caps=FI_MSG+FI_SOURCE
+rx_api=fi_recv
+completion_api=fi_cq_read+fi_cq_readfrom
+samples=200000
+warmup=20000
+libfabric_version=2.4.0amzn5.0
+goblin_sha256=77395b6d47ef7130dbd8b52438590007b05e2dabe48be7aafcda4577063d2984
+probe_sha256=70f3d70792c6690cbeeb6d294bab8f13655df38b6b2bd330b2835e61526abad0
+
+[AWS hpc7g endpoint A]
+Linux 6.1.176-221.367.amzn2023.aarch64
+Socket(s):                               1
+NUMA node(s):                            1
+ens5             UP
+nic_numa=-1
+	Link detected: yes
+driver: ena
+firmware-version: 
+bus-info: 0000:00:05.0
+
+[AWS hpc7g endpoint B]
+Linux 6.1.176-221.367.amzn2023.aarch64
+Socket(s):                               1
+NUMA node(s):                            1
+ens5             UP
+nic_numa=-1
+	Link detected: yes
+driver: ena
+firmware-version: 
+bus-info: 0000:00:05.0

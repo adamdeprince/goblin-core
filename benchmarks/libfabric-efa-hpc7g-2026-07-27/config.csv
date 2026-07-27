@@ -1,0 +1,11 @@
+label,transport,protocol,pipeline,endpoint,buffers,samples,warmup
+efa-resp-auto,libfabric-RDM:efa,RESP2,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=auto-inject,client-work=131072,samples=200000,warmup=20000
+efa-resp-send,libfabric-RDM:efa,RESP2,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=fi_send,client-work=131072,samples=200000,warmup=20000
+efa-sbe-auto,libfabric-RDM:efa,SBE,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=auto-inject,client-work=131072,samples=200000,warmup=20000
+efa-sbe-send,libfabric-RDM:efa,SBE,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=fi_send,client-work=131072,samples=200000,warmup=20000
+kernel-tcp-resp,kernel-tcp,RESP2,depth=1,172.31.40.12->172.31.36.14:17397,snd=332800;rcv=131072,client-work=131072,samples=200000,warmup=20000
+kernel-tcp-sbe,kernel-tcp,SBE,depth=1,kernel-route->172.31.36.14:17397,client-work=131072;TCP_NODELAY,client-work=131072,samples=200000,warmup=20000
+tcp-resp-auto,libfabric-RDM:tcp,RESP2,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=auto-inject,client-work=131072,samples=200000,warmup=20000
+tcp-resp-send,libfabric-RDM:tcp,RESP2,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=fi_send,client-work=131072,samples=200000,warmup=20000
+tcp-sbe-auto,libfabric-RDM:tcp,SBE,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=auto-inject,client-work=131072,samples=200000,warmup=20000
+tcp-sbe-send,libfabric-RDM:tcp,SBE,depth=1,172.31.40.12->172.31.36.14:17401,tx-slots=16;rx-slots=16;max-payload=131072;reorder=64/1048576;send=fi_send,client-work=131072,samples=200000,warmup=20000

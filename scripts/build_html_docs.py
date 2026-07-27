@@ -152,6 +152,7 @@ a {
 
 .doc {
   min-width: 0;
+  max-width: 100%;
 }
 
 h1,
@@ -168,6 +169,7 @@ h1 {
   font-size: clamp(3rem, 7vw, 6.3rem);
   font-weight: 880;
   line-height: 0.94;
+  overflow-wrap: anywhere;
 }
 
 h2 {
@@ -199,7 +201,7 @@ h4 {
 
 p,
 ul,
-table,
+.table-scroll,
 pre {
   margin: 0 0 1.2rem;
 }
@@ -241,12 +243,17 @@ pre code {
   color: inherit;
 }
 
-table {
+.table-scroll {
   width: 100%;
-  border-collapse: collapse;
-  display: block;
+  max-width: 100%;
   overflow-x: auto;
   border-block: 1px solid var(--ink);
+}
+
+.table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
 }
 
 th,
@@ -549,14 +556,20 @@ def split_table_row(line: str) -> list[str]:
 def render_table(lines: Sequence[str]) -> str:
     headers = split_table_row(lines[0])
     body = [split_table_row(line) for line in lines[2:]]
-    out = ["<table>", "<thead>", "<tr>"]
+    out = [
+        '<div class="table-scroll" role="region" '
+        'aria-label="Scrollable data table" tabindex="0">',
+        "<table>",
+        "<thead>",
+        "<tr>",
+    ]
     out.extend(f"<th>{render_inline(cell)}</th>" for cell in headers)
     out.extend(["</tr>", "</thead>", "<tbody>"])
     for row in body:
         out.append("<tr>")
         out.extend(f"<td>{render_inline(cell)}</td>" for cell in row)
         out.append("</tr>")
-    out.extend(["</tbody>", "</table>"])
+    out.extend(["</tbody>", "</table>", "</div>"])
     return "\n".join(out)
 
 
