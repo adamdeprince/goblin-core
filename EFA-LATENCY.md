@@ -15,8 +15,9 @@ result; every workload deliberately used pipeline depth one.
 > **Scope:** this qualifies the Goblin code path intended for AWS EFA, but it
 > is not an AWS EFA hardware result. Native provider `efa` was unavailable on
 > the local machines. The measured providers were `tcp` and `verbs;ofi_rxm`
-> over a direct 100 Gb/s Mellanox ConnectX-5 Ethernet link. An EFA instance
-> still needs its own run.
+> on two decade-old, four-socket Intel Xeon E5-4657L v2 systems over a direct
+> 100 Gb/s Mellanox ConnectX-5 Ethernet link. An EFA instance still needs its
+> own run.
 
 ## Complete ranking
 
@@ -130,7 +131,6 @@ The preserved pre-fix results and traces are in
 
 ## Method
 
-- Server: `butterfly`, `10.100.0.1`; client: `rain`, `10.100.0.2`.
 - Both hosts are four-socket Intel Xeon E5-4657L v2 systems running Linux
   5.15.0-186.
 - Both endpoints use a Mellanox ConnectX-5 (firmware 16.35.8008) negotiated at
