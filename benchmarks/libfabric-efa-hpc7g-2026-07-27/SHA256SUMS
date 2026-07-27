@@ -1,4 +1,4 @@
-f03fa47489423880e4610fbbcf8974078203a96e6c00d46e63a72ed40c635d6f  benchmarks/libfabric-efa-hpc7g-2026-07-27/README.md
+c62e9a01b1385e2acd21ae85cbec08c16e39be58773a0de727b0976839f42372  benchmarks/libfabric-efa-hpc7g-2026-07-27/README.md
 d64b6b6e60d1dc90de16be3defa00a9ec8872f4ddaa977b747bac6c228df7d24  benchmarks/libfabric-efa-hpc7g-2026-07-27/aggregate.csv
 d0badfc668126f08bbcfad361d2089a107eee8e658242c771b8b4aac14da7bee  benchmarks/libfabric-efa-hpc7g-2026-07-27/comparison-latency.csv
 3d7517eb0d4f7e61943fb90bc0fd631427ed124064d8058a3a587c6866ff468c  benchmarks/libfabric-efa-hpc7g-2026-07-27/config.csv
@@ -24,7 +24,6 @@ bfc691dd4186d7d0f8b429d6151e0df7abcb7f36d7bbe59fd1a8206c318b3cca  benchmarks/lib
 6564b8964c92b6251cc899e82b53482b831ca2eb69d68065dd947dbaf3c8d8b8  benchmarks/libfabric-efa-hpc7g-2026-07-27/kernel-tcp.server.log
 0c4019cd38483d42cdfbd1fd05dce9a52a5dacf9bb5082d6ab5d152389c888ed  benchmarks/libfabric-efa-hpc7g-2026-07-27/latency.csv
 0647508218087ca5bd7bdd895d1d1a195dd823908d3a23585a7078359b33404b  benchmarks/libfabric-efa-hpc7g-2026-07-27/metadata.txt
-5660399435e205f386fe7691637c678369c16a0f7b821022e9d1eebf223531ec  benchmarks/libfabric-efa-hpc7g-2026-07-27/pre-placement-smoke-latency.csv
 841f5949229676f5f5c51a547b8693b4bcf489a33690e4a199a4ca733b9a33fc  benchmarks/libfabric-efa-hpc7g-2026-07-27/tcp-auto.server.log
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  benchmarks/libfabric-efa-hpc7g-2026-07-27/tcp-resp-auto.err
 34e6b54a058a5269519148fb5c05704beb17f25724d33b6fd56625b430c521ce  benchmarks/libfabric-efa-hpc7g-2026-07-27/tcp-resp-auto.out

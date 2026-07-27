@@ -30,7 +30,6 @@ with AWS libfabric `2.4.0amzn5.0`. `metadata.txt` records the executable hashes.
 | `comparison-latency.csv` | Canonical 80-distribution comparison used by the document |
 | `aggregate.csv` | Eight-operation averages ranked by median |
 | `latency.csv` | Original one-pass matrix, including its first kernel controls |
-| `pre-placement-smoke-latency.csv` | 1,000-sample EFA matrix before cluster placement |
 | `config.csv` | Transport, wire, endpoint, buffer, and sample metadata |
 | `efa-*.out`, `tcp-*.out` | Per-provider raw distributions |
 | `kernel-tcp-*.out` | Kernel controls from the first one-pass matrix |

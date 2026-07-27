@@ -18,27 +18,6 @@ keeps its publisher and subscriber connections open.
 *Scope: two AWS `hpc7g.4xlarge` instances, native EFA2, `FI_EP_RDM`, AWS
 libfabric `2.4.0amzn5.0`, and Goblin commit `96bcece` on July 27, 2026.*
 
-## Placement is part of the hardware
-
-The first attempt put both instances in the same availability zone but not in
-a cluster placement group. EFA negotiated and every operation worked, but the
-path was wrong: 64-byte `fi_pingpong` took 192.83 microseconds per transfer and
-Goblin's eight SBE operations averaged 357.53 microseconds at p50.
-
-Both instances were stopped, assigned to one cluster placement group, and
-started together. The same fabric sanity check fell to 10.29 microseconds per
-transfer. Goblin's full SBE/EFA matrix then averaged 23.06 microseconds at p50.
-
-| Topology | 64-byte `fi_pingpong` (us/transfer) | Goblin EFA/SBE avg p50 (us) |
-|---|---:|---:|
-| Same AZ, no placement group | 192.83 | 357.53 |
-| Cluster placement group | 10.29 | 23.06 |
-| Improvement | 18.74x | 15.50x |
-
-The unplaced Goblin row is a 1,000-sample setup smoke test; the placed row is
-the 200,000-sample publication run. The comparison is not a tail claim. It is
-a deployment warning: "EFA attached" does not mean "latency topology correct."
-
 ## Complete ranking
 
 Modes are ranked by the arithmetic average of the eight per-operation medians.
@@ -135,9 +114,8 @@ throughput. EFA is a latency path in this test, not a bandwidth target.
 
 The [raw AWS matrix on
 GitHub](https://github.com/adamdeprince/goblin-core/tree/main/benchmarks/libfabric-efa-hpc7g-2026-07-27)
-includes all publication distributions, the pre-placement smoke result,
-dedicated kernel repeats, aggregate CSV, build hashes, provider logs, and
-sanitized hardware metadata.
+includes all publication distributions, dedicated kernel repeats, aggregate
+CSV, build hashes, provider logs, and sanitized hardware metadata.
 
 ## Reproduction
 
