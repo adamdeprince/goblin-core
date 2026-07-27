@@ -1,0 +1,6 @@
+goblin-core SIMD caps: neon=0 avx2=0 avx512bw=0 avx512vl=0 lsx=0 lasx=0
+goblin-core NUMA: node 1 selected explicitly, CPU 5
+goblin-core: SBE enabled as a trusted, unauthenticated fabric
+goblin-core listening on tcp://127.0.0.1:17699
+goblin-core: libfabric verbs;ofi_rxm 10.100.0.1:17401 ready (FI_EP_RDM, fi_send, 0 ms heartbeat lease)
+goblin-core: polled mode -- busy-polling 1 ordered server target(s) ahead of sockets (100% CPU by design)

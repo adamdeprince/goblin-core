@@ -29,11 +29,21 @@ struct RdmaConfig {
   std::uint64_t bytes{0};
 };
 
-// One ExaSock-priority TCP listener from `--exasock <address> <port>`. Serviced
-// in the same strict busy-poll order as rings and RDMA (before the sparse plain
-// socket pass). Under the `exasock` LD_PRELOAD wrapper and an ExaNIC bind
-// address, accepted sockets are kernel-bypassed; without the wrapper this is
-// still a high-priority TCP target.
+// One reliable-datagram libfabric endpoint. `port` is a short-lived TCP
+// bootstrap listener used only to exchange the provider's opaque endpoint
+// address; commands and replies stay on libfabric. Production uses provider
+// "efa"; provider-neutral values such as "verbs;ofi_rxm" support qualification.
+struct LibfabricConfig {
+  std::string provider;
+  std::string bootstrap_address;
+  std::uint16_t bootstrap_port{0};
+};
+
+// One ExaSock-priority TCP listener from `--exasock <address> <port>`.
+// Serviced in the same strict busy-poll order as rings, RDMA, libfabric, and
+// XLIO (before the sparse plain-socket pass). Under the `exasock` LD_PRELOAD
+// wrapper and an ExaNIC bind address, accepted sockets are kernel-bypassed;
+// without the wrapper this is still a high-priority TCP target.
 struct ExasockConfig {
   std::string bind_address;
   std::uint16_t port{0};
@@ -41,18 +51,20 @@ struct ExasockConfig {
 
 // One native XLIO Ultra TCP listener from `--xlio <address> <port>`. Each
 // instance owns its own polling group so literal command-line order remains the
-// strict priority order across XLIO, ring, RDMA, and ExaSock targets.
+// strict priority order across XLIO, ring, RDMA, libfabric, and ExaSock targets.
 struct XlioConfig {
   std::string bind_address;
   std::uint16_t port{0};
 };
 
-// Polled targets retain their literal command-line order. A mixed sequence such
-// as `--ring A --xlio B --rdma C --ring D` is therefore scanned A, B, C, D,
-// followed by the sparse plain-socket pass. Progress restarts the scan at A, so
-// a continuously ready earlier target intentionally can starve later targets.
+// Polled targets retain their literal command-line order. For example,
+// `--ring /tmp/a 64kb --xlio 10.0.0.1 7000 --efa 10.0.0.2 7001
+// --rdma 10.0.0.3 7002 1mb` scans ring, XLIO, EFA, then RDMA before the sparse
+// plain-socket pass. Progress restarts at the ring, so a continuously ready
+// earlier target intentionally can starve later targets.
 using PollTargetConfig =
-    std::variant<RingConfig, RdmaConfig, ExasockConfig, XlioConfig>;
+    std::variant<RingConfig, RdmaConfig, LibfabricConfig, ExasockConfig,
+                 XlioConfig>;
 
 // One outbound SBE Pub/Sub subscription. The local server subscribes to the
 // upstream Goblin Core instance and republishes received channel/payload pairs
@@ -120,8 +132,8 @@ using ReplicaSourceConfig =
                  ReplicaTcpConfig>;
 
 // Ordinary RESP/SBE socket listeners. These are intentionally separate from
-// polled ring, RDMA, and ExaSock targets: every configured socket participates
-// in the same sparse poll() pass.
+// polled ring, RDMA, libfabric, XLIO, and ExaSock targets: every configured
+// socket participates in the same sparse poll() pass.
 struct TcpListenerConfig {
   std::string bind_address;
   std::uint16_t port{0};
@@ -142,8 +154,8 @@ using SocketListenerConfig =
 
 // One certificate identity shared by TLS-enabled ordinary TCP listeners. The
 // certificate file may contain the leaf certificate followed by its chain.
-// UDS, ring, RDMA, and ExaSock transports remain inside the trusted transport
-// boundary and do not use this context.
+// UDS, ring, RDMA, libfabric, XLIO, and ExaSock transports remain inside the
+// trusted transport boundary and do not use this context.
 struct TlsConfig {
   std::string certificate_chain_file;
   std::string private_key_file;
@@ -199,10 +211,10 @@ struct ServerConfig {
   // Per-connection socket read buffer (the chunk each recv() fills). Configurable so
   // an operator can trade memory for fewer syscalls on large-message workloads.
   std::size_t client_read_buffer_bytes{16U * 1024U};
-  // Shared-memory rings, ExaSock TCP listeners, and RDMA targets, highest priority
-  // first (literal CLI order). When non-empty the server busy-polls these before
-  // the sparse plain-socket pass (and spins at 100% CPU by design); when empty it
-  // runs the ordinary low-CPU poll() loop.
+  // Shared-memory rings, ExaSock/XLIO targets, RDMA rings, and libfabric RDM
+  // endpoints, highest priority first (literal CLI order). When non-empty the
+  // server busy-polls these before the sparse plain-socket pass (and spins at
+  // 100% CPU by design); when empty it runs the ordinary low-CPU poll() loop.
   std::vector<PollTargetConfig> poll_targets{};
   // Optional upstream Goblin Core instance. It is always an SBE PSUBSCRIBE
   // client and therefore requires the exact same Goblin Core version.
@@ -221,7 +233,15 @@ struct ServerConfig {
   // whole transport class as inside the operator's trusted boundary.
   bool no_auth_ring{false};
   bool no_auth_rdma{false};
+  bool no_auth_libfabric{false};
   bool no_auth_xlio{false};
+  // Lease for logical FI_EP_RDM clients. The server advertises it during the
+  // version handshake; clients PING at one third of the lease while otherwise
+  // idle. Zero disables heartbeat expiry.
+  std::uint32_t efa_heartbeat_timeout_ms{3000};
+  // Force every libfabric frame through fi_send and its TX completion queue.
+  // The default permits fi_inject for frames within the provider's limit.
+  bool libfabric_force_send{false};
   // Back the rings with huge pages (Linux hugetlbfs) to cut ring TLB pressure. The
   // requested size rounds up to the huge-page size, and each --ring PATH becomes a
   // symlink into the hugetlbfs mount. Linux-only; rejected at startup elsewhere.

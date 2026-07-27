@@ -11,7 +11,7 @@ isolation, and NUMA placement are Linux facilities.
 
 The complete Linux workflow below was verified on Ubuntu 22.04.1 with CMake
 3.28.6, GCC 16.1, and Ninja 1.10.1. The default build detected Kafka, OpenSSL
-TLS, SBE, and InfiniBand/RDMA support; all 36 tests and the installed-program
+TLS, SBE, and InfiniBand/RDMA support; all 37 tests and the installed-program
 smoke test passed.
 
 ## 1. Install the build prerequisites
@@ -202,6 +202,8 @@ profile makes the resulting binary easier to audit.
 | `GOBLIN_CORE_ENABLE_KAFKA` | `ON` | Compiles vendored librdkafka and enables Kafka journaling/replay. No system librdkafka is needed. |
 | `GOBLIN_CORE_ENABLE_TLS` | `ON` | Enables OpenSSL TLS for ordinary non-loopback TCP listeners and TLS replica connections. Requires OpenSSL development files. |
 | `GOBLIN_CORE_ENABLE_RDMA` | `ON` | Enables polled RDMA rings on Linux when libibverbs and librdmacm are found. Missing libraries or a non-Linux host disable it with a CMake status message. |
+| `GOBLIN_CORE_ENABLE_LIBFABRIC` | `OFF` | Enables provider-neutral `FI_EP_RDM` and AWS EFA on Linux. Build the vendored static library first and set `GOBLIN_CORE_LIBFABRIC_ROOT` to its install prefix. |
+| `GOBLIN_CORE_LIBFABRIC_ROOT` | empty | Prefix produced by `scripts/build-libfabric.sh`; required when libfabric support is enabled. |
 | `GOBLIN_CORE_ENABLE_XLIO` | `OFF` | Enables native NVIDIA XLIO Ultra TCP on Linux. The vendored headers compile with Goblin, but the pinned DPCP/XLIO runtime must also be built and preloaded. |
 | `GOBLIN_CORE_STATIC_GNU_RUNTIME` | `ON` | With GCC, links `libstdc++` and `libgcc` statically while leaving libc and device libraries dynamic. It has no effect with Clang/MSVC. |
 | `GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS` | `OFF` | Adds sequential and pipelined compatibility tests against an installed `redis-server`. This is a test dependency, never a server runtime dependency. |
@@ -287,6 +289,18 @@ Install libibverbs/librdmacm, leave `GOBLIN_CORE_ENABLE_RDMA=ON`, and confirm
 CMake reports `GOBLIN_HAS_RDMA`. Runtime targets use
 `--rdma ADDRESS PORT SIZE`. See [polled RDMA rings](docs/rdma-rings.md) and the
 [InfiniBand setup guide](docs/infiniband-setup.md).
+
+### Libfabric and AWS EFA
+
+Build the vendored AWS libfabric once with `scripts/build-libfabric.sh PREFIX`,
+then configure with `GOBLIN_CORE_ENABLE_LIBFABRIC=ON` and
+`GOBLIN_CORE_LIBFABRIC_ROOT=PREFIX`. Runtime EFA targets use
+`--efa ADDRESS PORT`; `--libfabric PROVIDER ADDRESS PORT` selects the same RDM
+implementation for provider-neutral qualification.
+`--libfabric-force-send` disables the small-frame `fi_inject()` shortcut so
+every frame uses `fi_send()` and a TX completion. See
+[libfabric RDM and AWS EFA](docs/efa.md) for ordering, bootstrap, sequence, and
+heartbeat behavior.
 
 ### XLIO Ultra
 

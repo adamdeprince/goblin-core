@@ -19,6 +19,9 @@
 #if defined(GOBLIN_HAS_RDMA)
 #include "goblin/core/rdma_ring.hpp"
 #endif
+#if defined(GOBLIN_HAS_LIBFABRIC)
+#include "goblin/core/libfabric_transport.hpp"
+#endif
 #if defined(GOBLIN_HAS_EXASOCK)
 #include "goblin/core/exasock_transport.hpp"
 #endif
@@ -2195,6 +2198,10 @@ using SbeRingClient = BasicSbeClient<RingSbeTransport>;
 using SbeSocketClient = BasicSbeClient<SocketSbeTransport>;
 #if defined(GOBLIN_HAS_RDMA)
 using SbeRdmaClient = BasicSbeClient<rdma::ClientTransport>;
+#endif
+#if defined(GOBLIN_HAS_LIBFABRIC)
+using SbeLibfabricClient = BasicSbeClient<fabric::ClientTransport>;
+using SbeEfaClient = SbeLibfabricClient;
 #endif
 #if defined(GOBLIN_HAS_EXASOCK)
 using SbeExasockClient = BasicSbeClient<exasock::ClientTransport>;

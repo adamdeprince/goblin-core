@@ -45,6 +45,17 @@ Kafka command-log ingestion uses the vendored librdkafka C client:
                             https://github.com/confluentinc/librdkafka
                             third_party/librdkafka/LICENSE
 
+EFA and provider-neutral reliable-datagram networking use AWS's qualified
+libfabric release. Goblin Core elects its permissive BSD license option rather
+than its GPL option:
+
+  AWS libfabric 2.4.0amzn5.0
+                            Copyright (c) Intel Corporation
+                            Copyright (c) 2015-2019 Cisco Systems, Inc.
+                            (BSD OR GPL-2.0-only; selected BSD)
+                            https://github.com/aws/libfabric
+                            third_party/libfabric/COPYING
+
 XLIO Ultra networking uses pinned NVIDIA XLIO and Direct Packet Control Plane
 sources. Goblin Core elects XLIO's permissive BSD license option rather than its
 GPL option:

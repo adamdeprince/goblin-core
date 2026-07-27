@@ -32,8 +32,9 @@ parses or re-stringifies numbers, and the server dispatches straight out of the 
 The C++ typed client is compile-time-dispatched over its transport:
 `SbeSocketClient` uses TCP or a Unix-domain socket, `SbeRingClient` uses the
 co-located shared-memory ring, and `SbeRdmaClient` uses the cross-host one-sided
-ring. They expose the same command API without a virtual call on the request
-path.
+ring. `SbeLibfabricClient` uses provider-neutral reliable datagrams, including
+[AWS EFA](efa.md). They expose the same command API without a virtual call on
+the request path.
 
 **SBE is a lockstep protocol in Goblin Core. An SBE client and server must run
 exactly the same Goblin Core version; behavior is undefined when their versions
@@ -212,6 +213,13 @@ pattern message, `2`/`3` for literal/pattern subscribe acknowledgement, and
 `4`/`5` for literal/pattern unsubscribe acknowledgement. The typed client queues
 pushes that arrive while it waits for a synchronous reply, including the
 self-publish ordering where deliveries precede the `Publish` `IntReply`.
+
+Libfabric RDM adds an envelope outside this SBE framing. Its independent
+client-request and server-reply sequence counters restore per-connection order
+when a reliable-datagram provider completes packets out of order. The server
+sequesters a bounded gap and drains it when the missing sequence arrives;
+ordinary replies echo the request sequence while unsolicited Pub/Sub output
+uses zero. This envelope is transport state and does not alter the SBE schema.
 
 The server keeps a page-backed unsolicited-output FIFO per SBE connection, just
 as it does for RESP. See the [Pub/Sub command reference](commands/pubsub.md) for

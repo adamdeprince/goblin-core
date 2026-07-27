@@ -1,0 +1,2 @@
+LIBFABRIC_ORDER,client-replies,6593698830520165103,received=220001,delivered=220001,sequestered=0,duplicates=0,overflows=0,max-gap=0,max-pending=0
+LIBFABRIC_ORDER,client-replies,18091972501959878530,received=1760003,delivered=1760003,sequestered=0,duplicates=0,overflows=0,max-gap=0,max-pending=0

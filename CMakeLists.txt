@@ -18,6 +18,11 @@ option(GOBLIN_CORE_BUILD_HTML_DOCS "Build HTML documentation from Markdown" ON)
 option(GOBLIN_CORE_ENABLE_RDMA
   "Enable InfiniBand/RDMA polled-ring transport (Linux libibverbs + librdmacm; not vendored)"
   ON)
+option(GOBLIN_CORE_ENABLE_LIBFABRIC
+  "Enable provider-neutral libfabric RDM transport and AWS EFA support"
+  OFF)
+set(GOBLIN_CORE_LIBFABRIC_ROOT "" CACHE PATH
+  "Installed prefix produced by scripts/build-libfabric.sh")
 option(GOBLIN_CORE_ENABLE_EXASOCK
   "Enable Cisco ExaSock / Nexus SmartNIC sockets support (requires installed ExaSock SDK; not vendored)"
   OFF)
@@ -71,6 +76,7 @@ set(GOBLIN_CORE_HTML_DOCS
   ${CMAKE_CURRENT_SOURCE_DIR}/html/SET-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/ARRAY-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LATENCY-SHOOTOUT.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/EFA-LATENCY.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/XLIO-LATENCY.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/MICROBENCHMARKS.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LISTS.html
@@ -316,6 +322,30 @@ if(GOBLIN_CORE_ENABLE_RDMA)
   endif()
 endif()
 
+set(GOBLIN_LIBFABRIC_SOURCES)
+set(GOBLIN_HAS_LIBFABRIC_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_LIBFABRIC)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR
+      "goblin-core: GOBLIN_CORE_ENABLE_LIBFABRIC=ON requires Linux")
+  endif()
+  if(NOT GOBLIN_CORE_LIBFABRIC_ROOT)
+    message(FATAL_ERROR
+      "goblin-core: set GOBLIN_CORE_LIBFABRIC_ROOT to the prefix produced by "
+      "scripts/build-libfabric.sh")
+  endif()
+
+  find_package(PkgConfig REQUIRED)
+  set(GOBLIN_SAVED_PKG_CONFIG_PATH "$ENV{PKG_CONFIG_PATH}")
+  set(ENV{PKG_CONFIG_PATH}
+    "${GOBLIN_CORE_LIBFABRIC_ROOT}/${CMAKE_INSTALL_LIBDIR}/pkgconfig:${GOBLIN_CORE_LIBFABRIC_ROOT}/lib/pkgconfig:${GOBLIN_CORE_LIBFABRIC_ROOT}/lib64/pkgconfig:${GOBLIN_SAVED_PKG_CONFIG_PATH}")
+  pkg_check_modules(GOBLIN_LIBFABRIC REQUIRED libfabric)
+  set(ENV{PKG_CONFIG_PATH} "${GOBLIN_SAVED_PKG_CONFIG_PATH}")
+
+  set(GOBLIN_HAS_LIBFABRIC_BUILD ON)
+  list(APPEND GOBLIN_LIBFABRIC_SOURCES src/libfabric_transport.cpp)
+endif()
+
 set(GOBLIN_HAS_EXASOCK_BUILD OFF)
 if(GOBLIN_CORE_ENABLE_EXASOCK)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -374,6 +404,7 @@ add_library(goblin_core
   src/replication.cpp
   src/replication_follower.cpp
   $<$<BOOL:${GOBLIN_HAS_XLIO_BUILD}>:src/xlio_transport.cpp>
+  ${GOBLIN_LIBFABRIC_SOURCES}
   ${GOBLIN_RDMA_SOURCES})
 
 if(GOBLIN_HAS_KAFKA_BUILD)
@@ -425,6 +456,23 @@ if(GOBLIN_HAS_RDMA_BUILD)
     ${IBVERBS_LIBRARY}
     ${RDMACM_LIBRARY})
   message(STATUS "goblin-core: InfiniBand/RDMA polled-ring transport enabled (GOBLIN_HAS_RDMA)")
+endif()
+
+if(GOBLIN_HAS_LIBFABRIC_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_LIBFABRIC=1)
+  target_include_directories(goblin_core SYSTEM PRIVATE
+    ${GOBLIN_LIBFABRIC_INCLUDE_DIRS})
+  target_link_directories(goblin_core PUBLIC
+    ${GOBLIN_LIBFABRIC_STATIC_LIBRARY_DIRS})
+  # goblin_core is a static archive, so consumers must inherit libfabric's
+  # complete static dependency closure when they resolve this transport.
+  target_link_libraries(goblin_core PUBLIC
+    ${GOBLIN_LIBFABRIC_STATIC_LIBRARIES})
+  target_link_options(goblin_core PUBLIC
+    ${GOBLIN_LIBFABRIC_STATIC_LDFLAGS_OTHER})
+  message(STATUS
+    "goblin-core: libfabric RDM transport enabled "
+    "(providers selected at runtime; AWS EFA supported)")
 endif()
 
 if(GOBLIN_HAS_EXASOCK_BUILD)
@@ -703,6 +751,17 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
     target_compile_options(goblin_core_xlio_latency_benchmark PRIVATE
       -Wall -Wextra -Wpedantic)
 
+    if(GOBLIN_HAS_LIBFABRIC_BUILD AND TARGET goblin_sbe_headers)
+      add_executable(goblin_core_libfabric_latency_benchmark
+        benchmarks/libfabric_latency_benchmark.cpp)
+      target_link_libraries(goblin_core_libfabric_latency_benchmark PRIVATE
+        goblin_core goblin_sbe_headers)
+      set_target_properties(goblin_core_libfabric_latency_benchmark PROPERTIES
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+      target_compile_options(goblin_core_libfabric_latency_benchmark PRIVATE
+        -Wall -Wextra -Wpedantic)
+    endif()
+
     add_executable(goblin_core_hset_benchmark benchmarks/hset_benchmark.cpp)
     set_target_properties(goblin_core_hset_benchmark PROPERTIES
       CXX_STANDARD 23
@@ -848,6 +907,27 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  add_executable(goblin_core_libfabric_wire_test
+    tests/libfabric_wire_test.cpp)
+  target_link_libraries(goblin_core_libfabric_wire_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_libfabric_wire_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_libfabric_wire
+    COMMAND goblin_core_libfabric_wire_test)
+
+  if(GOBLIN_HAS_LIBFABRIC_BUILD AND TARGET goblin_sbe_headers)
+    add_executable(goblin_core_libfabric_roundtrip_test
+      tests/libfabric_roundtrip_test.cpp)
+    target_link_libraries(goblin_core_libfabric_roundtrip_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_libfabric_roundtrip_test PROPERTIES
+      CXX_STANDARD 23
+      CXX_STANDARD_REQUIRED ON
+      CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_libfabric_roundtrip_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
 
   add_executable(goblin_core_replication_test tests/replication_test.cpp)
   target_link_libraries(goblin_core_replication_test PRIVATE goblin_core)
@@ -1302,6 +1382,7 @@ install(
     MICROBENCHMARKS.md
     PERFORMANCE_BRIEF.md
     PUBSUB-BENCHMARK.md
+    EFA-LATENCY.md
     XLIO-LATENCY.md
     RELEASE.md
     LICENSE

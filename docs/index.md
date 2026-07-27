@@ -4,7 +4,8 @@ Goblin Core is a compact, single-node server with Redis command semantics and
 two independent protocol choices: RESP for compatibility and SBE for typed
 binary clients. Both protocols work over TCP (optionally accelerated with
 Cisco ExaSock or native NVIDIA XLIO Ultra), Unix-domain sockets, shared-memory
-rings, and polled one-sided RDMA rings.
+rings, and polled one-sided RDMA rings. SBE also runs over provider-neutral
+libfabric reliable datagrams, including AWS EFA.
 
 ## Start here
 
@@ -14,6 +15,7 @@ rings, and polled one-sided RDMA rings.
 - [Performance architecture](../PERFORMANCE_BRIEF.md)
 - [Benchmark methodology and results](../BENCHMARKS.md)
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
+- [Libfabric provider matrix over 100 Gb/s](../EFA-LATENCY.md)
 - [XLIO Ultra command latency](../XLIO-LATENCY.md)
 - [List storage algorithms](../LISTS.md)
 - [Real-time and memory-efficient hash indexes](real-time-hashes.md)
@@ -30,6 +32,7 @@ rings, and polled one-sided RDMA rings.
 | [TCP listeners and TLS](tls.md) | Repeatable IPv4/IPv6 binds, the mandatory plaintext localhost companion, certificate configuration, and protocol/security boundaries. |
 | [Shared-memory ring buffers](ring-buffers.md) | Ring creation, SQ/CQ layout, busy polling, reconnect behavior, sizing, HugeTLB, NUMA placement, and the C++ clients. |
 | [Polled RDMA rings](rdma-rings.md) | RC queue-pair setup, sequence-word slots, cached credits, memory registration, mixed-target priority, and RESP/SBE clients. |
+| [Libfabric RDM and AWS EFA](efa.md) | Provider-neutral reliable datagrams, EFA build and launch, multi-client sequencing, bounded reordering, and PING heartbeats. |
 | [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
 | [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
 | [Native XLIO Ultra TCP](xlio.md) | Native RESP/SBE server and client, strict poll priority, pinned XLIO/DPCP sources, ConnectX-5 qualification, build recipe, snapshot constraints, and kernel-TCP interoperability. |

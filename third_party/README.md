@@ -16,6 +16,7 @@ remain isolated from `goblin_core`'s strict warning flags.
 | `xxhash/`          | xxHash (XXH3) | 0.8.3 | BSD-2-Clause | https://github.com/Cyan4973/xxHash |
 | `fast_float/`      | fast_float (header-only) | 8.0.2 | MIT OR Apache-2.0 | https://github.com/fastfloat/fast_float |
 | `librdkafka/`      | librdkafka | 2.15.0 | BSD-2-Clause | https://github.com/confluentinc/librdkafka |
+| `libfabric/`       | AWS libfabric | 2.4.0amzn5.0 (`3d9e30ba`) | BSD OR GPL-2.0-only; BSD selected | https://github.com/aws/libfabric |
 | `xlio/`            | NVIDIA XLIO | 3.61.2 (`ae821447`) | GPL-2.0-only OR BSD-2-Clause; BSD selected | https://github.com/Mellanox/libxlio |
 | `libdpcp/`         | NVIDIA DPCP | 1.1.61 (`4cc43b30`) | BSD-3-Clause | https://github.com/Mellanox/libdpcp |
 
@@ -24,6 +25,15 @@ and the small C++ wrapper directory expected by upstream CMake. Examples, tests,
 packaging, and repository metadata are omitted. Goblin Core links only the C
 static library and disables optional system-dependent TLS/SASL, curl, zlib, and
 zstd integrations; librdkafka's bundled Snappy and LZ4 support remains enabled.
+
+`libfabric/` is the generated source release from AWS's EFA-qualified
+`v2.4.0amzn5.0` tag. Goblin Core selects the BSD option in its dual-license
+`COPYING` file. The release contains libfabric core plus its provider sources and
+generated Autotools build files; it omits the upstream repository's examples,
+fabtests, CI metadata, and bindings. Goblin builds only the provider set needed
+for EFA and local qualification. The generated upstream release archive used
+for this import has SHA-256
+`8da7c1d2a48d4087fcdf456e9925d36495fa96be0e1a3c725026928246a8257f`.
 
 `xlio/` and `libdpcp/` are complete pinned upstream source trees with repository
 metadata omitted. At the July 22, 2026 dependency audit, XLIO 3.61.2 was the

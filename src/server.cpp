@@ -14,6 +14,9 @@
 #ifdef GOBLIN_HAS_RDMA
 #include "goblin/core/rdma_ring.hpp"
 #endif
+#ifdef GOBLIN_HAS_LIBFABRIC
+#include "goblin/core/libfabric_transport.hpp"
+#endif
 #ifdef GOBLIN_HAS_XLIO
 #include "goblin/core/xlio_transport.hpp"
 #endif
@@ -89,6 +92,9 @@ enum class TlsWant : std::uint8_t {
 
 struct ReplyBoundary {
   std::uint64_t sequence{0};
+  // Transport-level request sequence that caused this response. Ordinary
+  // stream/ring transports leave it zero; libfabric echoes it in reply_to.
+  std::uint64_t reply_to{0};
   std::size_t end_offset{0};
   // Zero means immediately writable. Broker durability mode fills this with
   // the last logical mutation offset covered by the reply.
@@ -100,6 +106,7 @@ struct BlockedListRequest {
 
   std::vector<std::string> fields;
   std::optional<Clock::time_point> deadline;
+  std::uint64_t reply_to{0};
   bool null_array{false};
 };
 
@@ -138,10 +145,12 @@ struct EndpointSession : detail::PubSubSession {
   bool dump_world{false};
   std::unique_ptr<detail::UnsolicitedOutputQueue> firehose_output;
   std::uint64_t next_reply_kafka_offset{0};
+  std::uint64_t active_request_sequence{0};
 
   void record_reply(std::size_t prior_size) {
     if (output.size() != prior_size) {
       replies.push_back(ReplyBoundary{.sequence = next_output_sequence++,
+                                      .reply_to = active_request_sequence,
                                       .end_offset = output.size(),
                                       .required_kafka_offset =
                                           next_reply_kafka_offset});
@@ -203,6 +212,7 @@ struct EndpointSession : detail::PubSubSession {
     dump_world = false;
     firehose_output.reset();
     next_reply_kafka_offset = 0;
+    active_request_sequence = 0;
     transaction.reset();
   }
 };
@@ -610,6 +620,7 @@ class BlockingListRegistry {
         request.fields.emplace_back(arg);
       }
       request.null_array = null_array_reply(command.type);
+      request.reply_to = session.active_request_sequence;
       if (command.list_timeout_seconds > 0.0) {
         const auto now = BlockedListRequest::Clock::now();
         const auto available = BlockedListRequest::Clock::time_point::max() - now;
@@ -656,6 +667,7 @@ class BlockingListRegistry {
       }
 
       auto& request = *session.blocked_list;
+      session.active_request_sequence = request.reply_to;
       session.fields.clear();
       session.fields.reserve(request.fields.size());
       for (const auto& field : request.fields) {
@@ -884,6 +896,29 @@ struct RdmaRuntimeTarget {
 };
 #endif
 
+#ifdef GOBLIN_HAS_LIBFABRIC
+struct LibfabricEndpoint : EndpointSession {
+  LibfabricEndpoint(std::unique_ptr<fabric::Connection> fabric_connection,
+                    std::size_t unsolicited_output_bytes,
+                    std::size_t transaction_buffer_bytes,
+                    std::uint64_t assigned_connection_id,
+                    bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
+        connection(std::move(fabric_connection)) {}
+
+  std::unique_ptr<fabric::Connection> connection;
+  bool disconnect_started{false};
+};
+
+struct LibfabricRuntimeTarget {
+  std::unique_ptr<fabric::ServerListener> listener;
+  std::vector<std::unique_ptr<LibfabricEndpoint>> endpoints;
+  std::size_t next_endpoint{0};
+  bool listener_error_reported{false};
+};
+#endif
+
 #ifdef GOBLIN_HAS_EXASOCK
 // Priority TCP listener for `--exasock`. Clients are ordinary non-blocking
 // sockets; under the exasock wrapper + ExaNIC bind they are accelerated.
@@ -923,6 +958,9 @@ struct PolledRuntimeTarget {
   std::unique_ptr<RingEndpoint> ring_endpoint;
 #ifdef GOBLIN_HAS_RDMA
   std::unique_ptr<RdmaRuntimeTarget> rdma_target;
+#endif
+#ifdef GOBLIN_HAS_LIBFABRIC
+  std::unique_ptr<LibfabricRuntimeTarget> libfabric_target;
 #endif
 #ifdef GOBLIN_HAS_EXASOCK
   std::unique_ptr<ExasockRuntimeTarget> exasock_target;
@@ -2788,6 +2826,44 @@ template <class ReplicaFn, class NetFn>
       continue;
     }
 
+    if (const auto* fc =
+            std::get_if<LibfabricConfig>(&configured_target)) {
+#ifdef GOBLIN_HAS_LIBFABRIC
+      std::string error;
+      auto listener = fabric::ServerListener::create(
+          fc->provider, fc->bootstrap_address, fc->bootstrap_port,
+          config.efa_heartbeat_timeout_ms, fabric::kDefaultReorderMessages,
+          fabric::kDefaultReorderBytes, error,
+          config.libfabric_force_send ? fabric::SendMode::send
+                                      : fabric::SendMode::auto_inject);
+      if (!listener) {
+        std::cerr << "goblin-core: failed to create libfabric "
+                  << fc->provider << " listener " << fc->bootstrap_address
+                  << ':' << fc->bootstrap_port << ": " << error << '\n';
+        return false;
+      }
+      std::cout << "goblin-core: libfabric " << listener->provider() << ' '
+                << fc->bootstrap_address << ':' << fc->bootstrap_port
+                << " ready (FI_EP_RDM, "
+                << (config.libfabric_force_send ? "fi_send"
+                                                : "fi_inject/fi_send")
+                << ", "
+                << config.efa_heartbeat_timeout_ms
+                << " ms heartbeat lease)\n";
+      PolledRuntimeTarget target;
+      target.libfabric_target =
+          std::make_unique<LibfabricRuntimeTarget>();
+      target.libfabric_target->listener = std::move(listener);
+      targets.push_back(std::move(target));
+#else
+      (void)fc;
+      std::cerr
+          << "goblin-core: this build cannot create a libfabric poll target\n";
+      return false;
+#endif
+      continue;
+    }
+
     const auto* rc = std::get_if<RdmaConfig>(&configured_target);
     if (rc == nullptr) {
       std::cerr << "goblin-core: unsupported polled target configuration\n";
@@ -2876,6 +2952,10 @@ template <class ReplicaFn, class NetFn>
       if (bytes.size() > producer.max_record_payload()) {
         bytes = bytes.substr(0, producer.max_record_payload());
       }
+      if constexpr (requires { producer.set_reply_to(std::uint64_t{}); }) {
+        producer.set_reply_to(
+            write_push ? 0 : ep.replies[ep.reply_index].reply_to);
+      }
       if (!producer.try_push(bytes)) {
         break;
       }
@@ -2954,6 +3034,11 @@ template <class ReplicaFn, class NetFn>
     const auto record = consumer.peek();
     if (!record) {
       return false;
+    }
+    if constexpr (requires { consumer.current_sequence(); }) {
+      ep.active_request_sequence = consumer.current_sequence();
+    } else {
+      ep.active_request_sequence = 0;
     }
 
     // Decide the protocol from the first 8 bytes: "GOBLINS!" -> the SBE binary wire,
@@ -3156,6 +3241,90 @@ template <class ReplicaFn, class NetFn>
       if (!endpoint.connection->established()) {
         continue;
       }
+      if (endpoint.close_requested && !has_pending_output(endpoint)) {
+        if (!endpoint.disconnect_started) {
+          endpoint.connection->disconnect();
+          endpoint.disconnect_started = true;
+          target.next_endpoint = (index + 1) % count;
+          return true;
+        }
+        continue;
+      }
+      if (process_polled_endpoint(endpoint, *endpoint.connection,
+                                  *endpoint.connection)) {
+        target.next_endpoint = (index + 1) % count;
+        return true;
+      }
+    }
+    return progressed;
+  };
+#endif
+
+#ifdef GOBLIN_HAS_LIBFABRIC
+  const auto process_libfabric_target =
+      [&](LibfabricRuntimeTarget& target) -> bool {
+    bool progressed = false;
+    auto event = target.listener->poll();
+    progressed = event.progressed;
+    if (!target.listener->error().empty() &&
+        !target.listener_error_reported) {
+      std::cerr << "goblin-core: libfabric listener error: "
+                << target.listener->error() << '\n';
+      target.listener_error_reported = true;
+      running = false;
+      return true;
+    }
+    if (event.connection) {
+      try {
+        target.endpoints.push_back(
+            std::make_unique<LibfabricEndpoint>(
+                std::move(event.connection),
+                config.unsolicited_output_buffer_bytes,
+                config.transaction_buffer_bytes, next_connection_id(),
+                auth_database != nullptr &&
+                    !config.no_auth_libfabric));
+      } catch (const std::bad_alloc&) {
+        std::cerr
+            << "goblin-core: unable to allocate libfabric endpoint state\n";
+        running = false;
+      }
+      progressed = true;
+    }
+
+    for (std::size_t i = target.endpoints.size(); i > 0; --i) {
+      const std::size_t index = i - 1;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->failed() &&
+          !endpoint.connection->disconnected()) {
+        continue;
+      }
+      if (endpoint.connection->failed() &&
+          !endpoint.connection->error().empty()) {
+        std::cerr << "goblin-core: libfabric peer closed after error: "
+                  << endpoint.connection->error() << '\n';
+      }
+      replication.remove(endpoint);
+      dump_world.remove(endpoint);
+      pubsub.remove(endpoint);
+      watches.remove(endpoint.transaction);
+      blocking_lists.remove(endpoint);
+      target.endpoints.erase(target.endpoints.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+      if (target.next_endpoint > index) --target.next_endpoint;
+      progressed = true;
+    }
+    if (target.endpoints.empty()) {
+      target.next_endpoint = 0;
+      return progressed;
+    }
+    target.next_endpoint %= target.endpoints.size();
+
+    const std::size_t count = target.endpoints.size();
+    for (std::size_t offset = 0; offset < count; ++offset) {
+      const std::size_t index =
+          (target.next_endpoint + offset) % count;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->established()) continue;
       if (endpoint.close_requested && !has_pending_output(endpoint)) {
         if (!endpoint.disconnect_started) {
           endpoint.connection->disconnect();
@@ -3418,6 +3587,12 @@ template <class ReplicaFn, class NetFn>
         target_progress = process_xlio_target(*target.xlio_target);
       }
 #endif
+#ifdef GOBLIN_HAS_LIBFABRIC
+      else if (target.libfabric_target) {
+        target_progress =
+            process_libfabric_target(*target.libfabric_target);
+      }
+#endif
 #ifdef GOBLIN_HAS_RDMA
       else if (target.rdma_target) {
         target_progress = process_rdma_target(*target.rdma_target);
@@ -3489,6 +3664,18 @@ template <class ReplicaFn, class NetFn>
         pubsub.remove(*endpoint);
         watches.remove(endpoint->transaction);
         blocking_lists.remove(*endpoint);
+      }
+    }
+#endif
+#ifdef GOBLIN_HAS_LIBFABRIC
+    if (target.libfabric_target) {
+      for (auto& endpoint : target.libfabric_target->endpoints) {
+        replication.remove(*endpoint);
+        dump_world.remove(*endpoint);
+        pubsub.remove(*endpoint);
+        watches.remove(endpoint->transaction);
+        blocking_lists.remove(*endpoint);
+        endpoint->connection->disconnect();
       }
     }
 #endif

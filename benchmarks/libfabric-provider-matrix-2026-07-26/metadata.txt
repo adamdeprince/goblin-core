@@ -1,0 +1,54 @@
+timestamp_utc=20260727T014121Z
+git_commit=774117c954557150a862033f7b3447f079cc1a9a
+server_host=butterfly
+client_host=rain
+server_address=10.100.0.1
+client_address=10.100.0.2
+interface=enp68s0np0
+server_cpu=5
+client_cpu=5
+numa_node=1
+providers=tcp,verbs;ofi_rxm
+send_modes=auto,send
+wires=resp,sbe
+endpoint=FI_EP_RDM
+caps=FI_MSG+FI_SOURCE
+rx_api=fi_recv
+completion_api=fi_cq_read+fi_cq_readfrom
+samples=200000
+warmup=20000
+libfabric_version=2.4.0amzn5.0
+goblin_sha256=fccfe23eb6fd6c0535e75fca8e907432834195337db0906061fea260047ff821
+probe_sha256=751a773489a6069779228ac57bdb4a56e0e124fccc12ff01872f2902e3cbca48
+
+[butterfly]
+butterfly
+Linux 5.15.0-186-generic
+Model name:                              Intel(R) Xeon(R) CPU E5-4657L v2 @ 2.40GHz
+Socket(s):                               4
+NUMA node(s):                            4
+enp68s0np0       UP             10.100.0.1/30 fe80::1e34:daff:fe76:33f4/64
+nic_numa=1
+	Speed: 100000Mb/s
+	Duplex: Full
+	Port: Direct Attach Copper
+	Link detected: yes
+driver: mlx5_core
+firmware-version: 16.35.8008 (MT_0000000011)
+bus-info: 0000:44:00.0
+
+[rain]
+rain
+Linux 5.15.0-186-generic
+Model name:                              Intel(R) Xeon(R) CPU E5-4657L v2 @ 2.40GHz
+Socket(s):                               4
+NUMA node(s):                            4
+enp68s0np0       UP             10.100.0.2/30 fe80::e42:a1ff:fe22:e4b6/64
+nic_numa=1
+	Speed: 100000Mb/s
+	Duplex: Full
+	Port: Direct Attach Copper
+	Link detected: yes
+driver: mlx5_core
+firmware-version: 16.35.8008 (MT_0000000011)
+bus-info: 0000:44:00.0

@@ -485,6 +485,15 @@ void lock_server_memory() noexcept {
                                std::to_string(xlio->port))) {
         return false;
       }
+    } else if (const auto* fabric =
+                   std::get_if<goblin::core::LibfabricConfig>(&target)) {
+      if (!collect_address(
+              fabric->bootstrap_address,
+              "libfabric " + fabric->provider + " bootstrap " +
+                  fabric->bootstrap_address + ':' +
+                  std::to_string(fabric->bootstrap_port))) {
+        return false;
+      }
     }
   }
 
@@ -628,8 +637,8 @@ void print_usage(std::string_view program) {
             << "       [--kafka-ack-mode queued|broker]"
                " [--kafka-pending-bytes BYTES]\n"
             << "       [--auth-file FILE]\n"
-            << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]"
-               " [--no-auth-xlio]\n"
+            << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]\n"
+            << "       [--no-auth-libfabric] [--no-auth-xlio]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
@@ -645,6 +654,13 @@ void print_usage(std::string_view program) {
             << "       [--rdma ADDRESS PORT SIZE]..."
                " (e.g. --rdma 10.88.88.1 6380 1mb; repeatable;\n"
             << "                               requires -DGOBLIN_CORE_ENABLE_RDMA=ON)\n"
+            << "       [--efa ADDRESS PORT]..."
+               " (AWS EFA FI_EP_RDM; PORT bootstraps opaque addresses)\n"
+            << "       [--libfabric PROVIDER ADDRESS PORT]..."
+               " (provider-neutral qualification)\n"
+            << "       [--libfabric-force-send]"
+               " (disable fi_inject; use TX completions)\n"
+            << "       [--efa-heartbeat-timeout-ms MS] (default: 3000; 0 disables)\n"
             << "       [--pubsub-listener-ring PATH]\n"
             << "       [--pubsub-listener-rdma ADDRESS PORT SIZE]\n"
             << "       [--pubsub-listener-uds PATH]\n"
@@ -858,6 +874,11 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--no-auth-libfabric") {
+      config.no_auth_libfabric = true;
+      continue;
+    }
+
     if (arg == "--no-auth-xlio") {
       config.no_auth_xlio = true;
       continue;
@@ -1038,6 +1059,72 @@ int main(int argc, char** argv) {
                    " -DGOBLIN_CORE_ENABLE_RDMA=ON)\n";
       return 2;
 #endif
+      continue;
+    }
+
+    if (arg == "--efa" || arg == "--libfabric") {
+#if defined(GOBLIN_HAS_LIBFABRIC)
+      const bool explicit_provider = arg == "--libfabric";
+      const int required = explicit_provider ? 3 : 2;
+      if (i + required >= argc) {
+        std::cerr << "goblin-core: " << arg
+                  << (explicit_provider
+                          ? " requires PROVIDER, ADDRESS, and PORT\n"
+                          : " requires ADDRESS and PORT\n");
+        return 2;
+      }
+      const std::string provider =
+          explicit_provider ? std::string(argv[++i]) : std::string("efa");
+      const std::string address = argv[++i];
+      const std::string_view port_text = argv[++i];
+      const auto port = parse_port(port_text);
+      if (provider.empty() || !port) {
+        std::cerr << "goblin-core: invalid " << arg
+                  << " provider or bootstrap port\n";
+        return 2;
+      }
+      config.poll_targets.emplace_back(goblin::core::LibfabricConfig{
+          .provider = provider,
+          .bootstrap_address = address,
+          .bootstrap_port = *port});
+#else
+      std::cerr << "goblin-core: " << arg
+                << " is unavailable in this build (configure with "
+                   "-DGOBLIN_CORE_ENABLE_LIBFABRIC=ON)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--libfabric-force-send") {
+#if defined(GOBLIN_HAS_LIBFABRIC)
+      config.libfabric_force_send = true;
+#else
+      std::cerr << "goblin-core: --libfabric-force-send is unavailable in "
+                   "this build (configure with "
+                   "-DGOBLIN_CORE_ENABLE_LIBFABRIC=ON)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--efa-heartbeat-timeout-ms") {
+      if (i + 1 >= argc) {
+        std::cerr
+            << "goblin-core: --efa-heartbeat-timeout-ms requires milliseconds\n";
+        return 2;
+      }
+      const std::string_view text(argv[++i]);
+      std::uint64_t value = 0;
+      const auto [ptr, ec] =
+          std::from_chars(text.data(), text.data() + text.size(), value);
+      if (ec != std::errc{} || ptr != text.data() + text.size() ||
+          value > std::numeric_limits<std::uint32_t>::max()) {
+        std::cerr
+            << "goblin-core: invalid --efa-heartbeat-timeout-ms value\n";
+        return 2;
+      }
+      config.efa_heartbeat_timeout_ms = static_cast<std::uint32_t>(value);
       continue;
     }
 
