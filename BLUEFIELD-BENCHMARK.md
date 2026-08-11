@@ -1,6 +1,6 @@
 # BlueField Pub/Sub benchmark
 
-Generated on August 11, 2026 from the current v0.10.3 release tree.
+Generated on August 11, 2026 from the current v0.10.4 release tree.
 
 ## Current result
 

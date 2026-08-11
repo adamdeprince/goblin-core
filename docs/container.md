@@ -24,13 +24,13 @@ From the repository root:
 
 ```sh
 podman build --format oci \
-  --build-arg GOBLIN_CORE_VERSION=0.10.3 \
+  --build-arg GOBLIN_CORE_VERSION=0.10.4 \
   --build-arg GOBLIN_CORE_REVISION="$(git rev-parse HEAD)" \
   --file Containerfile \
-  --tag localhost/goblin-core:0.10.3 \
+  --tag localhost/goblin-core:0.10.4 \
   .
 
-podman tag localhost/goblin-core:0.10.3 localhost/goblin-core:latest
+podman tag localhost/goblin-core:0.10.4 localhost/goblin-core:latest
 ```
 
 Pass `--build-arg GOBLIN_CORE_ARCH=native` only when the image will stay on
@@ -57,7 +57,7 @@ podman run --detach \
   --volume goblin-core-data:/data:U \
   --ulimit memlock=-1:-1 \
   --cap-add IPC_LOCK \
-  localhost/goblin-core:0.10.3
+  localhost/goblin-core:0.10.4
 ```
 
 Confirm the server from the host with any RESP2 client:
@@ -97,7 +97,7 @@ podman run --detach \
   --volume goblin-core-data:/data:U \
   --ulimit memlock=-1:-1 \
   --cap-add IPC_LOCK \
-  localhost/goblin-core:0.10.3 \
+  localhost/goblin-core:0.10.4 \
   --maxmemory 3gb
 ```
 
@@ -120,7 +120,7 @@ podman run --detach \
   --volume goblin-core-data:/data:U \
   --ulimit memlock=-1:-1 \
   --cap-add IPC_LOCK \
-  localhost/goblin-core:0.10.3 \
+  localhost/goblin-core:0.10.4 \
   --load /data/goblin.snapshot
 ```
 
@@ -144,7 +144,7 @@ podman run --detach \
   --volume ./certs:/certs:ro \
   --ulimit memlock=-1:-1 \
   --cap-add IPC_LOCK \
-  localhost/goblin-core:0.10.3 \
+  localhost/goblin-core:0.10.4 \
   --listen 0.0.0.0:6379 \
   --tls-cert-file /certs/server.crt \
   --tls-key-file /certs/server.key
@@ -167,6 +167,6 @@ generic container launch.
 Inspect the image without running it:
 
 ```sh
-podman image inspect localhost/goblin-core:0.10.3
-podman history localhost/goblin-core:0.10.3
+podman image inspect localhost/goblin-core:0.10.4
+podman history localhost/goblin-core:0.10.4
 ```

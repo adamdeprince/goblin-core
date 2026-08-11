@@ -10,9 +10,32 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
-- The top-level build now leaves the optional BlueField edge executable and its
-  integration test disabled. DPU users can enable them with
-  `-DGOBLIN_CORE_BUILD_BLUEFIELD=ON` or use the independent `bluefield/` build.
+Nothing yet.
+
+## v0.10.4 — August 11, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.4)
+
+The opt-in NVIDIA BlueField Pub/Sub edge release.
+
+- Added a standalone RESP2/RESP3 edge for NVIDIA BlueField DPUs. Subscriptions
+  register locally, DPU-originated publications fan out locally first, and
+  ordinary commands remain authoritative on the host Goblin Core server.
+- Added weighted aggregate host subscriptions and stable edge IDs so each host
+  publication crosses the host-to-DPU path once without duplicate return
+  delivery or inaccurate Redis-compatible subscriber counts.
+- Added a directly polled XLIO Ultra listener with direct non-blocking fanout,
+  fixed prefaulted output rings, CPU pinning, and standard RESP on the wire.
+- Published the [direct 100 Gb/s BlueField benchmark](BLUEFIELD-BENCHMARK.md):
+  native XLIO Pub/Sub measured 12.5 microseconds p50 and 19.3 microseconds p99,
+  versus 107.8 and 116.5 microseconds with a kernel TCP client against the same
+  native Ultra DPU server.
+- Kept BlueField out of ordinary builds by default. Enable the edge executable
+  and integration test with `-DGOBLIN_CORE_BUILD_BLUEFIELD=ON`, or use the
+  independent `bluefield/` AArch64 build.
+- Included end-to-end tests, deployment documentation, and the complete
+  Apache-compatible binary notice bundle for the edge and its selected
+  XLIO/DPCP dependencies.
 
 ## v0.10.3 — August 11, 2026
 
