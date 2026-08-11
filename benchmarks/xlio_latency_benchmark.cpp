@@ -8,6 +8,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -152,6 +153,65 @@ template <class Operation>
   return true;
 }
 
+template <class Operation>
+[[nodiscard]] bool measure_external_ticks(std::string_view label,
+                                          std::string_view operation,
+                                          std::size_t warmup,
+                                          std::size_t samples,
+                                          Operation&& invoke) {
+  for (std::size_t i = 0; i < warmup; ++i) {
+    if (!invoke()) {
+      std::fprintf(stderr, "%.*s: %.*s failed during warmup\n",
+                   static_cast<int>(label.size()), label.data(),
+                   static_cast<int>(operation.size()), operation.data());
+      return false;
+    }
+  }
+
+  std::vector<std::uint64_t> elapsed;
+  elapsed.reserve(samples);
+  for (std::size_t i = 0; i < samples; ++i) {
+    const auto ticks = invoke();
+    if (!ticks) {
+      std::fprintf(stderr, "%.*s: %.*s failed at sample %zu\n",
+                   static_cast<int>(label.size()), label.data(),
+                   static_cast<int>(operation.size()), operation.data(), i);
+      return false;
+    }
+    elapsed.push_back(*ticks);
+  }
+
+  std::ranges::sort(elapsed);
+  const double total_ticks = std::accumulate(
+      elapsed.begin(), elapsed.end(), 0.0,
+      [](double total, std::uint64_t value) { return total + value; });
+  const double mean_us = total_ticks * nanoseconds_per_tick /
+                         static_cast<double>(elapsed.size()) / 1000.0;
+  const double qps = 1.0e6 / mean_us;
+  const double minimum = percentile_us(elapsed, 0.0);
+  const double p50 = percentile_us(elapsed, 0.50);
+  const double p75 = percentile_us(elapsed, 0.75);
+  const double p90 = percentile_us(elapsed, 0.90);
+  const double p95 = percentile_us(elapsed, 0.95);
+  const double p99 = percentile_us(elapsed, 0.99);
+  const double p999 = percentile_us(elapsed, 0.999);
+  const double p9999 = percentile_us(elapsed, 0.9999);
+  const double maximum = percentile_us(elapsed, 1.0);
+
+  std::printf(
+      "LAT,%.*s,%.*s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.0f,%zu\n",
+      static_cast<int>(label.size()), label.data(),
+      static_cast<int>(operation.size()), operation.data(), minimum, p50, p75,
+      p90, p95, p99, p999, p9999, maximum, mean_us, qps, elapsed.size());
+  std::fflush(stdout);
+  std::fprintf(stderr,
+               "  %-7.*s p50=%8.3f p99=%8.3f p99.9=%8.3f "
+               "p99.99=%8.3f max=%9.3f us\n",
+               static_cast<int>(operation.size()), operation.data(), p50, p99,
+               p999, p9999, maximum);
+  return true;
+}
+
 class TcpClient {
  public:
   TcpClient(const TcpClient&) = delete;
@@ -232,7 +292,19 @@ class TcpClient {
 
   [[nodiscard]] std::optional<std::string> command(
       std::span<const std::string_view> arguments) {
-    const std::string encoded = goblin::core::ring::encode_command(arguments);
+    try {
+      send(arguments);
+    } catch (const std::exception&) {
+      return std::nullopt;
+    }
+    return read_reply();
+  }
+
+  void send(std::span<const std::string_view> arguments) {
+    send_raw(goblin::core::ring::encode_command(arguments));
+  }
+
+  void send_raw(std::string_view encoded) {
     std::size_t offset = 0;
     while (offset < encoded.size()) {
       const ssize_t sent = ::send(fd_, encoded.data() + offset,
@@ -242,9 +314,12 @@ class TcpClient {
       } else if (sent < 0 && errno == EINTR) {
         continue;
       } else {
-        return std::nullopt;
+        throw std::runtime_error("TcpClient: request send failed");
       }
     }
+  }
+
+  [[nodiscard]] std::optional<std::string> read_reply() {
     for (;;) {
       if (const auto end = goblin::core::ring::reply_end(pending_)) {
         std::string reply = pending_.substr(0, *end);
@@ -390,6 +465,67 @@ template <class Client>
                   [&] { return bulk_reply(client.command(zscore)); }));
 }
 
+[[nodiscard]] std::string pubsub_ack(std::string_view channel) {
+  std::string reply("*3\r\n$9\r\nsubscribe\r\n$");
+  reply.append(std::to_string(channel.size()));
+  reply.append("\r\n");
+  reply.append(channel);
+  reply.append("\r\n:1\r\n");
+  return reply;
+}
+
+template <class Client>
+[[nodiscard]] bool run_pubsub_suite(Client& subscriber, Client& publisher,
+                                    std::string_view label,
+                                    std::string_view transport,
+                                    std::string_view buffer_description,
+                                    std::size_t samples, std::size_t warmup,
+                                    std::string_view channel) {
+  const std::array<std::string_view, 2> subscribe{"SUBSCRIBE", channel};
+  if (subscriber.command(subscribe) != pubsub_ack(channel)) {
+    std::fprintf(stderr, "%.*s: SUBSCRIBE setup failed\n",
+                 static_cast<int>(label.size()), label.data());
+    return false;
+  }
+
+  std::printf("META,%.*s,%.*s,%.*s,%zu,%zu,RESP2,1\n",
+              static_cast<int>(label.size()), label.data(),
+              static_cast<int>(transport.size()), transport.data(),
+              static_cast<int>(buffer_description.size()),
+              buffer_description.data(), samples, warmup);
+  std::fflush(stdout);
+  std::fprintf(stderr,
+               "[%.*s] %.*s; %.*s; RESP2 local publish-to-subscriber; "
+               "samples=%zu warmup=%zu\n",
+               static_cast<int>(label.size()), label.data(),
+               static_cast<int>(transport.size()), transport.data(),
+               static_cast<int>(buffer_description.size()),
+               buffer_description.data(), samples, warmup);
+
+  std::uint64_t sequence = 0;
+  return measure_external_ticks(label, "PUBSUB", warmup, samples,
+                                [&]() -> std::optional<std::uint64_t> {
+    const std::string payload = "p" + std::to_string(sequence++);
+    const std::array<std::string_view, 3> publish{"PUBLISH", channel, payload};
+    const std::array<std::string_view, 3> message{"message", channel, payload};
+    try {
+      const auto begin = hardware_ticks();
+      publisher.send(publish);
+      const auto delivered = subscriber.read_reply();
+      const auto end = hardware_ticks();
+      const auto publish_reply = publisher.read_reply();
+      if (!delivered ||
+          *delivered != goblin::core::ring::encode_command(message) ||
+          publish_reply != std::optional<std::string>(":1\r\n")) {
+        return std::nullopt;
+      }
+      return end - begin;
+    } catch (const std::exception&) {
+      return std::nullopt;
+    }
+  });
+}
+
 void usage(const char* program) {
   std::fprintf(
       stderr,
@@ -397,8 +533,11 @@ void usage(const char* program) {
       "  %s ring PATH LABEL SAMPLES WARMUP\n"
       "  %s tcp HOST PORT LABEL SAMPLES WARMUP [LOCAL-ADDRESS]\n"
       "  %s xlio HOST PORT LABEL SAMPLES WARMUP [LOCAL-ADDRESS]\n"
-      "\nAll modes use RESP2, pipeline depth 1, and the same seven operations.\n",
-      program, program, program);
+      "  %s tcp-pubsub HOST PORT LABEL SAMPLES WARMUP [LOCAL-ADDRESS] [CHANNEL]\n"
+      "  %s xlio-pubsub HOST PORT LABEL SAMPLES WARMUP [LOCAL-ADDRESS] [CHANNEL]\n"
+      "\nAll modes use RESP2 and pipeline depth 1. Pub/Sub modes time local "
+      "PUBLISH-to-subscriber delivery.\n",
+      program, program, program, program, program);
   std::fprintf(stderr,
                "Set GOBLIN_XLIO_BENCH_OPERATION to one operation for a "
                "diagnostic-only run.\n");
@@ -442,11 +581,15 @@ int main(int argc, char** argv) {
                : 1;
   }
 
-  if (mode != "tcp" && mode != "xlio") {
+  const bool pubsub = mode == "tcp-pubsub" || mode == "xlio-pubsub";
+  const bool tcp = mode == "tcp" || mode == "tcp-pubsub";
+  const bool xlio = mode == "xlio" || mode == "xlio-pubsub";
+  if (!tcp && !xlio) {
     usage(argv[0]);
     return 2;
   }
-  if (argc != 7 && argc != 8) {
+  if ((!pubsub && argc != 7 && argc != 8) ||
+      (pubsub && (argc < 7 || argc > 9))) {
     usage(argv[0]);
     return 2;
   }
@@ -461,10 +604,12 @@ int main(int argc, char** argv) {
     return 2;
   }
   const auto port = static_cast<std::uint16_t>(port_value);
-  const std::string_view local_address = argc == 8 ? argv[7] : "";
+  const std::string_view local_address = argc >= 8 ? argv[7] : "";
+  const std::string_view channel =
+      argc >= 9 ? argv[8] : "benchmark:bluefield:xlio";
   std::string error;
 
-  if (mode == "tcp") {
+  if (tcp) {
     auto client = TcpClient::open(argv[2], port, local_address, error);
     if (!client) {
       std::fprintf(stderr, "xlio_latency_benchmark: kernel TCP: %s\n",
@@ -474,6 +619,18 @@ int main(int argc, char** argv) {
     const std::string buffers =
         "snd=" + std::to_string(client->send_buffer_bytes()) +
         ";rcv=" + std::to_string(client->receive_buffer_bytes());
+    if (pubsub) {
+      auto publisher = TcpClient::open(argv[2], port, local_address, error);
+      if (!publisher) {
+        std::fprintf(stderr, "xlio_latency_benchmark: kernel TCP: %s\n",
+                     error.c_str());
+        return 1;
+      }
+      return run_pubsub_suite(*client, *publisher, argv[4], "kernel-tcp",
+                              buffers, samples, warmup, channel)
+                 ? 0
+                 : 1;
+    }
     return run_suite(*client, argv[4], "kernel-tcp", buffers, samples, warmup)
                ? 0
                : 1;
@@ -491,6 +648,19 @@ int main(int argc, char** argv) {
       "client-work=" +
       std::to_string(client->transport().buffer_size_hint()) +
       ";tx=inline-copy;rx=xlio-owned;pipeline=1";
+  if (pubsub) {
+    auto publisher = goblin::core::xlio::XlioClient::open(
+        argv[2], port, std::chrono::seconds(5), local_address, &error);
+    if (!publisher) {
+      std::fprintf(stderr, "xlio_latency_benchmark: XLIO Ultra: %s\n",
+                   error.c_str());
+      return 1;
+    }
+    return run_pubsub_suite(*client, *publisher, argv[4], "xlio-ultra-tcp",
+                            buffers, samples, warmup, channel)
+               ? 0
+               : 1;
+  }
   return run_suite(*client, argv[4], "xlio-ultra-tcp", buffers, samples,
                    warmup)
              ? 0

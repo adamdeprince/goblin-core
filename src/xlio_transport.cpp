@@ -2,12 +2,11 @@
 
 #if defined(GOBLIN_HAS_XLIO)
 
-#include "goblin/core/ring_buffer.hpp"
-
 #include <pthread.h>
 #include <xlio_extra.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -31,6 +30,16 @@ namespace {
 constexpr std::size_t kOutputFragmentBytes = 64U * 1024U;
 constexpr std::size_t kInitialClientBufferBytes = 64U * 1024U;
 constexpr std::size_t kInlineReceiveFragments = 16;
+
+inline void cpu_relax() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+  __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+  __asm__ __volatile__("yield" ::: "memory");
+#else
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
 
 struct Environment {
   xlio_api_t* api{nullptr};
@@ -739,7 +748,7 @@ std::optional<ClientTransport> ClientTransport::open(
       if (error != nullptr) *error = std::move(local_error);
       return std::nullopt;
     }
-    ring::cpu_relax();
+    detail::cpu_relax();
   }
   if (!raw->established) {
     local_error = raw->error.empty() ? "XLIO connection failed" : raw->error;
@@ -764,7 +773,7 @@ void ClientTransport::pop() noexcept {
 
 void ClientTransport::wait_for_record() noexcept {
   poll();
-  ring::cpu_relax();
+  detail::cpu_relax();
 }
 
 void ClientTransport::poll() noexcept {

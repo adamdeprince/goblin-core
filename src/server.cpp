@@ -26,11 +26,13 @@
 #include "goblin/core/sbe_dispatch.hpp"
 #include "goblin/core/sbe_frame.hpp"
 #include "goblin_sbe/MessageHeader.h"
+#include "goblin_sbe/ErrorReply.h"
 #include "goblin_sbe/PSubscribe.h"
 #include "goblin_sbe/PUnsubscribe.h"
 #include "goblin_sbe/PubSub.h"
 #include "goblin_sbe/Publish.h"
 #include "goblin_sbe/Subscribe.h"
+#include "goblin_sbe/StatusReply.h"
 #include "goblin_sbe/Unsubscribe.h"
 #endif
 #include "goblin/core/store.hpp"
@@ -54,6 +56,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <charconv>
 #include <csignal>
 #include <cstring>
 #include <deque>
@@ -2221,6 +2224,37 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
 }
 
 #ifdef GOBLIN_HAS_SBE
+void append_sbe_status_reply(std::string& out, std::string_view status) {
+  const std::size_t start = out.size();
+  const std::size_t capacity = kSbeLenPrefix +
+                               goblin_sbe::MessageHeader::encodedLength() + 4 +
+                               status.size() + 16;
+  out.resize(start + capacity);
+  goblin_sbe::StatusReply reply;
+  reply.wrapAndApplyHeader(out.data() + start, kSbeLenPrefix, capacity);
+  reply.putStatus(status.data(), static_cast<std::uint32_t>(status.size()));
+  const auto encoded = static_cast<std::uint32_t>(
+      goblin_sbe::MessageHeader::encodedLength() + reply.encodedLength());
+  std::memcpy(out.data() + start, &encoded, kSbeLenPrefix);
+  out.resize(start + kSbeLenPrefix + encoded);
+}
+
+void append_sbe_error_reply(std::string& out, std::string_view message) {
+  const std::size_t start = out.size();
+  const std::size_t capacity = kSbeLenPrefix +
+                               goblin_sbe::MessageHeader::encodedLength() + 8 +
+                               3 + message.size() + 16;
+  out.resize(start + capacity);
+  goblin_sbe::ErrorReply reply;
+  reply.wrapAndApplyHeader(out.data() + start, kSbeLenPrefix, capacity);
+  reply.putCode("ERR", 3);
+  reply.putMessage(message.data(), static_cast<std::uint32_t>(message.size()));
+  const auto encoded = static_cast<std::uint32_t>(
+      goblin_sbe::MessageHeader::encodedLength() + reply.encodedLength());
+  std::memcpy(out.data() + start, &encoded, kSbeLenPrefix);
+  out.resize(start + kSbeLenPrefix + encoded);
+}
+
 [[nodiscard]] std::size_t dispatch_sbe_command(
     EndpointSession& session, Store& store, detail::PubSubRegistry& pubsub,
     ReplicationRuntime& replication, std::string_view bytes,
@@ -2314,13 +2348,70 @@ void dispatch_resp_command(EndpointSession& session, Store& store,
         session.fields.push_back("NUMSUB");
       } else if (operation == 2) {
         session.fields.push_back("NUMPAT");
-      } else {
+      } else if (operation != 3 && operation != 4) {
         session.fields.push_back("UNKNOWN");
       }
       auto& group = message.args();
       session.fields.reserve(1 + static_cast<std::size_t>(group.count()));
       while (group.hasNext()) {
         session.fields.push_back(group.next().getArgAsStringView());
+      }
+      if (operation == 3) {
+        if (session.fields.size() != 2 || session.fields[0].empty() ||
+            (session.fields[1] != "aggregate" &&
+             session.fields[1] != "publisher")) {
+          append_sbe_error_reply(
+              session.output,
+              "invalid BlueField registration; expected edge id and role");
+          return frame_bytes;
+        }
+        std::uint64_t edge_id = 0;
+        const auto id_text = session.fields[0];
+        const auto [end, error] = std::from_chars(
+            id_text.data(), id_text.data() + id_text.size(), edge_id);
+        if (error != std::errc{} || end != id_text.data() + id_text.size() ||
+            edge_id == 0 || session.subscription_count() != 0 ||
+            session.bluefield_edge_id != 0) {
+          append_sbe_error_reply(session.output,
+                                 "invalid BlueField edge registration");
+          return frame_bytes;
+        }
+        session.bluefield_edge_id = edge_id;
+        session.bluefield_aggregate = session.fields[1] == "aggregate";
+        if (session.bluefield_aggregate) {
+          session.bluefield_aggregate_state =
+              std::make_unique<detail::BluefieldAggregateState>();
+        }
+        append_sbe_status_reply(session.output, "OK");
+        return frame_bytes;
+      }
+      if (operation == 4) {
+        if (session.fields.size() != 3 ||
+            (session.fields[0] != "channel" &&
+             session.fields[0] != "pattern") ||
+            !session.bluefield_aggregate) {
+          append_sbe_error_reply(
+              session.output,
+              "invalid BlueField subscription-weight update");
+          return frame_bytes;
+        }
+        std::uint32_t subscribers = 0;
+        const auto count_text = session.fields[2];
+        const auto [end, error] = std::from_chars(
+            count_text.data(), count_text.data() + count_text.size(),
+            subscribers);
+        const bool pattern = session.fields[0] == "pattern";
+        if (error != std::errc{} ||
+            end != count_text.data() + count_text.size() || subscribers == 0 ||
+            !pubsub.set_bluefield_subscription_weight(
+                session, session.fields[1], pattern, subscribers)) {
+          append_sbe_error_reply(
+              session.output,
+              "BlueField weight requires an active aggregate subscription");
+          return frame_bytes;
+        }
+        append_sbe_status_reply(session.output, "OK");
+        return frame_bytes;
       }
       command.type = CommandType::pubsub;
       command.name = "PUBSUB";

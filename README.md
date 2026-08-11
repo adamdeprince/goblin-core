@@ -85,6 +85,11 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Pub/Sub results are in [PUBSUB-BENCHMARK.md](PUBSUB-BENCHMARK.md), including
   Goblin over RESP2/UDS and SBE over 4 KiB rings against every incumbent over
   RESP2/UDS.
+- [NVIDIA BlueField edge mode](docs/bluefield.md) runs a RESP2/RESP3 server on
+  the DPU with a native XLIO Ultra listener, fans Pub/Sub out locally before
+  crossing PCIe, and proxies the rest to a same-version Goblin Core server on
+  the host. The [BlueField benchmark](BLUEFIELD-BENCHMARK.md) compares kernel
+  TCP and native XLIO clients over the direct 100 Gb/s link.
 
 ## Current Commands
 
@@ -201,7 +206,9 @@ the traditional subscribed mode; RESP3 uses push frames and keeps ordinary
 commands available while subscribed. Literal channels use direct lookup and
 patterns use Redis-compatible glob matching. See the
 [Pub/Sub command reference](docs/commands/pubsub.md) for delivery frames, SBE
-templates, and slow-consumer behavior.
+templates, and slow-consumer behavior. BlueField deployments can place a
+[RESP-speaking Pub/Sub edge](docs/bluefield.md) on the DPU while retaining the
+authoritative keyspace on the host.
 
 ## Scripting
 
@@ -776,7 +783,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.10.2
+git checkout v0.10.3
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure

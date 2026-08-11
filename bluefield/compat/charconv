@@ -1,0 +1,27 @@
+#pragma once
+
+#include_next <charconv>
+
+#if __cplusplus < 202002L
+#include <cerrno>
+#include <cstddef>
+#include <cstdio>
+#include <system_error>
+
+// libstdc++ 9 has integer charconv but not the floating overload. The edge does
+// not format scores on its Pub/Sub hot path; this completes the header surface
+// pulled in by the shared RESP encoder without replacing the card's C++ runtime.
+namespace std {
+
+inline to_chars_result to_chars(char* first, char* last, double value) noexcept {
+  if (first >= last) return {last, errc::value_too_large};
+  const auto capacity = static_cast<size_t>(last - first);
+  const int count = std::snprintf(first, capacity, "%.17g", value);
+  if (count < 0 || static_cast<size_t>(count) >= capacity) {
+    return {last, errc::value_too_large};
+  }
+  return {first + count, errc{}};
+}
+
+}  // namespace std
+#endif

@@ -10,6 +10,22 @@
 using goblin::core::detail::PubSubRegistry;
 using goblin::core::detail::PubSubSession;
 using goblin::core::detail::UnsolicitedOutputQueue;
+using goblin::core::detail::WireMode;
+
+#ifdef GOBLIN_BLUEFIELD_STANDALONE
+struct DirectWriteProbe {
+  std::size_t limit{0};
+  std::size_t calls{0};
+  bool fatal{false};
+  std::string bytes;
+};
+#endif
+
+struct SubscriptionChange {
+  std::string name;
+  bool pattern{false};
+  std::size_t subscribers{0};
+};
 
 int main() {
   assert(PubSubRegistry::glob_match("*", "anything"));
@@ -131,4 +147,153 @@ int main() {
 
   registry.remove(survivor);
   assert(registry.publish(shared_channel, "payload") == 0);
+
+  // Edge observers receive every cardinality transition, not just first/last,
+  // so the host can preserve Redis subscriber counts with one aggregate link.
+  PubSubRegistry observed;
+  std::vector<SubscriptionChange> changes;
+  observed.set_subscription_observer({
+      .context = &changes,
+      .changed = [](void* context, std::string_view name, bool pattern,
+                    std::size_t subscribers) {
+        static_cast<std::vector<SubscriptionChange>*>(context)->push_back(
+            {.name = std::string(name),
+             .pattern = pattern,
+             .subscribers = subscribers});
+      }});
+  PubSubSession observed_a(4096);
+  PubSubSession observed_b(4096);
+  const std::string_view observed_channel = "observed";
+  output.clear();
+  observed.execute(
+      observed_a,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&observed_channel, 1)},
+      output);
+  observed.execute(
+      observed_b,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&observed_channel, 1)},
+      output);
+  observed.execute(
+      observed_a,
+      {.type = goblin::core::CommandType::unsubscribe,
+       .args = std::span(&observed_channel, 1)},
+      output);
+  observed.remove(observed_b);
+  assert(changes.size() == 4);
+  assert(changes[0].name == observed_channel && changes[0].subscribers == 1);
+  assert(changes[1].subscribers == 2);
+  assert(changes[2].subscribers == 1);
+  assert(changes[3].subscribers == 0);
+
+#ifdef GOBLIN_BLUEFIELD_STANDALONE
+  // The DPU fast writer may consume a prefix directly. The exact remainder
+  // must retain the same output sequence in the mmap backpressure queue.
+  PubSubRegistry direct;
+  DirectWriteProbe direct_probe{.limit = 7};
+  direct.set_direct_writer({
+      .context = &direct_probe,
+      .write = [](void* context, PubSubSession&,
+                  std::string_view bytes) {
+        auto& probe = *static_cast<DirectWriteProbe*>(context);
+        ++probe.calls;
+        if (probe.fatal) {
+          return goblin::core::detail::PubSubDirectWriteResult{
+              .consumed = 0, .fatal = true};
+        }
+        const std::size_t consumed =
+            probe.limit < bytes.size() ? probe.limit : bytes.size();
+        probe.bytes.append(bytes.substr(0, consumed));
+        return goblin::core::detail::PubSubDirectWriteResult{
+            .consumed = consumed, .fatal = false};
+      }});
+  PubSubSession direct_session(4096);
+  direct_session.wire_mode = WireMode::resp2;
+  const std::string_view direct_channel = "fast";
+  output.clear();
+  direct.execute(
+      direct_session,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&direct_channel, 1)},
+      output);
+  const std::string expected_push =
+      "*3\r\n$7\r\nmessage\r\n$4\r\nfast\r\n$4\r\ntick\r\n";
+  assert(direct.publish(direct_channel, "tick") == 1);
+  assert(direct_probe.calls == 1);
+  assert(direct_probe.bytes == expected_push.substr(0, direct_probe.limit));
+  assert(direct_session.unsolicited.front()->sequence == 1);
+  assert(direct_session.unsolicited.front()->bytes ==
+         expected_push.substr(direct_probe.limit));
+  direct_session.unsolicited.pop();
+
+  direct_probe.limit = static_cast<std::size_t>(-1);
+  direct_probe.bytes.clear();
+  assert(direct.publish(direct_channel, "tick") == 1);
+  assert(direct_probe.calls == 2);
+  assert(direct_probe.bytes == expected_push);
+  assert(direct_session.unsolicited.empty());
+  assert(direct_session.next_output_sequence == 3);
+
+  direct_probe.fatal = true;
+  assert(direct.publish(direct_channel, "tick") == 0);
+  assert(direct_session.close_requested);
+  assert(direct_session.subscription_count() == 0);
+#endif
+
+#ifdef GOBLIN_HAS_SBE
+  // Literal and pattern weights contribute to PUBLISH exactly as separate
+  // edge clients would, while only one SBE push is queued for the whole edge.
+  PubSubRegistry weighted;
+  PubSubSession aggregate(4096);
+  aggregate.wire_mode = WireMode::sbe;
+  aggregate.bluefield_edge_id = 99;
+  aggregate.bluefield_aggregate = true;
+  aggregate.bluefield_aggregate_state =
+      std::make_unique<goblin::core::detail::BluefieldAggregateState>();
+  PubSubSession host(4096);
+  host.wire_mode = WireMode::resp2;
+  const std::string_view weighted_channel = "prices:weighted";
+  const std::string_view weighted_pattern = "prices:*";
+  output.clear();
+  weighted.execute(
+      aggregate,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&weighted_channel, 1)},
+      output);
+  weighted.execute(
+      aggregate,
+      {.type = goblin::core::CommandType::psubscribe,
+       .args = std::span(&weighted_pattern, 1)},
+      output);
+  weighted.execute(
+      host,
+      {.type = goblin::core::CommandType::subscribe,
+       .args = std::span(&weighted_channel, 1)},
+      output);
+  assert(weighted.set_bluefield_subscription_weight(
+      aggregate, weighted_channel, false, 2));
+  assert(weighted.set_bluefield_subscription_weight(
+      aggregate, weighted_pattern, true, 3));
+  aggregate.unsolicited.clear();  // discard subscription acknowledgements
+  host.unsolicited.clear();
+  assert(weighted.publish(weighted_channel, "tick") == 6);
+  assert(aggregate.unsolicited.front().has_value());
+  aggregate.unsolicited.pop();
+  assert(aggregate.unsolicited.empty());
+  host.unsolicited.clear();
+
+  // Publications originating from this edge skip its aggregate subscription.
+  assert(weighted.publish(weighted_channel, "self", 99) == 1);
+  assert(aggregate.unsolicited.empty());
+
+  PubSubSession query(4096);
+  query.wire_mode = WireMode::resp2;
+  const std::string_view numsub_args[]{"NUMSUB", weighted_channel};
+  output.clear();
+  weighted.execute(
+      query,
+      {.type = goblin::core::CommandType::pubsub, .args = numsub_args}, output);
+  assert(output == "*2\r\n$15\r\nprices:weighted\r\n:3\r\n");
+#endif
 }

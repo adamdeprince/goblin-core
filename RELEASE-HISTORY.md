@@ -12,6 +12,34 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 Nothing yet.
 
+## v0.10.3 — August 11, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.3)
+
+The NVIDIA BlueField Pub/Sub edge release.
+
+- Added a standalone RESP2/RESP3 server for NVIDIA BlueField DPUs. It registers
+  literal and pattern subscriptions locally, delivers a DPU-originated
+  publication to local subscribers before forwarding it, and proxies ordinary
+  commands to the authoritative Goblin Core process on the host.
+- Aggregated local interest into weighted host subscriptions so a host
+  publication crosses the host-to-DPU path once, independent of local fanout.
+  Stable edge IDs suppress the return path for DPU-originated publications
+  without weakening Redis-compatible subscriber counts.
+- Added a directly polled XLIO Ultra listener on the DPU. Standard RESP remains
+  on the wire, while direct non-blocking fanout, fixed prefaulted output rings,
+  CPU pinning, and strict polling keep the client-facing path in userspace.
+- Published the [direct 100 Gb/s BlueField benchmark](BLUEFIELD-BENCHMARK.md).
+  With the same native XLIO client used for ConnectX-5 qualification, local
+  Pub/Sub measured 12.5 microseconds p50 and 19.3 microseconds p99, versus
+  107.8 and 116.5 microseconds with a kernel TCP client against the same native
+  Ultra DPU server.
+- Added the standalone AArch64 build, native latency probe, end-to-end socket
+  tests, deployment documentation, and complete Apache-compatible binary
+  notice bundle for the edge and its selected XLIO/DPCP dependencies.
+- Published an independent native AWS EFA qualification run and added a
+  reproducible rootless Podman/OCI source-build path.
+
 ## v0.10.2 — July 26, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.2)

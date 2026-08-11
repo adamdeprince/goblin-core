@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.10.2
+  VERSION 0.10.3
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -75,6 +75,7 @@ set(GOBLIN_CORE_HTML_DOCS
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LIST-WORK-QUEUE-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/SET-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/ARRAY-BENCHMARK.html
+  ${CMAKE_CURRENT_SOURCE_DIR}/html/BLUEFIELD-BENCHMARK.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/LATENCY-SHOOTOUT.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/EFA-LATENCY.html
   ${CMAKE_CURRENT_SOURCE_DIR}/html/AWS-EFA-LATENCY.html
@@ -624,6 +625,43 @@ set_target_properties(goblin_core_server PROPERTIES
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 
+if(TARGET goblin_sbe_headers)
+  add_executable(goblin_core_bluefield
+    src/bluefield_main.cpp
+    src/bluefield_relay.cpp
+    src/bluefield_sbe.cpp
+    src/auth.cpp
+    src/pubsub.cpp
+    src/resp_parser.cpp)
+  if(GOBLIN_HAS_XLIO_BUILD)
+    target_sources(goblin_core_bluefield PRIVATE src/xlio_transport.cpp)
+    target_compile_definitions(goblin_core_bluefield PRIVATE GOBLIN_HAS_XLIO=1)
+    target_include_directories(goblin_core_bluefield PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xlio/src/core)
+  endif()
+  target_link_libraries(goblin_core_bluefield PRIVATE
+    goblin_sbe_headers ${SODIUM_LIBRARY})
+  target_compile_definitions(goblin_core_bluefield PRIVATE
+    GOBLIN_BLUEFIELD_STANDALONE=1
+    GOBLIN_CORE_VERSION="${PROJECT_VERSION}")
+  target_include_directories(goblin_core_bluefield PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fast_float/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${SODIUM_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/unordered_dense/include)
+  set_target_properties(goblin_core_bluefield PROPERTIES
+    OUTPUT_NAME goblin-core-bluefield
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF)
+  if(NOT MSVC)
+    target_compile_options(goblin_core_bluefield PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
+endif()
+
 add_executable(goblin_core_auth src/auth_cli.cpp)
 target_link_libraries(goblin_core_auth PRIVATE goblin_core)
 set_target_properties(goblin_core_auth PROPERTIES
@@ -1063,6 +1101,19 @@ if(GOBLIN_CORE_BUILD_TESTS)
     COMMAND goblin_core_pubsub_socket_test $<TARGET_FILE:goblin_core_server>)
   set_tests_properties(goblin_core_pubsub_socket PROPERTIES TIMEOUT 60)
 
+  if(TARGET goblin_core_bluefield)
+    add_executable(goblin_core_bluefield_socket_test
+      tests/bluefield_socket_test.cpp)
+    target_link_libraries(goblin_core_bluefield_socket_test PRIVATE goblin_core)
+    set_target_properties(goblin_core_bluefield_socket_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    add_test(NAME goblin_core_bluefield_socket
+      COMMAND goblin_core_bluefield_socket_test
+        $<TARGET_FILE:goblin_core_server>
+        $<TARGET_FILE:goblin_core_bluefield>)
+    set_tests_properties(goblin_core_bluefield_socket PROPERTIES TIMEOUT 60)
+  endif()
+
   # SBE dispatch test (framed request -> Store -> generic reply).
   if(TARGET goblin_sbe_headers)
     add_executable(goblin_core_replication_socket_test
@@ -1347,6 +1398,9 @@ set(GOBLIN_CORE_INSTALL_TARGETS
   goblin_core goblin_core_server goblin_core_auth goblin_core_ring_cli
   goblin_lua goblin_luau_vm goblin_wren
   goblin_jim goblin_upy goblin_qjs)
+if(TARGET goblin_core_bluefield)
+  list(APPEND GOBLIN_CORE_INSTALL_TARGETS goblin_core_bluefield)
+endif()
 if(GOBLIN_HAS_KAFKA_BUILD)
   list(APPEND GOBLIN_CORE_INSTALL_TARGETS rdkafka)
 endif()
@@ -1380,6 +1434,7 @@ install(
     INSTALL.md
     README.md
     BENCHMARKS.md
+    BLUEFIELD-BENCHMARK.md
     MICROBENCHMARKS.md
     PERFORMANCE_BRIEF.md
     PUBSUB-BENCHMARK.md
@@ -1391,12 +1446,35 @@ install(
     NOTICE
   DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+install(
+  FILES third_party/unordered_dense/LICENSE
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/unordered_dense)
+install(
+  FILES third_party/xxhash/LICENSE
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/xxhash)
+install(
+  FILES third_party/fast_float/LICENSE-APACHE
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/fast_float)
+
 if(GOBLIN_HAS_KAFKA_BUILD)
   install(
     FILES
       third_party/librdkafka/LICENSE
       third_party/librdkafka/LICENSES.txt
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/librdkafka)
+endif()
+
+if(GOBLIN_HAS_XLIO_BUILD)
+  install(
+    FILES
+      third_party/xlio/LICENSE
+      third_party/xlio/debian/copyright
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/xlio)
+  install(
+    FILES
+      third_party/libdpcp/LICENSE
+      third_party/libdpcp/debian/copyright
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/third_party/libdpcp)
 endif()
 
 if(GOBLIN_CORE_BUILD_HTML_DOCS)

@@ -92,9 +92,25 @@ void erase_name(std::vector<std::string>& names, std::string_view name) {
   }
 }
 
-[[nodiscard]] std::uint8_t collect_modes(const PubSubRegistry::SubscriberSet& subscribers) {
+#ifdef GOBLIN_HAS_SBE
+void add_delivery_count(long long& deliveries, std::uint32_t count) noexcept {
+  const auto room = static_cast<unsigned long long>(
+      std::numeric_limits<long long>::max() - deliveries);
+  deliveries += static_cast<long long>(
+      std::min<unsigned long long>(count, room));
+}
+#endif
+
+[[nodiscard]] std::uint8_t collect_modes(
+    const PubSubRegistry::SubscriberSet& subscribers,
+    std::uint64_t excluded_bluefield_edge_id) {
   std::uint8_t modes = 0;
   for (const auto* session : subscribers) {
+    if (session->bluefield_aggregate ||
+        (excluded_bluefield_edge_id != 0 &&
+         session->bluefield_edge_id == excluded_bluefield_edge_id)) {
+      continue;
+    }
     switch (session->wire_mode) {
       case WireMode::resp3:
         modes |= kModeResp3;
@@ -649,6 +665,24 @@ bool PubSubRegistry::glob_match(std::string_view pattern,
 
 bool PubSubRegistry::enqueue(PubSubSession& session, std::string_view bytes) {
   const std::uint64_t sequence = session.next_output_sequence;
+#ifdef GOBLIN_BLUEFIELD_STANDALONE
+  if (direct_writer_.write != nullptr && session.unsolicited.empty()) {
+    const auto result =
+        direct_writer_.write(direct_writer_.context, session, bytes);
+    if (result.fatal || result.consumed > bytes.size()) {
+      if (!session.close_requested) {
+        session.close_requested = true;
+        overflowed_.push_back(&session);
+      }
+      return false;
+    }
+    bytes.remove_prefix(result.consumed);
+    if (bytes.empty()) {
+      ++session.next_output_sequence;
+      return true;
+    }
+  }
+#endif
   if (session.unsolicited.push(sequence, bytes)) {
     ++session.next_output_sequence;
     // Push appends at the tail; a cached head remains valid.
@@ -736,6 +770,13 @@ void PubSubRegistry::subscribe(PubSubSession& session,
     if (subscribers->insert(&session).second) {
       ++count;
       reverse.emplace_back(name);
+      if (session.bluefield_aggregate && session.bluefield_aggregate_state) {
+        auto& weights = patterns
+                            ? session.bluefield_aggregate_state->patterns
+                            : session.bluefield_aggregate_state->channels;
+        (void)weights.try_emplace(name, 1U);
+      }
+      notify_subscription_changed(name, patterns, subscribers->size());
     }
     append_ack(out, session, kind, name);
   }
@@ -761,11 +802,24 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
     // erase_name() calls without losing cleanup information if encoding throws.
     for (const auto& name : reverse) {
       bool empty = false;
+      bool removed = false;
+      std::size_t remaining = 0;
       if (auto* subscribers = table.find(std::string_view(name))) {
         if (subscribers->erase(&session) != 0) {
           --count;
+          removed = true;
         }
         empty = subscribers->empty();
+        remaining = subscribers->size();
+      }
+      if (removed) {
+        if (session.bluefield_aggregate && session.bluefield_aggregate_state) {
+          auto& weights = patterns
+                              ? session.bluefield_aggregate_state->patterns
+                              : session.bluefield_aggregate_state->channels;
+          weights.erase(std::string_view(name));
+        }
+        notify_subscription_changed(name, patterns, remaining);
       }
       if (empty) {
         table.erase(std::string_view(name));
@@ -781,12 +835,25 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
 
   for (const auto name : names) {
     bool empty = false;
+    bool removed = false;
+    std::size_t remaining = 0;
     if (auto* subscribers = table.find(name)) {
       if (subscribers->erase(&session) != 0) {
         --count;
         erase_name(reverse, name);
+        removed = true;
       }
       empty = subscribers->empty();
+      remaining = subscribers->size();
+    }
+    if (removed) {
+      if (session.bluefield_aggregate && session.bluefield_aggregate_state) {
+        auto& weights = patterns
+                            ? session.bluefield_aggregate_state->patterns
+                            : session.bluefield_aggregate_state->channels;
+        weights.erase(name);
+      }
+      notify_subscription_changed(name, patterns, remaining);
     }
     if (empty) {
       table.erase(name);
@@ -799,7 +866,9 @@ void PubSubRegistry::unsubscribe(PubSubSession& session,
 }
 
 void PubSubRegistry::deliver_to_set(const SubscriberSet& subscribers,
-                                    std::uint8_t modes, long long& deliveries) {
+                                    std::uint8_t modes,
+                                    std::uint64_t excluded_bluefield_edge_id,
+                                    long long& deliveries) {
   std::string_view by_mode[4]{};
   if ((modes & kModeResp2) != 0) {
     by_mode[static_cast<unsigned>(WireMode::undecided)] = resp2_scratch_;
@@ -825,6 +894,11 @@ void PubSubRegistry::deliver_to_set(const SubscriberSet& subscribers,
 #endif
     }
     auto* session = *it;
+    if (session->bluefield_aggregate ||
+        (excluded_bluefield_edge_id != 0 &&
+         session->bluefield_edge_id == excluded_bluefield_edge_id)) {
+      continue;
+    }
     const auto mode_index = static_cast<unsigned>(session->wire_mode);
     const std::string_view bytes = by_mode[mode_index];
     if (bytes.data() == nullptr) {
@@ -851,20 +925,62 @@ void PubSubRegistry::deliver_to_set(const SubscriberSet& subscribers,
   }
 }
 
-long long PubSubRegistry::publish(std::string_view channel,
-                                  std::string_view payload) {
+long long PubSubRegistry::publish(
+    std::string_view channel, std::string_view payload,
+    std::uint64_t excluded_bluefield_edge_id) {
   long long deliveries = 0;
+  aggregate_delivered_.clear();
+
+#ifdef GOBLIN_HAS_SBE
+  bool aggregate_frame_encoded = false;
+  const auto deliver_aggregates = [&](const SubscriberSet& subscribers,
+                                      std::string_view subscription,
+                                      bool pattern) {
+    for (auto* session : subscribers) {
+      if (!session->bluefield_aggregate ||
+          session->close_requested ||
+          (excluded_bluefield_edge_id != 0 &&
+           session->bluefield_edge_id == excluded_bluefield_edge_id)) {
+        continue;
+      }
+      const auto weight =
+          bluefield_subscription_weight(*session, subscription, pattern);
+      if (weight == 0) {
+        continue;
+      }
+      if (aggregate_delivered_.insert(session).second) {
+        if (!aggregate_frame_encoded) {
+          encode_literal_frames(kModeSbe, channel, payload, resp2_scratch_,
+                                resp3_scratch_, sbe_scratch_);
+          aggregate_frame_encoded = true;
+        }
+        if (!enqueue(*session, sbe_scratch_)) {
+          continue;
+        }
+      }
+      add_delivery_count(deliveries, weight);
+    }
+  };
+#endif
 
   if (auto* subscribers = channels_.find(channel)) {
     if (!subscribers->empty()) {
-      const std::uint8_t modes = collect_modes(*subscribers);
-      encode_literal_frames(modes, channel, payload, resp2_scratch_, resp3_scratch_
+      const std::uint8_t modes =
+          collect_modes(*subscribers, excluded_bluefield_edge_id);
+      if (modes != 0) {
+        encode_literal_frames(modes, channel, payload, resp2_scratch_,
+                              resp3_scratch_
 #ifdef GOBLIN_HAS_SBE
-                            ,
-                            sbe_scratch_
+                              ,
+                              sbe_scratch_
 #endif
-      );
-      deliver_to_set(*subscribers, modes, deliveries);
+        );
+        deliver_to_set(*subscribers, modes, excluded_bluefield_edge_id,
+                       deliveries);
+      }
+#ifdef GOBLIN_HAS_SBE
+      deliver_aggregates(*subscribers, channel, false);
+#endif
     }
   }
 
@@ -877,20 +993,80 @@ long long PubSubRegistry::publish(std::string_view channel,
       if (subscribers == nullptr || subscribers->empty()) {
         continue;
       }
-      const std::uint8_t modes = collect_modes(*subscribers);
-      encode_pattern_frames(modes, entry.pattern, channel, payload, resp2_scratch_,
-                            resp3_scratch_
+      const std::uint8_t modes =
+          collect_modes(*subscribers, excluded_bluefield_edge_id);
+      if (modes != 0) {
+        encode_pattern_frames(modes, entry.pattern, channel, payload,
+                              resp2_scratch_, resp3_scratch_
 #ifdef GOBLIN_HAS_SBE
-                            ,
-                            sbe_scratch_
+                              ,
+                              sbe_scratch_
 #endif
-      );
-      deliver_to_set(*subscribers, modes, deliveries);
+        );
+        deliver_to_set(*subscribers, modes, excluded_bluefield_edge_id,
+                       deliveries);
+      }
+#ifdef GOBLIN_HAS_SBE
+      deliver_aggregates(*subscribers, entry.pattern, true);
+#endif
     }
   }
 
   cleanup_overflowed();
+  aggregate_delivered_.clear();
   return deliveries;
+}
+
+void PubSubRegistry::notify_subscription_changed(std::string_view name,
+                                                 bool pattern,
+                                                 std::size_t subscribers) {
+  if (subscription_observer_.changed != nullptr) {
+    subscription_observer_.changed(subscription_observer_.context, name,
+                                   pattern, subscribers);
+  }
+}
+
+std::uint32_t PubSubRegistry::bluefield_subscription_weight(
+    const PubSubSession& session, std::string_view name, bool pattern) {
+  if (!session.bluefield_aggregate || !session.bluefield_aggregate_state) {
+    return 1;
+  }
+  const auto& weights = pattern ? session.bluefield_aggregate_state->patterns
+                                : session.bluefield_aggregate_state->channels;
+  const auto* weight = weights.find(name);
+  return weight == nullptr ? 0U : *weight;
+}
+
+std::uint32_t PubSubRegistry::subscriber_count(
+    const SubscriberSet& subscribers, std::string_view name, bool pattern) {
+  std::uint64_t count = 0;
+  for (const auto* session : subscribers) {
+    count += bluefield_subscription_weight(*session, name, pattern);
+  }
+  return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+      count, std::numeric_limits<std::uint32_t>::max()));
+}
+
+bool PubSubRegistry::set_bluefield_subscription_weight(
+    PubSubSession& session, std::string_view name, bool pattern,
+    std::uint32_t subscribers) {
+  if (!session.bluefield_aggregate || !session.bluefield_aggregate_state ||
+      subscribers == 0) {
+    return false;
+  }
+  auto& table = pattern ? patterns_ : channels_;
+  const auto* subscribed = table.find(name);
+  if (subscribed == nullptr || !subscribed->contains(&session)) {
+    return false;
+  }
+  auto& weights = pattern ? session.bluefield_aggregate_state->patterns
+                          : session.bluefield_aggregate_state->channels;
+  auto* weight = weights.find(name);
+  if (weight == nullptr) {
+    return false;
+  }
+  *weight = subscribers;
+  return true;
 }
 
 void PubSubRegistry::cleanup_overflowed() {
@@ -910,7 +1086,10 @@ void PubSubRegistry::remove(PubSubSession& session) {
 
   for (const auto& name : session.channel_names) {
     if (auto* subscribers = channels_.find(std::string_view(name))) {
-      (void)subscribers->erase(&session);
+      const bool removed = subscribers->erase(&session) != 0;
+      if (removed) {
+        notify_subscription_changed(name, false, subscribers->size());
+      }
       if (subscribers->empty()) {
         channels_.erase(std::string_view(name));
       }
@@ -921,7 +1100,10 @@ void PubSubRegistry::remove(PubSubSession& session) {
 
   for (const auto& name : session.pattern_names) {
     if (auto* subscribers = patterns_.find(std::string_view(name))) {
-      (void)subscribers->erase(&session);
+      const bool removed = subscribers->erase(&session) != 0;
+      if (removed) {
+        notify_subscription_changed(name, true, subscribers->size());
+      }
       if (subscribers->empty()) {
         patterns_.erase(std::string_view(name));
         erase_pattern_publish_entry(name);
@@ -930,6 +1112,11 @@ void PubSubRegistry::remove(PubSubSession& session) {
   }
   session.pattern_names.clear();
   session.pattern_subscriptions = 0;
+
+  if (session.bluefield_aggregate_state) {
+    session.bluefield_aggregate_state->channels.clear();
+    session.bluefield_aggregate_state->patterns.clear();
+  }
 
   session.unsolicited.clear();
   session.clear_unsolicited_front_cache();
@@ -961,7 +1148,8 @@ void PubSubRegistry::execute(PubSubSession& session, const Command& command,
       unsubscribe(session, command.args, true, out);
       return;
     case CommandType::publish: {
-      const auto delivered = publish(command.args[0], command.args[1]);
+      const auto delivered = publish(command.args[0], command.args[1],
+                                     session.bluefield_edge_id);
 #ifdef GOBLIN_HAS_SBE
       if (session.wire_mode == WireMode::sbe) {
         append_sbe_integer(out, delivered);
@@ -1037,8 +1225,9 @@ void PubSubRegistry::execute(PubSubSession& session, const Command& command,
       const auto* subscribers = channels_.find(command.args[i]);
       values.emplace_back(command.args[i], subscribers == nullptr
                                                ? 0U
-                                               : static_cast<std::uint32_t>(
-                                                     subscribers->size()));
+                                               : subscriber_count(
+                                                     *subscribers,
+                                                     command.args[i], false));
     }
 #ifdef GOBLIN_HAS_SBE
     if (session.wire_mode == WireMode::sbe) {

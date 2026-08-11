@@ -11,9 +11,11 @@ libfabric reliable datagrams, including AWS EFA.
 
 - [Build, configure, and run Goblin Core](../README.md)
 - [Install Goblin Core from source](../INSTALL.md)
+- [Build and run the OCI image with Podman](container.md)
 - [Release history](../RELEASE-HISTORY.md)
 - [Performance architecture](../PERFORMANCE_BRIEF.md)
 - [Benchmark methodology and results](../BENCHMARKS.md)
+- [BlueField Pub/Sub benchmark](../BLUEFIELD-BENCHMARK.md)
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
 - [Libfabric provider matrix over 100 Gb/s](../EFA-LATENCY.md)
 - [XLIO Ultra command latency](../XLIO-LATENCY.md)
@@ -36,6 +38,7 @@ libfabric reliable datagrams, including AWS EFA.
 | [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
 | [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
 | [Native XLIO Ultra TCP](xlio.md) | Native RESP/SBE server and client, strict poll priority, pinned XLIO/DPCP sources, ConnectX-5 qualification, build recipe, snapshot constraints, and kernel-TCP interoperability. |
+| [NVIDIA BlueField Pub/Sub edge](bluefield.md) | RESP-facing DPU edge, local-first Pub/Sub fanout, host forwarding, native XLIO Ultra polling, deployment, and qualification. |
 | [SBE protocol](sbe-protocol.md) | Handshake, framing, schema generation, message and reply types, compatibility rules, and typed-client usage. |
 
 Protocol and transport are independent. RESP and opt-in SBE can each run over

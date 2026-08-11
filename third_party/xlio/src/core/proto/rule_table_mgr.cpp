@@ -20,6 +20,7 @@
 
 #include <netlink/route/rule.h>
 #include <netlink/netlink.h>
+#include <netlink/version.h>
 
 #include "utils/bullseye.h"
 #include "utils/lock_wrapper.h"
@@ -78,7 +79,6 @@ void rule_table_mgr::update_tbl(nl_data_t data_type)
 // Parse received rule entry into custom object (rule_val).
 void rule_table_mgr::parse_entry(struct nl_object *nl_obj)
 {
-    int err = 0;
     rule_val val;
 
     // Cast the generic nl_object to a specific route or rule object
@@ -86,10 +86,16 @@ void rule_table_mgr::parse_entry(struct nl_object *nl_obj)
 
     // Set rule properties in p_val using libnl getters
     uint8_t protocol = 0;
-    err = rtnl_rule_get_protocol(rule, &protocol);
+#if LIBNL_VER_NUM >= LIBNL_VER(3, 5)
+    int err = rtnl_rule_get_protocol(rule, &protocol);
     if (err < 0) {
         rr_mgr_logdbg("Rule without protocol attribute, using default");
     }
+#else
+    // libnl 3.4 predates FRA_PROTOCOL accessors. Protocol is retained only for
+    // diagnostics here and does not participate in XLIO route-rule matching.
+    rr_mgr_logdbg("libnl has no rule protocol accessor, using default");
+#endif
 
     val.set_family(rtnl_rule_get_family(rule));
     val.set_protocol(protocol);

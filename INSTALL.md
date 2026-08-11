@@ -1,9 +1,12 @@
 # Installing Goblin Core from source
 
 Goblin Core is currently distributed as source. There are no official binary,
-container, operating-system package, or service-manager releases. A release is
-an annotated Git tag; compile the tag on the machine where it will run, or on a
-compatible build host.
+registry-hosted container, operating-system package, or service-manager
+releases. A release is an annotated Git tag; compile the tag on the machine
+where it will run, on a compatible build host, or use the repository
+`Containerfile` to build a local OCI image with Podman. See the
+[container guide](docs/container.md) for the rootless build and deployment
+workflow.
 
 Linux is the production platform. macOS is supported for development and the
 portable socket/shared-memory test suite. RDMA, XLIO Ultra, HugeTLB, CPU

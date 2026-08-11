@@ -130,6 +130,16 @@ all three Ethernet verbs devices, mapped `10.100.0.2` to
 `enp68s0np0`/`rocep68s0`, and created the active TX and RX queues on that
 ConnectX-5 device.
 
+## BlueField-2 libnl compatibility
+
+The Ubuntu 20.04 image on the BlueField-2 provides libnl 3.4. XLIO 3.61 reads
+the optional routing-rule protocol attribute through an accessor introduced in
+libnl 3.5. The local XLIO patch version-gates that diagnostic field and leaves
+it at its existing zero default on libnl 3.4. XLIO's route-rule matcher uses
+family, source, destination, TOS, interface names, table, and priority; it does
+not use the stored protocol field. This lets the pinned runtime build against
+the DPU's system libnl without replacing a system networking library.
+
 ## Reproducing the build
 
 The verified build used GCC 11.4, CMake 3.22, GNU Autotools, libibverbs, libnl3,
@@ -169,15 +179,24 @@ cmake -S . -B build-xlio \
 cmake --build build-xlio -j"$(nproc)"
 ```
 
+`cmake --install` includes Goblin Core's `LICENSE` and `NOTICE` plus the selected
+licenses for its vendored header dependencies. XLIO-enabled installs also
+include the selected XLIO BSD license, XLIO's consolidated component copyright
+inventory, and the DPCP BSD license and copyright inventory under the
+installation's `share/doc` directory. The GPL-only `COPYING` file is the
+unselected XLIO alternative and is deliberately not placed in the binary notice
+bundle.
+
 The XLIO tree uses an Autotools-generated Makefile. Running `autogen.sh`
 generates build-system files inside the source tree; use a disposable source
 copy when verifying that the vendored tree still differs from upstream only by
 the documented discovery patch.
 
 XLIO needs `CAP_NET_RAW` or root to create the offloaded path. It also expects a
-sufficient locked-memory limit and normally uses huge pages. The smoke tests
-used `XLIO_MEM_ALLOC_TYPE=ANON` because they validated functionality rather than
-production memory placement.
+sufficient locked-memory limit and normally uses huge pages. The current
+BlueField-2 image has no reserved HugeTLB pages, so its native Ultra service and
+qualification runs use `XLIO_MEM_ALLOC_TYPE=ANON`. Reserve huge pages for a
+production image before selecting XLIO's huge-page allocator.
 
 ## Running Goblin Core over XLIO
 

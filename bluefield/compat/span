@@ -1,0 +1,105 @@
+#pragma once
+
+#if __cplusplus >= 202002L
+#include_next <span>
+#else
+
+#include <array>
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+// GCC 9, shipped by the BlueField-2 Ubuntu 20.04 image, implements the language
+// features used by the edge but predates libstdc++'s <span>. Keep this small
+// compatibility surface private to the standalone DPU build.
+namespace std {
+
+inline constexpr size_t dynamic_extent = static_cast<size_t>(-1);
+
+template <class Element, size_t Extent = dynamic_extent>
+class span {
+ public:
+  using element_type = Element;
+  using value_type = remove_cv_t<Element>;
+  using size_type = size_t;
+  using difference_type = ptrdiff_t;
+  using pointer = Element*;
+  using const_pointer = const Element*;
+  using reference = Element&;
+  using const_reference = const Element&;
+  using iterator = pointer;
+
+  constexpr span() noexcept = default;
+  constexpr span(pointer data, size_type count) noexcept
+      : data_(data), size_(count) {}
+  constexpr span(pointer first, pointer last) noexcept
+      : data_(first), size_(static_cast<size_type>(last - first)) {}
+
+  template <size_t Count,
+            enable_if_t<Extent == dynamic_extent || Extent == Count, int> = 0>
+  constexpr span(element_type (&values)[Count]) noexcept
+      : data_(values), size_(Count) {}
+
+  template <class Other, size_t Count,
+            enable_if_t<is_convertible_v<Other (*)[], Element (*)[]> &&
+                            (Extent == dynamic_extent || Extent == Count),
+                        int> = 0>
+  constexpr span(array<Other, Count>& values) noexcept
+      : data_(values.data()), size_(Count) {}
+
+  template <class Other, size_t Count,
+            enable_if_t<is_convertible_v<const Other (*)[], Element (*)[]> &&
+                            (Extent == dynamic_extent || Extent == Count),
+                        int> = 0>
+  constexpr span(const array<Other, Count>& values) noexcept
+      : data_(values.data()), size_(Count) {}
+
+  template <class Container,
+            class Data = decltype(declval<Container&>().data()),
+            class Size = decltype(declval<Container&>().size()),
+            enable_if_t<is_convertible_v<Data, pointer> &&
+                            is_convertible_v<Size, size_type>,
+                        int> = 0>
+  constexpr span(Container& values) noexcept
+      : data_(values.data()), size_(static_cast<size_type>(values.size())) {}
+
+  template <class Other, size_t OtherExtent,
+            enable_if_t<is_convertible_v<Other (*)[], Element (*)[]> &&
+                            (Extent == dynamic_extent ||
+                             OtherExtent == dynamic_extent ||
+                             Extent == OtherExtent),
+                        int> = 0>
+  constexpr span(const span<Other, OtherExtent>& other) noexcept
+      : data_(other.data()), size_(other.size()) {}
+
+  [[nodiscard]] constexpr pointer data() const noexcept { return data_; }
+  [[nodiscard]] constexpr size_type size() const noexcept { return size_; }
+  [[nodiscard]] constexpr size_type size_bytes() const noexcept {
+    return size_ * sizeof(element_type);
+  }
+  [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
+
+  [[nodiscard]] constexpr reference operator[](size_type index) const noexcept {
+    return data_[index];
+  }
+  [[nodiscard]] constexpr reference front() const noexcept { return data_[0]; }
+  [[nodiscard]] constexpr reference back() const noexcept {
+    return data_[size_ - 1];
+  }
+  [[nodiscard]] constexpr iterator begin() const noexcept { return data_; }
+  [[nodiscard]] constexpr iterator end() const noexcept { return data_ + size_; }
+
+  [[nodiscard]] constexpr span<Element> subspan(
+      size_type offset, size_type count = dynamic_extent) const noexcept {
+    return span<Element>(data_ + offset,
+                         count == dynamic_extent ? size_ - offset : count);
+  }
+
+ private:
+  pointer data_{nullptr};
+  size_type size_{0};
+};
+
+}  // namespace std
+
+#endif
