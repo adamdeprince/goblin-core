@@ -15,7 +15,7 @@ libfabric reliable datagrams, including AWS EFA.
 - [Release history](../RELEASE-HISTORY.md)
 - [Performance architecture](../PERFORMANCE_BRIEF.md)
 - [Benchmark methodology and results](../BENCHMARKS.md)
-- [BlueField Pub/Sub benchmark](../BLUEFIELD-BENCHMARK.md)
+- [BlueField DPU-side Pub/Sub benchmark](../BLUEFIELD-BENCHMARK.md)
 - [Pub/Sub performance benchmark](../PUBSUB-BENCHMARK.md)
 - [Libfabric provider matrix over 100 Gb/s](../EFA-LATENCY.md)
 - [XLIO Ultra command latency](../XLIO-LATENCY.md)

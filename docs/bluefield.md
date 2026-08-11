@@ -1,8 +1,8 @@
 # NVIDIA BlueField Pub/Sub edge
 
-`goblin-core-bluefield` is a small RESP server intended to run on the Arm cores
-of an NVIDIA BlueField DPU. The ordinary `goblin-core` process remains the
-authoritative server on the host. The edge owns no keyspace: it handles
+`goblin-core-bluefield` is a small RESP-facing edge intended to run on the Arm
+cores of an NVIDIA BlueField DPU. The ordinary `goblin-core` process remains
+the authoritative server on the host. The edge owns no keyspace: it handles
 Pub/Sub locally and proxies every ordinary data command to the host.
 
 ```text
@@ -252,8 +252,8 @@ python3 benchmarks/bluefield_pubsub_latency.py \
 An XLIO-enabled root build also exposes matched kernel and XLIO Ultra Pub/Sub
 modes in the existing latency probe. Both modes use two RESP2 connections and
 the same payloads, timer, validation, CPU binding, warmup, and sample count. The
-DPU server transport is selected independently at launch. The current results
-use the native XLIO Ultra listener (`--xlio`) on the DPU for both client modes:
+DPU edge transport is selected independently at launch. The current results use
+the native XLIO Ultra listener (`--xlio`) on the DPU for both client modes:
 
 ```sh
 numactl --cpunodebind=1 --membind=1 taskset -c 5 \
@@ -297,12 +297,13 @@ DPDK supplies packet I/O rather than a complete Redis-compatible TCP stack;
 using it directly would require a separate userspace TCP implementation and a
 substantially larger integration.
 
-On August 11, 2026, `rain` was connected directly to BlueField port p0 at
-100 Gb/s with RS-FEC. The native Ultra edge ran on BlueField Arm CPU 2 and the
-client ran on `rain` CPU 5, local to its ConnectX-5. With exactly one edge
-process running, the current 5,000-sample client comparison is:
+On August 11, 2026, a ConnectX-5 client host was connected directly to
+BlueField port p0 at 100 Gb/s with RS-FEC. The native Ultra edge processed
+Pub/Sub on BlueField Arm CPU 2, and the client ran on CPU 5 local to its
+ConnectX-5. With exactly one DPU edge process running, the current 5,000-sample
+client comparison is:
 
-| Client on `rain` | p50 | p90 | p99 | p99.9 | Mean |
+| Client transport | p50 | p90 | p99 | p99.9 | Mean |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Kernel TCP | 107.8 us | 108.7 us | 116.5 us | 153.7 us | 108.1 us |
 | Native XLIO Ultra | 12.5 us | 14.4 us | 19.3 us | 24.4 us | 12.9 us |
@@ -316,8 +317,8 @@ TCP measured 27.6 us p50 and 32.6 us p99; XLIO Ultra measured 10.6 us p50 and
 median for the second connection, RESP parsing, lookup, encoding, and fanout.
 
 The concise current-state report is the
-[BlueField Pub/Sub benchmark](../BLUEFIELD-BENCHMARK.md). Its raw rows and
-deployment metadata are in
+[BlueField DPU-side Pub/Sub benchmark](../BLUEFIELD-BENCHMARK.md). Its raw rows
+and deployment metadata are in
 [`benchmarks/bluefield_pubsub_2026-08-11.csv`](../benchmarks/bluefield_pubsub_2026-08-11.csv),
 [`benchmarks/bluefield_ping_2026-08-11.csv`](../benchmarks/bluefield_ping_2026-08-11.csv),
 and

@@ -26,10 +26,11 @@ The opt-in NVIDIA BlueField Pub/Sub edge release.
   delivery or inaccurate Redis-compatible subscriber counts.
 - Added a directly polled XLIO Ultra listener with direct non-blocking fanout,
   fixed prefaulted output rings, CPU pinning, and standard RESP on the wire.
-- Published the [direct 100 Gb/s BlueField benchmark](BLUEFIELD-BENCHMARK.md):
+- Published the
+  [direct 100 Gb/s BlueField DPU-side benchmark](BLUEFIELD-BENCHMARK.md):
   native XLIO Pub/Sub measured 12.5 microseconds p50 and 19.3 microseconds p99,
   versus 107.8 and 116.5 microseconds with a kernel TCP client against the same
-  native Ultra DPU server.
+  native Ultra DPU-resident edge.
 - Kept BlueField out of ordinary builds by default. Enable the edge executable
   and integration test with `-DGOBLIN_CORE_BUILD_BLUEFIELD=ON`, or use the
   independent `bluefield/` AArch64 build.
@@ -43,7 +44,7 @@ The opt-in NVIDIA BlueField Pub/Sub edge release.
 
 The NVIDIA BlueField Pub/Sub edge release.
 
-- Added a standalone RESP2/RESP3 server for NVIDIA BlueField DPUs. It registers
+- Added a standalone RESP2/RESP3 edge for NVIDIA BlueField DPUs. It registers
   literal and pattern subscriptions locally, delivers a DPU-originated
   publication to local subscribers before forwarding it, and proxies ordinary
   commands to the authoritative Goblin Core process on the host.
@@ -54,11 +55,12 @@ The NVIDIA BlueField Pub/Sub edge release.
 - Added a directly polled XLIO Ultra listener on the DPU. Standard RESP remains
   on the wire, while direct non-blocking fanout, fixed prefaulted output rings,
   CPU pinning, and strict polling keep the client-facing path in userspace.
-- Published the [direct 100 Gb/s BlueField benchmark](BLUEFIELD-BENCHMARK.md).
+- Published the
+  [direct 100 Gb/s BlueField DPU-side benchmark](BLUEFIELD-BENCHMARK.md).
   With the same native XLIO client used for ConnectX-5 qualification, local
   Pub/Sub measured 12.5 microseconds p50 and 19.3 microseconds p99, versus
   107.8 and 116.5 microseconds with a kernel TCP client against the same native
-  Ultra DPU server.
+  Ultra DPU-resident edge.
 - Added the standalone AArch64 build, native latency probe, end-to-end socket
   tests, deployment documentation, and complete Apache-compatible binary
   notice bundle for the edge and its selected XLIO/DPCP dependencies.
