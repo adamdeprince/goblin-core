@@ -85,7 +85,7 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Pub/Sub results are in [PUBSUB-BENCHMARK.md](PUBSUB-BENCHMARK.md), including
   Goblin over RESP2/UDS and SBE over 4 KiB rings against every incumbent over
   RESP2/UDS.
-- [NVIDIA BlueField edge mode](docs/bluefield.md) runs a RESP2/RESP3 server on
+- Optional [NVIDIA BlueField edge mode](docs/bluefield.md) runs a RESP2/RESP3 server on
   the DPU with a native XLIO Ultra listener, fans Pub/Sub out locally before
   crossing PCIe, and proxies the rest to a same-version Goblin Core server on
   the host. The [BlueField benchmark](BLUEFIELD-BENCHMARK.md) compares kernel

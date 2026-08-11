@@ -110,11 +110,13 @@ and Goblin's SBE messages are lockstep interfaces; mixing releases is
 unsupported. Client-facing compatibility does not have that constraint because
 the DPU always speaks RESP.
 
-The normal project also builds the edge and its socket integration test on a
-development machine:
+The normal project can also build the edge and its socket integration test on a
+development machine. BlueField support is off by default in the top-level
+build, so enable it explicitly:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DGOBLIN_CORE_BUILD_BLUEFIELD=ON
 cmake --build build --target goblin_core_server goblin_core_bluefield -j
 ctest --test-dir build --output-on-failure -R bluefield
 ```

@@ -10,7 +10,9 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
-Nothing yet.
+- The top-level build now leaves the optional BlueField edge executable and its
+  integration test disabled. DPU users can enable them with
+  `-DGOBLIN_CORE_BUILD_BLUEFIELD=ON` or use the independent `bluefield/` build.
 
 ## v0.10.3 — August 11, 2026
 

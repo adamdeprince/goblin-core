@@ -202,6 +202,7 @@ profile makes the resulting binary easier to audit.
 | `GOBLIN_CORE_BUILD_TESTS` | `ON` | Builds the C++ and socket integration tests and enables CTest. Requires Python 3 for script-driven tests. |
 | `GOBLIN_CORE_BUILD_BENCHMARKS` | `ON` | Builds benchmark workers and probes. Turn it off for a smaller/faster installation build. |
 | `GOBLIN_CORE_BUILD_HTML_DOCS` | `ON` | Converts the Markdown tree into the static site under `html/`. Requires Python 3. |
+| `GOBLIN_CORE_BUILD_BLUEFIELD` | `OFF` | Builds and installs the optional NVIDIA BlueField RESP Pub/Sub edge and its integration test. The standalone `bluefield/` build is independent of this option. |
 | `GOBLIN_CORE_ENABLE_KAFKA` | `ON` | Compiles vendored librdkafka and enables Kafka journaling/replay. No system librdkafka is needed. |
 | `GOBLIN_CORE_ENABLE_TLS` | `ON` | Enables OpenSSL TLS for ordinary non-loopback TCP listeners and TLS replica connections. Requires OpenSSL development files. |
 | `GOBLIN_CORE_ENABLE_RDMA` | `ON` | Enables polled RDMA rings on Linux when libibverbs and librdmacm are found. Missing libraries or a non-Linux host disable it with a CMake status message. |

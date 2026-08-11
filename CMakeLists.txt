@@ -15,6 +15,9 @@ set_property(CACHE GOBLIN_CORE_ARCH PROPERTY STRINGS
 option(GOBLIN_CORE_BUILD_TESTS "Build Goblin Core tests" ON)
 option(GOBLIN_CORE_BUILD_BENCHMARKS "Build Goblin Core benchmark executables" ON)
 option(GOBLIN_CORE_BUILD_HTML_DOCS "Build HTML documentation from Markdown" ON)
+option(GOBLIN_CORE_BUILD_BLUEFIELD
+  "Build the optional NVIDIA BlueField Pub/Sub edge executable"
+  OFF)
 option(GOBLIN_CORE_ENABLE_RDMA
   "Enable InfiniBand/RDMA polled-ring transport (Linux libibverbs + librdmacm; not vendored)"
   ON)
@@ -625,7 +628,7 @@ set_target_properties(goblin_core_server PROPERTIES
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 
-if(TARGET goblin_sbe_headers)
+if(GOBLIN_CORE_BUILD_BLUEFIELD AND TARGET goblin_sbe_headers)
   add_executable(goblin_core_bluefield
     src/bluefield_main.cpp
     src/bluefield_relay.cpp
@@ -660,6 +663,9 @@ if(TARGET goblin_sbe_headers)
     target_compile_options(goblin_core_bluefield PRIVATE
       -Wall -Wextra -Wpedantic)
   endif()
+elseif(GOBLIN_CORE_BUILD_BLUEFIELD)
+  message(FATAL_ERROR
+    "GOBLIN_CORE_BUILD_BLUEFIELD requires the generated SBE headers")
 endif()
 
 add_executable(goblin_core_auth src/auth_cli.cpp)
