@@ -36,13 +36,18 @@ target_include_directories(_goblin_core PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../include
   ${CMAKE_CURRENT_SOURCE_DIR}/../sbe/generated)
 
-# Optional RDMA / ExaSock (same flags as the parent tree; not vendored).
+# Optional RDMA / ExaSock / Aeron (same flags as the parent tree; not vendored).
 option(GOBLIN_CORE_ENABLE_RDMA
   "Enable InfiniBand/RDMA support in the Python extension"
   OFF)
 option(GOBLIN_CORE_ENABLE_EXASOCK
   "Enable Cisco ExaSock support in the Python extension"
   OFF)
+option(GOBLIN_CORE_ENABLE_AERON
+  "Enable Aeron UDP and IPC support in the Python extension"
+  OFF)
+set(GOBLIN_CORE_AERON_ROOT "" CACHE PATH
+  "Installed Aeron 1.51+ prefix (scripts/build-aeron.sh)")
 
 if(GOBLIN_CORE_ENABLE_RDMA)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -69,6 +74,25 @@ if(GOBLIN_CORE_ENABLE_RDMA)
   message(STATUS "goblin_core Python: RDMA support enabled")
 endif()
 
+if(GOBLIN_CORE_ENABLE_AERON)
+  if(GOBLIN_CORE_AERON_ROOT)
+    find_package(aeron 1.51 CONFIG REQUIRED
+      PATHS ${GOBLIN_CORE_AERON_ROOT}
+      NO_DEFAULT_PATH)
+  else()
+    find_package(aeron 1.51 CONFIG REQUIRED)
+  endif()
+  if(NOT TARGET aeron::aeron_static)
+    message(FATAL_ERROR
+      "goblin_core Python: Aeron package does not export aeron::aeron_static")
+  endif()
+  target_compile_definitions(_goblin_core PRIVATE GOBLIN_HAS_AERON=1)
+  target_sources(_goblin_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/aeron_transport.cpp)
+  target_link_libraries(_goblin_core PRIVATE aeron::aeron_static)
+  message(STATUS "goblin_core Python: Aeron UDP/IPC support enabled")
+endif()
+
 if(GOBLIN_CORE_ENABLE_EXASOCK)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "GOBLIN_CORE_ENABLE_EXASOCK requires Linux + ExaSock SDK")
@@ -86,8 +110,11 @@ if(GOBLIN_CORE_ENABLE_EXASOCK)
 endif()
 
 # Drop the extension into the package directory so it is importable in place.
+set(GOBLIN_CORE_PYTHON_OUTPUT_DIRECTORY
+  "${CMAKE_CURRENT_SOURCE_DIR}/goblin_core" CACHE PATH
+  "Directory for an in-place _goblin_core extension build")
 set_target_properties(_goblin_core PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/goblin_core)
+  LIBRARY_OUTPUT_DIRECTORY ${GOBLIN_CORE_PYTHON_OUTPUT_DIRECTORY})
 
 # For an installed build (scikit-build-core / pip), install into the package.
 install(TARGETS _goblin_core LIBRARY DESTINATION goblin_core)

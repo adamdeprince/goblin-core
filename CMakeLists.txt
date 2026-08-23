@@ -32,6 +32,11 @@ option(GOBLIN_CORE_ENABLE_EXASOCK
 option(GOBLIN_CORE_ENABLE_XLIO
   "Enable native NVIDIA XLIO Ultra polled TCP transport (Linux; runtime libxlio preload required)"
   OFF)
+option(GOBLIN_CORE_ENABLE_AERON
+  "Enable Aeron reliable UDP and IPC request/response transports"
+  OFF)
+set(GOBLIN_CORE_AERON_ROOT "" CACHE PATH
+  "Installed Aeron 1.51+ prefix (scripts/build-aeron.sh)")
 option(GOBLIN_CORE_ENABLE_KAFKA
   "Enable RESP2 write ingestion from Kafka using vendored librdkafka"
   ON)
@@ -387,6 +392,22 @@ if(GOBLIN_CORE_ENABLE_XLIO)
   set(GOBLIN_HAS_XLIO_BUILD ON)
 endif()
 
+set(GOBLIN_HAS_AERON_BUILD OFF)
+if(GOBLIN_CORE_ENABLE_AERON)
+  if(GOBLIN_CORE_AERON_ROOT)
+    find_package(aeron 1.51 CONFIG REQUIRED
+      PATHS ${GOBLIN_CORE_AERON_ROOT}
+      NO_DEFAULT_PATH)
+  else()
+    find_package(aeron 1.51 CONFIG REQUIRED)
+  endif()
+  if(NOT TARGET aeron::aeron_static)
+    message(FATAL_ERROR
+      "goblin-core: Aeron package does not export aeron::aeron_static")
+  endif()
+  set(GOBLIN_HAS_AERON_BUILD ON)
+endif()
+
 add_library(goblin_core
   src/auth.cpp
   src/command.cpp
@@ -408,6 +429,7 @@ add_library(goblin_core
   src/quickjs_script.cpp
   src/replication.cpp
   src/replication_follower.cpp
+  $<$<BOOL:${GOBLIN_HAS_AERON_BUILD}>:src/aeron_transport.cpp>
   $<$<BOOL:${GOBLIN_HAS_XLIO_BUILD}>:src/xlio_transport.cpp>
   ${GOBLIN_LIBFABRIC_SOURCES}
   ${GOBLIN_RDMA_SOURCES})
@@ -494,6 +516,15 @@ if(GOBLIN_HAS_XLIO_BUILD)
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xlio/src/core)
   message(STATUS
     "goblin-core: native XLIO Ultra polling enabled (GOBLIN_HAS_XLIO); preload the pinned libxlio.so at runtime")
+endif()
+
+if(GOBLIN_HAS_AERON_BUILD)
+  target_compile_definitions(goblin_core PUBLIC GOBLIN_HAS_AERON=1)
+  # goblin_core is a static archive, so its final consumers need Aeron's C
+  # client dependency as part of their link closure.
+  target_link_libraries(goblin_core PUBLIC aeron::aeron_static)
+  message(STATUS
+    "goblin-core: Aeron UDP/IPC response-channel transports enabled (GOBLIN_HAS_AERON)")
 endif()
 
 # The two Lua runtimes each ship a "lua.h" (both derive from Lua). Keep every
@@ -972,6 +1003,33 @@ if(GOBLIN_CORE_BUILD_TESTS)
       CXX_EXTENSIONS OFF)
     target_compile_options(goblin_core_libfabric_roundtrip_test PRIVATE
       -Wall -Wextra -Wpedantic)
+  endif()
+
+  if(GOBLIN_HAS_AERON_BUILD AND TARGET goblin_sbe_headers)
+    add_executable(goblin_core_aeron_roundtrip_test
+      tests/aeron_roundtrip_test.cpp)
+    target_link_libraries(goblin_core_aeron_roundtrip_test PRIVATE
+      goblin_core goblin_sbe_headers)
+    add_dependencies(goblin_core_aeron_roundtrip_test
+      goblin_core_server goblin_core_auth)
+    set_target_properties(goblin_core_aeron_roundtrip_test PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_aeron_roundtrip_test PRIVATE
+      -Wall -Wextra -Wpedantic)
+
+    find_program(GOBLIN_AERON_DRIVER_EXECUTABLE NAMES aeronmd_s aeronmd
+      HINTS ${GOBLIN_CORE_AERON_ROOT}/bin)
+    if(GOBLIN_AERON_DRIVER_EXECUTABLE)
+      add_test(NAME goblin_core_aeron_roundtrip
+        COMMAND goblin_core_aeron_roundtrip_test
+                $<TARGET_FILE:goblin_core_server>
+                ${GOBLIN_AERON_DRIVER_EXECUTABLE}
+                $<TARGET_FILE:goblin_core_auth>)
+      set_tests_properties(goblin_core_aeron_roundtrip PROPERTIES TIMEOUT 60)
+    else()
+      message(STATUS
+        "aeronmd not found; Aeron round-trip test built for manual execution")
+    endif()
   endif()
 
   add_executable(goblin_core_replication_test tests/replication_test.cpp)

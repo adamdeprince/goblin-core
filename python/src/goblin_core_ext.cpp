@@ -1,6 +1,6 @@
 // nanobind extension backing the goblin_core Python package: a redis-py-shaped
-// client that speaks the SBE binary wire to a goblin-core server over a shared-memory
-// ring buffer.
+// client that speaks the SBE binary wire to a goblin-core server over the
+// shared-memory ring, RDMA, ExaSock TCP, or Aeron UDP/IPC transports.
 //
 // It wraps the C++ SbeRingClient. The Python layer (goblin_core/__init__.py) is the
 // same redis-py surface as before -- it hands us one already-encoded command as a
@@ -26,12 +26,16 @@
 #if defined(GOBLIN_HAS_EXASOCK)
 #include "goblin/core/exasock_transport.hpp"
 #endif
+#if defined(GOBLIN_HAS_AERON)
+#include "goblin/core/aeron_transport.hpp"
+#endif
 
 #include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -48,6 +52,9 @@ using goblin::core::SbeRdmaClient;
 #endif
 #if defined(GOBLIN_HAS_EXASOCK)
 using goblin::core::SbeExasockClient;
+#endif
+#if defined(GOBLIN_HAS_AERON)
+using goblin::core::SbeAeronClient;
 #endif
 using goblin::core::SetOptions;
 using goblin::core::SetReply;
@@ -197,10 +204,13 @@ class BasicPyClient {
     } catch (const ResponseError&) {
       throw;  // already the right Python type
     } catch (const std::runtime_error& e) {
-      // BasicSbeClient throws "SbeRingClient: ..." for transport failures and
+      // BasicSbeClient throws "SbeClient: ..." for transport failures and
       // "<code> <message>" for an ErrorReply.
       const std::string msg = e.what();
-      if (msg.rfind("SbeRingClient:", 0) == 0) throw RingError(msg);
+      if (msg.rfind("SbeClient:", 0) == 0 ||
+          msg.rfind("SbeRingClient:", 0) == 0) {
+        throw RingError(msg);
+      }
       throw ResponseError(msg);
     }
   }
@@ -545,11 +555,45 @@ class ExasockClient : public BasicPyClient<SbeExasockClient> {
 };
 #endif
 
+#if defined(GOBLIN_HAS_AERON)
+class AeronClient : public BasicPyClient<SbeAeronClient> {
+ public:
+  AeronClient(const std::string& request_channel,
+              std::int64_t request_stream_id,
+              const std::string& response_channel,
+              std::int64_t response_stream_id,
+              const std::string& aeron_directory,
+              long connect_timeout_ms, std::size_t buffer_size) {
+    if (request_stream_id < std::numeric_limits<std::int32_t>::min() ||
+        request_stream_id > std::numeric_limits<std::int32_t>::max() ||
+        response_stream_id < std::numeric_limits<std::int32_t>::min() ||
+        response_stream_id > std::numeric_limits<std::int32_t>::max()) {
+      throw RingError("AeronClient: stream id is outside the int32 range");
+    }
+    goblin::core::aeron::ChannelConfig channels{
+        .request_channel = request_channel,
+        .request_stream_id = static_cast<std::int32_t>(request_stream_id),
+        .response_channel = response_channel,
+        .response_stream_id = static_cast<std::int32_t>(response_stream_id),
+    };
+    std::string error;
+    auto opened = SbeAeronClient::open(
+        channels, ms(connect_timeout_ms), buffer_size, aeron_directory, &error);
+    if (!opened) {
+      throw RingError("cannot open Aeron request/response channels" +
+                      (error.empty() ? std::string{} : " (" + error + ")"));
+    }
+    client_.emplace(std::move(*opened));
+  }
+};
+#endif
+
 }  // namespace
 
 NB_MODULE(_goblin_core, m) {
   m.doc() =
-      "SBE client for goblin-core over shared-memory ring, RDMA, or ExaSock TCP.";
+      "SBE client for goblin-core over shared-memory ring, RDMA, ExaSock TCP, "
+      "or Aeron UDP/IPC.";
 
   nb::exception<ResponseError>(m, "ResponseError");
   nb::exception<RingError>(m, "RingError");
@@ -593,5 +637,23 @@ NB_MODULE(_goblin_core, m) {
            "run under the exasock wrapper).");
 #else
   m.attr("HAS_EXASOCK") = false;
+#endif
+
+#if defined(GOBLIN_HAS_AERON)
+  m.attr("HAS_AERON") = true;
+  nb::class_<AeronClient>(m, "AeronClient")
+      .def(nb::init<const std::string&, std::int64_t, const std::string&,
+                    std::int64_t, const std::string&, long, std::size_t>(),
+           nb::arg("request_channel"), nb::arg("request_stream_id"),
+           nb::arg("response_channel"), nb::arg("response_stream_id"),
+           nb::arg("aeron_directory") = "",
+           nb::arg("connect_timeout_ms") = 5000,
+           nb::arg("buffer_size") = 64 * 1024)
+      .def("buffer_size", &AeronClient::buffer_size)
+      .def("execute_command", &AeronClient::execute_command, nb::arg("args"),
+           nb::arg("timeout_ms") = 5000,
+           "Send one already-encoded command over SBE/Aeron UDP or IPC.");
+#else
+  m.attr("HAS_AERON") = false;
 #endif
 }

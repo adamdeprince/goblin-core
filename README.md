@@ -62,6 +62,9 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 - Live replication is transport-neutral: [`GOBLIN.FIREHOSE`](docs/replication.md)
   streams canonical writes over TCP, UDS, shared-memory rings, or RDMA, and
   replicas can feed replicas.
+- Optional [Aeron UDP and IPC](docs/aeron.md) targets carry RESP or typed SBE
+  through correlated response channels and the external Aeron Media Driver;
+  matching C++ and redis-py-shaped Python clients are included.
 - Durable replay belongs to Kafka: [`--kafka`](docs/kafka.md) journals primary
   writes as canonical RESP2 mutations and recovers from the exact broker and
   logical offsets saved in a native snapshot. `--kafka-ack-mode broker` can
@@ -408,11 +411,12 @@ goblin-core-auth --file /etc/goblin/core.auth add default 'long-secret'
 ```
 
 Use `AUTH [username] password` or `HELLO 3 AUTH username password`. RESP over
-TCP/UDS/ExaSock authenticates whenever `--auth-file` is set. RESP rings and RDMA
-do too unless `--no-auth-ring` or `--no-auth-rdma` explicitly places that fabric
-inside the trust boundary; those bypasses make AUTH optional rather than
-unavailable. Non-loopback ordinary TCP additionally requires native TLS, while
-the mandatory `127.0.0.1` endpoint stays plaintext. See
+every transport authenticates whenever `--auth-file` is set. The transport-wide
+`--no-auth-ring`, `--no-auth-rdma`, `--no-auth-libfabric`, `--no-auth-xlio`, and
+`--no-auth-aeron` switches explicitly place those fabrics inside the trust
+boundary; they make AUTH optional rather than unavailable. Non-loopback ordinary
+TCP additionally requires native TLS, while the mandatory `127.0.0.1` endpoint
+stays plaintext. See
 [Authentication](docs/authentication.md), including transport boundaries and
 credential rotation rules.
 
@@ -445,7 +449,7 @@ listeners require one shared TLS certificate identity:
 an alias for `--listen`; `--bind <address> --port <port>` still configures one
 TCP endpoint when no explicit socket listener is present. `--unixsocket <path>`
 is a repeatable alias for `--uds-listen`. Even a transport-oriented deployment
-with only UDS, rings, RDMA, or ExaSock configured retains its plaintext
+with only UDS, rings, RDMA, ExaSock, XLIO, libfabric, or Aeron configured retains its plaintext
 localhost listener. See [TCP listeners and TLS](docs/tls.md) for wildcard rules,
 the OpenSSL build switch, and the protocol security boundary.
 
@@ -485,6 +489,16 @@ to an XLIO-backed server. Native RESP and SBE clients use
 and snapshot contract, and **[XLIO-LATENCY.md](XLIO-LATENCY.md)** for the matched
 100 Gb/s command-latency benchmark.
 
+**Aeron UDP and IPC (the response-channel path).** Build Aeron 1.51 or newer,
+configure Goblin with `-DGOBLIN_CORE_ENABLE_AERON=ON`, and run the external C
+Media Driver. `--aeron-ipc <request-stream> <response-stream>` serves co-located
+clients through one driver; `--aeron-udp <request-channel> <request-stream>
+<response-channel> <response-stream>` carries the same RESP/SBE connection model
+over reliable UDP. Bare UDP values are accepted as request endpoint and response
+control addresses. See **[docs/aeron.md](docs/aeron.md)** for the pinned build
+helper, Media Driver lifecycle, complete Aeron URIs, C++ and Python clients,
+security boundary, and live qualification.
+
 On Linux, Goblin resolves specific socket and RDMA bind addresses to their NICs
 and NUMA nodes. It selects the slice automatically only when every hardware
 endpoint agrees. If an ordinary NIC and an InfiniBand adapter are on different
@@ -494,7 +508,8 @@ or the exact-core form `--cpu 77`. Unknown device locality on a multi-node host
 also requires an explicit choice.
 
 Transport and protocol are independent: ordinary sockets, XLIO Ultra TCP,
-shared-memory rings, and RDMA rings support RESP and the SBE binary wire. SBE is
+shared-memory rings, RDMA rings, libfabric, and Aeron UDP/IPC support RESP and
+the SBE binary wire. SBE is
 disabled by default; start the server with `--enable-sbe` to accept the one-time
 `GOBLINS!` handshake. SBE is deliberately unauthenticated and belongs only on a
 trusted fabric. Otherwise an endpoint speaks RESP2 by default and may select

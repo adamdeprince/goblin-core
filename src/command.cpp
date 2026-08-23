@@ -140,6 +140,11 @@ void append_info_value(std::string& out, std::string_view value) {
   s += "xlio_support:0\r\n";
   s += "xlio_loaded:0\r\n";
 #endif
+#if defined(GOBLIN_HAS_AERON)
+  s += "aeron_support:1\r\n";
+#else
+  s += "aeron_support:0\r\n";
+#endif
   s += "# Replication\r\n";
   s += std::string("role:") + (store.replica_mode() ? "slave" : "master") +
        "\r\n";

@@ -4,6 +4,9 @@
 #include "goblin/core/server.hpp"
 #include "goblin/core/simd.hpp"
 #include "goblin/core/store.hpp"
+#if defined(GOBLIN_HAS_AERON)
+#include "goblin/core/aeron_transport.hpp"
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -45,6 +48,16 @@ namespace {
     return std::nullopt;
   }
   return static_cast<std::uint16_t>(value);
+}
+
+[[nodiscard]] std::optional<std::int32_t> parse_stream_id(
+    std::string_view text) {
+  std::int32_t value = 0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end) return std::nullopt;
+  return value;
 }
 
 [[nodiscard]] std::string format_tcp_endpoint(std::string_view address,
@@ -638,7 +651,7 @@ void print_usage(std::string_view program) {
                " [--kafka-pending-bytes BYTES]\n"
             << "       [--auth-file FILE]\n"
             << "       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]\n"
-            << "       [--no-auth-libfabric] [--no-auth-xlio]\n"
+            << "       [--no-auth-libfabric] [--no-auth-xlio] [--no-auth-aeron]\n"
             << "       [--max-output-buffer-mib MIB]\n"
             << "       [--initial-output-buffer-kib KIB]\n"
             << "       [--unsolicited-output-buffer-bytes BYTES]\n"
@@ -661,6 +674,10 @@ void print_usage(std::string_view program) {
             << "       [--libfabric-force-send]"
                " (disable fi_inject; use TX completions)\n"
             << "       [--efa-heartbeat-timeout-ms MS] (default: 3000; 0 disables)\n"
+            << "       [--aeron-dir PATH] (local Aeron Media Driver directory)\n"
+            << "       [--aeron-ipc REQUEST-STREAM RESPONSE-STREAM]...\n"
+            << "       [--aeron-udp REQUEST-CHANNEL REQUEST-STREAM"
+               " RESPONSE-CHANNEL RESPONSE-STREAM]...\n"
             << "       [--pubsub-listener-ring PATH]\n"
             << "       [--pubsub-listener-rdma ADDRESS PORT SIZE]\n"
             << "       [--pubsub-listener-uds PATH]\n"
@@ -682,9 +699,9 @@ void print_usage(std::string_view program) {
             << "\n"
             << "Polled-target order is literal CLI order and is the busy-poll priority\n"
             << "before plain sockets. Example:\n"
-            << "  --ring /tmp/a 64kb --xlio 10.100.0.1 6379 --rdma 10.88.88.1 6380 1mb\n"
+            << "  --ring /tmp/a 64kb --aeron-ipc 1001 1002 --rdma 10.88.88.1 6380 1mb\n"
             << "  --ring /tmp/b 1mb\n"
-            << "scans A, XLIO, RDMA, B, then the sparse plain-socket pass.\n"
+            << "scans A, Aeron, RDMA, B, then the sparse plain-socket pass.\n"
             << "\n"
             << "Every configured TCP port also has a plaintext 127.0.0.1 listener.\n"
             << "With no explicit TCP endpoint, the default is 127.0.0.1:6379.\n"
@@ -705,7 +722,8 @@ void print_usage(std::string_view program) {
       << "until the broker acknowledges every record in the atomic batch; queued\n"
       << "keeps the lower-latency local-enqueue contract (the default).\n"
       << "--auth-file protects RESP. SBE requires --enable-sbe and never\n"
-      << "authenticates; --no-auth-ring/--no-auth-rdma/--no-auth-xlio"
+      << "authenticates; --no-auth-ring/--no-auth-rdma/--no-auth-libfabric/\n"
+      << "--no-auth-xlio/--no-auth-aeron"
          " explicitly trust RESP\n"
       << "on those fabrics.\n";
 }
@@ -884,6 +902,11 @@ int main(int argc, char** argv) {
       continue;
     }
 
+    if (arg == "--no-auth-aeron") {
+      config.no_auth_aeron = true;
+      continue;
+    }
+
     if (arg == "--bind") {
       if (i + 1 >= argc) {
         print_usage(argv[0]);
@@ -974,6 +997,91 @@ int main(int argc, char** argv) {
       }
       config.poll_targets.emplace_back(
           goblin::core::RingConfig{.path = path, .bytes = *size});
+      continue;
+    }
+
+    if (arg == "--aeron-dir") {
+#if defined(GOBLIN_HAS_AERON)
+      if (i + 1 >= argc || std::string_view(argv[i + 1]).empty()) {
+        std::cerr << "goblin-core: --aeron-dir requires a non-empty path\n";
+        return 2;
+      }
+      config.aeron_directory = argv[++i];
+#else
+      std::cerr << "goblin-core: --aeron-dir is unavailable in this build"
+                   " (configure with -DGOBLIN_CORE_ENABLE_AERON=ON)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--aeron-ipc") {
+#if defined(GOBLIN_HAS_AERON)
+      if (i + 2 >= argc) {
+        std::cerr << "goblin-core: --aeron-ipc requires REQUEST-STREAM and "
+                     "RESPONSE-STREAM\n";
+        return 2;
+      }
+      const std::string_view request_text = argv[++i];
+      const std::string_view response_text = argv[++i];
+      const auto request_stream = parse_stream_id(request_text);
+      const auto response_stream = parse_stream_id(response_text);
+      if (!request_stream || !response_stream) {
+        std::cerr << "goblin-core: invalid --aeron-ipc stream id\n";
+        return 2;
+      }
+      const auto channels = goblin::core::aeron::ChannelConfig::ipc(
+          *request_stream, *response_stream);
+      config.poll_targets.emplace_back(goblin::core::AeronConfig{
+          .media = goblin::core::AeronMedia::ipc,
+          .request_channel = channels.request_channel,
+          .request_stream_id = channels.request_stream_id,
+          .response_channel = channels.response_channel,
+          .response_stream_id = channels.response_stream_id});
+#else
+      std::cerr << "goblin-core: --aeron-ipc is unavailable in this build"
+                   " (configure with -DGOBLIN_CORE_ENABLE_AERON=ON)\n";
+      return 2;
+#endif
+      continue;
+    }
+
+    if (arg == "--aeron-udp") {
+#if defined(GOBLIN_HAS_AERON)
+      if (i + 4 >= argc) {
+        std::cerr << "goblin-core: --aeron-udp requires REQUEST-CHANNEL, "
+                     "REQUEST-STREAM, RESPONSE-CHANNEL, and RESPONSE-STREAM\n";
+        return 2;
+      }
+      const std::string request = argv[++i];
+      const std::string_view request_text = argv[++i];
+      const std::string response = argv[++i];
+      const std::string_view response_text = argv[++i];
+      const auto request_stream = parse_stream_id(request_text);
+      const auto response_stream = parse_stream_id(response_text);
+      if (!request_stream || !response_stream || request.empty() ||
+          response.empty()) {
+        std::cerr << "goblin-core: invalid --aeron-udp channel or stream id\n";
+        return 2;
+      }
+      const auto channels = goblin::core::aeron::ChannelConfig::udp(
+          request, *request_stream, response, *response_stream);
+      if (!channels.request_channel.starts_with("aeron:udp?") ||
+          !channels.response_channel.starts_with("aeron:udp?")) {
+        std::cerr << "goblin-core: --aeron-udp channels must use aeron:udp\n";
+        return 2;
+      }
+      config.poll_targets.emplace_back(goblin::core::AeronConfig{
+          .media = goblin::core::AeronMedia::udp,
+          .request_channel = channels.request_channel,
+          .request_stream_id = channels.request_stream_id,
+          .response_channel = channels.response_channel,
+          .response_stream_id = channels.response_stream_id});
+#else
+      std::cerr << "goblin-core: --aeron-udp is unavailable in this build"
+                   " (configure with -DGOBLIN_CORE_ENABLE_AERON=ON)\n";
+      return 2;
+#endif
       continue;
     }
 

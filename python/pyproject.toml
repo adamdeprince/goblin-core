@@ -9,12 +9,12 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "goblin-core"
 version = "0.10.4"
-description = "redis-py-compatible client for goblin-core over shared-memory ring buffers"
+description = "redis-py-compatible SBE clients for goblin-core rings, RDMA, ExaSock, and Aeron UDP/IPC"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Goblin Reactor" }]
-keywords = ["redis", "ring-buffer", "shared-memory", "nanobind", "io_uring"]
+keywords = ["redis", "ring-buffer", "shared-memory", "nanobind", "aeron", "udp", "ipc", "rdma"]
 
 [tool.scikit-build]
 minimum-version = "0.10"

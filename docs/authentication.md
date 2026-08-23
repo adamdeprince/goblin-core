@@ -76,9 +76,12 @@ Every authenticated user has the full command surface.
 | RESP over UDS or ExaSock | Authentication required. |
 | RESP over a shared-memory ring | Required by default; `--no-auth-ring` marks every ring trusted. |
 | RESP over RDMA | Required by default; `--no-auth-rdma` marks every RDMA endpoint trusted. |
+| RESP over libfabric | Required by default; `--no-auth-libfabric` marks every libfabric endpoint trusted. |
+| RESP over XLIO Ultra | Required by default; `--no-auth-xlio` marks every XLIO endpoint trusted. |
+| RESP over Aeron UDP/IPC | Required by default; `--no-auth-aeron` marks every Aeron endpoint trusted. Aeron itself does not encrypt or authenticate peers. |
 | SBE over any transport | Never authenticated; SBE itself requires `--enable-sbe`. |
 
-The two RESP bypasses make authentication optional on that transport; `AUTH`
+The RESP bypasses make authentication optional on that transport; `AUTH`
 and `HELLO ... AUTH` still work when a trusted client sends them.
 
 SBE is a lockstep cluster-fabric protocol. Enabling it deliberately places every

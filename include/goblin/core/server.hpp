@@ -39,6 +39,22 @@ struct LibfabricConfig {
   std::uint16_t bootstrap_port{0};
 };
 
+enum class AeronMedia : std::uint8_t {
+  udp,
+  ipc,
+};
+
+// One Aeron response-channel target. Each incoming request publication image
+// becomes a Goblin connection with its own correlated response publication.
+// The Media Driver is external and is selected through aeron_directory.
+struct AeronConfig {
+  AeronMedia media{AeronMedia::udp};
+  std::string request_channel;
+  std::int32_t request_stream_id{0};
+  std::string response_channel;
+  std::int32_t response_stream_id{0};
+};
+
 // One ExaSock-priority TCP listener from `--exasock <address> <port>`.
 // Serviced in the same strict busy-poll order as rings, RDMA, libfabric, and
 // XLIO (before the sparse plain-socket pass). Under the `exasock` LD_PRELOAD
@@ -58,13 +74,13 @@ struct XlioConfig {
 };
 
 // Polled targets retain their literal command-line order. For example,
-// `--ring /tmp/a 64kb --xlio 10.0.0.1 7000 --efa 10.0.0.2 7001
-// --rdma 10.0.0.3 7002 1mb` scans ring, XLIO, EFA, then RDMA before the sparse
-// plain-socket pass. Progress restarts at the ring, so a continuously ready
-// earlier target intentionally can starve later targets.
+// `--ring /tmp/a 64kb --xlio 10.0.0.1 7000 --aeron-ipc 1001 1002
+// --rdma 10.0.0.3 7002 1mb` scans ring, XLIO, Aeron, then RDMA before the
+// sparse plain-socket pass. Progress restarts at the ring, so a continuously
+// ready earlier target intentionally can starve later targets.
 using PollTargetConfig =
     std::variant<RingConfig, RdmaConfig, LibfabricConfig, ExasockConfig,
-                 XlioConfig>;
+                 XlioConfig, AeronConfig>;
 
 // One outbound SBE Pub/Sub subscription. The local server subscribes to the
 // upstream Goblin Core instance and republishes received channel/payload pairs
@@ -211,11 +227,15 @@ struct ServerConfig {
   // Per-connection socket read buffer (the chunk each recv() fills). Configurable so
   // an operator can trade memory for fewer syscalls on large-message workloads.
   std::size_t client_read_buffer_bytes{16U * 1024U};
-  // Shared-memory rings, ExaSock/XLIO targets, RDMA rings, and libfabric RDM
-  // endpoints, highest priority first (literal CLI order). When non-empty the
-  // server busy-polls these before the sparse plain-socket pass (and spins at
-  // 100% CPU by design); when empty it runs the ordinary low-CPU poll() loop.
+  // Shared-memory rings, ExaSock/XLIO targets, Aeron images, RDMA rings, and
+  // libfabric RDM endpoints, highest priority first (literal CLI order). When
+  // non-empty the server busy-polls these before the sparse plain-socket pass
+  // (and spins at 100% CPU by design); when empty it runs the ordinary low-CPU
+  // poll() loop.
   std::vector<PollTargetConfig> poll_targets{};
+  // Empty selects Aeron's platform/user default. A custom path must match the
+  // local Media Driver used by every configured Aeron target.
+  std::string aeron_directory{};
   // Optional upstream Goblin Core instance. It is always an SBE PSUBSCRIBE
   // client and therefore requires the exact same Goblin Core version.
   std::optional<PubSubListenerConfig> pubsub_listener{};
@@ -235,6 +255,7 @@ struct ServerConfig {
   bool no_auth_rdma{false};
   bool no_auth_libfabric{false};
   bool no_auth_xlio{false};
+  bool no_auth_aeron{false};
   // Lease for logical FI_EP_RDM clients. The server advertises it during the
   // version handshake; clients PING at one third of the lease while otherwise
   // idle. Zero disables heartbeat expiry.

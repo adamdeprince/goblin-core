@@ -3,10 +3,13 @@
 Transports (selected by class / build flags):
 
     from goblin_core import Redis, RdmaRedis, ExasockRedis, HAS_RDMA, HAS_EXASOCK
+    from goblin_core import AeronIpcRedis, AeronUdpRedis, HAS_AERON
 
     r = Redis("/tmp/a")                          # --ring /tmp/a
     r = RdmaRedis("10.88.88.1", 6380, 64 * 1024) # --rdma ... (if HAS_RDMA)
     r = ExasockRedis("10.99.99.1", 6379)          # --exasock ... (if HAS_EXASOCK)
+    r = AeronIpcRedis()                           # --aeron-ipc 1001 1002
+    r = AeronUdpRedis("server:40123", "client:40124")
 
 The transport, busy-poll, and SBE encode/decode live in the C++ extension
 (`_goblin_core`). SBE is typed per command, so only verbs goblin-core implements
@@ -21,6 +24,7 @@ from ._goblin_core import ResponseError, RingError
 
 HAS_RDMA = bool(getattr(_goblin_core, "HAS_RDMA", False))
 HAS_EXASOCK = bool(getattr(_goblin_core, "HAS_EXASOCK", False))
+HAS_AERON = bool(getattr(_goblin_core, "HAS_AERON", False))
 
 __all__ = [
     "Redis",
@@ -29,11 +33,14 @@ __all__ = [
     "RingError",
     "HAS_RDMA",
     "HAS_EXASOCK",
+    "HAS_AERON",
 ]
 if HAS_RDMA:
     __all__.append("RdmaRedis")
 if HAS_EXASOCK:
     __all__.append("ExasockRedis")
+if HAS_AERON:
+    __all__ += ["AeronUdpRedis", "AeronIpcRedis"]
 
 EncodableT = Union[str, bytes, bytearray, memoryview, int, float, bool]
 
@@ -610,5 +617,99 @@ if HAS_EXASOCK:
         def __repr__(self) -> str:
             return (
                 f"ExasockRedis(endpoint={self._endpoint!r}, "
+                f"decode_responses={self._decode_responses})"
+            )
+
+
+if HAS_AERON:
+
+    class AeronUdpRedis(Redis):
+        """redis-py-shaped SBE client over an Aeron UDP response channel.
+
+        Bare endpoints become ``aeron:udp?endpoint=...`` for requests and
+        ``aeron:udp?control=...`` for replies. Complete Aeron channel URIs are
+        accepted unchanged. An external Aeron Media Driver must be running.
+        """
+
+        def __init__(
+            self,
+            request_endpoint: str,
+            response_control: str,
+            *,
+            request_stream_id: int = 1001,
+            response_stream_id: int = 1002,
+            aeron_directory: str = "",
+            decode_responses: bool = False,
+            connect_timeout: float = 5.0,
+            command_timeout: float = 5.0,
+            client_buffer_bytes: int = 64 * 1024,
+        ) -> None:
+            request_channel = (
+                request_endpoint
+                if request_endpoint.startswith("aeron:")
+                else f"aeron:udp?endpoint={request_endpoint}"
+            )
+            response_channel = (
+                response_control
+                if response_control.startswith("aeron:")
+                else f"aeron:udp?control={response_control}"
+            )
+            self._client = _goblin_core.AeronClient(
+                request_channel,
+                int(request_stream_id),
+                response_channel,
+                int(response_stream_id),
+                aeron_directory,
+                int(connect_timeout * 1000),
+                int(client_buffer_bytes),
+            )
+            self._decode_responses = decode_responses
+            self._timeout_ms = int(command_timeout * 1000)
+            self._ring_path = (
+                f"aeron+udp://{request_endpoint}/{request_stream_id}"
+                f"?response={response_control}&response_stream={response_stream_id}"
+            )
+            self._endpoint = self._ring_path
+
+        def __repr__(self) -> str:
+            return (
+                f"AeronUdpRedis(endpoint={self._endpoint!r}, "
+                f"decode_responses={self._decode_responses})"
+            )
+
+    class AeronIpcRedis(Redis):
+        """redis-py-shaped SBE client over Aeron IPC response channels.
+
+        The client and server must use the same local Media Driver directory.
+        """
+
+        def __init__(
+            self,
+            *,
+            request_stream_id: int = 1001,
+            response_stream_id: int = 1002,
+            aeron_directory: str = "",
+            decode_responses: bool = False,
+            connect_timeout: float = 5.0,
+            command_timeout: float = 5.0,
+            client_buffer_bytes: int = 64 * 1024,
+        ) -> None:
+            self._client = _goblin_core.AeronClient(
+                "aeron:ipc",
+                int(request_stream_id),
+                "aeron:ipc",
+                int(response_stream_id),
+                aeron_directory,
+                int(connect_timeout * 1000),
+                int(client_buffer_bytes),
+            )
+            self._decode_responses = decode_responses
+            self._timeout_ms = int(command_timeout * 1000)
+            self._ring_path = f"aeron+ipc://{request_stream_id}/{response_stream_id}"
+            self._endpoint = self._ring_path
+
+        def __repr__(self) -> str:
+            return (
+                f"AeronIpcRedis(endpoint={self._endpoint!r}, "
                 f"decode_responses={self._decode_responses})"
             )

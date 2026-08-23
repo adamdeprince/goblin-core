@@ -87,6 +87,13 @@ RESP credential files use the system-linked libsodium password-hashing API:
   libsodium                  Copyright (c) 2013-2026 Frank Denis (ISC)
                              https://libsodium.org
 
+Optional Aeron UDP/IPC transport support links the C client from an external
+Aeron installation. Aeron is not vendored in this repository:
+
+  Aeron 1.51.0               Copyright 2014-2025 Real Logic Limited
+                             Apache License 2.0
+                             https://github.com/aeron-io/aeron
+
 --------------------------------------------------------------------------------
 
 Scripting (EVAL / EVALSHA / SCRIPT)

@@ -28,6 +28,9 @@
 #if defined(GOBLIN_HAS_XLIO)
 #include "goblin/core/xlio_transport.hpp"
 #endif
+#if defined(GOBLIN_HAS_AERON)
+#include "goblin/core/aeron_transport.hpp"
+#endif
 
 #include "goblin_sbe/MessageHeader.h"
 #include "goblin_sbe/Ping.h"
@@ -2208,6 +2211,9 @@ using SbeExasockClient = BasicSbeClient<exasock::ClientTransport>;
 #endif
 #if defined(GOBLIN_HAS_XLIO)
 using SbeXlioClient = BasicSbeClient<xlio::ClientTransport>;
+#endif
+#if defined(GOBLIN_HAS_AERON)
+using SbeAeronClient = BasicSbeClient<aeron::ClientTransport>;
 #endif
 
 }  // namespace goblin::core

@@ -17,6 +17,9 @@
 #ifdef GOBLIN_HAS_LIBFABRIC
 #include "goblin/core/libfabric_transport.hpp"
 #endif
+#ifdef GOBLIN_HAS_AERON
+#include "goblin/core/aeron_transport.hpp"
+#endif
 #ifdef GOBLIN_HAS_XLIO
 #include "goblin/core/xlio_transport.hpp"
 #endif
@@ -922,6 +925,29 @@ struct LibfabricRuntimeTarget {
 };
 #endif
 
+#ifdef GOBLIN_HAS_AERON
+struct AeronEndpoint : EndpointSession {
+  AeronEndpoint(std::unique_ptr<aeron::Connection> aeron_connection,
+                std::size_t unsolicited_output_bytes,
+                std::size_t transaction_buffer_bytes,
+                std::uint64_t assigned_connection_id,
+                bool require_authentication)
+      : EndpointSession(unsolicited_output_bytes, transaction_buffer_bytes,
+                        assigned_connection_id, require_authentication),
+        connection(std::move(aeron_connection)) {}
+
+  std::unique_ptr<aeron::Connection> connection;
+  bool disconnect_started{false};
+};
+
+struct AeronRuntimeTarget {
+  std::unique_ptr<aeron::ServerListener> listener;
+  std::vector<std::unique_ptr<AeronEndpoint>> endpoints;
+  std::size_t next_endpoint{0};
+  bool listener_error_reported{false};
+};
+#endif
+
 #ifdef GOBLIN_HAS_EXASOCK
 // Priority TCP listener for `--exasock`. Clients are ordinary non-blocking
 // sockets; under the exasock wrapper + ExaNIC bind they are accelerated.
@@ -964,6 +990,9 @@ struct PolledRuntimeTarget {
 #endif
 #ifdef GOBLIN_HAS_LIBFABRIC
   std::unique_ptr<LibfabricRuntimeTarget> libfabric_target;
+#endif
+#ifdef GOBLIN_HAS_AERON
+  std::unique_ptr<AeronRuntimeTarget> aeron_target;
 #endif
 #ifdef GOBLIN_HAS_EXASOCK
   std::unique_ptr<ExasockRuntimeTarget> exasock_target;
@@ -2955,6 +2984,42 @@ template <class ReplicaFn, class NetFn>
       continue;
     }
 
+    if (const auto* ac = std::get_if<AeronConfig>(&configured_target)) {
+#ifdef GOBLIN_HAS_AERON
+      const aeron::ChannelConfig channels{
+          .request_channel = ac->request_channel,
+          .request_stream_id = ac->request_stream_id,
+          .response_channel = ac->response_channel,
+          .response_stream_id = ac->response_stream_id,
+      };
+      std::string error;
+      auto listener = aeron::ServerListener::create(
+          channels, config.aeron_directory, error);
+      if (!listener) {
+        std::cerr << "goblin-core: failed to create Aeron "
+                  << (ac->media == AeronMedia::ipc ? "IPC" : "UDP")
+                  << " listener: " << error << '\n';
+        return false;
+      }
+      std::cout << "goblin-core: Aeron "
+                << (ac->media == AeronMedia::ipc ? "IPC" : "UDP") << ' '
+                << ac->request_channel << '/' << ac->request_stream_id
+                << " -> " << ac->response_channel << '/'
+                << ac->response_stream_id
+                << " ready (response channels, external Media Driver)\n";
+      PolledRuntimeTarget target;
+      target.aeron_target = std::make_unique<AeronRuntimeTarget>();
+      target.aeron_target->listener = std::move(listener);
+      targets.push_back(std::move(target));
+#else
+      (void)ac;
+      std::cerr << "goblin-core: this build cannot create an Aeron poll "
+                   "target (-DGOBLIN_CORE_ENABLE_AERON=ON required)\n";
+      return false;
+#endif
+      continue;
+    }
+
     const auto* rc = std::get_if<RdmaConfig>(&configured_target);
     if (rc == nullptr) {
       std::cerr << "goblin-core: unsupported polled target configuration\n";
@@ -3435,6 +3500,84 @@ template <class ReplicaFn, class NetFn>
   };
 #endif
 
+#ifdef GOBLIN_HAS_AERON
+  const auto process_aeron_target = [&](AeronRuntimeTarget& target) -> bool {
+    bool progressed = false;
+    auto event = target.listener->poll();
+    progressed = event.progressed;
+    if (!target.listener->error().empty() &&
+        !target.listener_error_reported) {
+      std::cerr << "goblin-core: Aeron listener error: "
+                << target.listener->error() << '\n';
+      target.listener_error_reported = true;
+      running = false;
+      return true;
+    }
+    if (event.connection) {
+      try {
+        target.endpoints.push_back(std::make_unique<AeronEndpoint>(
+            std::move(event.connection), config.unsolicited_output_buffer_bytes,
+            config.transaction_buffer_bytes, next_connection_id(),
+            auth_database != nullptr && !config.no_auth_aeron));
+      } catch (const std::bad_alloc&) {
+        std::cerr << "goblin-core: unable to allocate Aeron endpoint state\n";
+        running = false;
+      }
+      progressed = true;
+    }
+
+    for (std::size_t i = target.endpoints.size(); i > 0; --i) {
+      const std::size_t index = i - 1;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->failed() &&
+          !endpoint.connection->disconnected()) {
+        continue;
+      }
+      if (endpoint.connection->failed() &&
+          !endpoint.connection->error().empty()) {
+        std::cerr << "goblin-core: Aeron peer closed after error: "
+                  << endpoint.connection->error() << '\n';
+      }
+      replication.remove(endpoint);
+      dump_world.remove(endpoint);
+      pubsub.remove(endpoint);
+      watches.remove(endpoint.transaction);
+      blocking_lists.remove(endpoint);
+      target.endpoints.erase(target.endpoints.begin() +
+                             static_cast<std::ptrdiff_t>(index));
+      if (target.next_endpoint > index) --target.next_endpoint;
+      progressed = true;
+    }
+    if (target.endpoints.empty()) {
+      target.next_endpoint = 0;
+      return progressed;
+    }
+    target.next_endpoint %= target.endpoints.size();
+
+    const std::size_t count = target.endpoints.size();
+    for (std::size_t offset = 0; offset < count; ++offset) {
+      const std::size_t index = (target.next_endpoint + offset) % count;
+      auto& endpoint = *target.endpoints[index];
+      if (!endpoint.connection->established()) continue;
+      if (endpoint.close_requested && !has_pending_output(endpoint)) {
+        if (!endpoint.disconnect_started) {
+          endpoint.connection->disconnect();
+          endpoint.disconnect_started = true;
+          target.next_endpoint = (index + 1) % count;
+          return true;
+        }
+        continue;
+      }
+      if (process_polled_endpoint(endpoint, *endpoint.connection,
+                                  *endpoint.connection)) {
+        target.next_endpoint = (index + 1) % count;
+        return true;
+      }
+    }
+    return progressed;
+  };
+#endif
+
 #ifdef GOBLIN_HAS_XLIO
   const auto detach_xlio_endpoint = [&](XlioEndpoint& endpoint) {
     if (endpoint.teardown_started) return;
@@ -3684,6 +3827,11 @@ template <class ReplicaFn, class NetFn>
             process_libfabric_target(*target.libfabric_target);
       }
 #endif
+#ifdef GOBLIN_HAS_AERON
+      else if (target.aeron_target) {
+        target_progress = process_aeron_target(*target.aeron_target);
+      }
+#endif
 #ifdef GOBLIN_HAS_RDMA
       else if (target.rdma_target) {
         target_progress = process_rdma_target(*target.rdma_target);
@@ -3770,6 +3918,18 @@ template <class ReplicaFn, class NetFn>
       }
     }
 #endif
+#ifdef GOBLIN_HAS_AERON
+    if (target.aeron_target) {
+      for (auto& endpoint : target.aeron_target->endpoints) {
+        replication.remove(*endpoint);
+        dump_world.remove(*endpoint);
+        pubsub.remove(*endpoint);
+        watches.remove(endpoint->transaction);
+        blocking_lists.remove(*endpoint);
+        endpoint->connection->disconnect();
+      }
+    }
+#endif
 #ifdef GOBLIN_HAS_XLIO
     if (target.xlio_target) {
       for (auto& endpoint : target.xlio_target->endpoints) {
@@ -3793,6 +3953,19 @@ Server::Server(ServerConfig config, Store& store)
   if (has_xlio) {
     // XLIO 3.61 permits fork only while no Ultra polling group exists. SAVE remains
     // available synchronously; BGSAVE and GOBLIN.DUMPWORLD report clear errors.
+    store_.set_background_fork_enabled(false);
+  }
+#endif
+#ifdef GOBLIN_HAS_AERON
+  const bool has_aeron = std::any_of(
+      config_.poll_targets.begin(), config_.poll_targets.end(),
+      [](const auto& target) {
+        return std::holds_alternative<AeronConfig>(target);
+      });
+  if (has_aeron) {
+    // Aeron's client conductor owns a background thread. Keep fork-based
+    // persistence disabled whenever the transport is configured; synchronous
+    // SAVE is still available.
     store_.set_background_fork_enabled(false);
   }
 #endif

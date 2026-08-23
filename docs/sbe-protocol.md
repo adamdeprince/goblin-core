@@ -3,7 +3,8 @@
 Goblin can speak two wire protocols on the same server. SBE must first be enabled
 with `--enable-sbe`; it is then chosen per connection by the
 **first 8 bytes** an endpoint writes over TCP, a Unix-domain socket, a
-shared-memory ring, or a [polled RDMA ring](rdma-rings.md):
+shared-memory ring, a [polled RDMA ring](rdma-rings.md), or an
+[Aeron UDP/IPC](aeron.md) response channel:
 
 | first 8 bytes | protocol |
 |---|---|
@@ -33,7 +34,8 @@ The C++ typed client is compile-time-dispatched over its transport:
 `SbeSocketClient` uses TCP or a Unix-domain socket, `SbeRingClient` uses the
 co-located shared-memory ring, and `SbeRdmaClient` uses the cross-host one-sided
 ring. `SbeLibfabricClient` uses provider-neutral reliable datagrams, including
-[AWS EFA](efa.md). They expose the same command API without a virtual call on
+[AWS EFA](efa.md), and `SbeAeronClient` uses Aeron UDP or IPC response channels.
+They expose the same command API without a virtual call on
 the request path.
 
 **SBE is a lockstep protocol in Goblin Core. An SBE client and server must run

@@ -5,5 +5,8 @@ find_dependency(Threads)
 if(@GOBLIN_HAS_TLS_BUILD@)
   find_dependency(OpenSSL COMPONENTS SSL Crypto)
 endif()
+if(@GOBLIN_HAS_AERON_BUILD@)
+  find_dependency(aeron 1.51 CONFIG)
+endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/goblinCoreTargets.cmake")

@@ -4,8 +4,8 @@ Goblin Core is a compact, single-node server with Redis command semantics and
 two independent protocol choices: RESP for compatibility and SBE for typed
 binary clients. Both protocols work over TCP (optionally accelerated with
 Cisco ExaSock or native NVIDIA XLIO Ultra), Unix-domain sockets, shared-memory
-rings, and polled one-sided RDMA rings. SBE also runs over provider-neutral
-libfabric reliable datagrams, including AWS EFA.
+rings, polled one-sided RDMA rings, and Aeron UDP/IPC response channels. SBE also
+runs over provider-neutral libfabric reliable datagrams, including AWS EFA.
 
 ## Start here
 
@@ -35,6 +35,7 @@ libfabric reliable datagrams, including AWS EFA.
 | [Shared-memory ring buffers](ring-buffers.md) | Ring creation, SQ/CQ layout, busy polling, reconnect behavior, sizing, HugeTLB, NUMA placement, and the C++ clients. |
 | [Polled RDMA rings](rdma-rings.md) | RC queue-pair setup, sequence-word slots, cached credits, memory registration, mixed-target priority, and RESP/SBE clients. |
 | [Libfabric RDM and AWS EFA](efa.md) | Provider-neutral reliable datagrams, EFA build and launch, multi-client sequencing, bounded reordering, and PING heartbeats. |
+| [Aeron UDP and IPC](aeron.md) | Pinned Aeron build, external Media Driver, response-channel correlation, server options, C++/Python clients, security, persistence constraints, and live tests. |
 | [InfiniBand setup](infiniband-setup.md) | Adapter inventory, PSID-safe firmware updates, OpenSM, link validation, verbs/perftest acceptance checks, IPoIB, and the mixed ring/RDMA polling contract. |
 | [ExaSock / Nexus SmartNIC](exasock.md) | Opt-in CMake flag, system ExaSock SDK (not vendored), `exasock` wrapper, RESP/SBE TCP clients, INFO fields. |
 | [Native XLIO Ultra TCP](xlio.md) | Native RESP/SBE server and client, strict poll priority, pinned XLIO/DPCP sources, ConnectX-5 qualification, build recipe, snapshot constraints, and kernel-TCP interoperability. |
@@ -43,8 +44,9 @@ libfabric reliable datagrams, including AWS EFA.
 
 Protocol and transport are independent. RESP and opt-in SBE can each run over
 TCP (native TLS, ExaSock, or [XLIO Ultra](xlio.md)), Unix-domain sockets, a
-shared-memory ring, or a polled RDMA ring. XLIO preserves ordinary TCP on the
-wire and remains compatible with a kernel TCP peer. Ordinary socket TCP is
+shared-memory ring, a polled RDMA ring, libfabric RDM, or Aeron UDP/IPC. XLIO
+preserves ordinary TCP on the wire and remains compatible with a kernel TCP
+peer. Ordinary socket TCP is
 always plaintext on `127.0.0.1` and requires TLS on non-loopback addresses. SBE
 requires `--enable-sbe` and is intentionally unauthenticated; see
 [Authentication](authentication.md) before exposing it.

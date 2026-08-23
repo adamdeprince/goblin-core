@@ -9,8 +9,9 @@ where it will run, on a compatible build host, or use the repository
 workflow.
 
 Linux is the production platform. macOS is supported for development and the
-portable socket/shared-memory test suite. RDMA, XLIO Ultra, HugeTLB, CPU
-isolation, and NUMA placement are Linux facilities.
+portable socket/shared-memory/Aeron test suite. RDMA, XLIO Ultra, HugeTLB, CPU
+isolation, and NUMA placement are Linux facilities; Aeron's C client and Media
+Driver support both Linux and macOS.
 
 The complete Linux workflow below was verified on Ubuntu 22.04.1 with CMake
 3.28.6, GCC 16.1, and Ninja 1.10.1. The default build detected Kafka, OpenSSL
@@ -209,6 +210,8 @@ profile makes the resulting binary easier to audit.
 | `GOBLIN_CORE_ENABLE_LIBFABRIC` | `OFF` | Enables provider-neutral `FI_EP_RDM` and AWS EFA on Linux. Build the vendored static library first and set `GOBLIN_CORE_LIBFABRIC_ROOT` to its install prefix. |
 | `GOBLIN_CORE_LIBFABRIC_ROOT` | empty | Prefix produced by `scripts/build-libfabric.sh`; required when libfabric support is enabled. |
 | `GOBLIN_CORE_ENABLE_XLIO` | `OFF` | Enables native NVIDIA XLIO Ultra TCP on Linux. The vendored headers compile with Goblin, but the pinned DPCP/XLIO runtime must also be built and preloaded. |
+| `GOBLIN_CORE_ENABLE_AERON` | `OFF` | Enables Aeron reliable UDP and IPC response-channel transports. Requires an installed Aeron 1.51+ C client and an external Media Driver at runtime. |
+| `GOBLIN_CORE_AERON_ROOT` | empty | Optional Aeron CMake install prefix, such as the one produced by `scripts/build-aeron.sh`. |
 | `GOBLIN_CORE_STATIC_GNU_RUNTIME` | `ON` | With GCC, links `libstdc++` and `libgcc` statically while leaving libc and device libraries dynamic. It has no effect with Clang/MSVC. |
 | `GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS` | `OFF` | Adds sequential and pipelined compatibility tests against an installed `redis-server`. This is a test dependency, never a server runtime dependency. |
 | `GOBLIN_CORE_ARCH` | empty | Selects additional ISA tuning: `native`, `avx2`, `avx512`, `lsx`, or `lasx`. Empty is the distribution-friendly choice. |
@@ -312,6 +315,17 @@ Set `GOBLIN_CORE_ENABLE_XLIO=ON` only after building the pinned DPCP and XLIO
 runtime. Goblin must run with `libxlio.so` preloaded; runtime listeners use
 `--xlio ADDRESS PORT`. See [native XLIO Ultra TCP](docs/xlio.md) for the exact
 dependency build and launch environment.
+
+### Aeron UDP and IPC
+
+Build the pinned Aeron C client and Media Driver with
+`scripts/build-aeron.sh PREFIX`, then configure the server with
+`GOBLIN_CORE_ENABLE_AERON=ON` and `GOBLIN_CORE_AERON_ROOT=PREFIX`. Run
+`PREFIX/bin/aeronmd_s` before Goblin or its clients. Runtime targets use
+`--aeron-ipc REQUEST-STREAM RESPONSE-STREAM` or
+`--aeron-udp REQUEST-CHANNEL REQUEST-STREAM RESPONSE-CHANNEL RESPONSE-STREAM`.
+See [Aeron UDP and IPC](docs/aeron.md) for driver directories, response-channel
+semantics, C++/Python clients, and qualification.
 
 ## Troubleshooting
 
