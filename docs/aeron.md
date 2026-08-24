@@ -184,6 +184,24 @@ The Aeron C client owns a conductor thread. Goblin therefore disables fork-based
 `BGSAVE` and `GOBLIN.DUMPWORLD` when any Aeron target is configured. Synchronous
 `SAVE` remains available.
 
+## Local transport benchmark
+
+The local latency matrix compares depth-one `PING`, `SET`, and `GET` round trips
+for RESP and SBE over a shared-memory ring, Aeron IPC, Aeron loopback UDP, and a
+Unix-domain socket. Every case gets a fresh server. IPC shares one Media Driver;
+UDP uses separate local server/client drivers so it traverses the kernel
+loopback path.
+
+```sh
+AERON_PREFIX="$HOME/opt/aeron-1.51.0-$(uname -m)" \
+  bash benchmarks/local_transport_latency.sh
+```
+
+The launcher defaults to the physical-core layout on `naamah`. Override
+`SERVER_CPU`, `CLIENT_CPU`, the driver CPU variables, or `SAMPLES`/`WARMUP` for
+another host. It writes raw CSV, a median/p99 summary, per-process logs, and
+machine/build metadata under `benchmark-results/` by default.
+
 ## Qualification
 
 When `aeronmd_s` is discoverable, the main CTest suite launches separate private

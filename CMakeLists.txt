@@ -817,6 +817,17 @@ if(GOBLIN_CORE_BUILD_BENCHMARKS)
       -Wall -Wextra -Wpedantic)
   endif()
 
+  if(GOBLIN_HAS_AERON_BUILD AND TARGET goblin_sbe_headers AND UNIX)
+    add_executable(goblin_core_local_transport_latency_benchmark
+      benchmarks/local_transport_latency_benchmark.cpp)
+    target_link_libraries(goblin_core_local_transport_latency_benchmark PRIVATE
+      goblin_core goblin_sbe_headers)
+    set_target_properties(goblin_core_local_transport_latency_benchmark PROPERTIES
+      CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(goblin_core_local_transport_latency_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+  endif()
+
   if(UNIX)
     add_executable(goblin_core_xlio_latency_benchmark
       benchmarks/xlio_latency_benchmark.cpp)
