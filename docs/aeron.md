@@ -37,14 +37,30 @@ dependency to downstream CMake consumers.
 ## Start the Media Driver
 
 Run the C Media Driver before the server or clients. The static executable avoids
-runtime shared-library search-path setup:
+runtime shared-library search-path setup. Goblin's latency-oriented C++ clients
+continuously poll their response subscriptions and configure their Aeron client
+conductor with the `spin` idle strategy. Use Aeron's corresponding low-latency
+profile for the external Media Driver so its agents do not amplify a short
+application pause through exponential backoff:
 
 ```sh
 AERON_PREFIX="$HOME/opt/aeron-1.51.0-$(uname -m)"
 AERON_DIR=/run/user/$(id -u)/goblin-aeron
 
-"$AERON_PREFIX/bin/aeronmd_s" -Daeron.dir="$AERON_DIR"
+env \
+  AERON_CONDUCTOR_IDLE_STRATEGY=spin \
+  AERON_SENDER_IDLE_STRATEGY=noop \
+  AERON_RECEIVER_IDLE_STRATEGY=noop \
+  AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND=2 \
+  "$AERON_PREFIX/bin/aeronmd_s" -Daeron.dir="$AERON_DIR"
 ```
+
+Here `noop` means the sender or receiver immediately begins its next agent
+iteration; it does not disable that agent. The conductor's `spin` strategy also
+polls continuously but issues the architecture's processor-relax hint. These
+settings reserve a core for each dedicated agent. For UDP, apply them to the
+Media Driver on both hosts; IPC has one shared local driver. The C++ client
+cannot change an already-running external driver's idle strategy.
 
 The `--aeron-dir` argument on Goblin and `aeron_directory` client argument must
 name that same directory. Omitting them selects Aeron's platform/user default.
@@ -201,6 +217,14 @@ The launcher defaults to the physical-core layout on `naamah`. Override
 `SERVER_CPU`, `CLIENT_CPU`, the driver CPU variables, or `SAMPLES`/`WARMUP` for
 another host. It writes raw CSV, a median/p99 summary, per-process logs, and
 machine/build metadata under `benchmark-results/` by default.
+
+The launcher deliberately uses `DEDICATED` Media Driver threads with conductor
+`spin`, sender/receiver `noop`, and at most two messages per network send. The
+C++ benchmark client's Aeron conductor also spins. The continuously polled C++
+client conductor and Media Driver agents each have a distinct physical core in
+the default `naamah` layout. The four `AERON_*` environment variables remain
+overridable for an explicit polling-policy comparison, and their effective
+values are recorded in each run's metadata.
 
 ## Qualification
 

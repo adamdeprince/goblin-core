@@ -28,6 +28,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kFragmentLimit = 16;
 constexpr auto kServerConnectTimeout = std::chrono::seconds(5);
+constexpr char kClientConductorIdleStrategy[] = "spin";
 
 [[nodiscard]] bool starts_with_aeron_uri(std::string_view value) noexcept {
   return value.starts_with("aeron:");
@@ -722,6 +723,11 @@ std::optional<ClientTransport> ClientTransport::open(
        aeron_context_set_dir(state->context,
                              std::string(aeron_directory).c_str()) < 0) ||
       aeron_context_set_client_name(state->context, "goblin-core-client") < 0 ||
+      // The synchronous Redis clients poll their response subscription on the
+      // caller thread. Keep Aeron's companion client-conductor thread active as
+      // well so an idle sleep cannot delay image or publication state changes.
+      aeron_context_set_idle_strategy(state->context,
+                                      kClientConductorIdleStrategy) < 0 ||
       aeron_context_set_driver_timeout_ms(
           state->context, static_cast<std::uint64_t>(timeout_count)) < 0 ||
       aeron_context_set_error_handler(state->context,

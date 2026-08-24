@@ -14,6 +14,7 @@
 #   BUILD_DIR=$PWD/build-aeron-rel SKIP_BUILD=1
 #   SAMPLES=200000 WARMUP=20000
 #   SERVER_CPU=2 CLIENT_CPU=3 OUT_DIR=/tmp/goblin-local-results
+#   AERON_SENDER_IDLE_STRATEGY=backoff (trade latency for idle CPU)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +28,15 @@ PROBE="${PROBE:-$BUILD_DIR/goblin_core_local_transport_latency_benchmark}"
 SAMPLES="${SAMPLES:-100000}"
 WARMUP="${WARMUP:-10000}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
+
+# Aeron's DEDICATED threading mode assigns separate agents but does not make
+# them continuously poll: the C Media Driver otherwise defaults each agent to
+# exponential backoff. This latency benchmark follows Aeron's low-latency C
+# driver profile. Callers may override these when measuring another policy.
+AERON_CONDUCTOR_IDLE_STRATEGY="${AERON_CONDUCTOR_IDLE_STRATEGY:-spin}"
+AERON_SENDER_IDLE_STRATEGY="${AERON_SENDER_IDLE_STRATEGY:-noop}"
+AERON_RECEIVER_IDLE_STRATEGY="${AERON_RECEIVER_IDLE_STRATEGY:-noop}"
+AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND="${AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND:-2}"
 
 # naamah has 64 physical cores numbered 0-63, followed by their SMT siblings.
 # Keep the measuring threads, Aeron client conductors, and Media Driver agents
@@ -123,6 +133,15 @@ printf '%s\n' \
   printf 'aeronmd_sha256=%s\n' "$aeronmd_hash"
   printf 'samples=%s\n' "$SAMPLES"
   printf 'warmup=%s\n' "$WARMUP"
+  printf 'goblin_cpp_client_conductor_idle_strategy=spin\n'
+  printf 'aeron_driver_conductor_idle_strategy=%s\n' \
+    "$AERON_CONDUCTOR_IDLE_STRATEGY"
+  printf 'aeron_driver_sender_idle_strategy=%s\n' \
+    "$AERON_SENDER_IDLE_STRATEGY"
+  printf 'aeron_driver_receiver_idle_strategy=%s\n' \
+    "$AERON_RECEIVER_IDLE_STRATEGY"
+  printf 'aeron_network_publication_max_messages_per_send=%s\n' \
+    "$AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND"
   printf 'server_cpu=%s\n' "$SERVER_CPU"
   printf 'client_cpu=%s\n' "$CLIENT_CPU"
   printf 'server_aeron_client_cpu=%s\n' "$SERVER_AERON_CLIENT_CPU"
@@ -142,7 +161,12 @@ start_driver() {
   local role="$1" directory="$2" conductor_cpu="$3" receiver_cpu="$4"
   local sender_cpu="$5" log_file="$6"
   mkdir -p "$directory"
-  "$AERONMD" \
+  env \
+    AERON_CONDUCTOR_IDLE_STRATEGY="$AERON_CONDUCTOR_IDLE_STRATEGY" \
+    AERON_SENDER_IDLE_STRATEGY="$AERON_SENDER_IDLE_STRATEGY" \
+    AERON_RECEIVER_IDLE_STRATEGY="$AERON_RECEIVER_IDLE_STRATEGY" \
+    AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND="$AERON_NETWORK_PUBLICATION_MAX_MESSAGES_PER_SEND" \
+    "$AERONMD" \
     "-Daeron.dir=$directory" \
     -Daeron.dir.delete.on.start=true \
     -Daeron.dir.delete.on.shutdown=true \

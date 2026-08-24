@@ -43,7 +43,27 @@ SBE had a lower median than RESP in every transport/operation pair.
 
 Both runs reproduced an Aeron UDP `SET` p99 around 153--158 microseconds for
 both protocols. The benchmark establishes that this tail is repeatable on this
-configuration; it does not attribute its cause.
+configuration. Subsequent ordered-trace experiments found that the 16-byte SET
+value periodically grows and compacts its spilled string tail in the store
+arena. The Media Driver's default exponential-backoff agents amplified those
+brief pauses into contiguous UDP latency clusters.
+
+## Aeron polling policy
+
+These archived runs used `DEDICATED` Media Driver threads but did not override
+Aeron 1.51's default `backoff` idle strategy. `DEDICATED` assigned conductor,
+sender, and receiver agents to separate pinned threads; it did not make those
+agents poll continuously. The recorded 153--158 microsecond SET p99 therefore
+describes the default-backoff policy.
+
+The current benchmark launcher instead defaults to Aeron's low-latency C Media
+Driver profile: conductor `spin`, sender and receiver `noop`, and two messages
+per network send. Goblin's C++ Aeron client conductor also uses `spin`. In the
+controlled follow-up on this host, that policy reduced the same 16-byte Aeron
+UDP SET p99 to 18.4 microseconds for RESP and 19.2 microseconds for SBE; it
+continuously occupies the pinned C++ client-conductor and Media Driver agent
+cores. Checkout the recorded source commit above to reproduce these archived
+backoff results exactly.
 
 ## Files
 
@@ -64,8 +84,10 @@ start at CPU 64.
 
 Aeron IPC used one local Media Driver. Aeron UDP used separate server and
 client Media Drivers connected through `127.0.0.1`, so its data path crossed
-the kernel loopback UDP stack. UDS used a Unix-domain stream socket. Ring and
-Aeron transports were busy-polled; UDS used the server's socket event loop.
+the kernel loopback UDP stack. UDS used a Unix-domain stream socket. The ring
+and Goblin Aeron subscription paths were busy-polled, while the Media Driver
+agents used the historical backoff policy described above. UDS used the
+server's socket event loop.
 
 The machine had no configured isolated CPUs. Its scaling governor reported
 `performance`, while frequency boost remained enabled. These are latency
