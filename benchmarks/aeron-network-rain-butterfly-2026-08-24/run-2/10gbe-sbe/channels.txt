@@ -1,0 +1,6 @@
+server_request_channel=aeron:udp?endpoint=192.168.1.46:40130
+client_request_channel=aeron:udp?endpoint=192.168.1.46:40130
+server_response_channel=aeron:udp?control=192.168.1.46:40131
+client_response_channel=aeron:udp?control=192.168.1.46:40131
+request_stream=2023
+response_stream=2024

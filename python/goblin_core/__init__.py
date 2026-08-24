@@ -9,7 +9,7 @@ Transports (selected by class / build flags):
     r = RdmaRedis("10.88.88.1", 6380, 64 * 1024) # --rdma ... (if HAS_RDMA)
     r = ExasockRedis("10.99.99.1", 6379)          # --exasock ... (if HAS_EXASOCK)
     r = AeronIpcRedis()                           # --aeron-ipc 1001 1002
-    r = AeronUdpRedis("server:40123", "client:40124")
+    r = AeronUdpRedis("server:40123", "server:40124")
 
 The transport, busy-poll, and SBE encode/decode live in the C++ extension
 (`_goblin_core`). SBE is typed per command, so only verbs goblin-core implements
@@ -628,7 +628,10 @@ if HAS_AERON:
 
         Bare endpoints become ``aeron:udp?endpoint=...`` for requests and
         ``aeron:udp?control=...`` for replies. Complete Aeron channel URIs are
-        accepted unchanged. An external Aeron Media Driver must be running.
+        accepted unchanged. The response-control endpoint is on the server and
+        is used unchanged by both peers; Aeron learns the client's return
+        destination through response correlation. An external Aeron Media
+        Driver must be running.
         """
 
         def __init__(

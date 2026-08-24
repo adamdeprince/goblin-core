@@ -1,201 +1,188 @@
-# How an 11-byte arena tail became a 157-microsecond Aeron SET
+# Aeron IPC below a microsecond, and Aeron UDP across 100 GbE
 
-The local-transport benchmark was supposed to answer a straightforward question: what does
-the same Goblin Core operation cost over a shared-memory ring, Aeron IPC, Aeron UDP on
-localhost, and a Unix-domain socket? The medians gave the expected answer. The p99 for one
-case did not.
+With continuously polled clients and Media Drivers, Goblin Core's SBE `PING`
+measured 0.481 microseconds at p50 over Aeron IPC. The same operation measured
+12.489 microseconds through two Aeron drivers over Linux UDP loopback. Between
+two physical servers, it measured 48.099 microseconds over a 10 GbE kernel-UDP
+path and 7.172 microseconds when the two Aeron drivers used XLIO over direct
+100 GbE.
 
-`PING` and `GET` over Aeron UDP stayed near 20 microseconds at p99, but a 16-byte `SET`
-jumped to roughly 157 microseconds. RESP and SBE both did it. Two complete runs reproduced
-it. That made the outlier more interesting than the ranking: a protocol-independent store
-pause was interacting with Aeron's polling policy.
+Those numbers answer different questions. The local matrix compares IPC,
+loopback networking, a shared-memory ring, and a Unix-domain socket on one
+Threadripper host. The network matrix compares two complete paths between a
+pair of older PowerEdge servers. It changes the NIC and network stack as well
+as the link rate, so it is not a 10-versus-100-Gb bandwidth experiment.
 
-The short version is that each overwrite retired an 11-byte spilled value tail. Goblin's
-keyspace arena compacted after 64 KiB became reclaimable, once every 5,958 overwrites. The
-compaction itself was visible over every transport, but the Aeron C Media Driver's default
-exponential-backoff agents amplified that brief pause into a cluster of much slower UDP
-round trips. Continuously polled driver agents removed the amplification, reducing the same
-UDP `SET` p99 from about 157 microseconds to 18–19 microseconds. They did not remove the
-underlying store maintenance.
+Every figure below is the arithmetic mean of two complete runs. Each run used
+10,000 warm-up requests followed by 100,000 measured, synchronous, depth-one
+round trips for each operation. There was no pipeline hiding the return path.
 
-## What we measured
+## Local transport results
 
-The matrix crosses two independent choices: RESP versus SBE framing, and four local
-transports. Each of the eight combinations received a freshly started server and ran
-depth-one `PING`, `SET`, and `GET` requests. There was no pipelining to hide a round trip.
-Every operation had 10,000 warm-up requests followed by 100,000 measured requests, and the
-entire matrix ran twice.
+The local matrix ran on `naamah`, an AMD Ryzen Threadripper PRO 5995WX with 64
+physical cores and one NUMA node. Each protocol/transport pair received a fresh
+Goblin server. The server and measuring client occupied distinct physical
+cores. In the Aeron cases, their two client conductors and all Media Driver
+agents also had separate physical cores.
 
-| Transport | Path exercised in this test |
+All latency values in the tables are microseconds.
+
+| Protocol / transport | PING p50 | PING p99 | SET p50 | SET p99 | GET p50 | GET p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| RESP / ring | 0.316 | 0.376 | 0.736 | 0.812 | 0.406 | 0.466 |
+| SBE / ring | 0.200 | 0.251 | 0.471 | 0.556 | 0.261 | 0.311 |
+| RESP / Aeron IPC | 0.691 | 1.904 | 1.062 | 2.390 | 0.741 | 1.994 |
+| SBE / Aeron IPC | 0.481 | 1.738 | 0.832 | 2.179 | 0.601 | 1.808 |
+| RESP / Aeron UDP loopback | 12.744 | 18.084 | 13.225 | 18.475 | 12.779 | 19.427 |
+| SBE / Aeron UDP loopback | 12.489 | 17.198 | 12.864 | 19.302 | 12.799 | 17.929 |
+| RESP / UDS | 8.271 | 12.343 | 10.420 | 13.395 | 10.395 | 12.599 |
+| SBE / UDS | 7.204 | 8.451 | 7.634 | 9.388 | 7.349 | 8.701 |
+
+The steady-state order is straightforward: Goblin's native ring is fastest,
+Aeron IPC is next, then UDS, then two-driver Aeron UDP over loopback. Aeron IPC
+adds roughly 0.28--0.38 microseconds to the corresponding ring median while
+retaining a p99 below 2.4 microseconds in every row.
+
+Loopback UDP is deliberately not an IPC shortcut. The client and server have
+separate Media Drivers, and their datagrams cross Linux's UDP loopback path.
+That makes the result representative of Aeron UDP's local network machinery,
+not a differently named shared-memory channel.
+
+## Across 10 and 100 GbE
+
+`butterfly` served the network cases and `rain` ran the client. Both are Dell
+PowerEdge R820 systems with four Intel Xeon E5-4657L v2 sockets and four NUMA
+nodes. The shared NFS home meant Goblin and Aeron were built once on `rain` and
+the byte-identical artifact was reused on both hosts; Aeron directories, logs,
+and other runtime state remained on each machine's local `/tmp`.
+
+| Path / protocol | PING p50 | PING p99 | SET p50 | SET p99 | GET p50 | GET p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| 10 GbE kernel / RESP | 49.085 | 62.713 | 50.734 | 66.385 | 49.494 | 64.168 |
+| 10 GbE kernel / SBE | 48.099 | 61.019 | 49.725 | 64.340 | 48.759 | 62.313 |
+| 100 GbE XLIO / RESP | 7.378 | 16.021 | 8.764 | 19.451 | 7.718 | 17.753 |
+| 100 GbE XLIO / SBE | 7.172 | 14.895 | 8.282 | 18.955 | 7.427 | 16.932 |
+
+The 10 GbE path used the kernel UDP stack on node-local Broadcom `bnx2x` NICs.
+The adapters reported 24-microsecond RX and 48-microsecond TX coalescing. The
+100 GbE path used a direct ConnectX-5 link on NUMA node 1. XLIO 3.61.2 was
+preloaded into the external Aeron C Media Driver on each endpoint, with every
+Aeron agent and XLIO's helper thread pinned to a separate node-local physical
+core.
+
+For these tiny depth-one messages, the complete 100 GbE userspace
+configuration reduced PING p50 by about 6.7x and p99 by roughly 4x. That result
+belongs to the whole configuration. Larger link capacity alone does not explain
+it: XLIO bypasses the kernel UDP path, the ConnectX-5 has different coalescing,
+and both configurations use different NICs on different NUMA nodes.
+
+This is also distinct from Goblin's native XLIO Ultra TCP transport. Goblin and
+the benchmark client still talk to their local Aeron drivers through shared
+memory. XLIO intercepts the drivers' ordinary UDP socket calls and moves that
+network path into userspace.
+
+## Proving that XLIO really offloaded UDP
+
+The 100 GbE drivers used XLIO's latency profile, anonymous memory, infinite
+initial polling for unicast UDP, no kernel-FD poll ratio, and no progress-engine
+drain thread. `XLIO_EXCEPTION_HANDLING=2` returned errors instead of silently
+undoing an unsupported socket operation.
+
+Attaching `xlio_stats` while measuring would add another runnable process to a
+latency experiment. The reported rows therefore use no concurrent statistics
+collector. A separate qualification run used the same binaries, routes, CPU
+layout, channel URIs, and driver settings, then attached `xlio_stats` to the
+actual Media Driver PIDs. Both endpoints recorded nonzero transmitted and
+received offloaded packet counts. That qualification is archived beside the
+reported data but is not included in either mean.
+
+## Continuous polling is part of the result
+
+`DEDICATED` Aeron threading assigns conductor, sender, and receiver agents to
+separate threads; it does not by itself make them continuously poll. The
+latency profile in these runs is explicit:
+
+| Agent | Idle strategy |
 |---|---|
-| Shared-memory ring | A 1 MiB Goblin request/reply ring, busy-polled by client and server |
-| Aeron IPC | One local C Media Driver shared by client and server |
-| Aeron UDP | Separate client and server Media Drivers communicating through Linux UDP loopback |
-| UDS | A Unix-domain stream socket handled by the server's socket event loop |
+| Goblin and benchmark C++ Aeron client conductors | `spin` |
+| Media Driver conductor | `spin` |
+| Media Driver sender and receiver | `noop` |
+| Network publication | at most two messages per send |
 
-The host, `naamah`, is an AMD Ryzen Threadripper PRO 5995WX with 64 physical cores, 128
-logical CPUs, and one NUMA node. The governor was `performance` and boost remained enabled.
-The server and measuring client were pinned to CPUs 2 and 3. Aeron client conductors and
-Media Driver conductor, receiver, and sender agents occupied distinct physical cores from
-CPUs 4 through 11. No CPUs were isolated from the kernel, so these are host-specific
-latency measurements rather than a claim about a fully isolated production machine.
+In Aeron's C driver, `noop` means immediately begin the next duty cycle. It
+does not disable the agent. Goblin's synchronous client also continuously polls
+its response subscription on the calling thread. The policy minimizes wake-up
+latency by occupying the assigned cores, including when traffic is quiet.
 
-The archived runs used Goblin commit
-[`d122399`](https://github.com/adamdeprince/goblin-core/commit/d122399a3c78be3a4941f7d4767387b7c070bff2)
-and Aeron 1.51.0 at commit
-[`9773cba`](https://github.com/aeron-io/aeron/commit/9773cba37e4b88b2b7eb9460c4e0050267b71d28).
-Their Media Drivers used `DEDICATED`
-threading, which puts conductor, receiver, and sender on separate threads, but retained the
-C driver's default `backoff` idle strategies. Dedicated threads and continuous polling are
-separate choices.
+The cost differs by topology. IPC has one shared local Media Driver. UDP has a
+driver on each endpoint, so both machines reserve conductor, sender, and
+receiver cores in addition to their application and Aeron client-conductor
+cores. The 100 GbE XLIO path reserves one more core per host for XLIO's helper.
 
-## The baseline results
+## Why the old Aeron SET p99 was 157 microseconds
 
-These are arithmetic means of the two runs' medians, in microseconds:
+The previous local archive used dedicated Media Driver threads with Aeron's
+default exponential-backoff idle policy. `PING` and `GET` had ordinary UDP
+tails, but repeated 16-byte `SET` operations paused the store often enough to
+let idle driver agents advance into backoff. Work then waited for those agents
+to wake.
 
-| Protocol / transport | PING p50 | SET p50 | GET p50 |
-|---|---:|---:|---:|
-| RESP / ring | 0.316 | 0.721 | 0.401 |
-| SBE / ring | 0.195 | 0.461 | 0.256 |
-| RESP / Aeron IPC | 0.496 | 0.907 | 0.626 |
-| SBE / Aeron IPC | 0.341 | 0.646 | 0.411 |
-| RESP / Aeron UDP loopback | 13.967 | 15.485 | 14.713 |
-| SBE / Aeron UDP loopback | 13.926 | 14.112 | 13.977 |
-| RESP / UDS | 8.236 | 9.979 | 9.613 |
-| SBE / UDS | 7.194 | 7.589 | 7.329 |
+| Local UDP policy | RESP SET p99 | SBE SET p99 |
+|---|---:|---:|
+| Historical default backoff | 157.655 | 154.909 |
+| Current continuous profile | 18.475 | 19.302 |
 
-The median ordering was ring, Aeron IPC, UDS, then Aeron UDP loopback. Aeron IPC added
-about 0.15–0.23 microseconds to the corresponding ring median. SBE was faster than RESP in
-all 12 transport/operation pairs. UDP loopback was slower than UDS because it deliberately
-used two Media Drivers and crossed the kernel's UDP loopback path; it was not an IPC test
-with a UDP-shaped channel name.
-
-The two-run mean p99 exposed the anomaly:
-
-| Protocol / transport | PING p99 | SET p99 | GET p99 |
-|---|---:|---:|---:|
-| RESP / ring | 0.366 | 0.812 | 0.456 |
-| SBE / ring | 0.251 | 0.556 | 0.311 |
-| RESP / Aeron IPC | 1.623 | 2.229 | 1.788 |
-| SBE / Aeron IPC | 1.533 | 2.009 | 1.603 |
-| RESP / Aeron UDP loopback | 20.384 | **157.655** | 22.658 |
-| SBE / Aeron UDP loopback | 19.727 | **154.909** | 20.359 |
-| RESP / UDS | 11.983 | 13.080 | 12.449 |
-| SBE / UDS | 8.261 | 9.328 | 8.436 |
-
-This was not a general UDP tail. It was specific to repeated `SET`, and changing the wire
-format barely changed its size. That pointed below the protocol parser.
-
-## The 5,958-request fingerprint
-
-Ordered latency traces made the distribution diagnosable. A large spike recurred at the
-same request indices in RESP and SBE, with a period of about 5,958 overwrites. Running the
-same trace over the shared-memory ring retained those indices, although the individual
-spikes were only roughly 15–35 microseconds rather than a 100–220 microsecond UDP
-cluster. The transport was magnifying an event that originated in the store.
-
-The benchmark repeatedly writes the logical value `0123456789abcdef`, which is 16 bytes.
-Default string encoding adds a one-byte raw-value tag. Goblin's 16-byte `StringValue`
-stores up to 14 encoded bytes inline; a larger value keeps a six-byte prefix inline and
-places the rest in the keyspace arena:
-
-| Quantity | Bytes |
-|---|---:|
-| Logical benchmark value | 16 |
-| Encoded value, including raw tag | 17 |
-| Inline prefix when spilled | 6 |
-| Arena tail allocated by every write | 11 |
-| Arena compaction dead-byte floor | 65,536 |
-
-The overwrite path first allocates the replacement tail and then marks the old tail dead.
-The same key therefore contributes 11 dead bytes per overwrite. The recurrence falls
-straight out of the layout:
+The application pause itself comes from a compact value layout. A 16-byte raw
+value becomes 17 encoded bytes after its tag. Six bytes remain inline and an
+11-byte tail goes into the keyspace arena. Replacing the same key retires one
+11-byte tail, so the 64 KiB dead-byte floor is reached every
 
 ```text
 ceil(65,536 / 11) = 5,958 overwrites
 ```
 
-At that point the keyspace arena rebuilds its live keys and spilled values into fresh
-storage and updates their tail locations. Smaller staircase-shaped spikes between the
-compactions aligned with geometric arena growth and copying. Doubling the Goblin ring from
-1 MiB to 2 MiB did not move the indices. Neither disabling replication nor switching to
-tcmalloc removed them. Changing an Aeron status-message timeout also left the phase intact.
-The value layout and arena accounting were the stable explanation.
+Goblin then rebuilds the arena and updates live tail locations. That work is
+still visible: in the current local runs, `SET` p99.9 ranged from 15.419
+microseconds on the SBE ring to 32.321 microseconds on RESP UDP. Continuous
+polling removes the transport's backoff amplification; it does not remove the
+store maintenance. Reusing compatible tails or reclaiming incrementally would
+be a separate store-side optimization.
 
-A useful boundary test was a 13-byte logical value. With its encoding tag it occupies
-exactly 14 bytes and stays inline, so there is no arena tail to retire. Ring `SET` p99.9
-fell to 1.713 microseconds for RESP and 0.601 microseconds for SBE. With the historical
-backoff Media Driver, UDP p99 fell to 20.589 and 21.901 microseconds respectively. Its
-p99.9 could still reach roughly 157 microseconds when ordinary system interruptions left
-the drivers idle long enough to back off, but the deterministic `SET` recurrence was gone.
+## One response-channel detail that matters across hosts
 
-## How Aeron amplified the pause
+Aeron response channels use an asymmetric control URI. The response publication
+binds the control address on the server. The remote client subscription uses
+that same server control URI as its target; Aeron's response correlation learns
+the client's return destination. Supplying the client's IP as Goblin's response
+control address makes the server Media Driver try to bind an address it does not
+own.
 
-Aeron agents run a duty cycle: do available work, then apply an idle strategy when there
-is none. The C Media Driver defaults its dedicated conductor, sender, and receiver agents
-to `backoff`. After a short spin and yield phase, that policy parks for progressively
-longer intervals up to one millisecond. It is a sensible CPU-saving default, and Aeron's
-[best-practices guide](https://github.com/aeron-io/aeron/wiki/Best-Practices-Guide#idle-strategies)
-explicitly presents idle strategy as a responsiveness-versus-CPU tradeoff.
+The benchmark harness records the exact channels for every case. Bare server
+endpoints are sufficient when routing is unambiguous:
 
-The depth-one request/reply loop normally keeps the two UDP paths in lockstep. Arena
-maintenance briefly stops the server from consuming the next request. That creates an
-idle window elsewhere in the chain: a Media Driver receiver can stop finding packets, a
-sender can stop finding frames, and each can advance independently into backoff. When the
-store resumes, work now waits for one or more agents to wake. Because the next depth-one
-request depends on the previous reply, the delayed wakeups appear as a contiguous latency
-cluster rather than one isolated server-side spike.
+```text
+request:  aeron:udp?endpoint=SERVER_IP:REQUEST_PORT
+response: aeron:udp?control=SERVER_IP:RESPONSE_PORT
+```
 
-Separating the driver strategies confirmed the mechanism. Making only the receiver agents
-continuous brought p99 down to roughly 19–20 microseconds and p99.9 to 35–37
-microseconds. Making only the senders continuous produced a similar p99, but p99.9 remained
-near 100 microseconds. Both directions participated; the receiver side contributed more
-to the long cluster.
+## Reproduction and raw data
 
-## The latency profile now polls continuously
+All reported runs use Goblin commit
+[`9ddb3ed`](https://github.com/adamdeprince/goblin-core/commit/9ddb3ed3ea29dfbf458a388ca3e5143a3ffcdd76)
+and Aeron 1.51.0 commit
+[`9773cba`](https://github.com/aeron-io/aeron/commit/9773cba37e4b88b2b7eb9460c4e0050267b71d28).
 
-The controlled follow-up used the C Media Driver's low-latency profile: conductor `spin`,
-sender and receiver `noop`, and at most two messages per network send. Goblin's C++ Aeron
-client conductor also uses `spin`, while its response path continuously polls its
-subscription. In Aeron terminology, `noop` here means immediately begin the next agent iteration;
-it does not turn the sender or receiver off.
+- The [current local archive](../benchmarks/local-transports-naamah-2026-08-24/README.md)
+  contains both complete `naamah` runs, metadata, hashes, and the reproduction
+  command.
+- The [10/100 GbE network archive](../benchmarks/aeron-network-rain-butterfly-2026-08-24/README.md)
+  contains raw case CSVs, affinities, channel URIs, NIC counters, Media Driver
+  logs, XLIO logs, and the independent offload qualification.
+- The [historical backoff archive](../benchmarks/local-transports-naamah-2026-08-23/README.md)
+  preserves the original 153--158 microsecond UDP `SET` p99 rather than mixing
+  it into the current tables.
+- The [Aeron transport guide](../docs/aeron.md) documents the server, C++, and
+  Python configuration and the continuous polling policy.
 
-| Media Driver policy | RESP SET p99 | RESP p99.9 | SBE SET p99 | SBE p99.9 |
-|---|---:|---:|---:|---:|
-| Historical default backoff | 157.460 | 216.810 | 157.060 | 216.860 |
-| Continuous low-latency profile | **18.435** | **32.562** | **19.206** | **31.880** |
-
-Those figures are a controlled follow-up, not replacements silently spliced into the
-original two-run table. The archived baseline remains labeled as a backoff run. The current
-`benchmarks/local_transport_latency.sh` launcher defaults to the continuous profile and
-records the effective strategies in its metadata; callers can override them when the goal
-is to measure a lower-CPU policy.
-
-This tuning has an explicit cost. A dedicated C++ client-conductor core plus each dedicated
-Media Driver agent core remains occupied even when traffic is quiet. For IPC there is one
-shared local driver. For UDP there is a driver on each endpoint, so the reserved-core cost
-is larger. Continuous polling is appropriate for this latency benchmark and for deployments
-that intentionally buy latency with cores. It should not be presented as free.
-
-It also does not cure the 5,958-overwrite store event. The ring traces still expose arena
-growth and compaction. Eliminating that source requires a store-side change, such as
-reusing a compatible existing tail during a same-key overwrite or making reclamation more
-incremental. Raising the 64 KiB floor would only postpone the pause.
-
-## Reading the result honestly
-
-There are three conclusions, and keeping them separate matters:
-
-- On this host, the steady-state median ranking was ring, Aeron IPC, UDS, then two-driver
-  Aeron UDP loopback. IPC stayed within a fraction of a microsecond of Goblin's native ring.
-- The original 157-microsecond UDP `SET` p99 began as deterministic keyspace-arena
-  maintenance, not RESP parsing, SBE framing, ring capacity, or an Aeron protocol timer.
-- Aeron's default backoff converted a short application pause into a longer transport
-  cluster. Continuous polling removed that amplification in exchange for occupied cores;
-  the underlying arena work remains visible and is a separate optimization target.
-
-The [archived benchmark report and provenance](../benchmarks/local-transports-naamah-2026-08-23/README.md)
-contain both full runs, their aggregate table, hashes, host topology, and reproduction
-command. The [Aeron transport guide](../docs/aeron.md) documents the current driver profile
-and client behavior. Raw CSVs and metadata live in the
-[benchmark artifact directory](https://github.com/adamdeprince/goblin-core/tree/main/benchmarks/local-transports-naamah-2026-08-23).
+The launchers are `benchmarks/local_transport_latency.sh` for one host and
+`benchmarks/aeron_network_latency.sh` for the cross-host matrix.

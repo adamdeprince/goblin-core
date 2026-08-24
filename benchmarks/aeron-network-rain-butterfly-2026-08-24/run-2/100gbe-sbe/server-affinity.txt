@@ -1,0 +1,4 @@
+tid=86495 comm=goblin-core
+pid 86495's current affinity list: 5
+tid=86496 comm=aeron-client
+pid 86496's current affinity list: 21

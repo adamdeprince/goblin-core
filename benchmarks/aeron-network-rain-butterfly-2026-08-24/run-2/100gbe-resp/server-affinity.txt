@@ -1,0 +1,4 @@
+tid=85341 comm=goblin-core
+pid 85341's current affinity list: 5
+tid=85342 comm=aeron-client
+pid 85342's current affinity list: 21

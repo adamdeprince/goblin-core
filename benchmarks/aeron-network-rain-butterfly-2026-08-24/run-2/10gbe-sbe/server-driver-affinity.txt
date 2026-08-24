@@ -1,0 +1,8 @@
+tid=80201 comm=aeronmd_s
+pid 80201's current affinity list: 4
+tid=80202 comm=aeron-executor
+pid 80202's current affinity list: 4,8,12
+tid=80203 comm=sender
+pid 80203's current affinity list: 12
+tid=80204 comm=receiver
+pid 80204's current affinity list: 8

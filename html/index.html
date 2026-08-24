@@ -530,17 +530,16 @@
       <div class="hero-inner">
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
-        <p class="hero-copy">A compact Redis®-compatible server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, one-sided <strong>RDMA</strong>, and <strong>libfabric/EFA</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <div class="release-notes" aria-label="What's new in Goblin Core 0.10.2 and 0.10.4">
+        <p class="hero-copy">A compact Redis®-compatible server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, one-sided <strong>RDMA</strong>, <strong>libfabric/EFA</strong>, and <strong>Aeron UDP/IPC</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
+        <div class="release-notes" aria-label="What's new in Goblin Core 0.10.5 and 0.10.4">
+          <section class="release-note">
+            <span class="release-note-heading"><a href="RELEASE-HISTORY.html#v0-10-5-august-20-2026">New in v0.10.5</a></span>
+            <span><strong>Aeron UDP and IPC:</strong> RESP and SBE over correlated response channels. SBE PING measured 0.481 µs p50 over IPC, 12.489 µs over UDP loopback, and 7.172 µs across the direct 100 GbE XLIO path. <a href="blogs/aeron-local-transport-latency.html">Local and network matrix.</a></span>
+          </section>
           <section class="release-note">
             <span class="release-note-heading"><a href="RELEASE-HISTORY.html#v0-10-4-august-11-2026">New in v0.10.4</a></span>
             <span><strong>DPU-side Pub/Sub processing:</strong> the BlueField matches subscriptions and performs local-first fanout on-card; the host-side server remains authoritative for everything else.</span>
             <span class="release-secondary"><strong>Measured on the DPU path:</strong> 12.5 µs p50 Pub/Sub with native XLIO Ultra over direct 100 GbE. <a href="BLUEFIELD-BENCHMARK.html">Benchmark and raw data.</a></span>
-          </section>
-          <section class="release-note">
-            <span class="release-note-heading"><a href="RELEASE-HISTORY.html#v0-10-2-july-26-2026">New in v0.10.2</a></span>
-            <span><strong>Libfabric RDM:</strong> RESP2 and SBE over EFA, <code>tcp</code>, or <code>verbs;ofi_rxm</code>. <a href="EFA-LATENCY.html">100 Gb personal-lab benchmark.</a> <a href="AWS-EFA-LATENCY.html">Native AWS fast follow.</a></span>
-            <span class="release-secondary"><strong>Measured:</strong> 23.06 µs average median across eight operations on native EFA.</span>
           </section>
         </div>
         <div class="hero-actions">
@@ -556,7 +555,7 @@
           </a>
         </div>
         <div class="hero-note" aria-label="Project details">
-          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP/TLS + XLIO Ultra + UDS + Ringbuffer + RDMA + libfabric/EFA</span>
+          <span>Apache 2.0</span><span>C++23</span><span>RESP + opt-in SBE</span><span>TCP/TLS + XLIO Ultra + UDS + Ringbuffer + RDMA + libfabric/EFA + Aeron UDP/IPC</span>
         </div>
       </div>
     </section>
@@ -574,14 +573,14 @@
       <div class="section-inner">
         <p class="section-label">Two roads into the same engine</p>
         <h2 class="section-title">Choose the overhead you are done paying.</h2>
-        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over <a href="docs/tls.html">TLS-capable TCP</a>, <a href="docs/xlio.html">native XLIO Ultra TCP</a>, Unix-domain sockets, shared-memory rings, polled one-sided RDMA, and <a href="docs/efa.html">libfabric reliable datagrams including AWS EFA</a>. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
+        <p class="section-intro">Goblin Core keeps familiar Redis command semantics while specializing the storage and transport underneath them. RESP and opt-in trusted-fabric SBE work over <a href="docs/tls.html">TLS-capable TCP</a>, <a href="docs/xlio.html">native XLIO Ultra TCP</a>, Unix-domain sockets, shared-memory rings, polled one-sided RDMA, <a href="docs/efa.html">libfabric reliable datagrams including AWS EFA</a>, and <a href="docs/aeron.html">Aeron UDP or IPC</a>. Run it like a lean server, or put it beside your process and leave the kernel off the hot path.</p>
         <div class="path-grid">
           <article class="path">
             <span class="path-num">01 / GROWING PRODUCTS</span>
             <h3>Your leaderboard should not become a fundraising event.</h3>
             <p class="path-lede">When sorted sets and hashes are scaling faster than the budget, packed layouts turn infrastructure growth back into a product problem instead of a RAM bill.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, RDMA, or libfabric/EFA</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, RDMA, libfabric/EFA, or Aeron</dd></div>
               <div><dt>Best at</dt><dd>Leaderboards, rankings, hot hashes</dd></div>
               <div><dt>Measured</dt><dd>763.8 vs 1,486.7 MB: 48.6% less RSS than Redis 8.8 on Lichess</dd></div>
             </dl>
@@ -592,7 +591,7 @@
             <h3>Assemble real infrastructure before you invent a protocol.</h3>
             <p class="path-lede">Use the same Redis-shaped operations over any transport, then enable SBE over a trusted shared-memory ring for the lowest latency. You get hashes, sorted sets, TTL semantics, and synchronous calls fast enough to keep the obvious code obvious.</p>
             <dl>
-              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, RDMA, or libfabric/EFA</dd></div>
+              <div><dt>Interface</dt><dd>RESP or opt-in SBE over TCP, UDS, rings, RDMA, libfabric/EFA, or Aeron</dd></div>
               <div><dt>Best at</dt><dd>Market data and execution-adjacent state</dd></div>
               <div><dt>Measured</dt><dd>~220 ns HSET/ZADD round trip</dd></div>
             </dl>
@@ -625,7 +624,7 @@
       <div class="section-inner">
         <p class="section-label">The low-latency wire</p>
         <h2 class="section-title">One cache-line handoff. No syscall. No ASCII.</h2>
-        <p class="section-intro">RESP and opt-in SBE are both available over TCP, Unix-domain sockets, and rings. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. Between hosts, choose <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a> or keep ordinary TCP on the wire while accelerating both endpoints with <a href="XLIO-LATENCY.html">native XLIO Ultra</a>.</p>
+        <p class="section-intro">RESP and opt-in SBE are both available over TCP, Unix-domain sockets, rings, and Aeron UDP/IPC. The path below is the fastest combination: on Linux, pin client and server to separate cores and write a typed <a href="docs/sbe-protocol.html">SBE request</a> into shared memory; Goblin Core busy-polls, executes it, and returns the reply through the companion ring. Between hosts, choose <a href="docs/rdma-rings.html">polled one-sided RDMA rings</a>, <a href="docs/aeron.html">Aeron UDP</a>, or keep ordinary TCP on the wire while accelerating both endpoints with <a href="XLIO-LATENCY.html">native XLIO Ultra</a>.</p>
         <div class="engine-diagram" aria-label="Shared memory request path">
           <div class="engine-step"><small>01 / CLIENT</small><h3>Native call</h3><p>A one-header C++ client encodes doubles and integers directly.</p></div>
           <div class="engine-arrow" aria-hidden="true">→</div>
@@ -697,7 +696,7 @@
           </article>
         </div>
         <p class="method"><strong>Comparison discipline:</strong> HSET is RESP2/UDS throughout. LIST, SET, and ZSET compare Goblin RESP/TCP with RESP/TCP incumbents, then show Goblin's equally pipelined SBE ring separately. ARRAY is RESP/TCP with native AR* commands throughout; unsupported engines receive an <code>X</code>, never a hash fallback. Runs are medians on the same dedicated AMD 5995WX host, with one serving core per engine and process RSS read from Linux rather than trusted server counters.</p>
-        <p class="method"><strong>More transport evidence:</strong> <a href="BLUEFIELD-BENCHMARK.html">BlueField DPU-side Pub/Sub</a> · <a href="AWS-EFA-LATENCY.html">native AWS EFA latency</a> · <a href="EFA-LATENCY.html">local libfabric provider matrix</a> · <a href="XLIO-LATENCY.html">native XLIO Ultra over 100 Gb Ethernet</a> · <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="blogs/aeron-local-transport-latency.html">Aeron IPC/UDP local transport latency</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a> · <a href="NUMA-RING-LATENCY.html">same-node versus remote-ring NUMA cost</a></p>
+        <p class="method"><strong>More transport evidence:</strong> <a href="BLUEFIELD-BENCHMARK.html">BlueField DPU-side Pub/Sub</a> · <a href="AWS-EFA-LATENCY.html">native AWS EFA latency</a> · <a href="EFA-LATENCY.html">local libfabric provider matrix</a> · <a href="XLIO-LATENCY.html">native XLIO Ultra over 100 Gb Ethernet</a> · <a href="PUBSUB-BENCHMARK.html">Pub/Sub latency, fanout, and memory</a> · <a href="blogs/aeron-local-transport-latency.html">Aeron IPC/UDP locally and across 100 GbE</a> · <a href="LATENCY-SHOOTOUT.html">unpipelined ring latency shootout</a> · <a href="NUMA-RING-LATENCY.html">same-node versus remote-ring NUMA cost</a></p>
       </div>
     </section>
 
@@ -720,10 +719,10 @@
             <a href="blogs/ring-latency.html">Read the ring latency story →</a>
           </article>
           <article class="post post-wide">
-            <span class="post-meta">Aeron / Tail latency</span>
-            <h3>How an 11-byte arena tail became a 157-microsecond Aeron SET</h3>
-            <p>Ring, Aeron IPC, Aeron localhost UDP, and UDS exposed a 5,958-overwrite store-maintenance cycle—and how a backoff Media Driver amplified it.</p>
-            <a href="blogs/aeron-local-transport-latency.html">Read the Aeron benchmark investigation →</a>
+            <span class="post-meta">Aeron / Local and network latency</span>
+            <h3>Aeron IPC below a microsecond, and UDP across 100 GbE</h3>
+            <p>Current RESP and SBE results for ring, IPC, loopback UDP, UDS, 10 GbE kernel UDP, and 100 GbE userspace UDP—with the old backoff tail kept in context.</p>
+            <a href="blogs/aeron-local-transport-latency.html">Read the Aeron benchmark →</a>
           </article>
           <article class="post post-wide">
             <span class="post-meta">InfiniBand / RESP</span>

@@ -1,0 +1,10 @@
+tid=61049 comm=aeronmd_s
+pid 61049's current affinity list: 9
+tid=61054 comm=aeronmd_s
+pid 61054's current affinity list: 25
+tid=61115 comm=aeron-executor
+pid 61115's current affinity list: 9,13,17,25
+tid=61116 comm=sender
+pid 61116's current affinity list: 17
+tid=61117 comm=receiver
+pid 61117's current affinity list: 13

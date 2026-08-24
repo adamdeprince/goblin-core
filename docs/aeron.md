@@ -83,7 +83,7 @@ UDP pairs a request endpoint/channel with a response-control endpoint/channel:
 build-aeron/goblin-core \
   --enable-sbe \
   --aeron-dir "$AERON_DIR" \
-  --aeron-udp 10.20.0.10:40123 2001 10.20.0.11:40124 2002
+  --aeron-udp 10.20.0.10:40123 2001 10.20.0.10:40124 2002
 ```
 
 The complete forms are:
@@ -95,21 +95,23 @@ The complete forms are:
 ```
 
 A bare UDP request value becomes `aeron:udp?endpoint=VALUE`; a bare response
-value becomes `aeron:udp?control=VALUE`. Complete Aeron URIs are accepted, so an
-operator can add `interface`, `mtu`, term-length, or other supported channel
-parameters:
+value becomes `aeron:udp?control=VALUE`. Both values above are server-side
+addresses. The server response publication binds the response-control address,
+and the remote client subscription targets that same control URI. Do not
+replace it with the client's address. Aeron's response correlation learns the
+client's return destination.
 
-```sh
---aeron-udp \
-  'aeron:udp?endpoint=10.20.0.10:40123|interface=10.20.0.10' 2001 \
-  'aeron:udp?control=10.20.0.11:40124|interface=10.20.0.10' 2002
-```
+Complete Aeron URIs are accepted, so an operator can add `interface`, `mtu`,
+term-length, or other supported channel parameters. An `interface` parameter is
+local to the process using the URI, so server and client URIs can differ when
+their Media Drivers are on different hosts. With unambiguous routes, the bare
+server endpoints above avoid that distinction.
 
 Goblin adds `control-mode=response` and the per-client
 `response-correlation-id`; callers must not supply the correlation parameter.
-One UDP target has one response-control channel. Clients sharing a Media Driver
-can share that target; clients whose drivers listen at different response
-addresses should use separately configured channel/stream pairs.
+One UDP target has one response-control channel. Clients on the same or
+different Media Drivers can share that target; response correlation keeps their
+reply publications independent.
 
 The options are repeatable and participate in literal busy-poll priority with
 `--ring`, `--rdma`, `--libfabric`, `--exasock`, and `--xlio`. The first ready
@@ -128,7 +130,7 @@ transport:
 using namespace std::chrono_literals;
 
 auto channels = goblin::core::aeron::ChannelConfig::udp(
-    "10.20.0.10:40123", 2001, "10.20.0.11:40124", 2002);
+    "10.20.0.10:40123", 2001, "10.20.0.10:40124", 2002);
 std::string error;
 auto client = goblin::core::SbeAeronClient::open(
     channels, 5s, 64 * 1024, "/run/user/1000/goblin-aeron", &error);
@@ -176,7 +178,7 @@ ipc = AeronIpcRedis(
 
 udp = AeronUdpRedis(
     "10.20.0.10:40123",
-    "10.20.0.11:40124",
+    "10.20.0.10:40124",
     request_stream_id=2001,
     response_stream_id=2002,
     aeron_directory="/run/user/1000/goblin-aeron",
@@ -225,6 +227,39 @@ client conductor and Media Driver agents each have a distinct physical core in
 the default `naamah` layout. The four `AERON_*` environment variables remain
 overridable for an explicit polling-policy comparison, and their effective
 values are recorded in each run's metadata.
+
+The [2026-08-24 archived matrix](../benchmarks/local-transports-naamah-2026-08-24/README.md)
+contains two full continuous-polling runs. SBE `PING` measured 0.200
+microseconds p50 on the native ring, 0.481 over Aeron IPC, 7.204 over UDS, and
+12.489 through two Aeron drivers over UDP loopback. The accompanying
+[benchmark write-up](../blogs/aeron-local-transport-latency.md) separates those
+current results from the historical default-backoff run.
+
+## Cross-host UDP benchmark
+
+The network controller runs the same RESP/SBE `PING`, `SET`, and `GET` workload
+between `butterfly` and `rain`. Its lab defaults use kernel UDP over 10 GbE and
+preload XLIO into both Aeron Media Drivers over the direct 100 GbE link. Goblin
+and the probe still use Aeron's local shared-memory client protocol; XLIO moves
+the Media Drivers' UDP path into userspace.
+
+```sh
+RUNS=2 SAMPLES=100000 WARMUP=10000 \
+  XLIO_STATS_DURING_RUN=0 \
+  bash benchmarks/aeron_network_latency.sh
+```
+
+The default shared build prefix reflects the lab's NFS home and is
+overridable with `SHARED_PREFIX`, `GOBLIN`, `PROBE`, and `AERONMD`. Runtime
+Aeron directories and logs remain on each host's local `/tmp`. Network
+addresses, NICs, NUMA nodes, and every assigned CPU are also overridable.
+
+`XLIO_STATS_DURING_RUN=1` is a qualification mode: it attaches `xlio_stats` to
+both live Media Drivers and requires nonzero transmitted and received offload
+counters. Do not report that run as latency data, because the concurrent
+statistics process perturbs the experiment. The
+[archived 10/100 GbE matrix](../benchmarks/aeron-network-rain-butterfly-2026-08-24/README.md)
+keeps this qualification separate from two clean reported runs.
 
 ## Qualification
 

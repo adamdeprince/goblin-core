@@ -1,0 +1,107 @@
+timestamp_utc=20260824T131101Z
+controller_git_commit=9ddb3ed3ea29dfbf458a388ca3e5143a3ffcdd76
+controller_git_status_short= M CMakeLists.txt; M README.md; M RELEASE-HISTORY.md; M bluefield/CMakeLists.txt; M docs/container.md; M html/index.html; M python/pyproject.toml; M tests/libfabric_wire_test.cpp;?? benchmarks/aeron_network_latency.sh;?? docs/exanic-fdk-pubsub.md;?? include/goblin/core/exanic_fabric_model.hpp;?? include/goblin/core/exanic_pubsub_plane.hpp;?? src/exanic_fabric_model.cpp;?? src/exanic_pubsub_plane.cpp;?? tests/exanic_fabric_test.cpp;?? tests/exanic_plane_test.cpp;
+server_host=butterfly
+client_host=rain
+shared_prefix=/home/adam/opt/goblin-aeron-benchmark-9ddb3ed-9773cba
+server_runtime=/tmp/goblin-aeron-network-adam-20260824T131101Z-19360-server
+client_runtime=/tmp/goblin-aeron-network-adam-20260824T131101Z-19360-client
+runs=1
+samples=100000
+warmup=10000
+protocols=RESP
+paths=100gbe
+goblin_cpp_client_conductor_idle_strategy=spin
+aeron_driver_conductor_idle_strategy=spin
+aeron_driver_sender_idle_strategy=noop
+aeron_driver_receiver_idle_strategy=noop
+aeron_network_publication_max_messages_per_send=2
+xlio_spec=latency
+xlio_mem_alloc_type=ANON
+xlio_rx_poll_init=-1
+xlio_rx_udp_poll_os_ratio=0
+xlio_progress_engine_interval=0
+goblin_commit=9ddb3ed3ea29dfbf458a388ca3e5143a3ffcdd76
+aeron_commit=9773cba37e4b88b2b7eb9460c4e0050267b71d28
+aeron_version=1.51.0
+built_on=rain
+0121d96c2349cfdd68d75a90901c54cb1ee0a3d5f1ceede1c4ca6188d0cd4712  /home/adam/opt/goblin-aeron-benchmark-9ddb3ed-9773cba/bin/goblin-core
+7cae49c136345a993917f9c5d32bdafd323802af7d68c9910efab55e434fb52f  /home/adam/opt/goblin-aeron-benchmark-9ddb3ed-9773cba/bin/goblin_core_local_transport_latency_benchmark
+43c4c98c4b4d4a23164be94389f14492f38cb753cfd1137272fa9312f4defac5  /home/adam/opt/goblin-aeron-benchmark-9ddb3ed-9773cba/aeron/bin/aeronmd_s
+0472beaec85b6299aad9fb47377fc6fc09ee4bd8eb22a2a0d0025559f6625e2f  /home/adam/opt/goblin-xlio-3.61.2/prefix/lib/libxlio.so
+xliostat: Linked with XLIO version: 3.61.2.0
+xliostat: Build Date: Jul 22 2026 01:29:41
+
+[path=100gbe]
+network_stack=xlio-userspace
+interface=enp68s0np0
+numa_node=1
+server_address=10.100.0.1
+client_address=10.100.0.2
+server_cpu=5
+client_cpu=5
+driver_cpus=9,13,17
+aeron_client_cpu=21
+xlio_internal_cpu=25
+
+[100gbe/butterfly]
+butterfly
+Linux 5.15.0-187-generic #197-Ubuntu SMP Fri Jul 17 19:17:01 UTC 2026 GNU/Linux
+/home  192.168.1.11:/volume1/adam nfs4   rw,relatime,vers=4.1,rsize=131072,wsize=131072,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.1.46,local_lock=none,addr=192.168.1.11
+enp68s0np0       UP             10.100.0.1/30 fe80::1e34:daff:fe76:33f4/64 
+10.100.0.2 from 10.100.0.1 dev enp68s0np0 uid 1000 
+    cache 
+nic_numa=1
+	Speed: 100000Mb/s
+	Duplex: Full
+	Port: Direct Attach Copper
+	Link detected: yes
+driver: mlx5_core
+version: 5.15.0-187-generic
+firmware-version: 16.35.8008 (MT_0000000011)
+expansion-rom-version: 
+bus-info: 0000:44:00.0
+Adaptive RX: on  TX: on
+rx-usecs: 8
+rx-frames: 128
+tx-usecs: 8
+tx-frames: 128
+governor=schedutil
+CPU NODE SOCKET CORE
+  5    1      1    5
+  9    1      1    9
+ 13    1      1   13
+ 17    1      1   17
+ 21    1      1   21
+ 25    1      1   25
+
+[100gbe/rain]
+rain
+Linux 5.15.0-187-generic #197-Ubuntu SMP Fri Jul 17 19:17:01 UTC 2026 GNU/Linux
+/home  192.168.1.11:/volume1/adam nfs4   rw,relatime,vers=4.1,rsize=131072,wsize=131072,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.1.134,local_lock=none,addr=192.168.1.11
+enp68s0np0       UP             10.100.0.2/30 fe80::e42:a1ff:fe22:e4b6/64 
+10.100.0.1 from 10.100.0.2 dev enp68s0np0 uid 1000 
+    cache 
+nic_numa=1
+	Speed: 100000Mb/s
+	Duplex: Full
+	Port: Direct Attach Copper
+	Link detected: yes
+driver: mlx5_core
+version: 5.15.0-187-generic
+firmware-version: 16.35.8008 (MT_0000000011)
+expansion-rom-version: 
+bus-info: 0000:44:00.0
+Adaptive RX: on  TX: on
+rx-usecs: 8
+rx-frames: 128
+tx-usecs: 8
+tx-frames: 128
+governor=schedutil
+CPU NODE SOCKET CORE
+  5    1      1    5
+  9    1      1    9
+ 13    1      1   13
+ 17    1      1   17
+ 21    1      1   21
+ 25    1      1   25

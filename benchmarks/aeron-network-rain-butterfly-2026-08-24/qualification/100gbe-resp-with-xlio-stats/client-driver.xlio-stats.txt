@@ -1,0 +1,146 @@
+'unknown': I need something more specific.
+xliostat: stats for application: aeronmd_s with pid: 51450
+======================================================
+	CQ=[0]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    0    
+Strides received:    0    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  0
+Avg strides/packet:  0.0
+Avg packets/rwqe:    0.0
+======================================================
+	CQ=[1]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    3    
+Strides received:    5    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  2
+Avg strides/packet:  1.2
+Avg packets/rwqe:    3.0
+======================================================
+	CQ=[2]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    0    
+Strides received:    0    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  0
+Avg strides/packet:  0.0
+Avg packets/rwqe:    0.0
+======================================================
+	CQ=[3]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    0    
+Strides received:    0    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  0
+Avg strides/packet:  0.0
+Avg packets/rwqe:    0.0
+======================================================
+	CQ=[4]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    0    
+Strides received:    0    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  0
+Avg strides/packet:  0.0
+Avg packets/rwqe:    0.0
+======================================================
+	CQ=[5]
+SW RX Packets dropped: 0    
+HW RX Packets dropped: 0    
+Packets queue len:   0
+Drained max:         0
+Buffer pool size:    0
+Packets received:    0    
+Strides received:    0    
+CQE errors:          0
+Consumed rwqes:      0    
+Max strides/packet:  0
+Avg strides/packet:  0.0
+Avg packets/rwqe:    0.0
+======================================================
+======================================================
+	ETH=[0]
+Tx Offload:          0 / 3 [kilobytes/packets]    
+Rx Offload:          0 / 3 [kilobytes/packets]    
+Dev Mem Alloc:       16384
+Dev Mem Stats:       0 / 0 / 0 [kilobytes/packets/oob]    
+RX steering rules:   2
+TX buffers inflight: 256
+TX ZC buffers inflight: 0
+======================================================
+	ETH=[1]
+Tx Offload:          0 / 2 [kilobytes/packets]    
+Rx Offload:          0 / 0 [kilobytes/packets]    
+Dev Mem Alloc:       16384
+Dev Mem Stats:       0 / 0 / 0 [kilobytes/packets/oob]    
+TX buffers inflight: 256
+TX ZC buffers inflight: 0
+======================================================
+	ETH=[2]
+Tx Offload:          0 / 1 [kilobytes/packets]    
+Rx Offload:          0 / 0 [kilobytes/packets]    
+Dev Mem Alloc:       16384
+Dev Mem Stats:       0 / 0 / 0 [kilobytes/packets/oob]    
+TX buffers inflight: 256
+TX ZC buffers inflight: 0
+======================================================
+======================================================
+	BUFFER_POOL(RX)=[0]
+Size:                0
+Buffers in use:      12
+No buffers error:    0
+Expands:             1
+======================================================
+	BUFFER_POOL(RX)=[1]
+Size:                0
+Buffers in use:      98304
+No buffers error:    0
+Expands:             1
+======================================================
+	BUFFER_POOL(TX)=[2]
+Size:                256
+Buffers in use:      768
+No buffers error:    0
+======================================================
+	BUFFER_POOL(TX)=[3]
+Size:                0
+Buffers in use:      0
+No buffers error:    0
+======================================================
+======================================================
+	TCP_SEG_POOL
+Size:                16384
+No segments error:   0
+======================================================
+	GLOBAL
+Pending sockets:     0
+Destructed TCP sockets: 0
+Destructed UDP sockets: 2
+======================================================

@@ -22,7 +22,7 @@ from goblin_core import AeronIpcRedis, AeronUdpRedis, HAS_AERON
 
 local = AeronIpcRedis(aeron_directory="/run/user/1000/aeron")
 remote = AeronUdpRedis(
-    "server.example:40123", "client.example:40124",
+    "server.example:40123", "server.example:40124",
     aeron_directory="/run/user/1000/aeron",
 )
 ```

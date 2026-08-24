@@ -1,0 +1,6 @@
+rx_packets=45083808
+tx_packets=322614
+rx_bytes=70212622510
+tx_bytes=22535043
+rx_dropped=0
+tx_dropped=0

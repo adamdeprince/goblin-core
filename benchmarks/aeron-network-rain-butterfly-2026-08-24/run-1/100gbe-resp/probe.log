@@ -1,0 +1,3 @@
+RESP/aeron-udp   PING   min 5.573 us  p50 7.445 us  p90 8.288 us  p99 15.972 us  p99.9 68.587 us  mean 7.792 us
+RESP/aeron-udp   SET    min 6.966 us  p50 8.838 us  p90 9.804 us  p99 19.571 us  p99.9 88.524 us  mean 9.385 us
+RESP/aeron-udp   GET    min 5.995 us  p50 7.769 us  p90 8.765 us  p99 17.743 us  p99.9 61.075 us  mean 8.258 us

@@ -1,0 +1,4 @@
+tid=83039 comm=goblin-core
+pid 83039's current affinity list: 5
+tid=83040 comm=aeron-client
+pid 83040's current affinity list: 21

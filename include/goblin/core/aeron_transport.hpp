@@ -22,7 +22,9 @@ struct ChannelConfig {
   std::int32_t response_stream_id{0};
 
   // Endpoint arguments may be either bare HOST:PORT values or complete Aeron
-  // UDP channel URIs. Complete URIs preserve optional interface/MTU settings.
+  // UDP channel URIs. The response-control endpoint belongs to the server and
+  // is passed unchanged by remote clients; response correlation supplies the
+  // client's return destination. Complete URIs preserve optional settings.
   [[nodiscard]] static ChannelConfig udp(
       std::string_view request_endpoint_or_channel,
       std::int32_t request_stream_id,

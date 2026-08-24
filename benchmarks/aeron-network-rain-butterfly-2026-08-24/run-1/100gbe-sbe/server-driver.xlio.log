@@ -1,0 +1,40 @@
+[0m XLIO INFO   : ---------------------------------------------------------------------------
+[0m[0m XLIO INFO   : XLIO_VERSION: 3.61.2-0 Development Snapshot built on Jul 22 2026 01:29:48
+[0m[0m XLIO INFO   : Cmd Line: /home/adam/opt/goblin-aeron-benchmark-9ddb3ed-9773cba/aeron/bin/aeronmd_s -Daeron.dir=/tmp/goblin-aeron-network-adam-20260824T132110Z-21271-server/run-1/100gbe-sbe/aeron -Daeron.dir.delete.on.start=true -Daeron.dir.delete.on.shutdown=true -Daeron.threading.mode=DEDICATED -Daeron.conductor.cpu.affinity=9 -Daeron.receiver.cpu.affinity=13 -Daeron.sender.cpu.affinity=17
+[0m[0m XLIO INFO   : Current Time: Mon Aug 24 09:22:21 2026
+[0m[0m XLIO INFO   : Pid: 84017
+[0m[0m XLIO INFO   : Architecture: x86_64
+[0m[0m XLIO INFO   : Node: butterfly
+[0m[0m XLIO INFO   : ---------------------------------------------------------------------------
+[0m[0m XLIO INFO   : Spec                           latency                    [XLIO_SPEC]
+[0m[0m XLIO INFO   : Log Level                      INFO                       [XLIO_TRACELEVEL]
+[0m[0m XLIO INFO   : Log File                       /tmp/goblin-aeron-network-adam-20260824T132110Z-21271-server/run-1/100gbe-sbe/xlio.log [XLIO_LOG_FILE]
+[0m[0m XLIO INFO   : Ring On Device Memory TX       16384                      [XLIO_RING_DEV_MEM_TX]
+[0m[0m XLIO INFO   : Tx QP WRE                      256                        [XLIO_TX_WRE]
+[0m[0m XLIO INFO   : Tx QP WRE Batching             4                          [XLIO_TX_WRE_BATCHING]
+[0m[0m XLIO INFO   : Tx Bufs Batch TCP              1                          [XLIO_TX_BUFS_BATCH_TCP]
+[0m[0m XLIO INFO   : Rx QP WRE                      4                          [XLIO_RX_WRE]
+[0m[0m XLIO INFO   : Rx Poll Loops                  -1                         [XLIO_RX_POLL]
+[0m[0m XLIO INFO   : Rx Poll Init Loops             -1                         [XLIO_RX_POLL_INIT]
+[0m[0m XLIO INFO   : Rx UDP Poll OS Ratio           Disabled                   [XLIO_RX_UDP_POLL_OS_RATIO]
+[0m[0m XLIO INFO   : Rx Prefetch Bytes Before Poll  256                        [XLIO_RX_PREFETCH_BYTES_BEFORE_POLL]
+[0m[0m XLIO INFO   : GRO max streams                0                          [XLIO_GRO_STREAMS_MAX]
+[0m[0m XLIO INFO   : Select Poll (usec)             -1                         [XLIO_SELECT_POLL]
+[0m[0m XLIO INFO   : Select Poll OS Ratio           100                        [XLIO_SELECT_POLL_OS_RATIO]
+[0m[0m XLIO INFO   : CQ Drain Thread                Disabled                   [XLIO_PROGRESS_ENGINE_INTERVAL]
+[0m[0m XLIO INFO   : CQ Interrupts Moderation       Disabled                   [XLIO_CQ_MODERATION_ENABLE]
+[0m[0m XLIO INFO   : CQ Adaptive Moderation         Disabled                   [XLIO_CQ_AIM_INTERVAL_MSEC]
+[0m[0m XLIO INFO   : CQ Keeps QP Full               Disabled                   [XLIO_CQ_KEEP_QP_FULL]
+[0m[0m XLIO INFO   : TCP nodelay                    1                          [XLIO_TCP_NODELAY]
+[0m[0m XLIO INFO   : Exception handling mode        2 (Log Error and return error) [XLIO_EXCEPTION_HANDLING]
+[0m[0m XLIO INFO   : Avoid sys-calls on tcp fd      Enabled                    [XLIO_AVOID_SYS_CALLS_ON_TCP_FD]
+[0m[0m XLIO INFO   : Internal Thread Affinity       25                         [XLIO_INTERNAL_THREAD_AFFINITY]
+[0m[0m XLIO INFO   : Mem Allocation type            Regular pages              [XLIO_MEM_ALLOC_TYPE]
+[0m[0m XLIO INFO   : TSO support                    Disabled                   [XLIO_TSO]
+[0m[0m XLIO INFO   : ---------------------------------------------------------------------------
+[0m[2;35m XLIO WARNING: ************************************************************************
+[0m[2;35m XLIO WARNING: Your current max locked memory is: 67621089280. Please change it to unlimited.
+[0m[2;35m XLIO WARNING: Set this user's default to `ulimit -l unlimited`.
+[0m[2;35m XLIO WARNING: Read more about this topic in the XLIO's User Manual.
+[0m[2;35m XLIO WARNING: ************************************************************************
+[0m

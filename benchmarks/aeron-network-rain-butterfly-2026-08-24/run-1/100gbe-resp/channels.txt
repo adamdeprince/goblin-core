@@ -1,0 +1,6 @@
+server_request_channel=aeron:udp?endpoint=10.100.0.1:41124
+client_request_channel=aeron:udp?endpoint=10.100.0.1:41124
+server_response_channel=aeron:udp?control=10.100.0.1:41125
+client_response_channel=aeron:udp?control=10.100.0.1:41125
+request_stream=2011
+response_stream=2012
