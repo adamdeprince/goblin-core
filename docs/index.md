@@ -21,6 +21,7 @@ runs over provider-neutral libfabric reliable datagrams, including AWS EFA.
 - [XLIO Ultra command latency](../XLIO-LATENCY.md)
 - [List storage algorithms](../LISTS.md)
 - [Real-time and memory-efficient hash indexes](real-time-hashes.md)
+- [Fixed-width packed sorted sets](packed-zsets.md)
 - [Firehose replication and Kafka recovery](replication.md)
 - [Kafka write-log ingestion](kafka.md)
 - [Authentication and trusted transports](authentication.md)
@@ -141,6 +142,8 @@ page-backed per-client queue.
 
 The [sorted-set command reference](commands/sorted-sets.md) covers conditional
 updates, score bounds, rank and score ranges, endpoint pops, scans, and storage.
+The [packed sorted-set guide](packed-zsets.md) documents the six fixed-width
+member/score representations and their qualified command names.
 
 - [`ZADD`](commands/sorted-sets.md#zadd-and-zincrby),
   [`ZINCRBY`](commands/sorted-sets.md#zadd-and-zincrby),

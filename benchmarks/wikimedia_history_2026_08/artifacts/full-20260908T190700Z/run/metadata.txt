@@ -1,0 +1,174 @@
+started_utc=2026-09-08T19:14:24Z
+hostname=naamah
+payload=/home/adam/wiki2/wikimedia-full-20260908T190700Z/redis.cmds
+payload_bytes=33245740607
+head_lines=all
+sample_seconds=300
+digest_page_size=65536
+cmp_key=key
+servers=goblin-standard goblin-packed-int32-float32 redis-8.8 redis-7.2.4 valkey-9.1 dragonfly
+goblin=/home/adam/wiki2/wikimedia-full-20260908T190700Z/bin/goblin-core
+goblin-core: unknown option: --version
+usage: /home/adam/wiki2/wikimedia-full-20260908T190700Z/bin/goblin-core [--listen ADDRESS:PORT]... [--trusted-listen ADDRESS:PORT]...
+       [--uds-listen PATH]...
+       [--tls-cert-file FILE --tls-key-file FILE]
+       [--tcp-listen ADDRESS:PORT]... (compatibility alias)
+       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...
+       [--rank-cache|--no-rank-cache]
+       [--maxmemory BYTES]    (0/unset means unlimited; no eviction)
+       [--rank-cache-mode off|exact|block-hint]
+       [--score-string-cache|--no-score-string-cache]
+       [--member-index-growth FACTOR] [--load-factor N]
+       [--zset-implementation standard|packed-int32-float32|
+        packed-int32-float64|packed-int64-float32|
+        packed-int64-float64|packed-uuid-float32|
+        packed-uuid-float64] (default: standard)
+       [--packed-zset-merge-exponent K] (0 <= K <= 1)
+       [--block-shrink on|off]
+       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]
+       [--hash-compaction-knapsack|--no-hash-compaction-knapsack]
+       [--hash-compaction-work-budget N]
+       [--hash-listpack-max-entries N|blob]
+       [--hash-implementation efficient|rt]
+       [--rt-hash-index-bytes BYTES] (fixed prefaulted pool)
+       [--real-time]         (RT hashes and keyspace index)
+       [--list-implementation pma|segmented] (default: segmented)
+       [--list-chunk-bytes BYTES]
+       [--array-slice-slots N]   (power of two; leaf width ≤ 65536)
+       [--array-initial-depth N] (Classic: start depth; RT: hard depth)
+       [--array-chunk-bytes BYTES] (element arena; power of two)
+       [--rt-array-arena-growth FACTOR] (default: 2.0)
+       [--realtime-arrays]       (unqualified AR* → RT; default Classic)
+       [--list-max-density FRACTION]
+       [--list-resize-growth FACTOR]
+       [--disable-encoding]
+       [--use-lz4 BYTES] [--lz4-compress-level LEVEL]
+       [--load SNAPSHOT]
+       [--kafka CONNECTION] [--kafka-time-buffer SECONDS]
+       [--kafka-ack-mode queued|broker] [--kafka-pending-bytes BYTES]
+       [--auth-file FILE]
+       [--enable-sbe] [--no-auth-ring] [--no-auth-rdma]
+       [--no-auth-libfabric] [--no-auth-xlio] [--no-auth-aeron]
+       [--max-output-buffer-mib MIB]
+       [--initial-output-buffer-kib KIB]
+       [--unsolicited-output-buffer-bytes BYTES]
+       [--transaction-buffer-bytes BYTES]
+       [--client-read-buffer-kib KIB]
+       [--ring PATH SIZE]...  (e.g. --ring /tmp/a 4kb; repeatable)
+       [--exasock ADDRESS PORT]... (priority TCP; -DGOBLIN_CORE_ENABLE_EXASOCK=ON;
+                               run under `exasock` for SmartNIC bypass)
+       [--xlio ADDRESS PORT]... (native XLIO Ultra TCP; repeatable;
+                               requires -DGOBLIN_CORE_ENABLE_XLIO=ON)
+       [--rdma ADDRESS PORT SIZE]... (e.g. --rdma 10.88.88.1 6380 1mb; repeatable;
+                               requires -DGOBLIN_CORE_ENABLE_RDMA=ON)
+       [--efa ADDRESS PORT]... (AWS EFA FI_EP_RDM; PORT bootstraps opaque addresses)
+       [--libfabric PROVIDER ADDRESS PORT]... (provider-neutral qualification)
+       [--libfabric-force-send] (disable fi_inject; use TX completions)
+       [--efa-heartbeat-timeout-ms MS] (default: 3000; 0 disables)
+       [--aeron-dir PATH] (local Aeron Media Driver directory)
+       [--aeron-ipc REQUEST-STREAM RESPONSE-STREAM]...
+       [--aeron-udp REQUEST-CHANNEL REQUEST-STREAM RESPONSE-CHANNEL RESPONSE-STREAM]...
+       [--pubsub-listener-ring PATH]
+       [--pubsub-listener-rdma ADDRESS PORT SIZE]
+       [--pubsub-listener-uds PATH]
+       [--pubsub-listener-tcp HOST PORT]
+       [--pubsub-listener-pattern GLOB] (default: *)
+       [--replica-ring PATH]
+       [--replica-rdma ADDRESS PORT SIZE]
+       [--replica-uds PATH] [--replica-tcp HOST PORT]
+       [--replica-auth-user USER --replica-auth-password-file FILE]
+       [--replica-tls] [--replica-tls-ca-file FILE]
+       [--replica-tls-server-name NAME]
+       [--replication-buffer-bytes BYTES] (default: 1 MiB)
+       [--ring-hugetlb]       (Linux: back rings with huge pages)
+       [--arena-hugetlb]      (back arena blocks with huge pages;
+                               disables fork-COW BGSAVE)
+       [--cpu N]              (Linux: pin to CPU N; ring must be NUMA-local)
+       [--numa TARGET]        (Linux: node, NIC, InfiniBand device, or auto)
+       [--numa-arena]         (Linux: also prefer that node for arenas)
+
+Polled-target order is literal CLI order and is the busy-poll priority
+before plain sockets. Example:
+  --ring /tmp/a 64kb --aeron-ipc 1001 1002 --rdma 10.88.88.1 6380 1mb
+  --ring /tmp/b 1mb
+scans A, Aeron, RDMA, B, then the sparse plain-socket pass.
+
+Every configured TCP port also has a plaintext 127.0.0.1 listener.
+With no explicit TCP endpoint, the default is 127.0.0.1:6379.
+Listeners are repeatable and may be mixed. :PORT means
+127.0.0.1:PORT; IPv6 uses
+[ADDRESS]:PORT. Non-loopback --listen endpoints require TLS;
+--trusted-listen is an explicit plaintext exception for isolated
+fabrics. --tcp-listen is an alias for --listen.
+--tls-cert-file and --tls-key-file provide the shared identity.
+Legacy --bind/--port selects one TCP listener only when no explicit
+socket listener is configured; legacy
+--unixsocket is a repeatable alias for --uds-listen.
+Kafka CONNECTION is kafka://BROKER[,BROKER...]/TOPIC or
+bootstrap.servers=BROKERS;topic=TOPIC[;PROPERTY=VALUE...]. The topic
+must have one partition. Goblin replays it and journals RESP writes.
+--kafka-ack-mode broker withholds write replies and firehose batches
+until the broker acknowledges every record in the atomic batch; queued
+keeps the lower-latency local-enqueue contract (the default).
+--auth-file protects RESP. SBE requires --enable-sbe and never
+authenticates; --no-auth-ring/--no-auth-rdma/--no-auth-libfabric/
+--no-auth-xlio/--no-auth-aeron explicitly trust RESP
+on those fabrics.
+Redis server v=8.8.0 sha=5a693aae:1 malloc=jemalloc-5.3.0 bits=64 build=8ed05c2e43459af0
+Redis server v=7.2.4 sha=d2c8a4b9:1 malloc=jemalloc-5.3.0 bits=64 build=e3b655ddb06856ba
+Valkey server v=9.1.0 sha=c9e8005e:1 malloc=jemalloc-5.3.0 bits=64 build=26b8ea1787ae3102
+dragonfly [0;32mdev-0000000[m
+build time: [0;33mbigbang[m
+Linux naamah 7.0.0-30-generic #30-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31 18:22:54 UTC 2026 x86_64 GNU/Linux
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  128
+On-line CPU(s) list:                     0-127
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD Ryzen Threadripper PRO 5995WX 64-Cores
+CPU family:                              25
+Model:                                   8
+Thread(s) per core:                      2
+Core(s) per socket:                      64
+Socket(s):                               1
+Stepping:                                2
+Frequency boost:                         enabled
+CPU(s) scaling MHz:                      36%
+CPU max MHz:                             4575.1641
+CPU min MHz:                             413.4190
+BogoMIPS:                                5389.96
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin brs arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif v_spec_ctrl umip pku ospke vaes vpclmulqdq rdpid overflow_recov succor smca fsrm debug_swap
+Virtualization:                          AMD-V
+L1d cache:                               2 MiB (64 instances)
+L1i cache:                               2 MiB (64 instances)
+L2 cache:                                32 MiB (64 instances)
+L3 cache:                                256 MiB (8 instances)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-127
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Mitigation; Safe RET
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Mitigation; Clear CPU buffers
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+               total        used        free      shared  buff/cache   available
+Mem:     1064323911680 20911677440 772293263360  4455673856 282405302272 1043412234240
+Swap:              0           0           0
+expected_commands=1483700913
+finished_utc=2026-09-09T04:09:43Z
+verification_status=0

@@ -388,6 +388,19 @@ struct FileTimestamp {
   return value;
 }
 
+[[nodiscard]] std::optional<double> parse_closed_unit_interval(
+    std::string_view text) {
+  double value = 0.0;
+  const auto* begin = text.data();
+  const auto* end = text.data() + text.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc{} || ptr != end || value < 0.0 || value > 1.0 ||
+      !std::isfinite(value)) {
+    return std::nullopt;
+  }
+  return value == 0.0 ? 0.0 : value;
+}
+
 [[nodiscard]] std::optional<goblin::core::RankCacheMode> parse_rank_cache_mode(
     std::string_view text) {
   if (text == "off" || text == "none") {
@@ -625,6 +638,11 @@ void print_usage(std::string_view program) {
             << "       [--rank-cache-mode off|exact|block-hint]\n"
             << "       [--score-string-cache|--no-score-string-cache]\n"
             << "       [--member-index-growth FACTOR] [--load-factor N]\n"
+            << "       [--zset-implementation standard|packed-int32-float32|\n"
+               "        packed-int32-float64|packed-int64-float32|\n"
+               "        packed-int64-float64|packed-uuid-float32|\n"
+               "        packed-uuid-float64] (default: standard)\n"
+            << "       [--packed-zset-merge-exponent K] (0 <= K <= 1)\n"
             << "       [--block-shrink on|off]\n"
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--hash-compaction-knapsack|--no-hash-compaction-knapsack]\n"
@@ -1532,6 +1550,38 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.zset_score_index_load = load;
+      continue;
+    }
+
+    if (arg == "--packed-zset-merge-exponent") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto exponent = parse_closed_unit_interval(argv[++i]);
+      if (!exponent) {
+        std::cerr << "goblin-core: --packed-zset-merge-exponent must be "
+                     "between 0 and 1 inclusive\n";
+        return 2;
+      }
+      store_options.packed_zset_merge_exponent = *exponent;
+      continue;
+    }
+
+    if (arg == "--zset-implementation") {
+      if (i + 1 >= argc) {
+        print_usage(argv[0]);
+        return 2;
+      }
+      const auto implementation =
+          goblin::core::parse_zset_implementation(argv[++i]);
+      if (!implementation) {
+        std::cerr
+            << "goblin-core: --zset-implementation must be standard or one "
+               "of packed-{int32,int64,uuid}-{float32,float64}\n";
+        return 2;
+      }
+      store_options.zset_implementation = *implementation;
       continue;
     }
 

@@ -1,0 +1,1 @@
+/home/adam/bench/redis-7.2.4/src/redis-server --unixsocket /tmp/wiki-1689911-1689916-1788894864-redis-7.2.4.sock --port 0 --save '' --appendonly no --dir /tmp --activedefrag yes --active-defrag-ignore-bytes 1mb --active-defrag-threshold-lower 5 --active-defrag-cycle-max 75 

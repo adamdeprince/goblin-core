@@ -952,6 +952,7 @@ void replicate_sbe_set_members(
     case KeyType::List: return "list";
     case KeyType::Set: return "set";
     case KeyType::Array: return "array";
+    case KeyType::PackedZset: return "zset";
   }
   return "none";
 }
@@ -1039,6 +1040,47 @@ void replicate_sbe_set_members(
   return false;
 }
 
+[[nodiscard]] bool wrong_zset_type(Store& store, std::string_view key,
+                                   std::string& out) {
+  if (const auto actual = store.key_type(key);
+      actual && *actual != KeyType::Zset &&
+      *actual != KeyType::PackedZset) {
+    reply_error(out, "WRONGTYPE", kWrongTypeMsg);
+    return true;
+  }
+  return false;
+}
+
+[[nodiscard]] std::optional<PackedZSetKind> sbe_packed_zset_kind(
+    const Store& store, std::string_view key) {
+  const auto actual = store.key_type(key);
+  if (actual == KeyType::PackedZset) {
+    return store.packed_zset_kind(key);
+  }
+  return actual ? std::nullopt : store.default_packed_zset_kind();
+}
+
+void reply_invalid_packed_member(std::string& out, PackedZSetKind kind) {
+  std::string_view type;
+  switch (kind) {
+    case PackedZSetKind::Int32Float32:
+    case PackedZSetKind::Int32Float64:
+      type = "INT32";
+      break;
+    case PackedZSetKind::Int64Float32:
+    case PackedZSetKind::Int64Float64:
+      type = "INT64";
+      break;
+    case PackedZSetKind::UuidFloat32:
+    case PackedZSetKind::UuidFloat64:
+      type = "UUID";
+      break;
+  }
+  std::string message = "member is not a valid ";
+  message.append(type);
+  reply_error(out, "ERR", message);
+}
+
 [[nodiscard]] bool decode_list_implementation(
     std::uint8_t wire, std::optional<ListImplementation>& implementation,
     std::string& out) {
@@ -1077,7 +1119,13 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
   // after their group, so they self-check inside their case with wrong_type().
   if (const auto required = sbe_requires_type(tid)) {
     if (const auto key = sbe_leading_key(tid, buf, block_length, buflen)) {
-      if (wrong_type(store, *required, *key, out)) return;
+      const bool packed_capable_zset =
+          *required == KeyType::Zset && tid != kGoblinTdRescore &&
+          tid != kGoblinZWindow;
+      if (packed_capable_zset ? wrong_zset_type(store, *key, out)
+                             : wrong_type(store, *required, *key, out)) {
+        return;
+      }
     }
   }
 
@@ -1133,17 +1181,48 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", kErrSyntax);
         break;
       }
-      if (wrong_type(store, KeyType::Zset, key, out)) break;
-      const auto result = store.zadd(key, members, add_options);
-      if (result.invalid_score) {
-        reply_error(out, "ERR", "resulting score is not a number (NaN)");
-      } else if (add_options.increment) {
-        if (result.increment_score) reply_double(out, *result.increment_score);
-        else reply_nil(out);
+      if (wrong_zset_type(store, key, out)) break;
+      bool valid_result = false;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        static thread_local std::vector<PackedZSetAddItem> packed_members;
+        packed_members.clear();
+        packed_members.reserve(members.size());
+        for (const auto& member : members) {
+          packed_members.push_back({member.score, member.member});
+        }
+        const auto result = store.packed_zadd(
+            key, *kind, packed_members,
+            PackedZSetAddOptions{.nx = add_options.nx,
+                                 .xx = add_options.xx,
+                                 .gt = add_options.gt,
+                                 .lt = add_options.lt,
+                                 .increment = add_options.increment});
+        if (result.invalid_member) {
+          reply_invalid_packed_member(out, *kind);
+        } else if (result.invalid_score) {
+          reply_error(out, "ERR", "resulting score is not representable");
+        } else if (add_options.increment) {
+          if (result.increment_score) reply_double(out, *result.increment_score);
+          else reply_nil(out);
+          valid_result = true;
+        } else {
+          reply_int(out, (flags & kCh) != 0 ? result.changed : result.added);
+          valid_result = true;
+        }
       } else {
-        reply_int(out, (flags & kCh) != 0 ? result.changed : result.added);
+        const auto result = store.zadd(key, members, add_options);
+        if (result.invalid_score) {
+          reply_error(out, "ERR", "resulting score is not a number (NaN)");
+        } else if (add_options.increment) {
+          if (result.increment_score) reply_double(out, *result.increment_score);
+          else reply_nil(out);
+          valid_result = true;
+        } else {
+          reply_int(out, (flags & kCh) != 0 ? result.changed : result.added);
+          valid_result = true;
+        }
       }
-      if (!result.invalid_score) {
+      if (valid_result) {
         for (const auto& member : members) {
           const std::string_view changed[]{member.member};
           replicate_sbe_zset_members(options, store, key, changed);
@@ -1155,7 +1234,10 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
     case kZCard: {
       sbe::ZCard z;
       z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
-      const long long n = static_cast<long long>(store.zcard(z.getKeyAsStringView()));
+      const auto key = z.getKeyAsStringView();
+      const auto kind = sbe_packed_zset_kind(store, key);
+      const long long n =
+          kind ? store.packed_zcard(key) : store.zcard(key);
       reply<sbe::IntReply>(out, [n](sbe::IntReply& r) { r.value(n); });
       break;
     }
@@ -1165,7 +1247,17 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = z.getKeyAsStringView();
       const std::string_view member = z.getMemberAsStringView();
-      const auto score = store.zscore(key, member);
+      std::optional<double> score;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto result = store.packed_zscore(key, *kind, member);
+        if (!result.valid_member) {
+          reply_invalid_packed_member(out, *kind);
+          break;
+        }
+        score = result.score;
+      } else {
+        score = store.zscore(key, member);
+      }
       if (score) {
         reply<sbe::DoubleReply>(out, [v = *score](sbe::DoubleReply& r) { r.value(v); });
       } else {
@@ -1179,7 +1271,17 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = z.getKeyAsStringView();
       const std::string_view member = z.getMemberAsStringView();
-      const auto rank = store.zrank(key, member);
+      std::optional<std::size_t> rank;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto result = store.packed_zrank(key, *kind, member);
+        if (!result.valid_member) {
+          reply_invalid_packed_member(out, *kind);
+          break;
+        }
+        rank = result.rank;
+      } else {
+        rank = store.zrank(key, member);
+      }
       if (rank) {
         reply<sbe::IntReply>(out, [v = static_cast<long long>(*rank)](sbe::IntReply& r) { r.value(v); });
       } else {
@@ -1196,6 +1298,30 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const bool with_scores = z.withScores() != 0;
       const bool rev = z.rev() != 0;
       const std::string_view key = z.getKeyAsStringView();
+
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto entries =
+            store.packed_zrange_by_rank(key, start, stop, rev);
+        if (with_scores) {
+          static thread_local std::vector<
+              std::pair<std::string_view, double>> items;
+          items.clear();
+          items.reserve(entries.size());
+          for (const auto& entry : entries) {
+            items.emplace_back(entry.member, entry.score);
+          }
+          reply_scored_array(out, items);
+        } else {
+          static thread_local std::vector<std::string_view> members;
+          members.clear();
+          members.reserve(entries.size());
+          for (const auto& entry : entries) {
+            members.push_back(entry.member);
+          }
+          reply_array(out, members);
+        }
+        break;
+      }
 
       // Native-double path (no score-string cache): the store streams count-first,
       // which is exactly what an SBE group needs. Collect one pass (views stay valid
@@ -1236,14 +1362,33 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       }
       const auto key = z.getKeyAsStringView();
       const auto member = z.getMemberAsStringView();
-      const ZAddItem item{.score = increment, .member = member};
-      const auto result = store.zadd(
-          key, std::span<const ZAddItem>(&item, 1),
-          ZAddOptions{.increment = true});
-      if (result.invalid_score) {
-        reply_error(out, "ERR", "resulting score is not a number (NaN)");
+      bool valid_result = false;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const PackedZSetAddItem item{increment, member};
+        const auto result = store.packed_zadd(
+            key, *kind, std::span(&item, 1),
+            PackedZSetAddOptions{.increment = true});
+        if (result.invalid_member) {
+          reply_invalid_packed_member(out, *kind);
+        } else if (result.invalid_score) {
+          reply_error(out, "ERR", "resulting score is not representable");
+        } else {
+          reply_double(out, *result.increment_score);
+          valid_result = true;
+        }
       } else {
-        reply_double(out, *result.increment_score);
+        const ZAddItem item{.score = increment, .member = member};
+        const auto result = store.zadd(
+            key, std::span<const ZAddItem>(&item, 1),
+            ZAddOptions{.increment = true});
+        if (result.invalid_score) {
+          reply_error(out, "ERR", "resulting score is not a number (NaN)");
+        } else {
+          reply_double(out, *result.increment_score);
+          valid_result = true;
+        }
+      }
+      if (valid_result) {
         const std::string_view changed[]{member};
         replicate_sbe_zset_members(options, store, key, changed);
       }
@@ -1275,6 +1420,30 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
                              ? std::optional<std::size_t>{}
                              : std::optional<std::size_t>{
                                    static_cast<std::size_t>(limit_count)};
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto entries = store.packed_zrange_by_score(
+            key, min, min_exclusive, max, max_exclusive, reverse,
+            static_cast<std::size_t>(offset), limit);
+        if (with_scores) {
+          static thread_local std::vector<
+              std::pair<std::string_view, double>> items;
+          items.clear();
+          items.reserve(entries.size());
+          for (const auto& entry : entries) {
+            items.emplace_back(entry.member, entry.score);
+          }
+          reply_scored_array(out, items);
+        } else {
+          static thread_local std::vector<std::string_view> members;
+          members.clear();
+          members.reserve(entries.size());
+          for (const auto& entry : entries) {
+            members.push_back(entry.member);
+          }
+          reply_array(out, members);
+        }
+        break;
+      }
       if (with_scores) {
         static thread_local std::vector<std::pair<std::string_view, double>>
             items;
@@ -1307,9 +1476,15 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "min or max is not a float");
         break;
       }
-      reply_int(out, store.zcount(z.getKeyAsStringView(), z.min(),
-                                  z.minExclusive() != 0, z.max(),
-                                  z.maxExclusive() != 0));
+      const auto key = z.getKeyAsStringView();
+      if (sbe_packed_zset_kind(store, key)) {
+        reply_int(out, store.packed_zcount(
+                           key, z.min(), z.minExclusive() != 0, z.max(),
+                           z.maxExclusive() != 0));
+      } else {
+        reply_int(out, store.zcount(key, z.min(), z.minExclusive() != 0,
+                                    z.max(), z.maxExclusive() != 0));
+      }
       break;
     }
 
@@ -1328,14 +1503,27 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         reply_error(out, "ERR", "wrong number of arguments for 'zmscore' command");
         break;
       }
-      if (wrong_type(store, KeyType::Zset, key, out)) break;
+      if (wrong_zset_type(store, key, out)) break;
       static thread_local std::vector<std::optional<double>> scores;
       scores.clear();
       scores.reserve(members.size());
-      store.zmscore_for_each(key, members,
-                             [](std::optional<double> score) {
-                               scores.push_back(score);
-                             });
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        for (const auto member : members) {
+          const auto result = store.packed_zscore(key, *kind, member);
+          if (!result.valid_member) {
+            reply_invalid_packed_member(out, *kind);
+            scores.clear();
+            break;
+          }
+          scores.push_back(result.score);
+        }
+        if (scores.size() != members.size()) break;
+      } else {
+        store.zmscore_for_each(key, members,
+                               [](std::optional<double> score) {
+                                 scores.push_back(score);
+                               });
+      }
       reply_nullable_double_array(out, scores);
       break;
     }
@@ -1348,6 +1536,23 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         break;
       }
       const auto key = z.getKeyAsStringView();
+      if (sbe_packed_zset_kind(store, key)) {
+        const auto popped = store.packed_zpop(
+            key, static_cast<std::size_t>(z.count()), z.maximum() != 0);
+        static thread_local std::vector<
+            std::pair<std::string_view, double>> items;
+        items.clear();
+        items.reserve(popped.size());
+        for (const auto& item : popped) {
+          items.emplace_back(item.member, item.score);
+        }
+        reply_scored_array(out, items);
+        for (const auto& item : popped) {
+          const std::string_view changed[]{item.member};
+          replicate_sbe_zset_members(options, store, key, changed);
+        }
+        break;
+      }
       const auto popped =
           store.zpop(key, static_cast<std::size_t>(z.count()),
                      z.maximum() != 0);
@@ -1378,6 +1583,18 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const bool has_match = z.hasMatch() != 0;
       static thread_local std::vector<std::pair<std::string_view, double>> items;
       items.clear();
+      if (sbe_packed_zset_kind(store, key)) {
+        const auto result = store.packed_zscan(
+            key, z.cursor(), static_cast<std::size_t>(z.count()));
+        items.reserve(result.entries.size());
+        for (const auto& entry : result.entries) {
+          if (!has_match || scan_glob_match_sbe(pattern, entry.member)) {
+            items.emplace_back(entry.member, entry.score);
+          }
+        }
+        reply_scored_scan(out, result.next, items);
+        break;
+      }
       const auto next = store.zscan(
           key, z.cursor(), static_cast<std::size_t>(z.count()),
           [&](std::string_view member, double score) {
@@ -2243,7 +2460,17 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       z.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = z.getKeyAsStringView();
       const std::string_view member = z.getMemberAsStringView();
-      const auto rank = store.zrevrank(key, member);
+      std::optional<std::size_t> rank;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto result = store.packed_zrank(key, *kind, member, true);
+        if (!result.valid_member) {
+          reply_invalid_packed_member(out, *kind);
+          break;
+        }
+        rank = result.rank;
+      } else {
+        rank = store.zrevrank(key, member);
+      }
       if (rank) {
         reply_int(out, static_cast<long long>(*rank));
       } else {
@@ -2263,8 +2490,18 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
         members.push_back(g.getMemberAsStringView());
       }
       const std::string_view key = z.getKeyAsStringView();  // key trails the group
-      if (wrong_type(store, KeyType::Zset, key, out)) break;
-      reply_int(out, store.zrem(key, std::span<const std::string_view>(members)));
+      if (wrong_zset_type(store, key, out)) break;
+      if (const auto kind = sbe_packed_zset_kind(store, key)) {
+        const auto result = store.packed_zrem(key, *kind, members);
+        if (result.invalid_member) {
+          reply_invalid_packed_member(out, *kind);
+          break;
+        }
+        reply_int(out, static_cast<long long>(result.removed));
+      } else {
+        reply_int(out, store.zrem(
+                           key, std::span<const std::string_view>(members)));
+      }
       replicate_sbe_zset_members(options, store, key, members);
       break;
     }
@@ -2277,7 +2514,13 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       const double max = z.max();
       const bool max_excl = z.maxExclusive() != 0;
       const std::string_view key = z.getKeyAsStringView();
-      reply_int(out, store.zremrangebyscore(key, min, min_excl, max, max_excl));
+      if (sbe_packed_zset_kind(store, key)) {
+        reply_int(out, store.packed_zremrangebyscore(
+                           key, min, min_excl, max, max_excl));
+      } else {
+        reply_int(out,
+                  store.zremrangebyscore(key, min, min_excl, max, max_excl));
+      }
       std::string min_text = format_score(min);
       std::string max_text = format_score(max);
       if (min_excl) min_text.insert(min_text.begin(), '(');

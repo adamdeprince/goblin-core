@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -197,6 +199,97 @@ class SwissTable {
     return slot_ptr(index);
   }
 
+  // A short-lived lookup/insertion token. No table mutation may intervene
+  // except reserve_insert_slot(token). Preparing or abandoning a miss does
+  // not insert a member; commit_insert_slot performs no allocation or lookup.
+  // Commit must use the key that was looked up. erase_slot consumes a hit
+  // without hashing or probing again; either operation invalidates the token.
+  struct InsertSlot {
+    mapped_type* value{nullptr};
+
+   private:
+    friend class SwissTable;
+    size_type index{std::numeric_limits<size_type>::max()};
+    size_type hash{0};
+    const value_type* storage{nullptr};
+  };
+
+  template <class K>
+  [[nodiscard]] InsertSlot find_insert_slot(const K& key) {
+    InsertSlot result;
+    result.hash = hash_key(key);
+    result.storage = slots_;
+    if (capacity_ == 0) return result;
+    const auto needle = fingerprint(result.hash);
+    auto start = group_start_for(result.hash);
+    auto first_deleted = npos;
+    for (size_type probed = 0; probed < capacity_; probed += GroupWidth) {
+      const auto* group = control_.data() + start;
+      auto matches = match_byte(group, needle);
+      while (matches != 0) {
+        auto index = start + first_set_bit(matches);
+        if (index >= capacity_) index -= capacity_;
+        if (equal_(slot_ptr(index)->first, key)) {
+          result.index = index;
+          result.value = std::addressof(slot_ptr(index)->second);
+          return result;
+        }
+        matches &= matches - 1;
+      }
+      if (tombstones_ != 0 && first_deleted == npos) {
+        const auto deleted = match_byte(group, kDeleted);
+        if (deleted != 0) {
+          first_deleted = start + first_set_bit(deleted);
+          if (first_deleted >= capacity_) first_deleted -= capacity_;
+        }
+      }
+      const auto empty = match_byte(group, kEmpty);
+      if (empty != 0) {
+        auto index = start + first_set_bit(empty);
+        if (index >= capacity_) index -= capacity_;
+        result.index = first_deleted == npos ? index : first_deleted;
+        return result;
+      }
+      start += GroupWidth;
+      if (start >= capacity_) start -= capacity_;
+    }
+    result.index = first_deleted;
+    return result;
+  }
+
+  void reserve_insert_slot(InsertSlot& slot) {
+    assert(slot.value == nullptr && slot.storage == slots_);
+    reserve_additional(1);
+    if (slot.storage != slots_) {
+      slot.storage = slots_;
+      slot.index = find_insert_index(slot.hash);
+    }
+    assert(slot.index != npos && !is_full(slot.index));
+  }
+
+  template <class K>
+  mapped_type* commit_insert_slot(const InsertSlot& slot, K&& key, T value)
+      noexcept(std::is_nothrow_constructible_v<value_type, K&&, T&&>) {
+    assert(slot.value == nullptr && slot.storage == slots_);
+    assert(slot.index != npos && !is_full(slot.index));
+    const auto old_control = control_[slot.index];
+    std::construct_at(slot_ptr(slot.index), std::forward<K>(key), std::move(value));
+    set_control(slot.index, fingerprint(slot.hash));
+    ++size_;
+    if (old_control == kDeleted) --tombstones_;
+    return std::addressof(slot_ptr(slot.index)->second);
+  }
+
+  bool erase_slot(const InsertSlot& slot)
+      noexcept(std::is_nothrow_destructible_v<value_type>) {
+    assert(slot.storage == slots_);
+    if (slot.value == nullptr) return false;
+    assert(slot.index < capacity_ && is_full(slot.index));
+    assert(slot.value == std::addressof(slot_ptr(slot.index)->second));
+    erase_index(slot.index);
+    return true;
+  }
+
   template <class Fn>
   void for_each(Fn&& fn) {
     for (size_type i = 0; i < capacity_; ++i) {
@@ -276,10 +369,7 @@ class SwissTable {
       return false;
     }
 
-    std::destroy_at(slot_ptr(index));
-    set_control(index, kDeleted);
-    --size_;
-    ++tombstones_;
+    erase_index(index);
     return true;
   }
 
@@ -372,6 +462,14 @@ class SwissTable {
 
   [[nodiscard]] const value_type* slot_ptr(size_type index) const noexcept {
     return slots_ + index;
+  }
+
+  void erase_index(size_type index)
+      noexcept(std::is_nothrow_destructible_v<value_type>) {
+    std::destroy_at(slot_ptr(index));
+    set_control(index, kDeleted);
+    --size_;
+    ++tombstones_;
   }
 
   template <class K>
@@ -549,6 +647,7 @@ class SwissTable {
     return npos;
   }
 
+  template <bool MayHaveDeleted = true>
   [[nodiscard]] size_type find_insert_index(size_type hash) const {
     auto group_start = group_start_for(hash);
     auto first_deleted = npos;
@@ -556,12 +655,13 @@ class SwissTable {
     for (size_type probed = 0; probed < capacity_; probed += GroupWidth) {
       const auto* group = control_.data() + group_start;
 
-      auto deleted = match_byte(group, kDeleted);
-      if (first_deleted == npos && deleted != 0) {
-        const auto offset = first_set_bit(deleted);
-        first_deleted = group_start + offset;
-        if (first_deleted >= capacity_) {
-          first_deleted -= capacity_;
+      if constexpr (MayHaveDeleted) {
+        if (first_deleted == npos) {
+          const auto deleted = match_byte(group, kDeleted);
+          if (deleted != 0) {
+            first_deleted = group_start + first_set_bit(deleted);
+            if (first_deleted >= capacity_) first_deleted -= capacity_;
+          }
         }
       }
 
@@ -586,7 +686,9 @@ class SwissTable {
 
   void insert_existing(const value_type& value) {
     const auto hash = hash_key(value.first);
-    const auto index = find_insert_index(hash);
+    // Copy/rehash destinations have no tombstones: only test for empty slots.
+    assert(tombstones_ == 0);
+    const auto index = find_insert_index<false>(hash);
     std::construct_at(slot_ptr(index), value);
     set_control(index, fingerprint(hash));
     ++size_;
@@ -594,7 +696,8 @@ class SwissTable {
 
   void insert_existing(value_type&& value) {
     const auto hash = hash_key(value.first);
-    const auto index = find_insert_index(hash);
+    assert(tombstones_ == 0);
+    const auto index = find_insert_index<false>(hash);
     std::construct_at(slot_ptr(index), std::move(value));
     set_control(index, fingerprint(hash));
     ++size_;

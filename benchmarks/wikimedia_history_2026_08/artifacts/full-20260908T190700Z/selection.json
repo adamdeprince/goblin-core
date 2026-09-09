@@ -1,0 +1,19 @@
+{
+  "baseline_previous_project_stage": "wikimedia-packed-update-20260908T173900Z/02-single-probe",
+  "baseline_server_sha256": "5f49fab7c30fc1a9bd81b61bd7e2ceae1eca39b0f5ff757200c0f0791ea9864c",
+  "selected_source_stage": "06-equality",
+  "selected_server_stage": "07-selected",
+  "selected_server_sha256": "9513ff0e26399b0c68d6b84032a95e4724cdb6e0d2f4c9def984033f5c3b4e8d",
+  "retained_prior_changes": ["64-bit integer hash mixing", "score-slot reuse and prepared insertion"],
+  "retained_micro_changes": ["reduced Swiss tombstone/vacancy probing", "single-lookup packed point deletion", "direct live-tuple equality"],
+  "not_retained_micro_changes": ["equality-first ordering comparator", "direct/borrowed dirty-tail arguments"],
+  "shared_tree_path_experiment": "remains excluded",
+  "packed_zset_header_sha256": "45f6b5a2cd4ef89ed4361d81d2502ecd96855fa2217ce887ea120c1f2a43fc0a",
+  "packed_bplus_tree_header_sha256": "43aa6e43695243fcc582eb761a134300a43d05defc0bb8f8d696c3da1953d208",
+  "swiss_table_header_sha256": "4a9280607db509ee8235fb8fe085f9e2355b29e185db0eaac260bdf00585bcd7",
+  "input_sha256": "3972ab0d6b968c6b9bc117d1085f3e6f10cd85f2aa8ac4fde0dda35abe0c751e",
+  "verification": "Debug, ASan/UBSan, Release and all six replay checks passed",
+  "replay_result": "28.453 to 28.421 seconds median; effectively unchanged",
+  "object_allocated_bytes": 7810016,
+  "rss_kib": 32652
+}

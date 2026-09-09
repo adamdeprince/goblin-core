@@ -1,0 +1,38 @@
+# Server
+redis_version:7.4.0
+redis_mode:standalone
+list_implementation:segmented
+hash_implementation:efficient
+array_implementation:classic
+keyspace_index:swiss
+rdma_support:1
+exasock_support:0
+exasock_loaded:0
+xlio_support:0
+xlio_loaded:0
+aeron_support:0
+# Replication
+role:master
+master_replid:8f17d7ab78a18a8d121c5cd24812f89e
+master_repl_offset:1483700913
+kafka_acknowledged_offset:-1
+goblin_ready:1
+# Memory
+used_memory:3614876740
+used_memory_rss:3714461696
+used_memory_peak:3614876740
+mem_reclaimable_bytes:0
+hash_heap_allocated_bytes:0
+realtime_hash_index_pool_bytes:0
+realtime_keyspace_index_pool_bytes:0
+blob_pool_requested_bytes:0
+blob_pool_capacity_bytes:30248
+blob_pool_fragmentation_bytes:30248
+blob_pool_live_allocations:0
+blob_pool_upstream_allocations:25
+maxmemory:0
+maxmemory_policy:noeviction
+mem_fragmentation_ratio:1.00
+# Kafka
+kafka_journal_enabled:0
+kafka_ack_mode:off

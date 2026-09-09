@@ -1,0 +1,5 @@
+dc2085f95413712e08bbca6541a6f3fc3d794646381031912820e1f44a654fc3  /home/adam/bench/redis-8.8.0/src/redis-server
+679b99e3fe03ab9d8d57b4768248dc0e25108843e584ab1525c40afdbf58478a  /home/adam/bench/redis-7.2.4/src/redis-server
+8daf8612da0417941743d69cfb5da9e516e06839453e9f2f4f9ae8941e3d8a50  /home/adam/bench/valkey-9.1.0/src/valkey-server
+bb063de5b3e137fa4363f1177ede29931bd5467a76094cc8b8405e69bd994722  /usr/local/bin/dragonfly
+c45604bc44ce56c426a75723f0652831a93a0f9373d9bc1484ab9be5e2a1d8ca  /home/adam/bench/redis-8.8.0/src/redis-cli

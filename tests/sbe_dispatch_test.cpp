@@ -1058,6 +1058,101 @@ int main() {
   dispatch(store, zadd_frame("z2", {{1.0, "a"}, {2.0, "b"}, {3.0, "c"}, {4.0, "d"}}), int_is(4));
   dispatch(store, zremrangebyscore_frame("z2", 2.0, false, 3.0, false), int_is(2));
   dispatch(store, key_frame<sbe::ZCard>("z2"), int_is(2));  // a, d remain
+
+  // The process-wide zset selector also applies to unqualified typed SBE
+  // commands; the wire schema stays representation-neutral.
+  {
+    StoreOptions options;
+    options.zset_implementation =
+        ZSetImplementation::PackedInt32Float32;
+    Store packed(options);
+    dispatch(packed,
+             zadd_frame("packed-sbe",
+                        {{1.0, "10"}, {1.0, "2"}, {3.0, "30"}}),
+             int_is(3));
+    assert(packed.packed_zset_kind("packed-sbe") ==
+           PackedZSetKind::Int32Float32);
+    dispatch(packed, zcard_frame("packed-sbe"), int_is(3));
+    dispatch(packed, key_member_frame<sbe::ZScore>("packed-sbe", "10"),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               assert(decode<sbe::DoubleReply>(h, m, l).value() == 1.0);
+             });
+    dispatch(packed, key_member_frame<sbe::ZRank>("packed-sbe", "2"),
+             int_is(0));
+    dispatch(packed, zrange_frame("packed-sbe", 0, -1, false),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::ArrayReply>(h, m, l);
+               std::vector<std::string> got;
+               auto& g = r.items();
+               while (g.hasNext()) {
+                 g.next();
+                 got.emplace_back(g.getValueAsStringView());
+               }
+               assert((got == std::vector<std::string>{"2", "10", "30"}));
+             });
+    dispatch(packed, zincrby_frame("packed-sbe", 4.0, "10"),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               assert(decode<sbe::DoubleReply>(h, m, l).value() == 5.0);
+             });
+    dispatch(packed,
+             zrangebyscore_frame("packed-sbe", 1.0, false, 3.0, false),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::ArrayReply>(h, m, l);
+               auto& g = r.items();
+               g.next();
+               assert(g.getValueAsStringView() == "2");
+               g.next();
+               assert(g.getValueAsStringView() == "30");
+               assert(!g.hasNext());
+             });
+    dispatch(packed, zcount_frame("packed-sbe", 1.0, false, 3.0, false),
+             int_is(2));
+    dispatch(packed, zmscore_frame("packed-sbe", {"2", "99"}),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::NullableDoubleArrayReply>(h, m, l);
+               auto& g = r.items();
+               g.next();
+               assert(g.present() == 1 && g.value() == 1.0);
+               g.next();
+               assert(g.present() == 0);
+               assert(!g.hasNext());
+             });
+    dispatch(packed, zscan_frame("packed-sbe", 0, 2),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::ScoredScanReply>(h, m, l);
+               assert(r.nextCursor() == 2);
+               auto& g = r.items();
+               g.next();
+               assert(g.getMemberAsStringView() == "2");
+               g.next();
+               assert(g.getMemberAsStringView() == "30");
+               assert(!g.hasNext());
+             });
+    dispatch(packed, key_member_frame<sbe::ZRevRank>("packed-sbe", "10"),
+             int_is(0));
+    dispatch(packed, zpop_frame("packed-sbe", 1, true),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto r = decode<sbe::ScoredArrayReply>(h, m, l);
+               auto& g = r.items();
+               g.next();
+               assert(g.getMemberAsStringView() == "10" &&
+                      g.score() == 5.0);
+               assert(!g.hasNext());
+             });
+    dispatch(packed, zrem_frame("packed-sbe", {"2"}), int_is(1));
+    dispatch(packed,
+             zremrangebyscore_frame("packed-sbe", 3.0, false, 3.0, false),
+             int_is(1));
+    dispatch(packed, zcard_frame("packed-sbe"), int_is(0));
+    dispatch(packed, zadd_frame("invalid-packed-sbe", {{1.0, "word"}}),
+             [](sbe::MessageHeader& h, char* m, std::uint32_t l) {
+               auto error = decode<sbe::ErrorReply>(h, m, l);
+               assert(error.getCodeAsStringView() == "ERR");
+               assert(error.getMessageAsStringView().find("INT32") !=
+                      std::string_view::npos);
+             });
+    assert(!packed.exists("invalid-packed-sbe"));
+  }
   // GETRANGE / SETRANGE
   dispatch(store, set_frame("gr", "Hello World"), [](sbe::MessageHeader&, char*, std::uint32_t) {});
   dispatch(store, getrange_frame("gr", 0, 4), bulk_is("Hello"));

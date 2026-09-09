@@ -1,0 +1,1 @@
+/home/adam/wiki2/wikimedia-full-20260908T190700Z/bin/goblin-core --unixsocket /tmp/wiki-1689911-1689916-1788894864-goblin-packed-int32-float32.sock --port 16502 --zset-implementation packed-int32-float32 --packed-zset-merge-exponent 0.5 

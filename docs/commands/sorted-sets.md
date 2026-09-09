@@ -4,6 +4,12 @@ Goblin Core sorted sets keep one unique member string per score and order entrie
 by score, then by member bytes when scores tie. They are the primary building
 block for leaderboards, priority queues, time windows, and score-indexed work.
 
+Unqualified commands create the standard string-member/binary64-score
+representation unless `--zset-implementation` selects one of the six
+[fixed-width packed representations](../packed-zsets.md). Existing keys remain
+pinned to the representation that created or restored them, so changing the
+startup selector never converts live data implicitly.
+
 ## Command surface
 
 | Command | Purpose |
@@ -25,9 +31,10 @@ Missing keys behave as empty sorted sets. A key holding another type returns
 
 ## Scores and bounds
 
-Scores are binary `double` values. `-inf`, `+inf`, and `inf` are accepted;
-`nan` is rejected. Equal scores are ordered lexicographically by the member's
-binary bytes, making ties deterministic.
+Standard-zset scores are binary `double` values; a selected packed default uses
+binary32 or binary64 as named. `-inf`, `+inf`, and `inf` are accepted; `nan` is
+rejected. Equal standard-zset scores are ordered lexicographically by the
+member's binary bytes. Packed ties use signed integer or UUID-byte order.
 
 Score ranges accept inclusive bounds by default. Prefix a finite number or an
 infinity with `(` to make it exclusive:

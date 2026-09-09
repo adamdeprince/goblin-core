@@ -255,6 +255,46 @@ void append_info_value(std::string& out, std::string_view value) {
          equals_ci(value.substr(0, prefix.size()), prefix);
 }
 
+struct PackedZSetCommandName {
+  PackedZSetKind kind;
+  std::string_view suffix;
+};
+
+constexpr std::array kPackedZSetPrefixes{
+    std::pair{std::string_view{"GOBLIN.PACKED_INT32_FLOAT32."},
+              PackedZSetKind::Int32Float32},
+    std::pair{std::string_view{"GOBLIN.PACKED_INT32_FLOAT64."},
+              PackedZSetKind::Int32Float64},
+    std::pair{std::string_view{"GOBLIN.PACKED_INT64_FLOAT32."},
+              PackedZSetKind::Int64Float32},
+    std::pair{std::string_view{"GOBLIN.PACKED_INT64_FLOAT64."},
+              PackedZSetKind::Int64Float64},
+    std::pair{std::string_view{"GOBLIN.PACKED_UUID_FLOAT32."},
+              PackedZSetKind::UuidFloat32},
+    std::pair{std::string_view{"GOBLIN.PACKED_UUID_FLOAT64."},
+              PackedZSetKind::UuidFloat64},
+};
+
+constexpr std::array<std::string_view, 20> kPackedZSetCommandSuffixes{
+    "ZADD",              "ZINCRBY",       "ZCARD",
+    "ZCOUNT",            "ZRANGE",        "ZRANGEBYSCORE",
+    "ZREVRANGEBYSCORE",  "ZRANK",         "ZREVRANGE",
+    "ZREVRANK",          "ZREM",          "ZREMRANGEBYSCORE",
+    "ZREMRANGEBYRANK",   "ZINTERSTORE",   "ZUNIONSTORE",
+    "ZMSCORE",           "ZPOPMIN",       "ZPOPMAX",
+    "ZSCAN",             "ZSCORE",
+};
+
+[[nodiscard]] std::optional<PackedZSetCommandName> packed_zset_command_name(
+    std::string_view name) {
+  for (const auto& [prefix, kind] : kPackedZSetPrefixes) {
+    if (starts_with_ci(name, prefix) && name.size() > prefix.size()) {
+      return PackedZSetCommandName{kind, name.substr(prefix.size())};
+    }
+  }
+  return std::nullopt;
+}
+
 [[nodiscard]] std::optional<HashImplementation> qualified_hash_implementation(
     std::string_view command_name) {
   if (starts_with_ci(command_name, "GOBLIN.RT.")) {
@@ -509,6 +549,29 @@ void append_hello_response(std::string& out, resp::Version version,
   return fields_response(fields, version);
 }
 
+[[nodiscard]] std::vector<std::string> packed_zset_memory_stats_fields(
+    const PackedZSetMemoryStats& stats) {
+  std::vector<std::string> fields;
+  auto add = [&fields](std::string_view name, std::size_t value) {
+    fields.emplace_back(name);
+    fields.push_back(std::to_string(value));
+  };
+  fields.emplace_back("representation");
+  fields.emplace_back(packed_zset_kind_name(stats.kind));
+  add("member_count", stats.member_count);
+  add("sorted_entries", stats.sorted_entries);
+  add("unsorted_entries", stats.unsorted_entries);
+  add("leaf_capacity", stats.leaf_capacity);
+  add("leaf_count", stats.leaf_count);
+  add("branch_count", stats.branch_count);
+  add("tree_height", stats.tree_height);
+  fields.emplace_back("merge_exponent");
+  fields.push_back(format_score(stats.merge_exponent));
+  add("merge_threshold", stats.merge_threshold);
+  add("total_allocated_bytes", stats.total_allocated_bytes);
+  return fields;
+}
+
 [[nodiscard]] std::vector<std::string> hash_memory_stats_fields(const HashMemoryStats& stats) {
   std::vector<std::string> fields;
   auto add = [&fields](std::string_view name, std::size_t value) {
@@ -661,6 +724,8 @@ constexpr std::string_view kValueTooLarge =
       return "set";
     case KeyType::Array:
       return "array";
+    case KeyType::PackedZset:
+      return "zset";
   }
   return "none";
 }
@@ -680,6 +745,8 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::zrem:
     case CommandType::zremrangebyscore:
     case CommandType::zremrangebyrank:
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
     case CommandType::zmscore:
     case CommandType::zpopmin:
     case CommandType::zpopmax:
@@ -687,6 +754,34 @@ constexpr std::string_view kValueTooLarge =
     case CommandType::zscore:
     case CommandType::goblin_td_leaderboard_rescore:  // reads the zset like ZRANGE
     case CommandType::goblin_zwindow:                 // ZADD/ZREM/ZCARD on the zset
+      return true;
+    default:
+      return false;
+  }
+}
+
+[[nodiscard]] bool is_packed_zset_command(CommandType type) noexcept {
+  switch (type) {
+    case CommandType::zadd:
+    case CommandType::zincrby:
+    case CommandType::zcard:
+    case CommandType::zcount:
+    case CommandType::zrange:
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore:
+    case CommandType::zrank:
+    case CommandType::zrevrange:
+    case CommandType::zrevrank:
+    case CommandType::zrem:
+    case CommandType::zremrangebyscore:
+    case CommandType::zremrangebyrank:
+    case CommandType::zinterstore:
+    case CommandType::zunionstore:
+    case CommandType::zmscore:
+    case CommandType::zpopmin:
+    case CommandType::zpopmax:
+    case CommandType::zscan:
+    case CommandType::zscore:
       return true;
     default:
       return false;
@@ -1039,6 +1134,10 @@ constexpr std::string_view kValueTooLarge =
 [[nodiscard]] std::optional<KeyType> command_requires_type(
     CommandType type) noexcept {
   if (is_zset_command(type)) {
+    if (type == CommandType::zinterstore ||
+        type == CommandType::zunionstore) {
+      return std::nullopt;  // destination is replaced regardless of prior type
+    }
     return KeyType::Zset;
   }
   if (is_hash_command(type)) {
@@ -1355,15 +1454,21 @@ void append_range_response(Store& store,
 }  // namespace
 
 CommandType lookup_command_type(std::string_view name) noexcept {
-  if (name.size() > 31) {
+  const auto packed = packed_zset_command_name(name);
+  const auto dispatch_name = packed ? packed->suffix : name;
+  if (dispatch_name.size() > 31) {
     return CommandType::unknown;
   }
   std::array<char, 32> upper{};
-  for (std::size_t k = 0; k < name.size(); ++k) {
-    upper[k] = ascii_upper_char(name[k]);
+  for (std::size_t k = 0; k < dispatch_name.size(); ++k) {
+    upper[k] = ascii_upper_char(dispatch_name[k]);
   }
-  const CommandEntry* entry = CommandDispatch::lookup(upper.data(), name.size());
-  return entry == nullptr ? CommandType::unknown : entry->type;
+  const CommandEntry* entry =
+      CommandDispatch::lookup(upper.data(), dispatch_name.size());
+  if (entry == nullptr || (packed && !is_packed_zset_command(entry->type))) {
+    return CommandType::unknown;
+  }
+  return entry->type;
 }
 
 CommandParseResult parse_command(std::span<const std::string_view> fields) {
@@ -1375,21 +1480,31 @@ CommandParseResult parse_command(std::span<const std::string_view> fields) {
   command.name = fields.front();
   command.args = fields.subspan(1);
 
-  // Upper-case the name into a fixed 32-byte buffer, then perfect-hash it in O(1).
-  // Names longer than the longest command (GOBLIN.TD_LEADERBOARD_RESCORE, 29)
-  // cannot match and short-circuit to unknown without touching the buffer.
+  const auto packed_name = packed_zset_command_name(command.name);
+  const auto dispatch_name = packed_name ? packed_name->suffix : command.name;
+  if (packed_name) {
+    command.packed_zset_kind =
+        static_cast<std::uint8_t>(packed_name->kind);
+  }
+
+  // Upper-case the ordinary name or packed suffix into a fixed 32-byte buffer,
+  // then perfect-hash it in O(1). Longer dispatch names cannot match.
   const CommandEntry* entry = nullptr;
-  if (command.name.size() <= 31) {
+  if (dispatch_name.size() <= 31) {
     std::array<char, 32> upper{};
-    for (std::size_t k = 0; k < command.name.size(); ++k) {
-      upper[k] = ascii_upper_char(command.name[k]);
+    for (std::size_t k = 0; k < dispatch_name.size(); ++k) {
+      upper[k] = ascii_upper_char(dispatch_name[k]);
     }
-    entry = CommandDispatch::lookup(upper.data(), command.name.size());
+    entry = CommandDispatch::lookup(upper.data(), dispatch_name.size());
+    if (entry != nullptr && packed_name &&
+        !is_packed_zset_command(entry->type)) {
+      entry = nullptr;
+    }
     // Capture qualified hash implementation once at parse (L). Avoids
     // re-scanning the name on every execute_command_into for H*.
-    if (command.name.size() >= 10 && upper[0] == 'G' && upper[1] == 'O' &&
-        upper[2] == 'B' && upper[3] == 'L' && upper[4] == 'I' &&
-        upper[5] == 'N' && upper[6] == '.') {
+    if (!packed_name && command.name.size() >= 10 && upper[0] == 'G' &&
+        upper[1] == 'O' && upper[2] == 'B' && upper[3] == 'L' &&
+        upper[4] == 'I' && upper[5] == 'N' && upper[6] == '.') {
       if (command.name.size() >= 10 && upper[7] == 'R' && upper[8] == 'T' &&
           upper[9] == '.') {
         command.hash_implementation_tag = 2;  // Realtime
@@ -2658,6 +2773,9 @@ std::string render_server_info(const Store& store) { return build_info_string(st
 std::optional<std::vector<std::string>> goblin_memory_fields(const Store& store,
                                                              std::string_view key) {
   if (const auto z = store.zset_memory_stats(key)) return memory_stats_fields(*z);
+  if (const auto z = store.packed_zset_memory_stats(key)) {
+    return packed_zset_memory_stats_fields(*z);
+  }
   if (const auto h = store.hash_memory_stats(key)) return hash_memory_stats_fields(*h);
   if (const auto l = store.list_memory_stats(key)) return list_memory_stats_fields(*l);
   if (const auto s = store.set_memory_stats(key)) return set_memory_stats_fields(*s);
@@ -3193,9 +3311,20 @@ void append_command_descriptor(std::string& out, std::string_view name,
 void execute_command_introspection(const Command& command, std::string& out,
                                    resp::Version version) {
   if (command.args.empty()) {
-    resp::append_array_header(out, std::size(kCommandNames));
+    resp::append_array_header(
+        out, std::size(kCommandNames) +
+                 kPackedZSetPrefixes.size() *
+                     kPackedZSetCommandSuffixes.size());
     for (const auto name : kCommandNames) {
       append_command_descriptor(out, name, lookup_command_type(name));
+    }
+    for (const auto& [prefix, kind] : kPackedZSetPrefixes) {
+      (void)kind;
+      for (const auto suffix : kPackedZSetCommandSuffixes) {
+        std::string name(prefix);
+        name.append(suffix);
+        append_command_descriptor(out, name, lookup_command_type(name));
+      }
     }
     return;
   }
@@ -3211,6 +3340,474 @@ void execute_command_introspection(const Command& command, std::string& out,
     } else {
       append_command_descriptor(out, name, type);
     }
+  }
+}
+
+[[nodiscard]] std::string packed_member_error(PackedZSetKind kind) {
+  std::string message = "ERR member is not a valid ";
+  switch (kind) {
+    case PackedZSetKind::Int32Float32:
+    case PackedZSetKind::Int32Float64:
+      message += "INT32";
+      break;
+    case PackedZSetKind::Int64Float32:
+    case PackedZSetKind::Int64Float64:
+      message += "INT64";
+      break;
+    case PackedZSetKind::UuidFloat32:
+    case PackedZSetKind::UuidFloat64:
+      message += "UUID";
+      break;
+  }
+  return message;
+}
+
+void append_packed_entries(std::string& out,
+                           const std::vector<PackedZSetEntry>& entries,
+                           bool with_scores, resp::Version version,
+                           std::size_t reserve_limit) {
+  const auto element_count = with_scores && version == resp::Version::resp2
+                                 ? entries.size() * 2
+                                 : entries.size();
+  resp::reserve_append_capacity(
+      out, 16 + entries.size() * (with_scores ? 48 : 32), reserve_limit);
+  resp::append_array_header(out, element_count);
+  for (const auto& entry : entries) {
+    if (with_scores && version == resp::Version::resp3) {
+      resp::append_array_header(out, 2);
+    }
+    resp::append_bulk_string(out, entry.member);
+    if (with_scores) {
+      if (version == resp::Version::resp3) {
+        resp::append_double(out, entry.score);
+      } else {
+        resp::append_bulk_double(out, entry.score);
+      }
+    }
+  }
+}
+
+void execute_packed_zset_command(Store& store, const Command& command,
+                                 PackedZSetKind kind, std::string& out,
+                                 CommandExecutionOptions options) {
+  const auto version = response_version(options);
+  const auto invalid_member = [&out, kind] {
+    resp::append_error(out, packed_member_error(kind));
+  };
+
+  switch (command.type) {
+    case CommandType::zadd: {
+      PackedZSetAddOptions add_options;
+      bool return_changed = false;
+      std::size_t first_score = 1;
+      for (; first_score < command.args.size(); ++first_score) {
+        const auto option = command.args[first_score];
+        bool* flag = nullptr;
+        if (equals_ci(option, "NX")) flag = &add_options.nx;
+        else if (equals_ci(option, "XX")) flag = &add_options.xx;
+        else if (equals_ci(option, "GT")) flag = &add_options.gt;
+        else if (equals_ci(option, "LT")) flag = &add_options.lt;
+        else if (equals_ci(option, "CH")) {
+          if (return_changed) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          return_changed = true;
+          continue;
+        } else if (equals_ci(option, "INCR")) {
+          flag = &add_options.increment;
+        } else {
+          break;
+        }
+        if (*flag) {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+        *flag = true;
+      }
+      if ((add_options.nx &&
+           (add_options.xx || add_options.gt || add_options.lt)) ||
+          (add_options.gt && add_options.lt) ||
+          first_score >= command.args.size() ||
+          (command.args.size() - first_score) % 2 != 0 ||
+          (add_options.increment &&
+           command.args.size() - first_score != 2)) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      std::vector<PackedZSetAddItem> items;
+      items.reserve((command.args.size() - first_score) / 2);
+      for (std::size_t index = first_score; index < command.args.size();
+           index += 2) {
+        const auto score = parse_zset_score(command.args[index]);
+        if (!score) {
+          resp::append_error(out, "ERR value is not a valid float");
+          return;
+        }
+        items.push_back({*score, command.args[index + 1]});
+      }
+      const auto result = store.packed_zadd(command.args[0], kind, items,
+                                             add_options);
+      if (result.invalid_member) {
+        invalid_member();
+      } else if (result.invalid_score) {
+        resp::append_error(out,
+                           "ERR resulting score is not representable");
+      } else if (add_options.increment) {
+        if (!result.increment_score) {
+          resp::append_null(out, version);
+        } else if (version == resp::Version::resp3) {
+          resp::append_double(out, *result.increment_score);
+        } else {
+          resp::append_bulk_double(out, *result.increment_score);
+        }
+      } else {
+        resp::append_integer(out,
+                             return_changed ? result.changed : result.added);
+      }
+      return;
+    }
+
+    case CommandType::zincrby: {
+      const auto increment = parse_zset_score(command.args[1]);
+      if (!increment) {
+        resp::append_error(out, "ERR value is not a valid float");
+        return;
+      }
+      const PackedZSetAddItem item{*increment, command.args[2]};
+      const auto result = store.packed_zadd(
+          command.args[0], kind, std::span(&item, 1),
+          PackedZSetAddOptions{.increment = true});
+      if (result.invalid_member) {
+        invalid_member();
+      } else if (result.invalid_score) {
+        resp::append_error(out,
+                           "ERR resulting score is not representable");
+      } else if (version == resp::Version::resp3) {
+        resp::append_double(out, *result.increment_score);
+      } else {
+        resp::append_bulk_double(out, *result.increment_score);
+      }
+      return;
+    }
+
+    case CommandType::zcard:
+      resp::append_integer(out, store.packed_zcard(command.args[0]));
+      return;
+
+    case CommandType::zcount: {
+      const auto lo = parse_score_bound(command.args[1]);
+      const auto hi = parse_score_bound(command.args[2]);
+      if (!lo || !hi) {
+        resp::append_error(out, "ERR min or max is not a float");
+        return;
+      }
+      resp::append_integer(
+          out, store.packed_zcount(command.args[0], lo->value, lo->exclusive,
+                                   hi->value, hi->exclusive));
+      return;
+    }
+
+    case CommandType::zrange:
+    case CommandType::zrangebyscore:
+    case CommandType::zrevrangebyscore:
+    case CommandType::zrevrange: {
+      std::vector<PackedZSetEntry> entries;
+      if (command.range_by_score) {
+        const auto first = parse_score_bound(command.args[1]);
+        const auto second = parse_score_bound(command.args[2]);
+        if (!first || !second) {
+          resp::append_error(out, "ERR min or max is not a float");
+          return;
+        }
+        const auto lo = command.range_reverse ? *second : *first;
+        const auto hi = command.range_reverse ? *first : *second;
+        std::size_t offset = 0;
+        std::optional<std::size_t> limit;
+        if (command.range_has_limit) {
+          offset = static_cast<std::size_t>(command.range_limit_offset);
+          if (command.range_limit_count >= 0) {
+            limit = static_cast<std::size_t>(command.range_limit_count);
+          }
+        }
+        entries = store.packed_zrange_by_score(
+            command.args[0], lo.value, lo.exclusive, hi.value, hi.exclusive,
+            command.range_reverse, offset, limit);
+      } else {
+        long long start = command.range_start;
+        long long stop = command.range_stop;
+        if (!command.range_indexes_parsed) {
+          const auto parsed_start = parse_i64(command.args[1]);
+          const auto parsed_stop = parse_i64(command.args[2]);
+          if (!parsed_start || !parsed_stop) {
+            resp::append_error(out, integer_range_error());
+            return;
+          }
+          start = *parsed_start;
+          stop = *parsed_stop;
+        }
+        entries = store.packed_zrange_by_rank(
+            command.args[0], start, stop, command.range_reverse);
+      }
+      append_packed_entries(out, entries, command.with_scores, version,
+                            options.output_reserve_limit);
+      return;
+    }
+
+    case CommandType::zrank:
+    case CommandType::zrevrank: {
+      const auto result = store.packed_zrank(
+          command.args[0], kind, command.args[1],
+          command.type == CommandType::zrevrank);
+      if (!result.valid_member) {
+        invalid_member();
+      } else if (!result.rank) {
+        resp::append_null(out, version);
+      } else {
+        resp::append_integer(out, static_cast<long long>(*result.rank));
+      }
+      return;
+    }
+
+    case CommandType::zrem: {
+      const auto members = std::span<const std::string_view>(
+          command.args.data() + 1, command.args.size() - 1);
+      const auto result = store.packed_zrem(command.args[0], kind, members);
+      if (result.invalid_member) {
+        invalid_member();
+      } else {
+        resp::append_integer(out, static_cast<long long>(result.removed));
+      }
+      return;
+    }
+
+    case CommandType::zremrangebyscore: {
+      const auto lo = parse_score_bound(command.args[1]);
+      const auto hi = parse_score_bound(command.args[2]);
+      if (!lo || !hi) {
+        resp::append_error(out, "ERR min or max is not a float");
+        return;
+      }
+      resp::append_integer(
+          out, store.packed_zremrangebyscore(
+                   command.args[0], lo->value, lo->exclusive, hi->value,
+                   hi->exclusive));
+      return;
+    }
+
+    case CommandType::zremrangebyrank: {
+      const auto start = parse_i64(command.args[1]);
+      const auto stop = parse_i64(command.args[2]);
+      if (!start || !stop) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      resp::append_integer(
+          out, store.packed_zremrangebyrank(command.args[0], *start, *stop));
+      return;
+    }
+
+    case CommandType::zinterstore:
+    case CommandType::zunionstore: {
+      const auto numkeys_value = parse_i64(command.args[1]);
+      if (!numkeys_value) {
+        resp::append_error(out, integer_range_error());
+        return;
+      }
+      if (*numkeys_value <= 0) {
+        resp::append_error(out, "ERR at least 1 input key is needed");
+        return;
+      }
+      const auto numkeys = static_cast<std::size_t>(*numkeys_value);
+      if (numkeys > command.args.size() - 2) {
+        resp::append_error(out, syntax_error());
+        return;
+      }
+      const auto keys = command.args.subspan(2, numkeys);
+      std::vector<double> weights(numkeys, 1.0);
+      ZSetAggregate aggregate = ZSetAggregate::Sum;
+      bool saw_weights = false;
+      bool saw_aggregate = false;
+      std::size_t index = 2 + numkeys;
+      while (index < command.args.size()) {
+        if (equals_ci(command.args[index], "WEIGHTS") && !saw_weights) {
+          if (numkeys > command.args.size() - index - 1) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          saw_weights = true;
+          ++index;
+          for (std::size_t source = 0; source < numkeys;
+               ++source, ++index) {
+            const auto weight = parse_zset_score(command.args[index]);
+            if (!weight) {
+              resp::append_error(out, "ERR weight value is not a float");
+              return;
+            }
+            weights[source] = *weight;
+          }
+          continue;
+        }
+        if (equals_ci(command.args[index], "AGGREGATE") && !saw_aggregate &&
+            index + 1 < command.args.size()) {
+          saw_aggregate = true;
+          const auto value = command.args[index + 1];
+          if (equals_ci(value, "SUM")) {
+            aggregate = ZSetAggregate::Sum;
+          } else if (equals_ci(value, "MIN")) {
+            aggregate = ZSetAggregate::Min;
+          } else if (equals_ci(value, "MAX")) {
+            aggregate = ZSetAggregate::Max;
+          } else {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          index += 2;
+          continue;
+        }
+        resp::append_error(out, syntax_error());
+        return;
+      }
+
+      const auto now = store.ttl_empty() ? std::uint64_t{0} : store.now_ms();
+      const bool representation_qualified = command.packed_zset_kind != 0;
+      for (const auto key : keys) {
+        if (!store.ttl_empty()) (void)store.purge_if_expired(key, now);
+        if (const auto actual = store.key_type(key);
+            actual && *actual != KeyType::PackedZset &&
+            (representation_qualified || *actual != KeyType::Zset)) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+        if (representation_qualified) {
+          if (const auto actual_kind = store.packed_zset_kind(key);
+              actual_kind && *actual_kind != kind) {
+            resp::append_error(out, kWrongType);
+            return;
+          }
+        }
+      }
+      const auto result =
+          command.type == CommandType::zinterstore
+              ? store.packed_zinterstore(command.args[0], kind, keys, weights,
+                                          aggregate)
+              : store.packed_zunionstore(command.args[0], kind, keys, weights,
+                                          aggregate);
+      if (result.invalid_member) {
+        invalid_member();
+      } else if (result.invalid_score) {
+        resp::append_error(out,
+                           "ERR resulting score is not representable");
+      } else {
+        resp::append_integer(out, result.cardinality);
+      }
+      return;
+    }
+
+    case CommandType::zmscore: {
+      for (const auto member : command.args.subspan(1)) {
+        if (!PackedZSet::valid_member(kind, member)) {
+          invalid_member();
+          return;
+        }
+      }
+      resp::append_array_header(out, command.args.size() - 1);
+      for (const auto member : command.args.subspan(1)) {
+        const auto result = store.packed_zscore(command.args[0], kind, member);
+        if (!result.score) {
+          resp::append_null(out, version);
+        } else if (version == resp::Version::resp3) {
+          resp::append_double(out, *result.score);
+        } else {
+          resp::append_bulk_double(out, *result.score);
+        }
+      }
+      return;
+    }
+
+    case CommandType::zpopmin:
+    case CommandType::zpopmax: {
+      std::size_t count = 1;
+      if (command.args.size() == 2) {
+        const auto parsed = parse_u64(command.args[1]);
+        if (!parsed || *parsed > std::numeric_limits<std::size_t>::max()) {
+          resp::append_error(out, integer_range_error());
+          return;
+        }
+        count = static_cast<std::size_t>(*parsed);
+      }
+      const auto entries = store.packed_zpop(
+          command.args[0], count, command.type == CommandType::zpopmax);
+      append_packed_entries(out, entries, true, version,
+                            options.output_reserve_limit);
+      return;
+    }
+
+    case CommandType::zscan: {
+      const auto cursor = parse_u64(command.args[1]);
+      if (!cursor) {
+        resp::append_error(out, "ERR invalid cursor");
+        return;
+      }
+      std::string_view pattern;
+      bool has_pattern = false;
+      std::size_t count = 10;
+      for (std::size_t index = 2; index < command.args.size();) {
+        if (equals_ci(command.args[index], "MATCH") &&
+            index + 1 < command.args.size()) {
+          pattern = command.args[index + 1];
+          has_pattern = true;
+          index += 2;
+        } else if (equals_ci(command.args[index], "COUNT") &&
+                   index + 1 < command.args.size()) {
+          const auto parsed = parse_u64(command.args[index + 1]);
+          if (!parsed || *parsed == 0 ||
+              *parsed > std::numeric_limits<std::size_t>::max()) {
+            resp::append_error(out, syntax_error());
+            return;
+          }
+          count = static_cast<std::size_t>(*parsed);
+          index += 2;
+        } else {
+          resp::append_error(out, syntax_error());
+          return;
+        }
+      }
+      const auto result = store.packed_zscan(command.args[0], *cursor, count);
+      resp::append_array_header(out, 2);
+      resp::append_bulk_string(out, std::to_string(result.next));
+      std::size_t matches = 0;
+      for (const auto& entry : result.entries) {
+        if (!has_pattern || scan_glob_match(pattern, entry.member)) ++matches;
+      }
+      resp::append_array_header(out, matches * 2);
+      for (const auto& entry : result.entries) {
+        if (has_pattern && !scan_glob_match(pattern, entry.member)) continue;
+        resp::append_bulk_string(out, entry.member);
+        resp::append_bulk_double(out, entry.score);
+      }
+      return;
+    }
+
+    case CommandType::zscore: {
+      const auto result =
+          store.packed_zscore(command.args[0], kind, command.args[1]);
+      if (!result.valid_member) {
+        invalid_member();
+      } else if (!result.score) {
+        resp::append_null(out, version);
+      } else if (version == resp::Version::resp3) {
+        resp::append_double(out, *result.score);
+      } else {
+        resp::append_bulk_double(out, *result.score);
+      }
+      return;
+    }
+
+    default:
+      resp::append_error(out, "ERR unsupported packed zset command");
+      return;
   }
 }
 
@@ -3275,6 +3872,31 @@ void execute_command_into_impl(Store& store,
     (void)store.purge_if_expired(command.args[0], store.now_ms());
   }
 
+  // Qualified packed commands always select their named representation.
+  // Ordinary Z* commands select the configured default only when creating a
+  // key; once a key exists, its pinned representation wins. Aggregate stores
+  // replace their destination, so their output always follows the configured
+  // default while their inputs may use any zset representation.
+  std::optional<PackedZSetKind> effective_packed_zset_kind;
+  if (command.packed_zset_kind != 0) {
+    effective_packed_zset_kind =
+        static_cast<PackedZSetKind>(command.packed_zset_kind);
+  } else if (is_packed_zset_command(type)) {
+    const bool aggregate_store = type == CommandType::zinterstore ||
+                                 type == CommandType::zunionstore;
+    if (aggregate_store) {
+      effective_packed_zset_kind = store.default_packed_zset_kind();
+    } else if (!command.args.empty()) {
+      const auto actual = store.key_type(command.args[0]);
+      if (actual == KeyType::PackedZset) {
+        effective_packed_zset_kind =
+            store.packed_zset_kind(command.args[0]);
+      } else if (!actual) {
+        effective_packed_zset_kind = store.default_packed_zset_kind();
+      }
+    }
+  }
+
   // WRONGTYPE: a key holds at most one type (one unified namespace). A command
   // that operates on a specific type is rejected when the key already holds a
   // different one. SET / SETNX / MSET (clobber or create), MGET / DEL / EXISTS /
@@ -3282,13 +3904,36 @@ void execute_command_into_impl(Store& store,
   // exempt; GOBLIN.CAD / GOBLIN.CAEXPIRE / GOBLIN.CAS are not (they read the
   // value like GET).
   if (!command.args.empty()) {
-    if (const auto required = command_requires_type(type)) {
+    if (effective_packed_zset_kind) {
+      const auto requested = *effective_packed_zset_kind;
+      const bool destination_is_type_agnostic =
+          type == CommandType::zinterstore ||
+          type == CommandType::zunionstore;
+      if (!destination_is_type_agnostic) {
+        if (const auto actual = store.key_type(command.args[0]);
+            actual.has_value() && *actual != KeyType::PackedZset) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+        if (const auto actual_kind = store.packed_zset_kind(command.args[0]);
+            actual_kind && *actual_kind != requested) {
+          resp::append_error(out, kWrongType);
+          return;
+        }
+      }
+    } else if (const auto required = command_requires_type(type)) {
       if (const auto actual = store.key_type(command.args[0]);
           actual.has_value() && *actual != *required) {
         resp::append_error(out, kWrongType);
         return;
       }
     }
+  }
+
+  if (effective_packed_zset_kind) {
+    execute_packed_zset_command(store, command, *effective_packed_zset_kind,
+                                out, options);
+    return;
   }
 
   switch (type) {
@@ -3962,7 +4607,8 @@ void execute_command_into_impl(Store& store,
           (void)store.purge_if_expired(key, now);
         }
         const auto actual = store.key_type(key);
-        if (actual && *actual != KeyType::Zset) {
+        if (actual && *actual != KeyType::Zset &&
+            *actual != KeyType::PackedZset) {
           resp::append_error(out, kWrongType);
           return;
         }
@@ -5859,6 +6505,11 @@ void execute_command_into_impl(Store& store,
     case CommandType::goblin_memory: {
       if (const auto zstats = store.zset_memory_stats(command.args[0]); zstats) {
         out.append(memory_stats_response(*zstats, version));
+      } else if (const auto zstats =
+                     store.packed_zset_memory_stats(command.args[0]);
+                 zstats) {
+        out.append(fields_response(packed_zset_memory_stats_fields(*zstats),
+                                   version));
       } else if (const auto hstats = store.hash_memory_stats(command.args[0]);
                  hstats) {
         out.append(hash_memory_stats_response(*hstats, version));

@@ -274,6 +274,9 @@ struct Command {
   // so execute can select hash vs array implementation without re-scanning.
   // 0 = default store policy, 1 = non-RT qualified family, 2 = Realtime.
   std::uint8_t hash_implementation_tag{0};
+  // 0 = ordinary ZSET command; otherwise PackedZSetKind's underlying value,
+  // selected by GOBLIN.PACKED_<KEY>_<SCORE>.<command>.
+  std::uint8_t packed_zset_kind{0};
 };
 
 struct CommandParseResult {

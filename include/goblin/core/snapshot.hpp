@@ -57,7 +57,8 @@ inline constexpr std::uint32_t kOldestReadableFormatVersion = 2;
 // The snapshot body is a sequence of typed sections so each Redis value type
 // gets its own section, and a reader can skip a section type it does not
 // recognize (every section's entries are uniformly length-framed). Zsets,
-// strings, hashes, lists, sets, arrays, and TTLs currently have emitted sections.
+// zsets, packed zsets, strings, hashes, lists, sets, arrays, TTLs, and replication
+// metadata currently have emitted sections.
 enum class SectionType : std::uint32_t {
   Zset = 1,
   String = 2,
@@ -67,6 +68,7 @@ enum class SectionType : std::uint32_t {
   Ttl = 6,
   Array = 7,
   Replication = 8,
+  PackedZset = 9,
 };
 
 // Each section body is a stream of instructions -- a tiny per-family bytecode --
@@ -80,6 +82,11 @@ inline constexpr std::uint8_t kOpEnd = 0x00;
 enum class ZsetOpcode : std::uint8_t {
   End = kOpEnd,
   Zset = 0x01,  // operands: key, options, canonical members, optional accelerator
+};
+
+enum class PackedZsetOpcode : std::uint8_t {
+  End = kOpEnd,
+  PackedZset = 0x01,  // operands: key, kind, canonical score/member pairs
 };
 
 // Bump when the ZSET accelerator (member-index dump) layout or the swiss-table

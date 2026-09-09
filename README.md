@@ -139,6 +139,11 @@ Source: [github.com/adamdeprince/goblin-core](https://github.com/adamdeprince/go
 
 See the [sorted-set command reference](docs/commands/sorted-sets.md) for option
 compatibility, score-bound syntax, reply shapes, and storage behavior.
+
+Every sorted-set command above is also available through the six fixed-width
+`GOBLIN.PACKED_(INT32|INT64|UUID)_(FLOAT32|FLOAT64).*` families. These store
+members and scores in binary-width-specific Swiss-table/B+ tree layouts; see
+[Fixed-width packed sorted sets](docs/packed-zsets.md).
 - `HSET key field value [field value ...]`
 - `HMSET key field value [field value ...]`
 - `HSETNX key field value`
@@ -592,6 +597,18 @@ field index. A smaller factor keeps the never-compacted load factor high (memory
 at the cost of more frequent rehashes during writes; `2.0` is the classic
 doubling that favors write throughput.
 
+`--packed-zset-merge-exponent <k>` sets each packed B+ tree leaf's dirty-tail
+threshold to `ceil(leaf_capacity ** k)`, with `k` in `[0, 1]` and a default of
+`0.5`. Reads never trigger maintenance; a mutation compacts only the touched
+leaf when its threshold is reached. See
+[fixed-width packed sorted sets](docs/packed-zsets.md).
+
+`--zset-implementation standard|packed-int32-float32|packed-int32-float64|packed-int64-float32|packed-int64-float64|packed-uuid-float32|packed-uuid-float64`
+selects the representation created by unqualified sorted-set commands. It
+defaults to `standard`. Existing and restored keys retain their representation;
+ordinary commands follow that pinned representation, while `ZINTERSTORE` and
+`ZUNIONSTORE` create their destination in the selected default.
+
 `--hash-implementation efficient|rt` selects the representation created by
 standard hash commands. `--real-time` selects RT hashes and the incremental
 linear-hash keyspace index together. Existing hashes keep their implementation;
@@ -799,7 +816,7 @@ Build the server from a release checkout:
 ```sh
 git clone https://github.com/adamdeprince/goblin-core.git
 cd goblin-core
-git checkout v0.10.4
+git checkout v0.10.6
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release
 ctest --test-dir build-release --output-on-failure

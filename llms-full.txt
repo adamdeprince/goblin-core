@@ -190,6 +190,17 @@ Set these on the command line at startup.
   detected). Logs how many members/keys loaded. If the file is missing or
   invalid the server exits non-zero rather than starting empty. See "Persistence"
   and "Migrating from Redis".
+- `--zset-implementation IMPLEMENTATION` — representation used when an ordinary
+  sorted-set command creates a key. Default `standard`. The fixed-width choices
+  are `packed-int32-float32`, `packed-int32-float64`,
+  `packed-int64-float32`, `packed-int64-float64`,
+  `packed-uuid-float32`, and `packed-uuid-float64`. Existing and restored keys
+  retain their original representation; ordinary commands discover it
+  automatically.
+- `--packed-zset-merge-exponent K` — compact a packed B+ tree leaf when its
+  dirty tail reaches `ceil(leaf_capacity ** K)` records. `K` is in `[0, 1]`
+  and defaults to `0.5`. A larger threshold permits a larger local tail between
+  merges; reads reconcile the leaves they visit and never trigger maintenance.
 - `--member-index-growth FACTOR` — how much the member hash index grows on each
   rehash, for both the zset member index and the hash field index. Default
   `2^0.25` (about `1.19`). A smaller factor keeps the index fuller (less RAM)

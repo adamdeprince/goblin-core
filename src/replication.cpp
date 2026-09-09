@@ -83,11 +83,25 @@ void append_current_zset_member(const Store& store, std::string_view key,
                                 std::vector<ReplicationMutation>& out) {
   const std::string compact_key = key_for({"ZADD", key, member});
   const auto score = store.zscore(key, member);
+  std::string qualified_name;
+  if (const auto kind = store.packed_zset_kind(key)) {
+    qualified_name = "GOBLIN.PACKED_";
+    qualified_name.append(packed_zset_kind_name(*kind));
+    qualified_name.append(score ? ".ZADD" : ".ZREM");
+  }
   if (score) {
     const std::string text = format_score(*score);
-    out.push_back(command_mutation({"ZADD", key, text, member}, compact_key));
+    out.push_back(command_mutation(
+        {qualified_name.empty() ? std::string_view("ZADD")
+                                : std::string_view(qualified_name),
+         key, text, member},
+        compact_key));
   } else {
-    out.push_back(command_mutation({"ZREM", key, member}, compact_key));
+    out.push_back(command_mutation(
+        {qualified_name.empty() ? std::string_view("ZREM")
+                                : std::string_view(qualified_name),
+         key, member},
+        compact_key));
   }
 }
 
@@ -346,6 +360,16 @@ std::vector<ReplicationMutation> build_replication_mutations(
     const Store& store, const Command& command, std::string_view response) {
   std::vector<ReplicationMutation> result;
   if (response_is_error(response)) return result;
+
+  // Packed zsets have representation-qualified command names and binary member
+  // identity. Replaying the original qualified mutation preserves both; the
+  // ordinary ZADD/ZREM post-state materializer would address the wrong key type.
+  if (command.packed_zset_kind != 0) {
+    auto fields = command_fields(command);
+    result.push_back(
+        {.kafka_key = {}, .payload = encode_resp2_command(fields)});
+    return result;
+  }
 
   const auto type = command.type;
   switch (type) {

@@ -1,0 +1,7 @@
+goblin-standard: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int32-float32: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+redis-8.8: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+redis-7.2.4: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+valkey-9.1: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+dragonfly: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+all engines contain the same page_id -> edit-count mapping

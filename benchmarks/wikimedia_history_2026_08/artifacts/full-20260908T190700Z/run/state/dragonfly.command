@@ -1,0 +1,1 @@
+/usr/local/bin/dragonfly --unixsocket=/tmp/wiki-1689911-1689916-1788894864-dragonfly.sock --bind=127.0.0.1 --port 16409 --proactor_threads=1 --maxmemory=0 --dir /home/adam/wiki2/wikimedia-full-20260908T190700Z/run/state/dragonfly-data 

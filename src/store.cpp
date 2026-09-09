@@ -487,28 +487,23 @@ ZAddMutation ZSet::add(double score, std::string_view member,
     ensure_unique_mutable_state(WriteKind::ScoreUpdate);
 
     const auto member_snapshot = member_storage()->snapshot(member_id);
-    const bool rescored = entries().rescore(
-        ZSetScoreEntry{.score = stored_score, .member_id = member_id,
-                       .prefix = zset_member_prefix(member)},
-        ZSetScoreEntry{.score = target_score, .member_id = member_id,
-                       .prefix = zset_member_prefix(member)});
-    assert(rescored);
-    if (!rescored) {
-      return {.status = ZAddStatus::Skipped};
-    }
     try {
+      // Prepare the member score/cache first. The score index reserves before
+      // moving the entry, so failure only needs this allocation-free snapshot
+      // restore, never another potentially allocating rescore.
       member_storage()->set_score(member_id, target_score);
-    } catch (...) {
-      const bool restored = entries().rescore(
-          ZSetScoreEntry{.score = target_score,
-                         .member_id = member_id,
+      const bool rescored = entries().rescore(
+          ZSetScoreEntry{.score = stored_score, .member_id = member_id,
                          .prefix = zset_member_prefix(member)},
-          ZSetScoreEntry{.score = stored_score,
-                         .member_id = member_id,
+          ZSetScoreEntry{.score = target_score, .member_id = member_id,
                          .prefix = zset_member_prefix(member)});
+      assert(rescored);
+      if (!rescored) {
+        member_storage()->restore_snapshot(member_id, member_snapshot);
+        return {.status = ZAddStatus::Skipped};
+      }
+    } catch (...) {
       member_storage()->restore_snapshot(member_id, member_snapshot);
-      assert(restored);
-      (void)restored;
       throw;
     }
     return {.status = ZAddStatus::Applied,
@@ -1083,6 +1078,11 @@ Store::Store(StoreOptions options)
                 options.real_time ||
                     options.hash_implementation ==
                         HashImplementation::Realtime) {
+  if (!valid_packed_zset_merge_exponent(
+          options_.packed_zset_merge_exponent)) {
+    throw std::invalid_argument(
+        "packed zset merge exponent must be between 0 and 1");
+  }
   memory_ceiling_.bind(this, [](const void* context) noexcept {
     return static_cast<const Store*>(context)->memory_report().used_memory;
   });
@@ -1223,6 +1223,357 @@ long long Store::zrem(std::string_view key, std::span<const std::string_view> me
   return removed;
 }
 
+namespace {
+
+using AnyZSetSource = std::variant<const ZSet*, const PackedZSet*>;
+
+[[nodiscard]] std::size_t zset_source_size(
+    const AnyZSetSource& source) noexcept {
+  if (const auto* standard = std::get_if<const ZSet*>(&source)) {
+    return (*standard)->size();
+  }
+  return std::get<const PackedZSet*>(source)->size();
+}
+
+[[nodiscard]] std::optional<double> zset_source_score(
+    const AnyZSetSource& source, std::string_view member) {
+  if (const auto* standard = std::get_if<const ZSet*>(&source)) {
+    return (*standard)->score(member);
+  }
+  return std::get<const PackedZSet*>(source)->score(member).score;
+}
+
+template <class Fn>
+void for_each_zset_source(const AnyZSetSource& source, Fn&& fn) {
+  if (const auto* standard = std::get_if<const ZSet*>(&source)) {
+    (*standard)->for_range_values(0, -1, std::forward<Fn>(fn));
+    return;
+  }
+  const auto entries =
+      std::get<const PackedZSet*>(source)->range_by_rank(0, -1);
+  for (const auto& entry : entries) {
+    fn(entry.member, entry.score);
+  }
+}
+
+[[nodiscard]] double zset_contribution(double score, double weight) noexcept {
+  return score * weight;
+}
+
+[[nodiscard]] double zset_combine(double current, double contribution,
+                                  ZSetAggregate aggregate) noexcept {
+  switch (aggregate) {
+    case ZSetAggregate::Sum:
+      return current + contribution;
+    case ZSetAggregate::Min:
+      return std::min(current, contribution);
+    case ZSetAggregate::Max:
+      return std::max(current, contribution);
+  }
+  return current;
+}
+
+}  // namespace
+
+std::optional<PackedZSetKind> Store::packed_zset_kind(
+    std::string_view key) const noexcept {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? std::nullopt
+                         : std::optional<PackedZSetKind>{zset->kind()};
+}
+
+PackedZSetAddResult Store::packed_zadd(
+    std::string_view key, PackedZSetKind kind,
+    std::span<const PackedZSetAddItem> items, PackedZSetAddOptions options) {
+  if (items.empty()) return {};
+  if (auto* existing = find_packed_zset(key); existing != nullptr) {
+    if (existing->kind() != kind) {
+      throw std::logic_error("packed_zadd representation mismatch");
+    }
+    auto result = existing->add(items, options);
+    if (result.changed != 0) signal_key_modified(key);
+    return result;
+  }
+  if (keyspace_.contains(key)) {
+    throw std::logic_error("packed_zadd on a key of another type");
+  }
+
+  // Mutate a detached object first. Invalid members/scores and XX-only misses
+  // therefore never leave an empty key behind.
+  PackedZSet prepared(kind, options_.packed_zset_merge_exponent);
+  auto result = prepared.add(items, options);
+  if (!result.invalid_member && !result.invalid_score && !prepared.empty()) {
+    (void)keyspace_.place_loaded_packed_zset(key, std::move(prepared));
+    signal_key_modified(key);
+  }
+  return result;
+}
+
+PackedZSetRemoveResult Store::packed_zrem(
+    std::string_view key, PackedZSetKind kind,
+    std::span<const std::string_view> members) {
+  auto* zset = find_packed_zset(key);
+  if (zset == nullptr) {
+    for (const auto member : members) {
+      if (!PackedZSet::valid_member(kind, member)) {
+        return {.invalid_member = true};
+      }
+    }
+    return {};
+  }
+  if (zset->kind() != kind) {
+    throw std::logic_error("packed_zrem representation mismatch");
+  }
+  auto result = zset->remove(members);
+  if (result.removed != 0 && !zset->empty()) signal_key_modified(key);
+  if (result.removed != 0 && zset->empty()) (void)erase_key(key);
+  return result;
+}
+
+long long Store::packed_zcard(std::string_view key) const {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? 0 : static_cast<long long>(zset->size());
+}
+
+long long Store::packed_zcount(std::string_view key, double min,
+                               bool min_exclusive, double max,
+                               bool max_exclusive) const {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr
+             ? 0
+             : static_cast<long long>(
+                   zset->count(min, min_exclusive, max, max_exclusive));
+}
+
+PackedZSetLookup Store::packed_zscore(std::string_view key,
+                                      PackedZSetKind kind,
+                                      std::string_view member) const {
+  if (!PackedZSet::valid_member(kind, member)) {
+    return {.valid_member = false};
+  }
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? PackedZSetLookup{} : zset->score(member);
+}
+
+PackedZSetRankLookup Store::packed_zrank(std::string_view key,
+                                         PackedZSetKind kind,
+                                         std::string_view member,
+                                         bool reverse) const {
+  if (!PackedZSet::valid_member(kind, member)) {
+    return {.valid_member = false};
+  }
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? PackedZSetRankLookup{}
+                         : zset->rank(member, reverse);
+}
+
+std::vector<PackedZSetEntry> Store::packed_zrange_by_rank(
+    std::string_view key, long long start, long long stop, bool reverse) const {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? std::vector<PackedZSetEntry>{}
+                         : zset->range_by_rank(start, stop, reverse);
+}
+
+std::vector<PackedZSetEntry> Store::packed_zrange_by_score(
+    std::string_view key, double min, bool min_exclusive, double max,
+    bool max_exclusive, bool reverse, std::size_t offset,
+    std::optional<std::size_t> limit) const {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr
+             ? std::vector<PackedZSetEntry>{}
+             : zset->range_by_score(min, min_exclusive, max, max_exclusive,
+                                    reverse, offset, limit);
+}
+
+long long Store::packed_zremrangebyscore(std::string_view key, double min,
+                                         bool min_exclusive, double max,
+                                         bool max_exclusive) {
+  auto* zset = find_packed_zset(key);
+  if (zset == nullptr) return 0;
+  const auto removed =
+      zset->remove_by_score(min, min_exclusive, max, max_exclusive);
+  if (removed != 0 && !zset->empty()) signal_key_modified(key);
+  if (removed != 0 && zset->empty()) (void)erase_key(key);
+  return static_cast<long long>(removed);
+}
+
+long long Store::packed_zremrangebyrank(std::string_view key, long long start,
+                                        long long stop) {
+  auto* zset = find_packed_zset(key);
+  if (zset == nullptr) return 0;
+  const auto removed = zset->remove_by_rank(start, stop);
+  if (removed != 0 && !zset->empty()) signal_key_modified(key);
+  if (removed != 0 && zset->empty()) (void)erase_key(key);
+  return static_cast<long long>(removed);
+}
+
+ZStoreResult Store::packed_zunionstore(
+    std::string_view destination, PackedZSetKind kind,
+    std::span<const std::string_view> keys, std::span<const double> weights,
+    ZSetAggregate aggregate) {
+  SwissTable<std::string, double, StringTableHash, StringTableEqual> totals;
+  bool invalid_score = false;
+  for (std::size_t index = 0; index < keys.size() && !invalid_score; ++index) {
+    std::optional<AnyZSetSource> source;
+    if (const auto* standard = find_zset(keys[index])) {
+      source = standard;
+    } else if (const auto* packed = find_packed_zset(keys[index])) {
+      source = packed;
+    }
+    if (!source) continue;
+    const double weight = weights.empty() ? 1.0 : weights[index];
+    for_each_zset_source(*source, [&](std::string_view member, double score) {
+      if (invalid_score) return;
+      const double contribution = zset_contribution(score, weight);
+      if (std::isnan(contribution)) {
+        invalid_score = true;
+        return;
+      }
+      auto [current, inserted] = totals.try_emplace(
+          std::string(member), contribution);
+      if (!inserted) {
+        *current = zset_combine(*current, contribution, aggregate);
+        if (std::isnan(*current)) {
+          invalid_score = true;
+        }
+      }
+    });
+  }
+  if (invalid_score) return {.invalid_score = true};
+
+  PackedZSet merged(kind, options_.packed_zset_merge_exponent);
+  std::vector<PackedZSetAddItem> items;
+  reserve_memory_vector(items, totals.size());
+  totals.for_each([&items](const auto& entry) {
+    items.push_back({entry.second, entry.first});
+  });
+  const auto add_result = merged.add(items);
+  if (add_result.invalid_member) return {.invalid_member = true};
+  if (add_result.invalid_score) return {.invalid_score = true};
+
+  (void)erase_key(destination);
+  const auto cardinality = static_cast<long long>(merged.size());
+  if (!merged.empty()) {
+    (void)keyspace_.place_loaded_packed_zset(destination, std::move(merged));
+    signal_key_modified(destination);
+  }
+  return {.cardinality = cardinality};
+}
+
+ZStoreResult Store::packed_zinterstore(
+    std::string_view destination, PackedZSetKind kind,
+    std::span<const std::string_view> keys, std::span<const double> weights,
+    ZSetAggregate aggregate) {
+  std::vector<AnyZSetSource> sources;
+  reserve_memory_vector(sources, keys.size());
+  std::size_t driver_index = 0;
+  std::size_t driver_size = std::numeric_limits<std::size_t>::max();
+  for (std::size_t index = 0; index < keys.size(); ++index) {
+    std::optional<AnyZSetSource> source;
+    if (const auto* standard = find_zset(keys[index])) {
+      source = standard;
+    } else if (const auto* packed = find_packed_zset(keys[index])) {
+      source = packed;
+    }
+    if (!source) {
+      (void)erase_key(destination);
+      return {};
+    }
+    sources.push_back(*source);
+    if (zset_source_size(*source) < driver_size) {
+      driver_index = index;
+      driver_size = zset_source_size(*source);
+    }
+  }
+
+  PackedZSet intersection(kind, options_.packed_zset_merge_exponent);
+  bool invalid_score = false;
+  bool invalid_member = false;
+  if (!sources.empty()) {
+    for_each_zset_source(sources[driver_index],
+                        [&](std::string_view member, double) {
+      if (invalid_score || invalid_member) return;
+      bool present = true;
+      bool first = true;
+      double combined = 0.0;
+      for (std::size_t index = 0; index < sources.size(); ++index) {
+        const auto score = zset_source_score(sources[index], member);
+        if (!score) {
+          present = false;
+          break;
+        }
+        const double weight = weights.empty() ? 1.0 : weights[index];
+        const double contribution = zset_contribution(*score, weight);
+        if (std::isnan(contribution)) {
+          invalid_score = true;
+          break;
+        }
+        combined = first ? contribution
+                         : zset_combine(combined, contribution, aggregate);
+        first = false;
+      }
+      if (!present) return;
+      const PackedZSetAddItem item{combined, member};
+      const auto result = intersection.add(std::span(&item, 1));
+      if (result.invalid_member) {
+        invalid_member = true;
+        return;
+      }
+      if (result.invalid_score) {
+        invalid_score = true;
+      }
+    });
+  }
+  if (invalid_member) return {.invalid_member = true};
+  if (invalid_score) return {.invalid_score = true};
+
+  (void)erase_key(destination);
+  const auto cardinality = static_cast<long long>(intersection.size());
+  if (!intersection.empty()) {
+    (void)keyspace_.place_loaded_packed_zset(destination,
+                                             std::move(intersection));
+    signal_key_modified(destination);
+  }
+  return {.cardinality = cardinality};
+}
+
+std::vector<PackedZSetEntry> Store::packed_zpop(std::string_view key,
+                                                std::size_t count,
+                                                bool maximum) {
+  auto* zset = find_packed_zset(key);
+  if (zset == nullptr || count == 0) return {};
+  auto result = zset->pop(count, maximum);
+  if (!result.empty() && !zset->empty()) signal_key_modified(key);
+  if (!result.empty() && zset->empty()) (void)erase_key(key);
+  return result;
+}
+
+PackedZSetScanResult Store::packed_zscan(std::string_view key,
+                                         std::uint64_t cursor,
+                                         std::size_t count) const {
+  const auto* zset = find_packed_zset(key);
+  return zset == nullptr ? PackedZSetScanResult{} : zset->scan(cursor, count);
+}
+
+std::optional<PackedZSetMemoryStats> Store::packed_zset_memory_stats(
+    std::string_view key) const {
+  const auto* zset = find_packed_zset(key);
+  if (zset == nullptr) return std::nullopt;
+  return PackedZSetMemoryStats{
+      .kind = zset->kind(),
+      .member_count = zset->size(),
+      .sorted_entries = zset->sorted_entry_count(),
+      .unsorted_entries = zset->unsorted_size(),
+      .leaf_capacity = zset->leaf_capacity(),
+      .leaf_count = zset->leaf_count(),
+      .branch_count = zset->branch_count(),
+      .tree_height = zset->tree_height(),
+      .merge_exponent = zset->merge_exponent(),
+      .merge_threshold = zset->merge_threshold(),
+      .total_allocated_bytes = zset->allocated_bytes(),
+  };
+}
+
 std::vector<ZSetOwnedEntry> Store::zpop(std::string_view key,
                                        std::size_t count, bool maximum) {
   std::vector<ZSetOwnedEntry> popped;
@@ -1301,27 +1652,6 @@ long long Store::zremrangebyrank(std::string_view key, long long start,
   return static_cast<long long>(members.size());
 }
 
-namespace {
-
-[[nodiscard]] double zset_contribution(double score, double weight) noexcept {
-  return score * weight;
-}
-
-[[nodiscard]] double zset_combine(double current, double contribution,
-                                  ZSetAggregate aggregate) noexcept {
-  switch (aggregate) {
-    case ZSetAggregate::Sum:
-      return current + contribution;
-    case ZSetAggregate::Min:
-      return std::min(current, contribution);
-    case ZSetAggregate::Max:
-      return std::max(current, contribution);
-  }
-  return current;
-}
-
-}  // namespace
-
 ZStoreResult Store::zunionstore(std::string_view destination,
                                 std::span<const std::string_view> keys,
                                 std::span<const double> weights,
@@ -1329,12 +1659,15 @@ ZStoreResult Store::zunionstore(std::string_view destination,
   ZSet merged(zset_options());
   bool invalid_score = false;
   for (std::size_t i = 0; i < keys.size() && !invalid_score; ++i) {
-    const auto* source = find_zset(keys[i]);
-    if (source == nullptr) {
-      continue;
+    std::optional<AnyZSetSource> source;
+    if (const auto* standard = find_zset(keys[i])) {
+      source = standard;
+    } else if (const auto* packed = find_packed_zset(keys[i])) {
+      source = packed;
     }
+    if (!source) continue;
     const double weight = weights.empty() ? 1.0 : weights[i];
-    source->for_range_values(0, -1, [&](std::string_view member, double score) {
+    for_each_zset_source(*source, [&](std::string_view member, double score) {
       if (invalid_score) {
         return;
       }
@@ -1366,28 +1699,33 @@ ZStoreResult Store::zinterstore(std::string_view destination,
                                 std::span<const std::string_view> keys,
                                 std::span<const double> weights,
                                 ZSetAggregate aggregate) {
-  std::vector<const ZSet*> sources;
+  std::vector<AnyZSetSource> sources;
   sources.reserve(keys.size());
   std::size_t driver_index = 0;
   std::size_t driver_size = std::numeric_limits<std::size_t>::max();
   for (std::size_t i = 0; i < keys.size(); ++i) {
-    const auto* source = find_zset(keys[i]);
-    if (source == nullptr) {
+    std::optional<AnyZSetSource> source;
+    if (const auto* standard = find_zset(keys[i])) {
+      source = standard;
+    } else if (const auto* packed = find_packed_zset(keys[i])) {
+      source = packed;
+    }
+    if (!source) {
       (void)erase_key(destination);
       return {};
     }
-    sources.push_back(source);
-    if (source->size() < driver_size) {
+    sources.push_back(*source);
+    if (zset_source_size(*source) < driver_size) {
       driver_index = i;
-      driver_size = source->size();
+      driver_size = zset_source_size(*source);
     }
   }
 
   ZSet intersection(zset_options());
   bool invalid_score = false;
   if (!sources.empty()) {
-    sources[driver_index]->for_range_values(
-        0, -1, [&](std::string_view member, double) {
+    for_each_zset_source(
+        sources[driver_index], [&](std::string_view member, double) {
           if (invalid_score) {
             return;
           }
@@ -1395,7 +1733,7 @@ ZStoreResult Store::zinterstore(std::string_view destination,
           double combined = 0.0;
           bool first = true;
           for (std::size_t i = 0; i < sources.size(); ++i) {
-            const auto score = sources[i]->score(member);
+            const auto score = zset_source_score(sources[i], member);
             if (!score) {
               present = false;
               break;
@@ -2811,6 +3149,24 @@ CopyResult Store::copy(std::string_view source, std::string_view destination,
       }
       break;
     }
+    case KeyType::PackedZset: {
+      const auto* original = find_packed_zset(source);
+      PackedZSet clone(original->kind(), options_.packed_zset_merge_exponent);
+      const auto entries = original->range_by_rank(0, -1);
+      std::vector<PackedZSetAddItem> items;
+      reserve_memory_vector(items, entries.size());
+      for (const auto& entry : entries) {
+        items.push_back({entry.score, entry.member});
+      }
+      const auto result = clone.add(items);
+      assert(!result.invalid_member && !result.invalid_score);
+      (void)erase_key(destination);
+      (void)keyspace_.place_loaded_packed_zset(destination, std::move(clone));
+      if (expiry) {
+        ttl_.set(*keyspace_.id_of(destination), *expiry);
+      }
+      break;
+    }
   }
   signal_key_modified(destination);
   return CopyResult::Copied;
@@ -2939,12 +3295,13 @@ long long Store::zcount(std::string_view key, double min, bool min_exclusive,
 
 std::optional<double> Store::zscore(std::string_view key,
                                     std::string_view member) const {
-  const auto* zset = find_zset(key);
-  if (zset == nullptr) {
-    return std::nullopt;
+  if (const auto* zset = find_zset(key)) {
+    return zset->score(member);
   }
-
-  return zset->score(member);
+  if (const auto* packed = find_packed_zset(key)) {
+    return packed->score(member).score;
+  }
+  return std::nullopt;
 }
 
 std::optional<std::size_t> Store::zrank(std::string_view key,
@@ -3025,6 +3382,13 @@ std::optional<std::size_t> Store::optimize(std::string_view key,
     const auto before = zset->memory_stats(zset_options()).total_allocated_bytes;
     zset->compact(member_index_density);
     const auto after = zset->memory_stats(zset_options()).total_allocated_bytes;
+    return before > after ? before - after : 0;
+  }
+  if (auto* packed = find_packed_zset(key); packed != nullptr) {
+    const auto before = packed->allocated_bytes();
+    packed->force_merge();
+    release_unused_heap_pages();
+    const auto after = packed->allocated_bytes();
     return before > after ? before - after : 0;
   }
   if (auto* hash = find_hash(key); hash != nullptr) {
@@ -3239,7 +3603,7 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   writer.bytes(snapshot::kMagic, sizeof(snapshot::kMagic));
   writer.u32(snapshot::kFormatVersion);
   writer.u32(0);  // file flags (reserved)
-  writer.u32(8);  // data families plus replication metadata
+  writer.u32(9);  // data families plus replication metadata
   // ZSET section header: family, accelerator version (0 = this snapshot carries
   // no accelerator), and the hash identity the accelerator's swiss dump was
   // built with (a loader with a different std::hash must rebuild from canonical
@@ -3270,6 +3634,46 @@ void Store::save(std::ostream& out, bool with_accelerator) const {
   keyspace_.for_each_zset(emit_zset);
 
   const char end = static_cast<char>(snapshot::kOpEnd);
+  out.write(&end, 1);
+
+  // PACKED ZSET section: representation kind plus canonical logical pairs.
+  // The append log is deliberately merged away by the logical range walk; a
+  // loader rebuilds both the binary Swiss map and its single score vector.
+  std::string packed_zset_header;
+  snapshot::Writer packed_zset_writer(packed_zset_header);
+  packed_zset_writer.u32(
+      static_cast<std::uint32_t>(snapshot::SectionType::PackedZset));
+  packed_zset_writer.u32(0);
+  packed_zset_writer.u64(0);
+  out.write(packed_zset_header.data(),
+            static_cast<std::streamsize>(packed_zset_header.size()));
+
+  auto emit_packed_zset = [&out, &operands](std::string_view key,
+                                             const PackedZSet& zset) {
+    operands.clear();
+    snapshot::Writer operand_writer(operands);
+    operand_writer.str(key);
+    operand_writer.u8(static_cast<std::uint8_t>(zset.kind()));
+    operand_writer.u64(static_cast<std::uint64_t>(zset.size()));
+    const auto entries = zset.range_by_score(
+        -std::numeric_limits<double>::infinity(), false,
+        std::numeric_limits<double>::infinity(), false);
+    for (const auto& entry : entries) {
+      operand_writer.f64(entry.score);
+      operand_writer.str(entry.member);
+    }
+
+    std::string instruction;
+    snapshot::Writer instruction_writer(instruction);
+    instruction_writer.u8(static_cast<std::uint8_t>(
+        snapshot::PackedZsetOpcode::PackedZset));
+    instruction_writer.u64(operands.size());
+    instruction_writer.u32(snapshot::checksum(operands));
+    out.write(instruction.data(),
+              static_cast<std::streamsize>(instruction.size()));
+    out.write(operands.data(), static_cast<std::streamsize>(operands.size()));
+  };
+  keyspace_.for_each_packed_zset(emit_packed_zset);
   out.write(&end, 1);
 
   // HASH section: header, then a stream of OP_HASH instructions, then OP_END.
@@ -3737,6 +4141,9 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
 
       const bool is_zset =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Zset);
+      const bool is_packed_zset =
+          section_type ==
+          static_cast<std::uint32_t>(snapshot::SectionType::PackedZset);
       const bool is_hash =
           section_type == static_cast<std::uint32_t>(snapshot::SectionType::Hash);
       const bool is_string =
@@ -3790,6 +4197,42 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
               stats.used_accelerator || zset_use_accelerator;
           stats.members += zset.size();
           place_loaded_zset(std::move(key), std::move(zset));
+          ++stats.keys;
+        } else if (
+            is_packed_zset &&
+            opcode == static_cast<std::uint8_t>(
+                          snapshot::PackedZsetOpcode::PackedZset)) {
+          snapshot::Reader reader(operands);
+          auto key = std::string(reader.str());
+          const auto encoded_kind = reader.u8();
+          if (encoded_kind <
+                  static_cast<std::uint8_t>(PackedZSetKind::Int32Float32) ||
+              encoded_kind >
+                  static_cast<std::uint8_t>(PackedZSetKind::UuidFloat64)) {
+            throw snapshot::snapshot_error(
+                "snapshot packed zset kind is invalid");
+          }
+          const auto count = reader.u64();
+          if (count > std::numeric_limits<std::uint32_t>::max()) {
+            throw snapshot::snapshot_error("snapshot packed zset is too large");
+          }
+          std::vector<PackedZSetAddItem> items;
+          reserve_memory_vector(items, static_cast<std::size_t>(count));
+          for (std::uint64_t index = 0; index < count; ++index) {
+            const auto score = reader.f64();
+            const auto member = reader.str();
+            items.push_back({score, member});
+          }
+          PackedZSet zset(static_cast<PackedZSetKind>(encoded_kind),
+                          options_.packed_zset_merge_exponent);
+          const auto result = zset.add(items);
+          if (result.invalid_member || result.invalid_score ||
+              zset.size() != count) {
+            throw snapshot::snapshot_error(
+                "snapshot packed zset canonical data is invalid");
+          }
+          stats.members += zset.size();
+          place_loaded_packed_zset(std::move(key), std::move(zset));
           ++stats.keys;
         } else if (is_hash && opcode == static_cast<std::uint8_t>(
                                             snapshot::HashOpcode::Hash)) {
@@ -3943,6 +4386,11 @@ StoreMemoryStats Store::memory_stats() const noexcept {
     stats.overflow_zset_allocated_bytes +=
         zset.memory_stats(zopts).total_allocated_bytes;
   });
+  keyspace_.for_each_packed_zset(
+      [&stats](std::string_view, const PackedZSet& zset) {
+        ++stats.overflow_zset_count;
+        stats.overflow_zset_allocated_bytes += zset.allocated_bytes();
+      });
   // The unified keyspace no longer splits zsets into inline/overflow tables; the
   // arena + index + object/type table overhead lands in one figure.
   stats.overflow_zset_capacity = keyspace_.size();
@@ -3968,6 +4416,10 @@ MemoryReport Store::memory_report() const noexcept {
     }
     r.reclaimable_bytes += s.member_storage_dead_bytes;
   });
+  keyspace_.for_each_packed_zset(
+      [&r](std::string_view, const PackedZSet& zset) {
+        r.used_memory += zset.allocated_bytes();
+      });
   // Full hashes own heap state and a field-value arena. Compact hash blobs live
   // in KeyspaceStorage and are therefore already included in its footprint.
   keyspace_.for_each_hash([&r](std::string_view, const Hash& hash) {

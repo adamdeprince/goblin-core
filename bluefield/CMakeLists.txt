@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(goblin-core-bluefield
-  VERSION 0.10.4
+  VERSION 0.10.6
   DESCRIPTION "Low-latency RESP Pub/Sub edge for NVIDIA BlueField"
   LANGUAGES CXX)
 

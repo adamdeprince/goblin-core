@@ -1,0 +1,21 @@
+                   .--::--.                   
+   :+*=:          =@@@@@@@@=          :+*+:   
+  %@@@@@@%*=.     =@@@@@@@@-     .=*%@@@@@@#  
+  @@@@@@@@@@@@#+-. .%@@@@#. .-+#@@@@@@@@@@@%  
+  -@@@@@@@@@@@@@@@@*:#@@#:*@@@@@@@@@@@@@@@@-  
+    :+*********####-%@%%@%-####********++.    
+   .%@@@@@@@@@@@@@%:@@@@@@:@@@@@@@@@@@@@@%    
+   .@@@@@@@@%*+-:   =@@@@=  .:-+*%@@@@@@@%.   
+     =*+-:           ###*          .:-+*=     
+                     %@@%                     
+                     *@@*                     
+                     +@@=                     
+                     :##:                     
+                     :@@:                     
+                      @@                      
+                      ..                      
+* Logs will be written to the first available of the following paths:
+/tmp/dragonfly.*
+* For the available flags type dragonfly [--help | --helpfull]
+* Documentation can be found at: https://www.dragonflydb.io/docs
+mimalloc: warning: thread 0x75D533B3C6C0: unable to allocate aligned OS memory directly, fall back to over-allocation (size: 0x40400000 bytes, address: 0x75D4EBC00000, alignment: 0x2000000, commit: 1)

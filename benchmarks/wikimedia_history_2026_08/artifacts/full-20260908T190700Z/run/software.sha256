@@ -1,0 +1,4 @@
+9513ff0e26399b0c68d6b84032a95e4724cdb6e0d2f4c9def984033f5c3b4e8d  /home/adam/wiki2/wikimedia-full-20260908T190700Z/bin/goblin-core
+85a0dee4620e63c29525d5ec9d98562f38e2e9c2fbd4a1e6615cce6f717708d7  /home/adam/wiki2/wikimedia-full-20260908T190700Z/harness/run.sh
+fb0e0aec75174a70616abe50f870b4b3f56f76a7fb65d81d5ebadafe45eb4af7  /home/adam/wiki2/wikimedia-full-20260908T190700Z/harness/zset_digest.py
+285dd607890d576ff3abd49cbccbf98a44e359e1f2cfba8914c41024adeb4b73  /home/adam/wiki2/wikimedia-full-20260908T190700Z/harness/compare_digests.py

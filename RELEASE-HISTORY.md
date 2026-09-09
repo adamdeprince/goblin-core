@@ -12,6 +12,65 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 Nothing yet.
 
+## v0.10.6 — September 9, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.6)
+
+The space-efficient packed sorted-set release.
+
+- Added six fixed-width packed sorted-set representations for int32, int64, and
+  UUID members with binary32 or binary64 scores. Members stay binary in a Swiss
+  table and an arena-indexed B+ tree with bounded per-leaf dirty tails. See
+  [fixed-width packed sorted sets](docs/packed-zsets.md).
+- Published the verified
+  [1.48-billion-increment Wikimedia replay](benchmarks/wikimedia_history_2026_08/full-comparison-20260909.md).
+  At 80,798,328 members, packed INT32/FLOAT32 used 2.10 GiB of final process RSS:
+  53.6–72.2% less than Redis, Valkey, and Dragonfly, and 39.2% less than standard
+  Goblin. It also finished ahead of every incumbent in this single concurrent
+  trial. The report includes the full-state verification and raw evidence;
+  final RSS is not peak memory.
+- Added `--zset-implementation` so ordinary sorted-set commands can create any
+  packed representation by default while existing and restored keys remain
+  representation-pinned. The six `GOBLIN.PACKED_*.*` command families also allow
+  per-key selection. Integer members use numeric tie ordering, UUIDs use
+  binary lexicographic order, and FLOAT32 scores use binary32 precision; these
+  specializations are opt-in, with `standard` remaining the default.
+- Added `--packed-zset-merge-exponent` in `[0, 1]`, defaulting to `0.5`, to set
+  the local dirty-tail threshold to `ceil(leaf_capacity ** k)`. Only mutations
+  perform maintenance; reads never force a merge.
+- Optimized packed leaf compaction with base-slot invalidation bitmaps,
+  initialized-live-only scratch and run-based block moves; leaf redistribution
+  now transfers boundary entries directly. Merge thresholds and tie ordering
+  are unchanged.
+- Fixed packed integer hash distribution for Swiss bucket selection without
+  adding member storage. Packed updates now reuse score slots, prepare new
+  insertions before tree mutation, and reserve bulk map capacity for distinct
+  new members. Allocation-failure, collision and deep-routing regressions cover
+  the unchanged ordering and merge policy. A measured shared-tree-path prototype
+  was not retained because it did not provide a broad performance benefit.
+- Reduced Swiss vacancy-probe work, removed the second Swiss lookup from
+  packed point removals, and simplified live packed-tree tuple equality.
+  Ordering, merge thresholds and per-member storage remain unchanged.
+- Fixed standard sorted-set member positioning to binary-search the complete
+  `(score, lexicographic member)` tuple across blocks, avoiding linear walks
+  through large equal-score runs. Rescoring now reuses its known positions and
+  reserves before moving entries; allocation failure restores the member
+  snapshot without a reverse rescore. Also bounded rounded block capacities.
+
+## v0.10.5 — August 20, 2026
+
+[Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.5)
+
+The Aeron transport release.
+
+- Added optional [Aeron UDP and IPC](docs/aeron.md) transports. RESP and typed
+  SBE share correlated response channels through an external Aeron 1.51+ Media
+  Driver; matching C++ and redis-py-shaped Python clients are included.
+- Published the
+  [local transport latency matrix](blogs/aeron-local-transport-latency.md) on
+  naamah: SBE over Aeron IPC measured 341 ns p50 PING, versus 13.9 µs p50 over
+  Aeron UDP loopback.
+
 ## v0.10.4 — August 11, 2026
 
 [Source tag](https://github.com/adamdeprince/goblin-core/releases/tag/v0.10.4)

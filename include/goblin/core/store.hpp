@@ -25,6 +25,7 @@
 #include "goblin/core/keyspace_storage.hpp"
 #include "goblin/core/list.hpp"
 #include "goblin/core/memory_limit.hpp"
+#include "goblin/core/packed_zset.hpp"
 #include "goblin/core/replication.hpp"
 #include "goblin/core/set.hpp"
 #include "goblin/core/snapshot.hpp"
@@ -71,6 +72,7 @@ enum class ZSetAggregate : std::uint8_t {
 struct ZStoreResult {
   long long cardinality{0};
   bool invalid_score{false};
+  bool invalid_member{false};
 };
 
 struct ZSetRangeBounds {
@@ -147,6 +149,20 @@ struct ZSetMemoryStats {
   std::size_t score_block_capacity_sum{0};
   std::size_t score_index_allocated_bytes{0};
   std::size_t rank_location_cache_allocated_bytes{0};
+  std::size_t total_allocated_bytes{0};
+};
+
+struct PackedZSetMemoryStats {
+  PackedZSetKind kind{PackedZSetKind::Int32Float32};
+  std::size_t member_count{0};
+  std::size_t sorted_entries{0};
+  std::size_t unsorted_entries{0};
+  std::size_t leaf_capacity{0};
+  std::size_t leaf_count{0};
+  std::size_t branch_count{0};
+  std::size_t tree_height{0};
+  double merge_exponent{kDefaultPackedZSetMergeExponent};
+  std::size_t merge_threshold{0};
   std::size_t total_allocated_bytes{0};
 };
 
@@ -541,6 +557,7 @@ enum class KeyType : std::uint8_t {
   List = 3,
   Set = 4,
   Array = 5,
+  PackedZset = 6,
 };
 
 // The swap-remove an erase performs: the key that had id `from` now lives at id
@@ -589,7 +606,8 @@ struct StringGetResult {
 };
 
 // One key's object. Strings, zsets, and the 16-byte compact/full Hash handle live
-// directly in this slot; lists, sets, and arrays retain heap-owned objects.
+// directly in this slot; lists, sets, arrays, and packed zsets retain heap-owned
+// objects.
 // A bare union whose active member is named by the parallel KeyType array, so it
 // carries no tag of its own; Keyspace drives construction/destruction/relocation.
 union KeyObjectSlot {
@@ -599,6 +617,7 @@ union KeyObjectSlot {
   List* list;
   Set* set;
   Array* array;
+  PackedZSet* packed_zset;
   KeyObjectSlot() noexcept {}
   ~KeyObjectSlot() {}
 };
@@ -799,6 +818,33 @@ class Keyspace {
   [[nodiscard]] ZSet& place_loaded_zset(std::string_view key, ZSet&& zset) {
     const auto id = create_key(key, KeyType::Zset);
     return *::new (static_cast<void*>(&objects_[id].zset)) ZSet(std::move(zset));
+  }
+
+  // ---- fixed-width packed zset ----
+  [[nodiscard]] PackedZSet* find_packed_zset(std::string_view key) noexcept {
+    const auto id = find_id(key);
+    if (!id ||
+        types_[*id] != static_cast<std::uint8_t>(KeyType::PackedZset)) {
+      return nullptr;
+    }
+    return objects_[*id].packed_zset;
+  }
+  [[nodiscard]] const PackedZSet* find_packed_zset(
+      std::string_view key) const noexcept {
+    const auto id = find_id(key);
+    if (!id ||
+        types_[*id] != static_cast<std::uint8_t>(KeyType::PackedZset)) {
+      return nullptr;
+    }
+    return objects_[*id].packed_zset;
+  }
+  [[nodiscard]] PackedZSet& place_loaded_packed_zset(
+      std::string_view key, PackedZSet&& zset) {
+    ensure_memory_growth(sizeof(PackedZSet));
+    auto prepared = std::make_unique<PackedZSet>(std::move(zset));
+    const auto id = create_key(key, KeyType::PackedZset);
+    objects_[id].packed_zset = prepared.release();
+    return *objects_[id].packed_zset;
   }
 
   // ---- hash ----
@@ -1097,6 +1143,14 @@ class Keyspace {
       }
     }
   }
+  template <class Fn>
+  void for_each_packed_zset(Fn&& fn) const {
+    for (std::uint64_t id = 0; id < types_.size(); ++id) {
+      if (types_[id] == static_cast<std::uint8_t>(KeyType::PackedZset)) {
+        fn(storage_.view(id), *objects_[id].packed_zset);
+      }
+    }
+  }
 
   void clear() noexcept {
     destroy_all();
@@ -1346,6 +1400,10 @@ class Keyspace {
         delete objects_[id].array;
         objects_[id].array = nullptr;
         break;
+      case KeyType::PackedZset:
+        delete objects_[id].packed_zset;
+        objects_[id].packed_zset = nullptr;
+        break;
     }
   }
 
@@ -1376,6 +1434,10 @@ class Keyspace {
       case KeyType::Array:
         objects_[dst].array = objects_[src].array;
         objects_[src].array = nullptr;
+        break;
+      case KeyType::PackedZset:
+        objects_[dst].packed_zset = objects_[src].packed_zset;
+        objects_[src].packed_zset = nullptr;
         break;
     }
   }
@@ -1490,6 +1552,13 @@ struct StoreOptions {
   // larger sublists (less block overhead, more memmove per mutation); smaller =
   // the reverse. Runtime-tunable via --load-factor to sweep the large-zset knee.
   std::size_t zset_score_index_load{ZSetScoreIndex::kDefaultLoad};
+  // Packed B+ tree leaves merge at ceil(leaf_capacity^exponent) dirty records.
+  // Zero merges every mutation; one permits a tail as large as the leaf's sorted
+  // capacity. Reads reconcile only visited leaves and never trigger maintenance.
+  double packed_zset_merge_exponent{kDefaultPackedZSetMergeExponent};
+  // Unqualified zset commands create this representation. A live key remains
+  // pinned to the representation that created or restored it.
+  ZSetImplementation zset_implementation{ZSetImplementation::Standard};
   // Max entries a zset keeps as a compact listpack before promoting to the full
   // arena-shaped structure (0 disables the listpack). Tiny zsets live as one blob
   // (~1.5x leaner per zset with distinct members). 32 is the CPU knee: memory
@@ -1609,6 +1678,13 @@ class Store {
     return options_.real_time ? HashImplementation::Realtime
                               : options_.hash_implementation;
   }
+  [[nodiscard]] ZSetImplementation zset_implementation() const noexcept {
+    return options_.zset_implementation;
+  }
+  [[nodiscard]] std::optional<PackedZSetKind>
+  default_packed_zset_kind() const noexcept {
+    return packed_zset_kind_for_implementation(options_.zset_implementation);
+  }
   [[nodiscard]] bool real_time() const noexcept { return options_.real_time; }
   [[nodiscard]] std::size_t maxmemory() const noexcept {
     return options_.maxmemory;
@@ -1717,6 +1793,58 @@ class Store {
   [[nodiscard]] std::vector<ZSetEntry> zrevrange(std::string_view key,
                                                 long long start,
                                                 long long stop) const;
+
+  // Fixed-width packed sorted sets. The command prefix supplies `kind`; callers
+  // reject a different existing kind before invoking a mutator.
+  [[nodiscard]] std::optional<PackedZSetKind> packed_zset_kind(
+      std::string_view key) const noexcept;
+  [[nodiscard]] PackedZSetAddResult packed_zadd(
+      std::string_view key, PackedZSetKind kind,
+      std::span<const PackedZSetAddItem> items,
+      PackedZSetAddOptions options = {});
+  [[nodiscard]] PackedZSetRemoveResult packed_zrem(
+      std::string_view key, PackedZSetKind kind,
+      std::span<const std::string_view> members);
+  [[nodiscard]] long long packed_zcard(std::string_view key) const;
+  [[nodiscard]] long long packed_zcount(std::string_view key, double min,
+                                        bool min_exclusive, double max,
+                                        bool max_exclusive) const;
+  [[nodiscard]] PackedZSetLookup packed_zscore(std::string_view key,
+                                               PackedZSetKind kind,
+                                               std::string_view member) const;
+  [[nodiscard]] PackedZSetRankLookup packed_zrank(
+      std::string_view key, PackedZSetKind kind, std::string_view member,
+      bool reverse = false) const;
+  [[nodiscard]] std::vector<PackedZSetEntry> packed_zrange_by_rank(
+      std::string_view key, long long start, long long stop,
+      bool reverse = false) const;
+  [[nodiscard]] std::vector<PackedZSetEntry> packed_zrange_by_score(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive, bool reverse = false, std::size_t offset = 0,
+      std::optional<std::size_t> limit = std::nullopt) const;
+  [[nodiscard]] long long packed_zremrangebyscore(
+      std::string_view key, double min, bool min_exclusive, double max,
+      bool max_exclusive);
+  [[nodiscard]] long long packed_zremrangebyrank(std::string_view key,
+                                                 long long start,
+                                                 long long stop);
+  [[nodiscard]] ZStoreResult packed_zunionstore(
+      std::string_view destination, PackedZSetKind kind,
+      std::span<const std::string_view> keys,
+      std::span<const double> weights,
+      ZSetAggregate aggregate = ZSetAggregate::Sum);
+  [[nodiscard]] ZStoreResult packed_zinterstore(
+      std::string_view destination, PackedZSetKind kind,
+      std::span<const std::string_view> keys,
+      std::span<const double> weights,
+      ZSetAggregate aggregate = ZSetAggregate::Sum);
+  [[nodiscard]] std::vector<PackedZSetEntry> packed_zpop(
+      std::string_view key, std::size_t count, bool maximum);
+  [[nodiscard]] PackedZSetScanResult packed_zscan(std::string_view key,
+                                                  std::uint64_t cursor,
+                                                  std::size_t count) const;
+  [[nodiscard]] std::optional<PackedZSetMemoryStats> packed_zset_memory_stats(
+      std::string_view key) const;
   template <class CountFn, class Fn>
   std::size_t zrange_by_score_members_for_each_counted(
       std::string_view key, double min, bool min_exclusive, double max,
@@ -2592,6 +2720,18 @@ class Store {
   }
   [[nodiscard]] const ZSet* find_member_layer_template() const noexcept;
   void erase_if_empty(std::string_view key, const ZSet& zset);
+
+  void place_loaded_packed_zset(std::string key, PackedZSet&& zset) {
+    (void)keyspace_.place_loaded_packed_zset(key, std::move(zset));
+  }
+  [[nodiscard]] PackedZSet* find_packed_zset(
+      std::string_view key) noexcept {
+    return keyspace_.find_packed_zset(key);
+  }
+  [[nodiscard]] const PackedZSet* find_packed_zset(
+      std::string_view key) const noexcept {
+    return keyspace_.find_packed_zset(key);
+  }
 
   void place_loaded_hash(std::string key, Hash&& hash);
   [[nodiscard]] Hash* find_hash(std::string_view key) noexcept {

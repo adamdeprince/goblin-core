@@ -641,6 +641,80 @@ void test_swiss_table_insert_find_update() {
   assert(*table.find("one") == 10);
 }
 
+template <std::size_t GroupWidth = 16>
+void test_swiss_table_prepared_slots() {
+  struct CountHash {
+    int* calls;
+    std::size_t operator()(int) const noexcept {
+      ++*calls;
+      return std::numeric_limits<std::size_t>::max();  // wraparound collisions
+    }
+  };
+  int calls = 0;
+  goblin::core::SwissTable<int, int, CountHash, std::equal_to<int>, GroupWidth>
+      table(CountHash{&calls});
+  for (int i = 0; i < 32; ++i) {
+    calls = 0;
+    auto slot = table.find_insert_slot(i);
+    assert(slot.value == nullptr);
+    table.reserve_insert_slot(slot);
+    assert(table.size() == static_cast<std::size_t>(i));
+    assert(*table.commit_insert_slot(slot, i, i * 2) == i * 2);
+    assert(calls == 1);  // no second hash/lookup on commit
+  }
+  assert(table.erase(3));
+  // A tombstone before an existing entry must not masquerade as a miss.
+  auto found = table.find_insert_slot(31);
+  assert(found.value && *found.value == 62);
+  *found.value = 93;
+  const auto size = table.size();
+  auto abandoned = table.find_insert_slot(9999);
+  table.reserve_insert_slot(abandoned);
+  assert(table.size() == size && !table.contains(9999));
+  auto reuse = table.find_insert_slot(3);
+  table.reserve_insert_slot(reuse);
+  table.commit_insert_slot(reuse, 3, 6);
+  // Exercise token refresh across multiple rehashes, plus control mirroring.
+  for (int i = 32; i < 2000; ++i) {
+    auto slot = table.find_insert_slot(i);
+    table.reserve_insert_slot(slot);
+    table.commit_insert_slot(slot, i, i * 2);
+  }
+  for (int i = 0; i < 2000; ++i) {
+    const auto slot = table.find_insert_slot(i);
+    assert(slot.value && *slot.value == (i == 31 ? 93 : i * 2));
+  }
+  assert(table.size() == 2000);
+  for (int i : {0, 31, 1999}) {
+    calls = 0;
+    const auto slot = table.find_insert_slot(i);
+    assert(slot.value);
+    assert(table.erase_slot(slot));
+    assert(calls == 1);  // the found-slot erase does not hash again
+    assert(!table.contains(i));
+  }
+  assert(table.size() == 1997);
+  // Copy/rehash probes a fresh destination even when the source has tombstones.
+  const auto copy = table;
+  assert(copy.size() == table.size());
+  for (int i = 0; i < 2000; ++i) {
+    const auto* value = copy.find(i);
+    if (i == 0 || i == 31 || i == 1999) assert(value == nullptr);
+    else assert(value && *value == i * 2);
+  }
+  const auto miss = table.find_insert_slot(9999);
+  calls = 0;
+  assert(!table.erase_slot(miss));
+  assert(calls == 0 && table.size() == 1997);
+  for (int i : {0, 31, 1999}) {
+    auto slot = table.find_insert_slot(i);
+    table.reserve_insert_slot(slot);
+    table.commit_insert_slot(slot, i, i * 3);
+    assert(*table.find(i) == i * 3);
+  }
+  assert(table.size() == 2000);
+}
+
 void test_swiss_table_collision_probe_and_growth() {
   goblin::core::SwissTable<std::string, int, BadHasher> table;
 
@@ -658,6 +732,27 @@ void test_swiss_table_collision_probe_and_growth() {
     assert(value != nullptr);
     assert(*value == i);
   }
+}
+
+void test_swiss_table_slot_erase_destroys_value() {
+  struct Value {
+    int* destroyed;
+    explicit Value(int& count) noexcept : destroyed(&count) {}
+    Value(Value&& other) noexcept
+        : destroyed(std::exchange(other.destroyed, nullptr)) {}
+    ~Value() { if (destroyed) ++*destroyed; }
+  };
+  int destroyed = 0;
+  goblin::core::SwissTable<int, Value> table;
+  auto vacant = table.find_insert_slot(7);
+  table.reserve_insert_slot(vacant);
+  table.commit_insert_slot(vacant, 7, Value{destroyed});
+  assert(destroyed == 0 && table.size() == 1);
+  const auto found = table.find_insert_slot(7);
+  assert(table.erase_slot(found));
+  assert(destroyed == 1 && table.empty());
+  assert(!table.erase_slot(table.find_insert_slot(7)));
+  assert(destroyed == 1);
 }
 
 void test_swiss_table_erase_reuses_tombstones() {
@@ -2096,6 +2191,53 @@ void test_maxmemory_zset_score_update_rollback() {
   assert(execute_fields(capped, {"ZRANK", "leaders", "alice"}) ==
          ":0\r\n");
   assert(capped.memory_report().used_memory <= options.maxmemory);
+}
+
+void test_maxmemory_zset_cross_block_rescore_rollback() {
+  using namespace goblin::core;
+  for (auto mode : {RankCacheMode::Off, RankCacheMode::Exact,
+                    RankCacheMode::BlockHint}) {
+    for (bool score_cache : {false, true}) {
+      StoreOptions options;
+      options.zset_listpack_max_entries = 0;
+      options.zset_score_index_load = 64;
+      options.rank_cache_mode = mode;
+      options.score_string_cache = score_cache;
+      const auto populate = [](Store& store) {
+        for (unsigned id = 0; id < 512; ++id) {
+          const auto name = "same-prefix-" + std::to_string(id);
+          assert(store.zadd("leaders", 2.0, name) == 1);
+        }
+      };
+      std::size_t initial_usage;
+      std::size_t update_growth;
+      {
+        Store probe(options);
+        populate(probe);
+        initial_usage = probe.memory_report().used_memory;
+        assert(execute_fields(probe, {"ZADD", "leaders", "100000.25",
+                                       "same-prefix-99"}) == ":0\r\n");
+        update_growth = probe.memory_report().used_memory - initial_usage;
+      }
+      assert(update_growth > 1);
+      options.maxmemory = initial_usage + update_growth - 1;
+      Store capped(options);
+      populate(capped);
+      const auto before = capped.zrange("leaders", 0, -1);
+      // Member-score preparation succeeds, but score-index promotion is
+      // rejected. Restore the member snapshot without an allocating rescore.
+      assert(execute_fields(capped, {"ZADD", "leaders", "100000.25",
+                                     "same-prefix-99"}).starts_with("-OOM "));
+      assert(capped.zscore("leaders", "same-prefix-99") == 2.0);
+      const auto after = capped.zrange("leaders", 0, -1);
+      assert(before.size() == after.size());
+      for (std::size_t i = 0; i < before.size(); ++i) {
+        assert(before[i].score == after[i].score);
+        assert(before[i].member == after[i].member);
+      }
+      assert(capped.memory_report().used_memory <= options.maxmemory);
+    }
+  }
 }
 
 void test_maxmemory_collection_growth_rejection() {
@@ -7641,7 +7783,12 @@ int main() {
   test_ring_reply_framing();
   test_swiss_table_string_view_lookup();
   test_swiss_table_insert_find_update();
+  test_swiss_table_prepared_slots();
+  test_swiss_table_prepared_slots<1>();
+  test_swiss_table_prepared_slots<8>();
+  test_swiss_table_prepared_slots<64>();
   test_swiss_table_collision_probe_and_growth();
+  test_swiss_table_slot_erase_destroys_value();
   test_swiss_table_erase_reuses_tombstones();
   test_chunked_sorted_list_splits_and_ranges();
   test_chunked_sorted_list_erase_rebalances();
@@ -7678,6 +7825,7 @@ int main() {
   test_maxmemory_array_growth_rejection();
   test_maxmemory_new_typed_key_rollback();
   test_maxmemory_zset_score_update_rollback();
+  test_maxmemory_zset_cross_block_rescore_rollback();
   test_maxmemory_collection_growth_rejection();
   test_goblin_increx();
   test_zremrangebyscore();

@@ -409,6 +409,12 @@ EXCLUDE_FILES = {"RELEASE.md", "RING-LATENCY-HANDOFF.md"}
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 
+# Explicit, reviewable public result bundles only. Never publish the local
+# benchmark-results/ archive, input traces, executables, or database snapshots.
+PUBLIC_DATA_DIRS = ("benchmarks/wikimedia_history_2026_08/artifacts",)
+PUBLIC_DATA_EXTS = {".tsv", ".txt", ".json", ".sha256", ".sh", ".py",
+                    ".command", ".status"}
+
 
 def is_excluded(path: Path) -> bool:
     # Skip vendored code, build/output trees, virtualenvs, and agent memory when walking
@@ -813,6 +819,21 @@ def write_pages(sources: Sequence[Path], output_dir: Path) -> None:
                 dest = output_dir / asset.relative_to(ROOT)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(asset.read_bytes())
+
+    # Public benchmark evidence mirrors its source path, just like doc images.
+    # Markdown bundle indexes are rendered normally as part of the page set.
+    for relative_dir in PUBLIC_DATA_DIRS:
+        source_dir = ROOT / relative_dir
+        if not source_dir.is_dir():
+            continue
+        for asset in source_dir.rglob("*"):
+            if not asset.is_file() or asset.suffix.lower() not in PUBLIC_DATA_EXTS:
+                continue
+            if asset.is_symlink():
+                continue
+            dest = output_dir / asset.relative_to(ROOT)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(asset.read_bytes())
 
     # Copy the LLM-oriented docs (the llms.txt convention) verbatim to the site
     # root so they are served at /llms.txt and /llms-full.txt. They are rebuilt

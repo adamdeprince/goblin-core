@@ -299,8 +299,8 @@ class ZSetScoreIndex {
     }
   }
 
-  // Re-score an existing member: one bisect when the old and new positions share a
-  // block (one memmove instead of erase+insert), otherwise erase+insert.
+  // Locate the old and new positions once. Reserve before moving either entry,
+  // so a rejected allocation preserves the old score without a reverse rescore.
   [[nodiscard]] bool rescore(ZSetScoreEntry old_entry, ZSetScoreEntry new_entry) {
     if (blocks_.empty()) {
       return false;
@@ -324,9 +324,9 @@ class ZSetScoreIndex {
       return false;
     }
 
-    const auto block_index = located->first;
+    auto block_index = located->first;
     const auto old_offset = located->second;
-    const auto new_pos = locate_insert_position(new_entry);
+    auto new_pos = locate_insert_position(new_entry);
 
     if (new_pos.first == block_index) {
       auto target_offset = new_pos.second;
@@ -335,30 +335,76 @@ class ZSetScoreIndex {
       }
       blocks_[block_index].move_entry(old_offset, target_offset, new_entry);
       refresh_block_metadata(block_index);
-      if (location_cache_enabled()) {
+      if (rank_cache_mode_ == RankCacheMode::Exact) {
+        refresh_block_locations_from(block_index,
+                                     std::min(old_offset, target_offset));
+      } else if (location_cache_enabled()) {
         set_location(new_entry.member_id, block_index, target_offset);
       }
       return true;
     }
 
-    // Insert first so an allocation failure leaves the old entry untouched.
-    // The old block is then erased without optional merge maintenance; that
-    // erase cannot allocate and the next ordinary mutation may rebalance it.
-    insert(new_entry);
-    const auto relocated_old = locate_entry(old_entry);
-    if (!relocated_old) {
-      const auto inserted = locate_entry(new_entry);
-      if (inserted) {
-        erase_at(inserted->first, inserted->second,
-                 EraseRebalancePolicy::None);
+    // Split a full destination before the transfer. Only that split can shift
+    // either known block position; update them arithmetically instead of doing
+    // another global search. No logical member/score has changed yet.
+    if (blocks_[new_pos.first].size() >= load_ * 2) {
+      const auto destination = new_pos.first;
+      const auto split_at = blocks_[destination].size() / 2;
+      split_block(destination);
+      refresh_block_indices_from(destination + 1);
+      refresh_block_locations(destination);
+      refresh_block_locations(destination + 1);
+      invalidate_index();
+      if (block_index > destination) {
+        ++block_index;
       }
-      return false;
+      if (new_pos.second >= split_at) {
+        ++new_pos.first;
+        new_pos.second -= split_at;
+      }
     }
-    erase_at(relocated_old->first, relocated_old->second,
-             EraseRebalancePolicy::None);
-    if (const auto relocated_new = locate_entry(new_entry)) {
-      set_location(new_entry.member_id, relocated_new->first,
-                   relocated_new->second);
+
+    auto& destination = blocks_[new_pos.first];
+    destination.reserve(destination.size() + 1);
+    if (rank_cache_mode_ == RankCacheMode::BlockHint &&
+        destination.id_ >= block_hint_narrow_limit_) {
+      promote_block_hints_to_wide();
+    }
+
+    // All required storage is available. Insert/erase and cache refreshes below
+    // cannot allocate; erase may remove an empty source block, which shifts the
+    // destination's vector index but not its offset or stable block id.
+    destination.insert(new_pos.second, new_entry);
+    ++size_;
+    refresh_block_metadata(new_pos.first);
+    update_index(new_pos.first, 1);
+    if (rank_cache_mode_ == RankCacheMode::Exact) {
+      refresh_block_locations_from(new_pos.first, new_pos.second);
+    }
+    const bool source_empty = blocks_[block_index].size() == 1;
+    erase_at(block_index, old_offset, EraseRebalancePolicy::None);
+    if (source_empty && block_index < new_pos.first) {
+      --new_pos.first;
+    }
+    set_location(new_entry.member_id, new_pos.first, new_pos.second);
+
+    // Reclaim an underfilled source when a merge needs no subsequent split.
+    // Any allocation is attempted before merge_with_next changes either block,
+    // so failed optional maintenance cannot turn a committed rescore into OOM.
+    if (!source_empty && blocks_[block_index].size() < load_ / 2 &&
+        blocks_.size() > 1) {
+      const auto left = block_index + 1 < blocks_.size()
+                            ? block_index
+                            : block_index - 1;
+      if (blocks_[left].size() + blocks_[left + 1].size() <= load_ * 2) {
+        try {
+          if (merge_with_next(left)) {
+            invalidate_index();
+          }
+        } catch (const std::bad_alloc&) {
+          // The transfer is already complete; defer this optional merge.
+        }
+      }
     }
     return true;
   }
@@ -1312,7 +1358,8 @@ class ZSetScoreIndex {
       // 2*load_) keeps most of that range's capacity slack out of the score
       // index while bounding the number of growth reallocations.
       constexpr size_type kStep = 64;
-      return ((required + kStep - 1) / kStep) * kStep;
+      return std::min(((required + kStep - 1) / kStep) * kStep,
+                      load_ * 2 + 1);
     }
 
     void reallocate(size_type required) {
@@ -1688,22 +1735,14 @@ class ZSetScoreIndex {
       return std::nullopt;
     }
 
-    auto block_index = lower_block_by_score(value.score);
-    while (block_index < blocks_.size()) {
-      if (mins_[block_index].score > value.score) {
-        return std::nullopt;
-      }
-      if (maxes_[block_index].score < value.score) {
-        ++block_index;
-        continue;
-      }
-
-      const auto& block = blocks_[block_index];
-      if (const auto offset = locate_entry_offset(block, value)) {
+    // The maxima are ordered by the complete (score, lexicographic member)
+    // tuple. Searching only the score followed by a block walk is linear in
+    // the number of blocks in a tie, which may contain millions of members.
+    const auto block_index = lower_block(value);
+    if (block_index < blocks_.size()) {
+      if (const auto offset = locate_entry_offset(blocks_[block_index], value)) {
         return std::pair<size_type, size_type>{block_index, *offset};
       }
-
-      ++block_index;
     }
 
     return std::nullopt;
@@ -1726,39 +1765,13 @@ class ZSetScoreIndex {
       ZSetScoreEntry value) const {
     assert(!blocks_.empty());
 
-    auto block_index = lower_block_by_score(value.score);
+    auto block_index = lower_block(value);
     if (block_index >= blocks_.size()) {
       block_index = blocks_.size() - 1;
       return {block_index, blocks_[block_index].size()};
     }
 
-    while (true) {
-      if (mins_[block_index].score > value.score) {
-        return {block_index, 0};
-      }
-      if (maxes_[block_index].score < value.score) {
-        ++block_index;
-        if (block_index >= blocks_.size()) {
-          const auto last = blocks_.size() - 1;
-          return {last, blocks_[last].size()};
-        }
-        continue;
-      }
-
-      const auto& block = blocks_[block_index];
-      const auto offset = locate_insert_offset(block, value);
-      // lower_bound == block.size() means this entry sorts after every member here;
-      // the same score may continue in the next block (load splits mid-run).
-      if (offset < block.size()) {
-        return {block_index, offset};
-      }
-
-      ++block_index;
-      if (block_index >= blocks_.size()) {
-        const auto last = blocks_.size() - 1;
-        return {last, blocks_[last].size()};
-      }
-    }
+    return {block_index, locate_insert_offset(blocks_[block_index], value)};
   }
 
   template <class BlockRef>
@@ -2041,8 +2054,18 @@ class ZSetScoreIndex {
     reserve_memory_vector_for_push(maxes_, 1);
     reserve_memory_vector_for_push(mins_, 1);
     if (location_cache_enabled()) {
+      const auto max_block_id = rank_cache_mode_ == RankCacheMode::Exact
+                                    ? kMaxLocationBlockId
+                                    : kInvalidBlockHint32;
+      if (next_block_id_ >= max_block_id) {
+        throw std::length_error("zset rank location cache block id space exhausted");
+      }
       reserve_memory_vector(block_index_by_id_,
                             static_cast<size_type>(next_block_id_) + 1);
+      if (rank_cache_mode_ == RankCacheMode::BlockHint &&
+          next_block_id_ >= block_hint_narrow_limit_) {
+        promote_block_hints_to_wide();
+      }
     }
     auto& block = blocks_[block_index];
     const auto split_at = block.size() / 2;

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(goblin-core
-  VERSION 0.10.4
+  VERSION 0.10.6
   DESCRIPTION "A compact SIMD-oriented Redis-like server from Goblin Reactor"
   LANGUAGES CXX C)
 
@@ -994,6 +994,28 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+
+  add_executable(goblin_core_zset_score_index_test tests/zset_score_index_test.cpp)
+  target_link_libraries(goblin_core_zset_score_index_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_zset_score_index_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_zset_score_index COMMAND goblin_core_zset_score_index_test)
+
+  add_executable(goblin_core_packed_zset_test tests/packed_zset_test.cpp)
+  target_link_libraries(goblin_core_packed_zset_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_packed_zset_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  target_compile_options(goblin_core_packed_zset_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME goblin_core_packed_zset COMMAND goblin_core_packed_zset_test)
+
+  add_executable(goblin_core_packed_bplus_tree_test tests/packed_bplus_tree_test.cpp)
+  target_include_directories(goblin_core_packed_bplus_tree_test PRIVATE include)
+  set_target_properties(goblin_core_packed_bplus_tree_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  target_compile_options(goblin_core_packed_bplus_tree_test PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME goblin_core_packed_bplus_tree COMMAND goblin_core_packed_bplus_tree_test)
 
   add_executable(goblin_core_libfabric_wire_test
     tests/libfabric_wire_test.cpp)

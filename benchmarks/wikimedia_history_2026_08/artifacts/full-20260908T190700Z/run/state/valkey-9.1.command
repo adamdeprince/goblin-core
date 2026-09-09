@@ -1,0 +1,1 @@
+/home/adam/bench/valkey-9.1.0/src/valkey-server --unixsocket /tmp/wiki-1689911-1689916-1788894864-valkey-9.1.sock --port 0 --save '' --appendonly no --dir /tmp --activedefrag yes --active-defrag-ignore-bytes 1mb --active-defrag-threshold-lower 5 --active-defrag-cycle-max 75 
