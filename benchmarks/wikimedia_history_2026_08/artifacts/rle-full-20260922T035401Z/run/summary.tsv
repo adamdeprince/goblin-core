@@ -1,0 +1,13 @@
+server	status	feed_seconds	os_rss_mb	os_rss_kb	used_memory_rss_bytes	zcard	command_errors
+goblin-packed-int32-float32-rle-off	PASS	34211.488	2139.6	2190904	2243493888	80798328	0
+goblin-packed-int32-float32-rle-on	PASS	34322.285	1664.8	1704784	1745707008	80798328	0
+goblin-packed-int32-float64-rle-off	PASS	34667.177	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int32-float64-rle-on	PASS	34679.061	2614.2	2676964	2741219328	80798328	0
+goblin-packed-int64-float32-rle-off	PASS	34669.548	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int64-float32-rle-on	PASS	34796.175	3140.7	3216096	3293290496	80798328	0
+goblin-packed-int64-float64-rle-off	PASS	34555.511	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int64-float64-rle-on	PASS	34845.986	3178.7	3254992	3333120000	80798328	0
+goblin-packed-uuid-float32-rle-off	PASS	36559.638	5164.2	5288132	5415055360	80798328	0
+goblin-packed-uuid-float32-rle-on	PASS	36897.240	4746.9	4860828	4977496064	80798328	0
+goblin-packed-uuid-float64-rle-off	PASS	37071.213	6063.9	6209416	6358450176	80798328	0
+goblin-packed-uuid-float64-rle-on	PASS	37317.990	5144.9	5268380	5394829312	80798328	0

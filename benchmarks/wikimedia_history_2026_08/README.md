@@ -9,6 +9,11 @@ converted to one command:
 ZINCRBY key 1 <page_id>
 ```
 
+The latest [full typed-layout and RLE report](rle-full-comparison-20260922.md)
+compares all six packed representations with compression enabled and disabled.
+Score RLE is now enabled by default for packed zsets; the matrix passes an
+explicit on/off flag for every variant, keeping the comparison reproducible.
+
 `run.sh` starts every selected engine concurrently, gives each one its own
 Unix-domain socket, and feeds each server the same command file through
 `redis-cli` in normal reply-per-command mode.  The default matrix is:
@@ -59,8 +64,57 @@ minutes, verifies the results, rechecks the input checksum, and writes
 disconnects; it does not resume across a host restart or automatically retry.
 Earlier projects are never reused for a new run.
 
+## Typed layouts with score RLE
+
+`run_rle_matrix.sh` exercises all six packed layouts with score RLE off and
+on: INT32, INT64, and UUID members crossed with FLOAT32 and FLOAT64 scores.
+It uses the same reply-per-command replay method, with one server and Unix
+socket per variant. Merge exponent defaults to 0.5. Each server also receives
+a distinct unused loopback TCP port. Final results include `GOBLIN.MEMORY`
+allocation and score-compression counters, and verification checks that each
+server applied the requested RLE setting.
+
+UUID variants need a second command file, generated before timing:
+
+```sh
+c++ -O3 -std=c++23 uuid_page_ids.cpp -o uuid-page-ids
+./uuid-page-ids numeric.cmds uuid.cmds
+OUTDIR=/new/result/path \
+PAYLOAD=/frozen/numeric.cmds \
+PAYLOAD_UUID=/frozen/uuid.cmds \
+GOBLIN=/frozen/goblin-core \
+DIGEST_PAGE_SIZE=65536 \
+bash run_rle_matrix.sh
+```
+
+The converter maps each nonnegative INT32 page ID to a zero-extended UUID,
+preserving member identity and numeric tie order. The verifier decodes these
+UUIDs back to decimal IDs before hashing. UUID commands have longer wire
+representations, so compare RLE on/off within each layout. `SERVERS` can select
+a subset, using names such as `goblin-packed-int32-float32-rle-on`.
+
+`plot_rle_comparison.py` uses Gnuplot to regenerate the full report's standalone
+memory and timing SVGs from the archived twelve-variant result table.
+
+`run_rle_full.py PROJECT_DIR` is the detached controller for the complete
+matrix. It requires a frozen `bin/goblin-core`, `harness/` containing the
+matrix runner and digest scripts, `input/numeric.cmds`, `input/uuid.cmds`, and
+these `preflight/` records: successful `build.status` and
+`prepare-input.status`, `payloads.sha256`, `reference-prefix-2000000.json`,
+and the prior full-run `reference-numeric.json`. It first verifies a
+two-million-command prefix against its independent reference, then runs and
+verifies the full dataset, generates `run/comparison.md`, rechecks both input
+checksums, and writes `JOB-PASS` or `JOB-FAILED`. The full run uses the
+previously verified 1,483,700,913-command dataset and numeric full-state
+reference. Launch in a dedicated tmux session to survive SSH disconnects.
+
 ## Reports
 
+- [Completed full RLE matrix — September 22, 2026](rle-full-comparison-20260922.md):
+  all 12 typed-layout/RLE combinations verified; RLE reduced final RSS by
+  8.08–36.52%, with measured replay-time increases below 1%.
+- [RLE matrix launch record](rle-full-run-20260922T035401Z.md): frozen input,
+  executable, and configuration details for the completed matrix.
 - [Completed full comparison — September 8–9, 2026](full-comparison-20260909.md):
   1,483,700,913 increments, 80,798,328 members, all six engines verified.
 - [Limited comparison after packed optimizations — September 8, 2026](short-comparison-after-packed-update-20260908.md):

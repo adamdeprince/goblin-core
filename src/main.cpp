@@ -643,6 +643,7 @@ void print_usage(std::string_view program) {
                "        packed-int64-float64|packed-uuid-float32|\n"
                "        packed-uuid-float64] (default: standard)\n"
             << "       [--packed-zset-merge-exponent K] (0 <= K <= 1)\n"
+            << "       [--packed-zset-score-rle|--no-packed-zset-score-rle] (default: on)\n"
             << "       [--block-shrink on|off]\n"
             << "       [--zset-chunk-bytes BYTES] [--hash-chunk-bytes BYTES]\n"
             << "       [--hash-compaction-knapsack|--no-hash-compaction-knapsack]\n"
@@ -1550,6 +1551,12 @@ int main(int argc, char** argv) {
         return 2;
       }
       store_options.zset_score_index_load = load;
+      continue;
+    }
+
+    if (arg == "--packed-zset-score-rle" ||
+        arg == "--no-packed-zset-score-rle") {
+      store_options.packed_zset_score_rle = arg == "--packed-zset-score-rle";
       continue;
     }
 

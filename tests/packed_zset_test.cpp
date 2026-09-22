@@ -64,11 +64,11 @@ void test_integer_hash_distribution() {
   }
 }
 
-template <class Traits, class Score>
+template <class Traits, class Score, bool Rle = false>
 void test_update_slots_and_allocation_failures() {
   using namespace goblin::core;
   using Key = typename Traits::Key;
-  using Index = detail::PackedZSetIndex<Traits, Score>;
+  using Index = detail::PackedZSetIndex<Traits, Score, Rle>;
   const auto key_for = [](std::size_t id) {
     if constexpr (std::is_integral_v<Key>) {
       return static_cast<Key>(id);
@@ -188,7 +188,7 @@ void test_leaf_dirty_dedup_and_in_place_merge() {
   }
 }
 
-void test_randomized_append_log_against_reference() {
+void test_randomized_append_log_against_reference(bool rle = false) {
   constexpr std::array cases{
       std::pair{PackedZSetKind::Int32Float32, 0.0},
       std::pair{PackedZSetKind::Int32Float32, 0.5},
@@ -198,7 +198,7 @@ void test_randomized_append_log_against_reference() {
       std::pair{PackedZSetKind::Int32Float64, 1.0},
   };
   for (const auto [kind, merge_exponent] : cases) {
-    PackedZSet zset(kind, merge_exponent);
+    PackedZSet zset(kind, merge_exponent, rle);
     std::map<int, double> reference;
     std::uint64_t random = 0x8c3c'010c'cb47'563dULL;
     const auto next = [&random] {
@@ -395,6 +395,58 @@ void test_configurable_merge_exponent() {
   assert(loaded && loaded->merge_exponent == 0.0);
   assert(loaded->merge_threshold == 1);
   assert(loaded->unsorted_entries == 0);
+}
+
+void test_score_rle_store_policy() {
+  StoreOptions options;
+  // Exercise the default through creation, copy, aggregate stores, and load.
+  options.zset_implementation = goblin::core::ZSetImplementation::PackedInt32Float32;
+  Store store(options);
+  std::vector<std::string> members;
+  std::vector<PackedZSetAddItem> items;
+  members.reserve(1200);
+  items.reserve(1200);
+  for (int i = 0; i < 1200; ++i) {
+    members.push_back(std::to_string(i));
+    items.push_back({static_cast<double>(i / 100), members.back()});
+  }
+  assert(store.packed_zadd("runs", PackedZSetKind::Int32Float32, items).added == 1200);
+  assert(run(store, {"COPY", "runs", "copy"}) == ":1\r\n");
+  assert(run(store, {"ZUNIONSTORE", "union", "2", "runs", "copy"}) == ":1200\r\n");
+  assert(run(store, {"ZINTERSTORE", "intersection", "2", "runs", "copy"}) == ":1200\r\n");
+  assert(run(store, {"ZADD", "ordinary", "1", "1", "1", "2", "1", "3", "1", "4"}) == ":4\r\n");
+  for (const auto key : {"runs", "copy", "union", "intersection", "ordinary"}) {
+    assert(run(store, {"GOBLIN.OPTIMIZE", key}).front() == ':');
+    const auto stats = store.packed_zset_memory_stats(key);
+    assert(stats && stats->score_rle && stats->compressed_leaf_count != 0);
+    assert(stats->sorted_score_bytes < stats->sorted_entries * sizeof(float));
+    const auto reply = run(store, {"GOBLIN.MEMORY", key});
+    assert(reply.find("score_rle") != std::string::npos);
+    assert(reply.find("compressed_leaf_count") != std::string::npos);
+    assert(reply.find("sorted_score_bytes") != std::string::npos);
+  }
+  const auto expected = run(store, {"ZRANGE", "runs", "0", "-1", "WITHSCORES"});
+  assert(run(store, {"ZRANGE", "copy", "0", "-1", "WITHSCORES"}) == expected);
+  std::stringstream snapshot;
+  store.save(snapshot, false);
+  for (const bool enabled : {false, true}) {
+    StoreOptions receiver;
+    receiver.packed_zset_score_rle = enabled;
+    Store restored(receiver);
+    snapshot.clear();
+    snapshot.seekg(0);
+    assert(restored.load(snapshot).keys == 5);
+    const auto stats = restored.packed_zset_memory_stats("runs");
+    assert(stats && stats->score_rle == enabled);
+    assert(run(restored, {"ZRANGE", "runs", "0", "-1", "WITHSCORES"}) == expected);
+    // Also cover a snapshot emitted by the ordinary layout loading into RLE.
+    std::stringstream again;
+    restored.save(again, false);
+    Store compressed(options);
+    assert(compressed.load(again).keys == 5);
+    assert(compressed.packed_zset_memory_stats("runs")->score_rle);
+    assert(run(compressed, {"ZRANGE", "runs", "0", "-1", "WITHSCORES"}) == expected);
+  }
 }
 
 void test_all_command_prefixes() {
@@ -614,6 +666,7 @@ void test_default_implementation_selector() {
     assert(run(store, {"ZADD", "selected", "0.1", test.member}) ==
            ":1\r\n");
     assert(store.packed_zset_kind("selected") == test.kind);
+    assert(store.packed_zset_memory_stats("selected")->score_rle);
     assert(run(store, {"ZCARD", "selected"}) == ":1\r\n");
     const auto range = run(store, {"ZRANGE", "selected", "0", "-1"});
     assert(range.find(test.canonical_member) != std::string::npos);
@@ -625,6 +678,24 @@ void test_default_implementation_selector() {
                          test.kind == PackedZSetKind::UuidFloat32;
     assert(*score.score ==
            (float32 ? static_cast<double>(0.1F) : 0.1));
+
+    // The public C++ wrapper follows the server default, with an explicit
+    // opt-out that preserves the same logical data for all six layouts.
+    PackedZSet packed(test.kind);
+    PackedZSet raw(test.kind, goblin::core::kDefaultPackedZSetMergeExponent,
+                   false);
+    const PackedZSetAddItem item{0.1, test.member};
+    for (auto* zset : {&packed, &raw}) {
+      assert(zset->add(std::span(&item, 1), {}).added == 1);
+      assert(zset->check_invariants());
+    }
+    assert(packed.score_rle_enabled());
+    assert(!raw.score_rle_enabled());
+    const auto packed_entries = packed.range_by_rank(0, -1, false);
+    const auto raw_entries = raw.range_by_rank(0, -1, false);
+    assert(packed_entries.size() == 1 && raw_entries.size() == 1);
+    assert(packed_entries[0].member == raw_entries[0].member);
+    assert(packed_entries[0].score == raw_entries[0].score);
   }
 
   assert(goblin::core::parse_zset_implementation("standard") ==
@@ -715,9 +786,11 @@ void test_snapshot_copy_and_optimize() {
          "$19\r\n9223372036854775807\r\n$3\r\n3.5\r\n");
 }
 
-void test_replication_round_trip() {
+void test_replication_round_trip(bool rle = false) {
   Store source;
-  Store target;
+  StoreOptions receiver_options;
+  receiver_options.packed_zset_score_rle = rle;
+  Store target(receiver_options);
   std::vector<std::string_view> fields{
       "GOBLIN.PACKED_INT32_FLOAT64.ZADD", "replicated", "2.5", "17"};
   auto parsed = goblin::core::parse_command(fields);
@@ -740,6 +813,7 @@ void test_replication_round_trip() {
   assert(goblin::core::apply_firehose_batch(target, batch, error));
   assert(target.packed_zset_kind("replicated") ==
          PackedZSetKind::Int32Float64);
+  assert(target.packed_zset_memory_stats("replicated")->score_rle == rle);
   assert(run(target,
              {"GOBLIN.PACKED_INT32_FLOAT64.ZSCORE", "replicated", "17"}) ==
          "$3\r\n2.5\r\n");
@@ -748,7 +822,7 @@ void test_replication_round_trip() {
   default_options.zset_implementation =
       ZSetImplementation::PackedInt64Float32;
   Store default_source(default_options);
-  Store default_target;
+  Store default_target(receiver_options);
   std::vector<std::string_view> ordinary_fields{
       "ZADD", "ordinary-replicated", "0.1", "91"};
   auto ordinary = goblin::core::parse_command(ordinary_fields);
@@ -770,6 +844,7 @@ void test_replication_round_trip() {
                                              error));
   assert(default_target.packed_zset_kind("ordinary-replicated") ==
          PackedZSetKind::Int64Float32);
+  assert(default_target.packed_zset_memory_stats("ordinary-replicated")->score_rle == rle);
   assert(run(default_target,
              {"ZSCORE", "ordinary-replicated", "91"}) ==
          "$19\r\n0.10000000149011612\r\n");
@@ -782,15 +857,23 @@ int main() {
   test_integer_hash_distribution<std::int64_t>();
   using namespace goblin::core::detail;
   test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int32_t>, float>();
+  test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int32_t>, float, true>();
   test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int32_t>, double>();
+  test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int32_t>, double, true>();
   test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int64_t>, float>();
+  test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int64_t>, float, true>();
   test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int64_t>, double>();
+  test_update_slots_and_allocation_failures<PackedIntegerTraits<std::int64_t>, double, true>();
   test_update_slots_and_allocation_failures<PackedUuidTraits, float>();
+  test_update_slots_and_allocation_failures<PackedUuidTraits, float, true>();
   test_update_slots_and_allocation_failures<PackedUuidTraits, double>();
+  test_update_slots_and_allocation_failures<PackedUuidTraits, double, true>();
   test_leaf_dirty_dedup_and_in_place_merge();
   test_randomized_append_log_against_reference();
+  test_randomized_append_log_against_reference(true);
   test_multilevel_tree_and_cross_leaf_churn();
   test_configurable_merge_exponent();
+  test_score_rle_store_policy();
   test_all_command_prefixes();
   test_uuid_commands_and_representation_gate();
   test_float32_scores_and_full_surface();
@@ -798,4 +881,5 @@ int main() {
   test_default_implementation_selector();
   test_snapshot_copy_and_optimize();
   test_replication_round_trip();
+  test_replication_round_trip(true);
 }

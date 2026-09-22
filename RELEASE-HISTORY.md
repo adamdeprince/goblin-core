@@ -10,7 +10,18 @@ see the [repository history](https://github.com/adamdeprince/goblin-core/commits
 
 ## Unreleased
 
-Nothing yet.
+- Enable score run-length encoding by default in all six typed packed zset
+  layouts. Runs of four or more equal sorted-base scores use a NaN marker,
+  an unsigned count, and one score value. `--no-packed-zset-score-rle` retains
+  the raw layout; `--packed-zset-score-rle` explicitly selects compression.
+  Copies, aggregate stores, and snapshot restores follow the server policy.
+- Add compression counters to `GOBLIN.MEMORY`: `score_rle`,
+  `compressed_leaf_count`, and `sorted_score_bytes`.
+- Publish the verified [full Wikimedia RLE matrix](benchmarks/wikimedia_history_2026_08/rle-full-comparison-20260922.md):
+  12 concurrent runs, 1.48 billion increments and 80.8 million members each.
+  RLE reduced final RSS by 8.08–36.52% across the six layouts, with measured
+  replay-time differences below 1% in this single trial. INT32/FLOAT32 used
+  1.626 GiB versus 2.089 GiB with RLE disabled.
 
 ## v0.10.6 — September 9, 2026
 

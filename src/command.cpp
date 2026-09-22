@@ -568,6 +568,9 @@ void append_hello_response(std::string& out, resp::Version version,
   fields.emplace_back("merge_exponent");
   fields.push_back(format_score(stats.merge_exponent));
   add("merge_threshold", stats.merge_threshold);
+  add("score_rle", stats.score_rle);
+  add("compressed_leaf_count", stats.compressed_leaf_count);
+  add("sorted_score_bytes", stats.sorted_score_bytes);
   add("total_allocated_bytes", stats.total_allocated_bytes);
   return fields;
 }

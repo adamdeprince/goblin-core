@@ -1,0 +1,21 @@
+{
+  "variants": [
+    "goblin-packed-int32-float32-rle-off",
+    "goblin-packed-int32-float32-rle-on",
+    "goblin-packed-int32-float64-rle-off",
+    "goblin-packed-int32-float64-rle-on",
+    "goblin-packed-int64-float32-rle-off",
+    "goblin-packed-int64-float32-rle-on",
+    "goblin-packed-int64-float64-rle-off",
+    "goblin-packed-int64-float64-rle-on",
+    "goblin-packed-uuid-float32-rle-off",
+    "goblin-packed-uuid-float32-rle-on",
+    "goblin-packed-uuid-float64-rle-off",
+    "goblin-packed-uuid-float64-rle-on"
+  ],
+  "merge_exponent": 0.5,
+  "concurrent": true,
+  "commands_per_full_run": 1483700913,
+  "expected_members": 80798328,
+  "uuid_mapping": "128-bit zero extension of nonnegative INT32 page ID"
+}

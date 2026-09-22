@@ -1,0 +1,5 @@
+7340c28aa67d763e24553325b391ff77be6f4903c88211025a0b0023494148e6  /home/adam/wiki2/wikimedia-rle-matrix-20260922T035401Z/bin/goblin-core
+c45604bc44ce56c426a75723f0652831a93a0f9373d9bc1484ab9be5e2a1d8ca  /home/adam/bench/redis-8.8.0/src/redis-cli
+67b320507e3bdfd5164b84d044f42cf2a64e9a424b38d47b4e17d9dace52cd3c  /home/adam/wiki2/wikimedia-rle-matrix-20260922T035401Z/harness/run_rle_matrix.sh
+888ded560233b4232ae35a8ebc748fb0933e40ed15536bc32b6ba25b207bdd2b  /home/adam/wiki2/wikimedia-rle-matrix-20260922T035401Z/harness/zset_digest.py
+285dd607890d576ff3abd49cbccbf98a44e359e1f2cfba8914c41024adeb4b73  /home/adam/wiki2/wikimedia-rle-matrix-20260922T035401Z/harness/compare_digests.py

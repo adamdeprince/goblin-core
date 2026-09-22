@@ -1,0 +1,13 @@
+Test project /home/adam/wiki2/wikimedia-rle-matrix-20260922T035401Z/build
+    Start 2: goblin_core_tests
+1/4 Test #2: goblin_core_tests ................   Passed    1.38 sec
+    Start 4: goblin_core_packed_zset
+2/4 Test #4: goblin_core_packed_zset ..........   Passed    0.22 sec
+    Start 5: goblin_core_packed_bplus_tree
+3/4 Test #5: goblin_core_packed_bplus_tree ....   Passed    0.57 sec
+    Start 7: goblin_core_replication
+4/4 Test #7: goblin_core_replication ..........   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   2.18 sec

@@ -1,0 +1,12 @@
+goblin-packed-int32-float32-rle-off	50089
+goblin-packed-int32-float32-rle-on	35717
+goblin-packed-int32-float64-rle-off	58013
+goblin-packed-int32-float64-rle-on	37671
+goblin-packed-int64-float32-rle-off	42287
+goblin-packed-int64-float32-rle-on	57527
+goblin-packed-int64-float64-rle-off	47871
+goblin-packed-int64-float64-rle-on	53053
+goblin-packed-uuid-float32-rle-off	47119
+goblin-packed-uuid-float32-rle-on	53647
+goblin-packed-uuid-float64-rle-off	50611
+goblin-packed-uuid-float64-rle-on	53591

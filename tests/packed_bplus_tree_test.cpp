@@ -25,9 +25,9 @@ typename Traits::Key key_for(std::size_t id) {
   }
 }
 
-template <class Traits, class Score>
+template <class Traits, class Score, bool Rle = false>
 void redistribute_full_neighbor() {
-  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score>;
+  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score, Rle>;
   const auto capacity = Tree::kLeafCapacity;
   const auto count = capacity + capacity / 2;
   for (const bool reverse : {false, true}) {
@@ -44,9 +44,10 @@ void redistribute_full_neighbor() {
       tree.erase({static_cast<Score>(id), key_for<Traits>(id)});
     }
     // An underfull leaf plus a full neighbor cannot coalesce: both directions
-    // must redistribute, preserving the mapping without another allocation.
+    // must redistribute. The raw layout does so without another allocation;
+    // RLE may grow a score stream when the neighbor has more diverse scores.
     assert(tree.leaf_count() == 2 && tree.check_invariants());
-    assert(tree.allocated_bytes() == allocated);
+    if constexpr (!Rle) assert(tree.allocated_bytes() == allocated);
     const auto entries = tree.range_by_rank(0, -1, false);
     assert(entries.size() == count - capacity / 4 - 1);
     for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -57,9 +58,9 @@ void redistribute_full_neighbor() {
   }
 }
 
-template <class Traits, class Score>
+template <class Traits, class Score, bool Rle = false>
 void exercise(double exponent) {
-  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score>;
+  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score, Rle>;
   using Entry = typename Tree::Entry;
   Tree tree(exponent);
   const auto capacity = Tree::kLeafCapacity;
@@ -185,9 +186,9 @@ void exercise(double exponent) {
   verify();
 }
 
-template <class Traits, class Score>
+template <class Traits, class Score, bool Rle = false>
 void deep_rescore_routing() {
-  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score>;
+  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score, Rle>;
   using Entry = typename Tree::Entry;
   const auto capacity = Tree::kLeafCapacity;
   const auto count = capacity * 40 + 11;
@@ -259,28 +260,156 @@ void deep_rescore_routing() {
   verify();
 }
 
+template <class Score>
+void score_run_boundaries() {
+  using Traits = goblin::core::detail::PackedIntegerTraits<std::int32_t>;
+  using Tree = goblin::core::detail::PackedBPlusTree<Traits, Score, true>;
+  using Raw = goblin::core::detail::PackedBPlusTree<Traits, Score>;
+  Tree tree(0.0);
+  for (int i = 0; i < 3; ++i) tree.insert({Score{7}, i});
+  assert(tree.sorted_score_bytes() == 3 * sizeof(Score));
+  assert(tree.compressed_leaf_count() == 0);
+  tree.insert({Score{7}, 3});
+  assert(tree.sorted_score_bytes() == 3 * sizeof(Score));
+  assert(tree.compressed_leaf_count() == 1);
+  tree.erase({Score{7}, 1});
+  assert(tree.sorted_score_bytes() == 3 * sizeof(Score));
+  assert(tree.compressed_leaf_count() == 0 && tree.check_invariants());
+
+  Tree tied(0.5);
+  Raw raw(0.5);
+  const auto count = Tree::kLeafCapacity * 3;
+  for (std::size_t i = 0; i < count; ++i) {
+    tied.insert({Score{1}, static_cast<std::int32_t>(i)});
+    raw.insert({Score{1}, static_cast<std::int32_t>(i)});
+  }
+  tied.force_merge();
+  raw.force_merge();
+  assert(tied.check_invariants());
+  assert(tied.compressed_leaf_count() == tied.leaf_count());
+  assert(tied.sorted_score_bytes() == tied.leaf_count() * 3 * sizeof(Score));
+  assert(tied.allocated_bytes() < raw.allocated_bytes());
+  // Mutate a copy, including dirty slots and score-stream growth.
+  auto copy = tied;
+  for (std::size_t i = 0; i < count; ++i) {
+    copy.replace({Score{1}, static_cast<std::int32_t>(i)},
+                 {static_cast<Score>(i + 2), static_cast<std::int32_t>(i)});
+  }
+  copy.force_merge();
+  assert(copy.check_invariants() && tied.check_invariants());
+  assert(copy.compressed_leaf_count() == 0);
+  assert(copy.sorted_score_bytes() == count * sizeof(Score));
+}
+
+template <class Score>
+void score_run_allocation_failures() {
+  using namespace goblin::core;
+  using Traits = detail::PackedIntegerTraits<std::int32_t>;
+  using Tree = detail::PackedBPlusTree<Traits, Score, true>;
+  const auto capacity = Tree::kLeafCapacity;
+  MemoryCeiling deny_growth(1);
+  deny_growth.bind(nullptr, [](const void*) noexcept { return std::size_t{1}; });
+
+  // Break long runs into distinct scores until compaction needs more storage.
+  // Exercise both a single leaf and moves between separate source/dest leaves.
+  for (const bool cross_leaf : {false, true}) {
+    Tree tree(0.5);
+    const auto count = cross_leaf ? capacity * 2 + capacity / 4 : capacity / 2;
+    for (std::size_t i = 0; i < count; ++i) {
+      tree.insert({Score{1}, static_cast<std::int32_t>(i)});
+    }
+    tree.force_merge();
+    std::size_t changed = 0;
+    bool rejected = false;
+    for (; changed < capacity / 2; ++changed) {
+      MemoryCeilingScope scope(&deny_growth);
+      try {
+        tree.replace({Score{1}, static_cast<std::int32_t>(changed)},
+                     {static_cast<Score>(changed + 2),
+                      static_cast<std::int32_t>(changed)});
+      } catch (const MaxMemoryExceeded&) {
+        rejected = true;
+        break;
+      }
+    }
+    assert(rejected && changed != 0 && tree.check_invariants());
+    assert(tree.size() == count);
+    for (const auto& entry : tree.range_by_rank(0, -1, false)) {
+      const auto id = static_cast<std::size_t>(entry.key);
+      assert(entry.score == (id < changed ? static_cast<Score>(id + 2) : Score{1}));
+    }
+    // A refused write remains retryable with the original old tuple.
+    tree.replace({Score{1}, static_cast<std::int32_t>(changed)},
+                 {static_cast<Score>(changed + 2), static_cast<std::int32_t>(changed)});
+    tree.force_merge();
+    assert(tree.check_invariants());
+  }
+
+  // Redistribution from a diverse neighbor would expand a compressed leaf.
+  // Denying that optional growth must not reject the already committed erase.
+  Tree tree(0.5);
+  const auto count = capacity + capacity / 2;
+  for (std::size_t i = 0; i < count; ++i) {
+    tree.insert({i < capacity / 2 ? Score{1} : static_cast<Score>(i + 2),
+                 static_cast<std::int32_t>(i)});
+  }
+  tree.force_merge();
+  assert(tree.leaf_count() == 2);
+  {
+    MemoryCeilingScope scope(&deny_growth);
+    for (std::size_t i = 0; i <= capacity / 4; ++i) {
+      tree.erase({Score{1}, static_cast<std::int32_t>(i)});
+    }
+  }
+  assert(tree.size() == count - capacity / 4 - 1 && tree.check_invariants());
+  tree.erase({Score{1}, static_cast<std::int32_t>(capacity / 4 + 1)});
+  assert(tree.check_invariants());
+}
+
 }  // namespace
 
 int main() {
   using namespace goblin::core::detail;
+  score_run_boundaries<float>();
+  score_run_boundaries<double>();
+  score_run_allocation_failures<float>();
+  score_run_allocation_failures<double>();
   redistribute_full_neighbor<PackedIntegerTraits<std::int32_t>, float>();
+  redistribute_full_neighbor<PackedIntegerTraits<std::int32_t>, float, true>();
   redistribute_full_neighbor<PackedIntegerTraits<std::int32_t>, double>();
+  redistribute_full_neighbor<PackedIntegerTraits<std::int32_t>, double, true>();
   redistribute_full_neighbor<PackedIntegerTraits<std::int64_t>, float>();
+  redistribute_full_neighbor<PackedIntegerTraits<std::int64_t>, float, true>();
   redistribute_full_neighbor<PackedIntegerTraits<std::int64_t>, double>();
+  redistribute_full_neighbor<PackedIntegerTraits<std::int64_t>, double, true>();
   redistribute_full_neighbor<PackedUuidTraits, float>();
+  redistribute_full_neighbor<PackedUuidTraits, float, true>();
   redistribute_full_neighbor<PackedUuidTraits, double>();
+  redistribute_full_neighbor<PackedUuidTraits, double, true>();
   deep_rescore_routing<PackedIntegerTraits<std::int32_t>, float>();
+  deep_rescore_routing<PackedIntegerTraits<std::int32_t>, float, true>();
   deep_rescore_routing<PackedIntegerTraits<std::int32_t>, double>();
+  deep_rescore_routing<PackedIntegerTraits<std::int32_t>, double, true>();
   deep_rescore_routing<PackedIntegerTraits<std::int64_t>, float>();
+  deep_rescore_routing<PackedIntegerTraits<std::int64_t>, float, true>();
   deep_rescore_routing<PackedIntegerTraits<std::int64_t>, double>();
+  deep_rescore_routing<PackedIntegerTraits<std::int64_t>, double, true>();
   deep_rescore_routing<PackedUuidTraits, float>();
+  deep_rescore_routing<PackedUuidTraits, float, true>();
   deep_rescore_routing<PackedUuidTraits, double>();
+  deep_rescore_routing<PackedUuidTraits, double, true>();
   for (const auto exponent : {0.0, 0.5, 1.0}) {
     exercise<PackedIntegerTraits<std::int32_t>, float>(exponent);
+    exercise<PackedIntegerTraits<std::int32_t>, float, true>(exponent);
     exercise<PackedIntegerTraits<std::int32_t>, double>(exponent);
+    exercise<PackedIntegerTraits<std::int32_t>, double, true>(exponent);
     exercise<PackedIntegerTraits<std::int64_t>, float>(exponent);
+    exercise<PackedIntegerTraits<std::int64_t>, float, true>(exponent);
     exercise<PackedIntegerTraits<std::int64_t>, double>(exponent);
+    exercise<PackedIntegerTraits<std::int64_t>, double, true>(exponent);
     exercise<PackedUuidTraits, float>(exponent);
+    exercise<PackedUuidTraits, float, true>(exponent);
     exercise<PackedUuidTraits, double>(exponent);
+    exercise<PackedUuidTraits, double, true>(exponent);
   }
 }

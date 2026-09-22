@@ -201,6 +201,13 @@ Set these on the command line at startup.
   dirty tail reaches `ceil(leaf_capacity ** K)` records. `K` is in `[0, 1]`
   and defaults to `0.5`. A larger threshold permits a larger local tail between
   merges; reads reconcile the leaves they visit and never trigger maintenance.
+- `--packed-zset-score-rle` / `--no-packed-zset-score-rle` — enable or disable
+  sorted-base score run-length encoding in all six packed layouts. Default on.
+  Runs of four or more equal scores use a NaN marker, a score-width unsigned
+  count, and the score. Dirty tails retain ordinary tuples. Snapshots restore
+  using the receiver's setting. `GOBLIN.MEMORY` reports `score_rle`,
+  `compressed_leaf_count`, and `sorted_score_bytes`; use `total_allocated_bytes`
+  to compare whole-object footprints. The option does not affect standard zsets.
 - `--member-index-growth FACTOR` — how much the member hash index grows on each
   rehash, for both the zset member index and the hash field index. Default
   `2^0.25` (about `1.19`). A smaller factor keeps the index fuller (less RAM)

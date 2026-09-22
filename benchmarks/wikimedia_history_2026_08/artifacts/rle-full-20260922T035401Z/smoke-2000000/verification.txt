@@ -1,0 +1,13 @@
+goblin-packed-int32-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+all engines contain the same page_id -> edit-count mapping

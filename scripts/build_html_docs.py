@@ -413,7 +413,8 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 # benchmark-results/ archive, input traces, executables, or database snapshots.
 PUBLIC_DATA_DIRS = ("benchmarks/wikimedia_history_2026_08/artifacts",)
 PUBLIC_DATA_EXTS = {".tsv", ".txt", ".json", ".sha256", ".sh", ".py",
-                    ".command", ".status"}
+                    ".command", ".status", ".log", ".utc", ".patch", ".cpp",
+                    ".stderr", ".command-errors"}
 
 
 def is_excluded(path: Path) -> bool:

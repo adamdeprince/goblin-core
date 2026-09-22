@@ -1300,7 +1300,8 @@ PackedZSetAddResult Store::packed_zadd(
 
   // Mutate a detached object first. Invalid members/scores and XX-only misses
   // therefore never leave an empty key behind.
-  PackedZSet prepared(kind, options_.packed_zset_merge_exponent);
+  PackedZSet prepared(kind, options_.packed_zset_merge_exponent,
+                      options_.packed_zset_score_rle);
   auto result = prepared.add(items, options);
   if (!result.invalid_member && !result.invalid_score && !prepared.empty()) {
     (void)keyspace_.place_loaded_packed_zset(key, std::move(prepared));
@@ -1441,7 +1442,8 @@ ZStoreResult Store::packed_zunionstore(
   }
   if (invalid_score) return {.invalid_score = true};
 
-  PackedZSet merged(kind, options_.packed_zset_merge_exponent);
+  PackedZSet merged(kind, options_.packed_zset_merge_exponent,
+                    options_.packed_zset_score_rle);
   std::vector<PackedZSetAddItem> items;
   reserve_memory_vector(items, totals.size());
   totals.for_each([&items](const auto& entry) {
@@ -1486,7 +1488,8 @@ ZStoreResult Store::packed_zinterstore(
     }
   }
 
-  PackedZSet intersection(kind, options_.packed_zset_merge_exponent);
+  PackedZSet intersection(kind, options_.packed_zset_merge_exponent,
+                          options_.packed_zset_score_rle);
   bool invalid_score = false;
   bool invalid_member = false;
   if (!sources.empty()) {
@@ -1570,6 +1573,9 @@ std::optional<PackedZSetMemoryStats> Store::packed_zset_memory_stats(
       .tree_height = zset->tree_height(),
       .merge_exponent = zset->merge_exponent(),
       .merge_threshold = zset->merge_threshold(),
+      .score_rle = zset->score_rle_enabled(),
+      .compressed_leaf_count = zset->compressed_leaf_count(),
+      .sorted_score_bytes = zset->sorted_score_bytes(),
       .total_allocated_bytes = zset->allocated_bytes(),
   };
 }
@@ -3151,7 +3157,8 @@ CopyResult Store::copy(std::string_view source, std::string_view destination,
     }
     case KeyType::PackedZset: {
       const auto* original = find_packed_zset(source);
-      PackedZSet clone(original->kind(), options_.packed_zset_merge_exponent);
+      PackedZSet clone(original->kind(), options_.packed_zset_merge_exponent,
+                      options_.packed_zset_score_rle);
       const auto entries = original->range_by_rank(0, -1);
       std::vector<PackedZSetAddItem> items;
       reserve_memory_vector(items, entries.size());
@@ -4224,7 +4231,8 @@ SnapshotLoadStats Store::load_native(std::istream& in) {
             items.push_back({score, member});
           }
           PackedZSet zset(static_cast<PackedZSetKind>(encoded_kind),
-                          options_.packed_zset_merge_exponent);
+                          options_.packed_zset_merge_exponent,
+                          options_.packed_zset_score_rle);
           const auto result = zset.add(items);
           if (result.invalid_member || result.invalid_score ||
               zset.size() != count) {

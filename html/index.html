@@ -532,7 +532,12 @@
         <p class="eyebrow">Redis semantics, specialized properly</p>
         <h1>Goblin<br>Core</h1>
         <p class="hero-copy">A compact Redis®-compatible server for strings, sets, sorted sets, hashes, lists, sparse arrays, and Pub/Sub over TCP with kernel sockets or <strong>XLIO Ultra</strong>, UDS, <strong>ringbuffers</strong>, one-sided <strong>RDMA</strong>, <strong>libfabric/EFA</strong>, and <strong>Aeron UDP/IPC</strong>. <strong>Spend less to run the hot state you already have</strong>, or take Redis-shaped operations down to triple-digit nanoseconds.</p>
-        <div class="release-notes" aria-label="What's new in Goblin Core 0.10.6 and 0.10.5">
+        <div class="release-notes" aria-label="What's new in Goblin Core">
+          <section class="release-note">
+            <span class="release-note-heading"><a href="RELEASE-HISTORY.html#unreleased">Latest source</a></span>
+            <span><strong>Score RLE is now the packed-zset default:</strong> 80.8 million Wikipedia page IDs in <strong>1.63 GiB final RSS</strong> with INT32/FLOAT32, 22.2% below the same layout with RLE off.</span>
+            <span class="release-secondary">All 12 typed-layout/RLE combinations verified. Final RSS fell 8.1–36.5%; measured replay-time differences stayed below 1% in this trial. <a href="benchmarks/wikimedia_history_2026_08/rle-full-comparison-20260922.html">New report and configuration.</a></span>
+          </section>
           <section class="release-note">
             <span class="release-note-heading"><a href="RELEASE-HISTORY.html#v0-10-6-september-9-2026">New in v0.10.6</a></span>
             <span><strong>Space-efficient packed zsets:</strong> 80.8 million Wikipedia page IDs in <strong>2.10 GiB final RSS—53.6–72.2% less than Redis, Valkey, and Dragonfly</strong> in our replay. <a href="docs/packed-zsets.html">Six binary member/score layouts.</a></span>
@@ -698,9 +703,9 @@
           <article class="benchmark-report benchmark-report-wide">
             <span class="report-index">07 / Wikimedia page-edit replay</span>
             <h3>1.48 billion increments. 80.8 million page IDs.</h3>
-            <strong class="report-metric">39.2% less RSS</strong>
-            <p class="report-copy">Packed INT32/FLOAT32 finished in 7h 08m with 2.10 GiB RSS, versus standard Goblin's 7h 35m and 3.46 GiB. All six engines passed full-state verification. One concurrent, reply-per-command Unix-socket replay; packed uses numeric member tie ordering.</p>
-            <div class="report-links"><a href="benchmarks/wikimedia_history_2026_08/full-comparison-20260909.html">Open Wikimedia report →</a><a href="benchmarks/wikimedia_history_2026_08/artifacts/full-20260908T190700Z/run/summary.tsv">Raw TSV</a><a href="benchmarks/wikimedia_history_2026_08/artifacts/full-20260908T190700Z/README.html">Verification and artifacts</a></div>
+            <strong class="report-metric">1.63 GiB final RSS</strong>
+            <p class="report-copy">Score RLE is now enabled by default for typed packed zsets. INT32/FLOAT32 used 22.2% less RSS than its RLE-off pair. All six layouts saved memory, with measured replay-time differences below 1%; all 12 runs passed full-state verification.</p>
+            <div class="report-links"><a href="benchmarks/wikimedia_history_2026_08/rle-full-comparison-20260922.html">Open new Wikimedia report →</a><a href="benchmarks/wikimedia_history_2026_08/artifacts/rle-full-20260922T035401Z/run/summary.tsv">Raw TSV</a><a href="benchmarks/wikimedia_history_2026_08/artifacts/rle-full-20260922T035401Z/README.html">Verification and artifacts</a><a href="benchmarks/wikimedia_history_2026_08/full-comparison-20260909.html">Earlier six-engine comparison</a></div>
           </article>
         </div>
         <p class="method"><strong>Comparison discipline:</strong> HSET is RESP2/UDS throughout. LIST, SET, and ZSET compare Goblin RESP/TCP with RESP/TCP incumbents, then show Goblin's equally pipelined SBE ring separately. ARRAY is RESP/TCP with native AR* commands throughout; unsupported engines receive an <code>X</code>, never a hash fallback. Those structure benchmarks report medians on the same dedicated AMD 5995WX host, with one serving core per engine and process RSS read from Linux. Wikimedia is a single concurrent trial without CPU pinning, with final—not peak—RSS and separately verified numeric packed tie ordering.</p>

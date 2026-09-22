@@ -603,6 +603,15 @@ threshold to `ceil(leaf_capacity ** k)`, with `k` in `[0, 1]` and a default of
 leaf when its threshold is reached. See
 [fixed-width packed sorted sets](docs/packed-zsets.md).
 
+`--packed-zset-score-rle` compresses runs of four or more equal scores in packed
+B+ tree leaf bases. It applies to all packed member/score types and defaults to
+on; `--no-packed-zset-score-rle` disables it explicitly. Dirty tails and logical
+leaf capacities are preserved. Snapshots use the receiving server's setting.
+`GOBLIN.MEMORY` reports the setting, compressed leaf count, and used score bytes.
+The [full Wikimedia RLE comparison](benchmarks/wikimedia_history_2026_08/rle-full-comparison-20260922.md)
+measured 8.08–36.52% less final RSS across all six layouts, with replay-time
+differences below 1% in one concurrent trial per mode.
+
 `--zset-implementation standard|packed-int32-float32|packed-int32-float64|packed-int64-float32|packed-int64-float64|packed-uuid-float32|packed-uuid-float64`
 selects the representation created by unqualified sorted-set commands. It
 defaults to `standard`. Existing and restored keys retain their representation;

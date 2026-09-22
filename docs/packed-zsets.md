@@ -123,6 +123,56 @@ all dirty leaves to compact, while `GOBLIN.MEMORY key` reports the
 representation, exponent, per-leaf threshold, and aggregate sorted/dirty entry
 counts.
 
+## Score run-length encoding
+
+Sorted-base score compression is enabled by default for all six packed
+representations. Select a layout with:
+
+```text
+goblin-core --zset-implementation packed-int32-float32
+```
+
+Use `--no-packed-zset-score-rle` to disable compression, or
+`--packed-zset-score-rle` to explicitly enable it. The option applies to keys created by
+representation-qualified commands, copies, aggregate stores, and snapshot
+restores. Ordinary sorted sets retain their existing storage. Like the merge
+exponent, this is server policy: snapshots retain the member/score type and
+logical contents, and use the receiving server's compression setting.
+
+Each compressed-layout leaf stores its sorted member IDs separately from its
+score stream. Four or more adjacent equal scores become `[NaN, count, score]`.
+All three fields occupy one score-width word; the count is a binary `uint32`
+for FLOAT32 or `uint64` for FLOAT64. Shorter runs remain literal scores. NaN
+markers are internal and never appear in replies. Dirty tails keep their
+ordinary tuples and NaN deletion markers in separate storage.
+
+Logical leaf capacities and merge thresholds stay the same. A checkpoint every
+32 base positions bounds score decoding for binary-search probes; sequential
+reads decode each run once. Compaction rebuilds one leaf of logical entries;
+redistribution handles at most two leaves. All scratch space is bounded by the
+fixed leaf capacity. Runs end at leaf boundaries, and rank counts and
+invalidation bits still count members.
+
+Score buffers grow before a mutation is committed and can shrink as scores
+become more repetitive. If memory pressure prevents optional redistribution
+or shrinking, the existing leaves remain valid and maintenance can be retried
+by later writes. The separately allocated buffers and checkpoints add overhead
+for diverse scores; compression benefits workloads with many ties and adds
+encoding work during compaction. The opt-out retains the raw score layout for
+workloads where that tradeoff is preferable.
+
+In the [full Wikimedia comparison](../benchmarks/wikimedia_history_2026_08/rle-full-comparison-20260922.md),
+all 12 RLE on/off variants passed verification at 80,798,328 members. RLE reduced
+final RSS by 8.08–36.52% across the six layouts. INT32/FLOAT32 used 1.626 GiB
+instead of 2.089 GiB; measured replay-time differences were below 1% in one
+concurrent trial per variant.
+
+`GOBLIN.MEMORY key` additionally reports `score_rle` (0 or 1),
+`compressed_leaf_count` (leaves currently containing encoded runs), and
+`sorted_score_bytes` (used score-stream bytes, excluding reserved capacity,
+members, checkpoints, and dirty records). `total_allocated_bytes` includes all
+of those allocations and is the appropriate counter for comparing footprints.
+
 Native snapshots serialize canonical logical entries, not append history, and
 restore the same packed representation. Representation-qualified names are part
 of the RESP command surface. The unqualified typed SBE sorted-set templates also

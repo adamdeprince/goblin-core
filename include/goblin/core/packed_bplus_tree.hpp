@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "goblin/core/memory_limit.hpp"
+#include "goblin/core/packed_score_runs.hpp"
 
 namespace goblin::core::detail {
 
@@ -25,7 +26,7 @@ namespace goblin::core::detail {
 // leaf overwrites its dirty record; reaching the local threshold compacts only
 // that leaf. Branch and leaf references are 32-bit arena indices, never heap
 // pointers.
-template <class Traits, class Score>
+template <class Traits, class Score, bool ScoreRle = false>
 class PackedBPlusTree {
  public:
   using Key = typename Traits::Key;
@@ -77,9 +78,33 @@ class PackedBPlusTree {
     std::size_t bytes = leaves_.capacity() * sizeof(Leaf) +
                         branches_.capacity() * sizeof(Branch);
     for (const auto& leaf : leaves_) {
-      bytes += leaf.entries.capacity() * sizeof(Entry);
+      if constexpr (ScoreRle) bytes += leaf.entries.allocated_bytes();
+      else bytes += leaf.entries.capacity() * sizeof(Entry);
     }
     return bytes;
+  }
+
+  [[nodiscard]] static constexpr bool score_rle_enabled() noexcept {
+    return ScoreRle;
+  }
+  [[nodiscard]] std::size_t compressed_leaf_count() const noexcept {
+    std::size_t count = 0;
+    if constexpr (ScoreRle) {
+      for (const auto& leaf : leaves_) {
+        count += leaf.active && leaf.entries.encoded;
+      }
+    }
+    return count;
+  }
+  [[nodiscard]] std::size_t sorted_score_bytes() const noexcept {
+    if constexpr (!ScoreRle) return sorted_count_ * sizeof(Score);
+    else {
+      std::size_t bytes = 0;
+      for (const auto& leaf : leaves_) {
+        if (leaf.active) bytes += leaf.entries.scores.size() * sizeof(Score);
+      }
+      return bytes;
+    }
   }
 
   void insert(Entry entry) {
@@ -106,6 +131,7 @@ class PackedBPlusTree {
     }
 
     auto& leaf = leaves_[path.leaf];
+    prepare_dirty(leaf);
     ++leaf.live_count;
     ++size_;
     set_dirty(leaf, entry.key, entry.score);
@@ -122,6 +148,7 @@ class PackedBPlusTree {
     auto new_path = locate(new_entry);
     if (old_path.leaf == new_path.leaf) {
       auto& leaf = leaves_[old_path.leaf];
+      prepare_dirty(leaf);
       set_dirty(leaf, new_entry.key, new_entry.score, old_entry);
       expand_fence(old_path, new_entry);
       maybe_compact_leaf(old_path.leaf);
@@ -136,6 +163,8 @@ class PackedBPlusTree {
 
     auto& old_leaf = leaves_[old_path.leaf];
     auto& new_leaf = leaves_[new_path.leaf];
+    prepare_dirty(old_leaf);
+    prepare_dirty(new_leaf);
     --old_leaf.live_count;
     ++new_leaf.live_count;
     set_dirty(old_leaf, old_entry.key, std::nullopt, old_entry);
@@ -152,6 +181,7 @@ class PackedBPlusTree {
     assert(root_ != kNull && size_ != 0);
     const auto path = locate(old_entry);
     auto& leaf = leaves_[path.leaf];
+    prepare_dirty(leaf);
     --leaf.live_count;
     --size_;
     set_dirty(leaf, old_entry.key, std::nullopt, old_entry);
@@ -303,22 +333,26 @@ class PackedBPlusTree {
       if (leaf_id >= leaves_.size()) return false;
       const auto& leaf = leaves_[leaf_id];
       if (!leaf.active || leaf.prev != previous || !leaf.has_fence ||
-          leaf.sorted_size > leaf.entries.size() ||
-          leaf.entries.size() > kLeafCapacity + merge_threshold_) {
+          leaf.sorted_size + tail_size(leaf) > kLeafCapacity + merge_threshold_) {
         return false;
       }
+      if constexpr (ScoreRle) {
+        if (!leaf.entries.check_invariants(leaf.sorted_size) ||
+            tail_size(leaf) >= merge_threshold_) return false;
+      } else if (leaf.sorted_size > leaf.entries.size()) return false;
       if (previous_fence && !less(*previous_fence, leaf.fence)) return false;
       previous_fence = leaf.fence;
       for (std::size_t i = 1; i < leaf.sorted_size; ++i) {
-        if (less(leaf.entries[i], leaf.entries[i - 1])) return false;
+        if (less(base_entry(leaf, i), base_entry(leaf, i - 1))) return false;
       }
       for (std::size_t i = 0; i < kLeafCapacity; ++i) {
         const bool shadowed = i < leaf.sorted_size &&
-                              tail_contains(leaf, leaf.entries[i].key);
+                              tail_contains(leaf, base_entry(leaf, i).key);
         if (base_invalidated(leaf, i) != shadowed) return false;
       }
-      for (std::size_t i = leaf.sorted_size + 1; i < leaf.entries.size(); ++i) {
-        if (!Traits::less(leaf.entries[i - 1].key, leaf.entries[i].key)) {
+      const auto dirty_begin = tail_begin(leaf);
+      for (std::size_t i = 1; i < tail_size(leaf); ++i) {
+        if (!Traits::less(dirty_begin[i - 1].key, dirty_begin[i].key)) {
           return false;
         }
       }
@@ -334,7 +368,7 @@ class PackedBPlusTree {
       if (!local_ok || local_live != leaf.live_count) return false;
       live_seen += local_live;
       sorted_seen += leaf.sorted_size;
-      dirty_seen += leaf.entries.size() - leaf.sorted_size;
+      dirty_seen += tail_size(leaf);
       previous = leaf_id;
       ++leaves_seen;
     }
@@ -358,8 +392,9 @@ class PackedBPlusTree {
       std::numeric_limits<std::uint32_t>::max();
   static constexpr std::size_t kMaxHeight = 16;
 
+  using RleEntries = PackedScoreRuns<Entry, kLeafCapacity>;
   struct Leaf {
-    std::vector<Entry> entries;
+    std::conditional_t<ScoreRle, RleEntries, std::vector<Entry>> entries;
     // Base tuples stay unchanged until compaction, so their slots are stable.
     // One bit replaces a dirty-tail key search per base tuple on merges/reads.
     std::array<std::uint64_t, (kLeafCapacity + 63) / 64> invalidated{};
@@ -441,8 +476,9 @@ class PackedBPlusTree {
 
   [[nodiscard]] std::uint32_t allocate_leaf() {
     Leaf prepared;
-    reserve_memory_vector(prepared.entries,
-                          kLeafCapacity + merge_threshold_);
+    if constexpr (ScoreRle) prepared.entries.reserve(merge_threshold_);
+    else reserve_memory_vector(prepared.entries,
+                               kLeafCapacity + merge_threshold_);
     std::uint32_t id = kNull;
     if (free_leaf_ != kNull) {
       id = free_leaf_;
@@ -566,29 +602,41 @@ class PackedBPlusTree {
     return {.leaf = node, .offset = rank};
   }
 
-  [[nodiscard]] static auto tail_lower_bound(Leaf& leaf, const Key& key) {
-    return std::lower_bound(
-        leaf.entries.begin() + static_cast<std::ptrdiff_t>(leaf.sorted_size),
-        leaf.entries.end(), key,
+  [[nodiscard]] static auto tail_begin(auto& leaf) {
+    if constexpr (ScoreRle) return leaf.entries.dirty.begin();
+    else return leaf.entries.begin() +
+                static_cast<std::ptrdiff_t>(leaf.sorted_size);
+  }
+  [[nodiscard]] static auto tail_end(auto& leaf) {
+    if constexpr (ScoreRle) return leaf.entries.dirty.end();
+    else return leaf.entries.end();
+  }
+  [[nodiscard]] static std::size_t tail_size(const Leaf& leaf) noexcept {
+    return static_cast<std::size_t>(tail_end(leaf) - tail_begin(leaf));
+  }
+  [[nodiscard]] static Entry base_entry(const Leaf& leaf,
+                                         std::size_t slot) noexcept {
+    if constexpr (ScoreRle) return leaf.entries.entry(slot);
+    else return leaf.entries[slot];
+  }
+  [[nodiscard]] static auto tail_lower_bound(auto& leaf, const Key& key) {
+    return std::lower_bound(tail_begin(leaf), tail_end(leaf), key,
         [](const Entry& entry, const Key& candidate) {
           return key_less(entry, candidate);
         });
   }
-
-  [[nodiscard]] static auto tail_lower_bound(const Leaf& leaf,
-                                             const Key& key) {
-    return std::lower_bound(
-        leaf.entries.begin() + static_cast<std::ptrdiff_t>(leaf.sorted_size),
-        leaf.entries.end(), key,
-        [](const Entry& entry, const Key& candidate) {
-          return key_less(entry, candidate);
-        });
-  }
-
   [[nodiscard]] static bool tail_contains(const Leaf& leaf,
                                           const Key& key) noexcept {
     const auto found = tail_lower_bound(leaf, key);
-    return found != leaf.entries.end() && found->key == key;
+    return found != tail_end(leaf) && found->key == key;
+  }
+
+  void prepare_dirty(Leaf& leaf) {
+    if constexpr (ScoreRle) {
+      if (tail_size(leaf) + 1 >= merge_threshold_) {
+        leaf.entries.prepare_merge(tail_size(leaf) + 1);
+      }
+    }
   }
 
   [[nodiscard]] static bool base_invalidated(const Leaf& leaf,
@@ -601,34 +649,50 @@ class PackedBPlusTree {
                  std::optional<Entry> retired = std::nullopt) {
     auto found = tail_lower_bound(leaf, key);
     const auto stored = score.value_or(std::numeric_limits<Score>::quiet_NaN());
-    if (found != leaf.entries.end() && found->key == key) {
+    if (found != tail_end(leaf) && found->key == key) {
       found->score = stored;
       return;
     }
     if (retired) {
       // Only the first dirty record invalidates a base slot. Repeated updates,
       // deletes and reinsertions retain that bit until the leaf is compacted.
-      const auto base_end = leaf.entries.begin() +
-                            static_cast<std::ptrdiff_t>(leaf.sorted_size);
-      const auto base = std::lower_bound(leaf.entries.begin(), base_end, *retired,
-                                        [](const Entry& a, const Entry& b) {
-                                          return less(a, b);
-                                        });
-      assert(base != base_end && equivalent(*base, *retired));
-      const auto slot = static_cast<std::size_t>(base - leaf.entries.begin());
+      std::size_t slot;
+      if constexpr (ScoreRle) {
+        std::size_t first = 0;
+        std::size_t end = leaf.sorted_size;
+        while (first < end) {
+          const auto middle = first + (end - first) / 2;
+          if (less(base_entry(leaf, middle), *retired)) first = middle + 1;
+          else end = middle;
+        }
+        slot = first;
+      } else {
+        const auto base_end = leaf.entries.begin() +
+                              static_cast<std::ptrdiff_t>(leaf.sorted_size);
+        const auto base = std::lower_bound(leaf.entries.begin(), base_end, *retired,
+            [](const Entry& a, const Entry& b) { return less(a, b); });
+        slot = static_cast<std::size_t>(base - leaf.entries.begin());
+      }
+      assert(slot < leaf.sorted_size &&
+             equivalent(base_entry(leaf, slot), *retired));
       leaf.invalidated[slot / 64] |= std::uint64_t{1} << (slot % 64);
     }
-    assert(leaf.entries.size() < leaf.entries.capacity());
-    leaf.entries.insert(found, Entry{stored, key});
+    if constexpr (ScoreRle) {
+      assert(leaf.entries.dirty.size() < leaf.entries.dirty.capacity());
+      leaf.entries.dirty.insert(found, Entry{stored, key});
+    } else {
+      assert(leaf.entries.size() < leaf.entries.capacity());
+      leaf.entries.insert(found, Entry{stored, key});
+    }
     ++dirty_count_;
   }
 
   [[nodiscard]] static std::size_t collect_additions(
       const Leaf& leaf, std::array<MergeSlot, kLeafCapacity>& additions) {
     std::size_t addition_count = 0;
-    for (std::size_t i = leaf.sorted_size; i < leaf.entries.size(); ++i) {
-      if (!std::isnan(leaf.entries[i].score)) {
-        std::construct_at(&additions[addition_count++].entry, leaf.entries[i]);
+    for (auto it = tail_begin(leaf); it != tail_end(leaf); ++it) {
+      if (!std::isnan(it->score)) {
+        std::construct_at(&additions[addition_count++].entry, *it);
       }
     }
     std::sort(additions.begin(), additions.begin() +
@@ -645,6 +709,13 @@ class PackedBPlusTree {
     std::array<MergeSlot, kLeafCapacity> additions;
     const auto addition_count = collect_additions(leaf, additions);
 
+    struct RawCursor {
+      const std::vector<Entry>& entries;
+      Entry entry(std::size_t slot) const { return entries[slot]; }
+    };
+    using Cursor = std::conditional_t<ScoreRle, typename RleEntries::Cursor,
+                                      RawCursor>;
+    Cursor cursor{leaf.entries};
     std::size_t base = 0;
     std::size_t addition = 0;
     const auto next_base = [&]() {
@@ -655,12 +726,13 @@ class PackedBPlusTree {
     };
     next_base();
     while (base < leaf.sorted_size || addition < addition_count) {
+      const auto candidate = base < leaf.sorted_size ? cursor.entry(base) : Entry{};
       const bool use_base =
           addition == addition_count ||
-          (base < leaf.sorted_size &&
-           less(leaf.entries[base], additions[addition].entry));
+          (base < leaf.sorted_size && less(candidate, additions[addition].entry));
       if (use_base) {
-        if (!fn(leaf.entries[base++])) return false;
+        ++base;
+        if (!fn(candidate)) return false;
         next_base();
       } else {
         if (!fn(additions[addition++].entry)) return false;
@@ -671,92 +743,177 @@ class PackedBPlusTree {
 
   void maybe_compact_leaf(std::uint32_t leaf_id) {
     const auto& leaf = leaves_[leaf_id];
-    if (leaf.entries.size() - leaf.sorted_size >= merge_threshold_) {
+    if (tail_size(leaf) >= merge_threshold_) {
       compact_leaf(leaf_id);
     }
   }
 
-  void compact_leaf(std::uint32_t leaf_id) {
-    auto& leaf = leaves_[leaf_id];
-    const auto tail_size = leaf.entries.size() - leaf.sorted_size;
-    if (tail_size == 0) return;
-
-    std::array<MergeSlot, kLeafCapacity> additions;
-    const auto addition_count = collect_additions(leaf, additions);
-
-    const auto old_sorted = leaf.sorted_size;
-    std::size_t prefix = 0;
-    std::size_t source = 0;
-    const auto copy_run = [&](std::size_t end) {
-      const auto length = end - source;
-      if (length != 0 && prefix != source) {
-        std::memmove(leaf.entries.data() + prefix, leaf.entries.data() + source,
-                     length * sizeof(Entry));
-      }
-      prefix += length;
-    };
-    // Visit only the holes. The unchanged prefix needs no writes, and each
-    // surviving run after it is compacted with one overlapping block move.
-    for (std::size_t word = 0; word < leaf.invalidated.size(); ++word) {
-      auto holes = leaf.invalidated[word];
-      while (holes != 0) {
-        const auto hole = word * 64 + std::countr_zero(holes);
-        assert(hole < old_sorted);
-        copy_run(hole);
-        source = hole + 1;
-        holes &= holes - 1;
-      }
-    }
-    copy_run(old_sorted);
-    const auto final_size = prefix + addition_count;
-    leaf.entries.resize(final_size);
-
-    if (addition_count != 0) {
-      if (prefix == 0 || less(leaf.entries[prefix - 1], additions[0].entry)) {
-        // An ordered append (including an empty base) never moves the base.
-        for (std::size_t i = 0; i < addition_count; ++i) {
-          leaf.entries[prefix + i] = additions[i].entry;
-        }
-      } else {
-        std::size_t left = prefix;
-        std::size_t right = addition_count;
-        std::size_t output = final_size;
-        while (right != 0) {
-          const auto& addition = additions[right - 1].entry;
-          if (left != 0 && less(addition, leaf.entries[left - 1])) {
-            // Find the run from its right edge. Exponential probes make short
-            // runs cheap, while long runs still use logarithmic comparisons.
-            auto start = left - 1;
-            std::size_t stride = 1;
-            while (start != 0) {
-              const auto probe = start > stride ? start - stride : 0;
-              if (!less(addition, leaf.entries[probe])) {
-                const auto first = std::upper_bound(
-                    leaf.entries.begin() + static_cast<std::ptrdiff_t>(probe + 1),
-                    leaf.entries.begin() + static_cast<std::ptrdiff_t>(start),
-                    addition,
-                    [](const Entry& a, const Entry& b) { return less(a, b); });
-                start = static_cast<std::size_t>(first - leaf.entries.begin());
-                break;
-              }
-              start = probe;
-              stride *= 2;
-            }
-            const auto length = left - start;
-            output -= length;
-            std::memmove(leaf.entries.data() + output, leaf.entries.data() + start,
-                         length * sizeof(Entry));
-            left = start;
-          }
-          leaf.entries[--output] = additions[--right].entry;
-        }
-      }
-    }
-    assert(final_size == leaf.live_count);
-    sorted_count_ = sorted_count_ - old_sorted + final_size;
-    dirty_count_ -= tail_size;
-    leaf.sorted_size = final_size;
+  void assign_rle_base(Leaf& leaf, std::span<const Entry> values) noexcept {
+    sorted_count_ = sorted_count_ - leaf.sorted_size + values.size();
+    dirty_count_ -= tail_size(leaf);
+    leaf.entries.assign(values);
+    leaf.sorted_size = values.size();
     leaf.invalidated.fill(0);
+  }
+
+  void compact_rle_leaf(std::uint32_t leaf_id) {
+    auto& leaf = leaves_[leaf_id];
+    if (tail_size(leaf) != 0) {
+      std::array<Entry, kLeafCapacity> values;
+      std::size_t count = 0;
+      for_each_leaf_entry(leaf_id, [&](const Entry& entry) {
+        assert(count < values.size());
+        values[count++] = entry;
+        return true;
+      });
+      const std::span<const Entry> live(values.data(), count);
+      leaf.entries.reserve_words(RleEntries::word_count(live));
+      assign_rle_base(leaf, live);
+      assert(count == leaf.live_count);
+    }
+    leaf.entries.maybe_shrink(merge_threshold_);
+  }
+
+  void rebalance_rle_leaves(std::uint32_t left_id, std::uint32_t right_id) {
+    auto& left = leaves_[left_id];
+    auto& right = leaves_[right_id];
+    const auto left_old = left.live_count;
+    const auto right_old = right.live_count;
+    const auto combined = left_old + right_old;
+    const auto left_new = combined > kLeafCapacity ? combined / 2 : combined;
+    const auto right_new = combined - left_new;
+    std::array<Entry, kLeafCapacity * 2> values;
+    std::size_t count = 0;
+    for (const auto id : {left_id, right_id}) {
+      for_each_leaf_entry(id, [&](const Entry& entry) {
+        values[count++] = entry;
+        return true;
+      });
+    }
+    assert(count == combined);
+    const std::span<const Entry> all(values.data(), count);
+    try {
+      left.entries.reserve_words(RleEntries::word_count(all.first(left_new)));
+      right.entries.reserve_words(RleEntries::word_count(all.subspan(left_new)));
+    } catch (const std::bad_alloc&) {
+      // This is optional maintenance after a committed deletion/rescore.
+      // Both old leaves, their dirty records, and all counts remain valid.
+      return;
+    }
+    const auto left_path = locate(left.fence);
+    const auto right_path = locate(right.fence);
+    assign_rle_base(left, all.first(left_new));
+    assign_rle_base(right, all.subspan(left_new));
+    left.live_count = left_new;
+    right.live_count = right_new;
+    if (right_new != 0) {
+      left.fence = values[left_new - 1];
+      refresh_path(left_path, static_cast<std::ptrdiff_t>(left_new) -
+                                   static_cast<std::ptrdiff_t>(left_old));
+      refresh_path(right_path, static_cast<std::ptrdiff_t>(right_new) -
+                                    static_cast<std::ptrdiff_t>(right_old));
+    } else {
+      left.fence = right.fence;
+      left.next = right.next;
+      if (right.next != kNull) leaves_[right.next].prev = left_id;
+      if (last_leaf_ == right_id) last_leaf_ = left_id;
+      refresh_path(left_path, static_cast<std::ptrdiff_t>(right_old));
+      remove_child(right_path, right_old);
+      release_leaf(right_id);
+      --active_leaf_count_;
+    }
+    left.entries.maybe_shrink(merge_threshold_);
+    right.entries.maybe_shrink(merge_threshold_);
+    if (left.live_count < kLeafCapacity / 4 && active_leaf_count_ > 1) {
+      maybe_rebalance_leaf(left_id);
+    }
+  }
+
+  void compact_leaf(std::uint32_t leaf_id) {
+    if constexpr (ScoreRle) {
+      compact_rle_leaf(leaf_id);
+    } else {
+      auto& leaf = leaves_[leaf_id];
+      const auto tail_size = leaf.entries.size() - leaf.sorted_size;
+      if (tail_size == 0) return;
+
+      std::array<MergeSlot, kLeafCapacity> additions;
+      const auto addition_count = collect_additions(leaf, additions);
+
+      const auto old_sorted = leaf.sorted_size;
+      std::size_t prefix = 0;
+      std::size_t source = 0;
+      const auto copy_run = [&](std::size_t end) {
+        const auto length = end - source;
+        if (length != 0 && prefix != source) {
+          std::memmove(leaf.entries.data() + prefix, leaf.entries.data() + source,
+                       length * sizeof(Entry));
+        }
+        prefix += length;
+      };
+      // Visit only the holes. The unchanged prefix needs no writes, and each
+      // surviving run after it is compacted with one overlapping block move.
+      for (std::size_t word = 0; word < leaf.invalidated.size(); ++word) {
+        auto holes = leaf.invalidated[word];
+        while (holes != 0) {
+          const auto hole = word * 64 + std::countr_zero(holes);
+          assert(hole < old_sorted);
+          copy_run(hole);
+          source = hole + 1;
+          holes &= holes - 1;
+        }
+      }
+      copy_run(old_sorted);
+      const auto final_size = prefix + addition_count;
+      leaf.entries.resize(final_size);
+
+      if (addition_count != 0) {
+        if (prefix == 0 || less(leaf.entries[prefix - 1], additions[0].entry)) {
+          // An ordered append (including an empty base) never moves the base.
+          for (std::size_t i = 0; i < addition_count; ++i) {
+            leaf.entries[prefix + i] = additions[i].entry;
+          }
+        } else {
+          std::size_t left = prefix;
+          std::size_t right = addition_count;
+          std::size_t output = final_size;
+          while (right != 0) {
+            const auto& addition = additions[right - 1].entry;
+            if (left != 0 && less(addition, leaf.entries[left - 1])) {
+              // Find the run from its right edge. Exponential probes make short
+              // runs cheap, while long runs still use logarithmic comparisons.
+              auto start = left - 1;
+              std::size_t stride = 1;
+              while (start != 0) {
+                const auto probe = start > stride ? start - stride : 0;
+                if (!less(addition, leaf.entries[probe])) {
+                  const auto first = std::upper_bound(
+                      leaf.entries.begin() + static_cast<std::ptrdiff_t>(probe + 1),
+                      leaf.entries.begin() + static_cast<std::ptrdiff_t>(start),
+                      addition,
+                      [](const Entry& a, const Entry& b) { return less(a, b); });
+                  start = static_cast<std::size_t>(first - leaf.entries.begin());
+                  break;
+                }
+                start = probe;
+                stride *= 2;
+              }
+              const auto length = left - start;
+              output -= length;
+              std::memmove(leaf.entries.data() + output, leaf.entries.data() + start,
+                           length * sizeof(Entry));
+              left = start;
+            }
+            leaf.entries[--output] = additions[--right].entry;
+          }
+        }
+      }
+      assert(final_size == leaf.live_count);
+      sorted_count_ = sorted_count_ - old_sorted + final_size;
+      dirty_count_ -= tail_size;
+      leaf.sorted_size = final_size;
+      leaf.invalidated.fill(0);
+    }
   }
 
   void expand_fence(const Path& path, const Entry& entry) noexcept {
@@ -791,8 +948,7 @@ class PackedBPlusTree {
 
   void split_leaf(const Path& path) {
     compact_leaf(path.leaf);
-    auto& current = leaves_[path.leaf];
-    assert(current.live_count == kLeafCapacity);
+    assert(leaves_[path.leaf].live_count == kLeafCapacity);
 
     // All allocations precede changes to the live directory.
     reserve_memory_vector(branches_, branches_.size() + height_ + 1);
@@ -800,17 +956,34 @@ class PackedBPlusTree {
     auto& leaf = leaves_[path.leaf];
     auto& right = leaves_[right_id];
     const auto split = leaf.sorted_size / 2;
-    right.entries.insert(
-        right.entries.end(),
-        leaf.entries.begin() + static_cast<std::ptrdiff_t>(split),
-        leaf.entries.end());
-    leaf.entries.resize(split);
-    right.sorted_size = right.entries.size();
-    right.live_count = right.sorted_size;
-    leaf.sorted_size = split;
-    leaf.live_count = split;
     const auto old_fence = leaf.fence;
-    leaf.fence = leaf.entries.back();
+    if constexpr (ScoreRle) {
+      std::array<Entry, kLeafCapacity> values;
+      for (std::size_t i = 0; i < leaf.sorted_size; ++i) {
+        values[i] = base_entry(leaf, i);
+      }
+      const std::span<const Entry> all(values.data(), leaf.sorted_size);
+      try {
+        leaf.entries.reserve_words(RleEntries::word_count(all.first(split)));
+        right.entries.reserve_words(RleEntries::word_count(all.subspan(split)));
+      } catch (...) {
+        release_leaf(right_id);
+        throw;
+      }
+      assign_rle_base(right, all.subspan(split));
+      assign_rle_base(leaf, all.first(split));
+    } else {
+      right.entries.insert(
+          right.entries.end(),
+          leaf.entries.begin() + static_cast<std::ptrdiff_t>(split),
+          leaf.entries.end());
+      leaf.entries.resize(split);
+      right.sorted_size = right.entries.size();
+      leaf.sorted_size = split;
+    }
+    right.live_count = right.sorted_size;
+    leaf.live_count = split;
+    leaf.fence = base_entry(leaf, split - 1);
     right.fence = old_fence;
     right.has_fence = true;
     right.prev = path.leaf;
@@ -899,60 +1072,64 @@ class PackedBPlusTree {
       right_id = leaf_id;
     }
     if (left_id == kNull || right_id == kNull) return;
-    compact_leaf(left_id);
-    compact_leaf(right_id);
+    if constexpr (ScoreRle) {
+      rebalance_rle_leaves(left_id, right_id);
+    } else {
+      compact_leaf(left_id);
+      compact_leaf(right_id);
 
-    auto left_path = locate(leaves_[left_id].fence);
-    auto right_path = locate(leaves_[right_id].fence);
-    assert(left_path.leaf == left_id && right_path.leaf == right_id);
-    auto& left = leaves_[left_id];
-    auto& right = leaves_[right_id];
-    const auto left_old = left.live_count;
-    const auto right_old = right.live_count;
-    const auto combined = left_old + right_old;
+      auto left_path = locate(leaves_[left_id].fence);
+      auto right_path = locate(leaves_[right_id].fence);
+      assert(left_path.leaf == left_id && right_path.leaf == right_id);
+      auto& left = leaves_[left_id];
+      auto& right = leaves_[right_id];
+      const auto left_old = left.live_count;
+      const auto right_old = right.live_count;
+      const auto combined = left_old + right_old;
 
-    if (combined > kLeafCapacity) {
-      const auto left_new = combined / 2;
-      const auto right_new = combined - left_new;
-      // Compacted neighbors are already globally ordered. Transfer only the
-      // boundary run; the destination's reserved leaf capacity is sufficient.
-      assert(left_new <= left.entries.capacity());
-      assert(right_new <= right.entries.capacity());
-      if (left_old < left_new) {
-        const auto boundary = right.entries.begin() +
-                              static_cast<std::ptrdiff_t>(left_new - left_old);
-        left.entries.insert(left.entries.end(), right.entries.begin(), boundary);
-        right.entries.erase(right.entries.begin(), boundary);
-      } else if (left_old > left_new) {
-        const auto boundary = left.entries.begin() +
-                              static_cast<std::ptrdiff_t>(left_new);
-        right.entries.insert(right.entries.begin(), boundary, left.entries.end());
-        left.entries.resize(left_new);
+      if (combined > kLeafCapacity) {
+        const auto left_new = combined / 2;
+        const auto right_new = combined - left_new;
+        // Compacted neighbors are already globally ordered. Transfer only the
+        // boundary run; the destination's reserved leaf capacity is sufficient.
+        assert(left_new <= left.entries.capacity());
+        assert(right_new <= right.entries.capacity());
+        if (left_old < left_new) {
+          const auto boundary = right.entries.begin() +
+                                static_cast<std::ptrdiff_t>(left_new - left_old);
+          left.entries.insert(left.entries.end(), right.entries.begin(), boundary);
+          right.entries.erase(right.entries.begin(), boundary);
+        } else if (left_old > left_new) {
+          const auto boundary = left.entries.begin() +
+                                static_cast<std::ptrdiff_t>(left_new);
+          right.entries.insert(right.entries.begin(), boundary, left.entries.end());
+          left.entries.resize(left_new);
+        }
+        left.sorted_size = left.live_count = left_new;
+        right.sorted_size = right.live_count = right_new;
+        left.fence = left.entries.back();
+        refresh_path(left_path, static_cast<std::ptrdiff_t>(left_new) -
+                                     static_cast<std::ptrdiff_t>(left_old));
+        refresh_path(right_path, static_cast<std::ptrdiff_t>(right_new) -
+                                      static_cast<std::ptrdiff_t>(right_old));
+        return;
       }
-      left.sorted_size = left.live_count = left_new;
-      right.sorted_size = right.live_count = right_new;
-      left.fence = left.entries.back();
-      refresh_path(left_path, static_cast<std::ptrdiff_t>(left_new) -
-                                   static_cast<std::ptrdiff_t>(left_old));
-      refresh_path(right_path, static_cast<std::ptrdiff_t>(right_new) -
-                                    static_cast<std::ptrdiff_t>(right_old));
-      return;
-    }
 
-    left.entries.insert(left.entries.end(), right.entries.begin(),
-                        right.entries.end());
-    left.sorted_size = left.live_count = combined;
-    left.fence = right.fence;
-    left.next = right.next;
-    if (right.next != kNull) leaves_[right.next].prev = left_id;
-    if (last_leaf_ == right_id) last_leaf_ = left_id;
-    refresh_path(left_path, static_cast<std::ptrdiff_t>(right_old));
-    remove_child(right_path, right_old);
-    release_leaf(right_id);
-    --active_leaf_count_;
+      left.entries.insert(left.entries.end(), right.entries.begin(),
+                          right.entries.end());
+      left.sorted_size = left.live_count = combined;
+      left.fence = right.fence;
+      left.next = right.next;
+      if (right.next != kNull) leaves_[right.next].prev = left_id;
+      if (last_leaf_ == right_id) last_leaf_ = left_id;
+      refresh_path(left_path, static_cast<std::ptrdiff_t>(right_old));
+      remove_child(right_path, right_old);
+      release_leaf(right_id);
+      --active_leaf_count_;
 
-    if (left.live_count < kLeafCapacity / 4 && active_leaf_count_ > 1) {
-      maybe_rebalance_leaf(left_id);
+      if (left.live_count < kLeafCapacity / 4 && active_leaf_count_ > 1) {
+        maybe_rebalance_leaf(left_id);
+      }
     }
   }
 

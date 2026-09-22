@@ -163,6 +163,9 @@ struct PackedZSetMemoryStats {
   std::size_t tree_height{0};
   double merge_exponent{kDefaultPackedZSetMergeExponent};
   std::size_t merge_threshold{0};
+  bool score_rle{false};
+  std::size_t compressed_leaf_count{0};
+  std::size_t sorted_score_bytes{0};
   std::size_t total_allocated_bytes{0};
 };
 
@@ -1556,6 +1559,9 @@ struct StoreOptions {
   // Zero merges every mutation; one permits a tail as large as the leaf's sorted
   // capacity. Reads reconcile only visited leaves and never trigger maintenance.
   double packed_zset_merge_exponent{kDefaultPackedZSetMergeExponent};
+  // Encode equal sorted-base scores in runs by default; snapshots use the
+  // receiver policy. Disable with --no-packed-zset-score-rle.
+  bool packed_zset_score_rle{kDefaultPackedZSetScoreRle};
   // Unqualified zset commands create this representation. A live key remains
   // pinned to the representation that created or restored it.
   ZSetImplementation zset_implementation{ZSetImplementation::Standard};

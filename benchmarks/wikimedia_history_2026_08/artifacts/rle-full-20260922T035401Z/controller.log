@@ -1,0 +1,59 @@
+2026-09-22T04:10:05.861741+00:00 starting smoke-2000000: 12 variants
+starting 12 concurrent feeds at 2026-09-22T04:10:06Z
+server	status	feed_seconds	os_rss_mb	os_rss_kb	used_memory_rss_bytes	zcard	command_errors
+goblin-packed-int32-float32-rle-off	PASS	40.232	19.4	19828	20312064	279458	0
+goblin-packed-int32-float32-rle-on	PASS	40.045	17.7	18088	18530304	279458	0
+goblin-packed-int32-float64-rle-off	PASS	39.836	26.9	27584	28254208	279458	0
+goblin-packed-int32-float64-rle-on	PASS	40.061	21.4	21900	22433792	279458	0
+goblin-packed-int64-float32-rle-off	PASS	39.742	26.9	27584	28254208	279458	0
+goblin-packed-int64-float32-rle-on	PASS	40.421	23.3	23908	24489984	279458	0
+goblin-packed-int64-float64-rle-off	PASS	39.834	26.9	27584	28254208	279458	0
+goblin-packed-int64-float64-rle-on	PASS	40.524	23.5	24048	24633344	279458	0
+goblin-packed-uuid-float32-rle-off	PASS	42.496	30.8	31568	32333824	279458	0
+goblin-packed-uuid-float32-rle-on	PASS	42.668	29.1	29816	30539776	279458	0
+goblin-packed-uuid-float64-rle-off	PASS	42.314	36.2	37100	37998592	279458	0
+goblin-packed-uuid-float64-rle-on	PASS	42.574	32.6	33336	34144256	279458	0
+starting concurrent final-state digests at 2026-09-22T04:10:49Z
+goblin-packed-int32-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int32-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-int64-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float32-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float32-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float64-rle-off: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+goblin-packed-uuid-float64-rle-on: PASS: 279458 members, score_sum=2000000, max_score=11792.0
+all engines contain the same page_id -> edit-count mapping
+2026-09-22T04:10:50.386491+00:00 starting run: 12 variants
+starting 12 concurrent feeds at 2026-09-22T04:10:53Z
+server	status	feed_seconds	os_rss_mb	os_rss_kb	used_memory_rss_bytes	zcard	command_errors
+goblin-packed-int32-float32-rle-off	PASS	34211.488	2139.6	2190904	2243493888	80798328	0
+goblin-packed-int32-float32-rle-on	PASS	34322.285	1664.8	1704784	1745707008	80798328	0
+goblin-packed-int32-float64-rle-off	PASS	34667.177	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int32-float64-rle-on	PASS	34679.061	2614.2	2676964	2741219328	80798328	0
+goblin-packed-int64-float32-rle-off	PASS	34669.548	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int64-float32-rle-on	PASS	34796.175	3140.7	3216096	3293290496	80798328	0
+goblin-packed-int64-float64-rle-off	PASS	34555.511	4118.3	4217108	4318326784	80798328	0
+goblin-packed-int64-float64-rle-on	PASS	34845.986	3178.7	3254992	3333120000	80798328	0
+goblin-packed-uuid-float32-rle-off	PASS	36559.638	5164.2	5288132	5415055360	80798328	0
+goblin-packed-uuid-float32-rle-on	PASS	36897.240	4746.9	4860828	4977496064	80798328	0
+goblin-packed-uuid-float64-rle-off	PASS	37071.213	6063.9	6209416	6358450176	80798328	0
+goblin-packed-uuid-float64-rle-on	PASS	37317.990	5144.9	5268380	5394829312	80798328	0
+starting concurrent final-state digests at 2026-09-22T14:32:51Z
+goblin-packed-int32-float32-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int32-float32-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int32-float64-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int32-float64-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int64-float32-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int64-float32-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int64-float64-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-int64-float64-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-uuid-float32-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-uuid-float32-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-uuid-float64-rle-off: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+goblin-packed-uuid-float64-rle-on: PASS: 80798328 members, score_sum=1483700913, max_score=2162914.0
+all engines contain the same page_id -> edit-count mapping
+2026-09-22T14:42:37.457882+00:00 controller exit=0

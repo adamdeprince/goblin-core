@@ -116,6 +116,7 @@ parse_zset_implementation(std::string_view text) noexcept {
 }
 
 inline constexpr double kDefaultPackedZSetMergeExponent = 0.5;
+inline constexpr bool kDefaultPackedZSetScoreRle = true;
 
 [[nodiscard]] constexpr bool valid_packed_zset_merge_exponent(
     double exponent) noexcept {
@@ -350,11 +351,11 @@ template <class Score>
   return (bits & kSign) != 0 ? ~bits : bits ^ kSign;
 }
 
-template <class Traits, class Score>
+template <class Traits, class Score, bool ScoreRle = false>
 class PackedZSetIndex {
  public:
   using Key = typename Traits::Key;
-  using Order = PackedBPlusTree<Traits, Score>;
+  using Order = PackedBPlusTree<Traits, Score, ScoreRle>;
   using Entry = typename Order::Entry;
 
   explicit PackedZSetIndex(
@@ -391,6 +392,15 @@ class PackedZSetIndex {
   }
   [[nodiscard]] std::size_t tree_height() const noexcept {
     return order_.tree_height();
+  }
+  [[nodiscard]] static constexpr bool score_rle_enabled() noexcept {
+    return ScoreRle;
+  }
+  [[nodiscard]] std::size_t compressed_leaf_count() const noexcept {
+    return order_.compressed_leaf_count();
+  }
+  [[nodiscard]] std::size_t sorted_score_bytes() const noexcept {
+    return order_.sorted_score_bytes();
   }
   [[nodiscard]] double merge_exponent() const noexcept {
     return merge_exponent_;
@@ -625,6 +635,17 @@ using PackedInt64Float64 =
 using PackedUuidFloat32 = PackedZSetIndex<PackedUuidTraits, float>;
 using PackedUuidFloat64 = PackedZSetIndex<PackedUuidTraits, double>;
 
+using PackedRleInt32Float32 =
+    PackedZSetIndex<PackedIntegerTraits<std::int32_t>, float, true>;
+using PackedRleInt32Float64 =
+    PackedZSetIndex<PackedIntegerTraits<std::int32_t>, double, true>;
+using PackedRleInt64Float32 =
+    PackedZSetIndex<PackedIntegerTraits<std::int64_t>, float, true>;
+using PackedRleInt64Float64 =
+    PackedZSetIndex<PackedIntegerTraits<std::int64_t>, double, true>;
+using PackedRleUuidFloat32 = PackedZSetIndex<PackedUuidTraits, float, true>;
+using PackedRleUuidFloat64 = PackedZSetIndex<PackedUuidTraits, double, true>;
+
 }  // namespace detail
 
 // Runtime wrapper around the six compile-time layouts. Keyspace stores this as
@@ -634,7 +655,8 @@ class PackedZSet {
  public:
   explicit PackedZSet(
       PackedZSetKind kind,
-      double merge_exponent = kDefaultPackedZSetMergeExponent)
+      double merge_exponent = kDefaultPackedZSetMergeExponent,
+      bool score_rle = kDefaultPackedZSetScoreRle)
       : kind_(kind) {
     if (!valid_packed_zset_merge_exponent(merge_exponent)) {
       throw std::invalid_argument(
@@ -642,22 +664,28 @@ class PackedZSet {
     }
     switch (kind) {
       case PackedZSetKind::Int32Float32:
-        impl_.emplace<detail::PackedInt32Float32>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleInt32Float32>(merge_exponent);
+        else impl_.emplace<detail::PackedInt32Float32>(merge_exponent);
         break;
       case PackedZSetKind::Int32Float64:
-        impl_.emplace<detail::PackedInt32Float64>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleInt32Float64>(merge_exponent);
+        else impl_.emplace<detail::PackedInt32Float64>(merge_exponent);
         break;
       case PackedZSetKind::Int64Float32:
-        impl_.emplace<detail::PackedInt64Float32>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleInt64Float32>(merge_exponent);
+        else impl_.emplace<detail::PackedInt64Float32>(merge_exponent);
         break;
       case PackedZSetKind::Int64Float64:
-        impl_.emplace<detail::PackedInt64Float64>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleInt64Float64>(merge_exponent);
+        else impl_.emplace<detail::PackedInt64Float64>(merge_exponent);
         break;
       case PackedZSetKind::UuidFloat32:
-        impl_.emplace<detail::PackedUuidFloat32>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleUuidFloat32>(merge_exponent);
+        else impl_.emplace<detail::PackedUuidFloat32>(merge_exponent);
         break;
       case PackedZSetKind::UuidFloat64:
-        impl_.emplace<detail::PackedUuidFloat64>(merge_exponent);
+        if (score_rle) impl_.emplace<detail::PackedRleUuidFloat64>(merge_exponent);
+        else impl_.emplace<detail::PackedUuidFloat64>(merge_exponent);
         break;
     }
   }
@@ -702,6 +730,18 @@ class PackedZSet {
   }
   [[nodiscard]] std::size_t tree_height() const noexcept {
     return std::visit([](const auto& value) { return value.tree_height(); },
+                      impl_);
+  }
+  [[nodiscard]] bool score_rle_enabled() const noexcept {
+    return std::visit([](const auto& value) { return value.score_rle_enabled(); },
+                      impl_);
+  }
+  [[nodiscard]] std::size_t compressed_leaf_count() const noexcept {
+    return std::visit([](const auto& value) { return value.compressed_leaf_count(); },
+                      impl_);
+  }
+  [[nodiscard]] std::size_t sorted_score_bytes() const noexcept {
+    return std::visit([](const auto& value) { return value.sorted_score_bytes(); },
                       impl_);
   }
   [[nodiscard]] double merge_exponent() const noexcept {
@@ -863,7 +903,10 @@ class PackedZSet {
   using Implementation =
       std::variant<detail::PackedInt32Float32, detail::PackedInt32Float64,
                    detail::PackedInt64Float32, detail::PackedInt64Float64,
-                   detail::PackedUuidFloat32, detail::PackedUuidFloat64>;
+                   detail::PackedUuidFloat32, detail::PackedUuidFloat64,
+                   detail::PackedRleInt32Float32, detail::PackedRleInt32Float64,
+                   detail::PackedRleInt64Float32, detail::PackedRleInt64Float64,
+                   detail::PackedRleUuidFloat32, detail::PackedRleUuidFloat64>;
 
   template <class Index>
   [[nodiscard]] static std::optional<typename Index::Key> parse_for_index(
