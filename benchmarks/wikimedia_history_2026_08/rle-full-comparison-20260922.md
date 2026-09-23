@@ -16,6 +16,54 @@ The complete job, including verification and input checksum checks, finished
 at **10:42:37 a.m. EDT** (14:42:37 UTC). All benchmark servers exited after
 verification. The controller recorded `JOB-PASS` and exit status zero.
 
+## Memory as entries are added
+
+The new packed RLE result improves on both earlier Goblin representations and
+the incumbents in the verified full replays. At the same final state, it uses
+**22.64% less RSS than our earlier packed result**, **53.00% less than standard
+Goblin**, and **64.12–78.47% less than Dragonfly, Valkey, and Redis**.
+
+![Process RSS versus live unique page IDs for Goblin with RLE, earlier packed and standard Goblin, Redis 8.8, Redis 7.2.4, Valkey 9.1, and Dragonfly. RLE finishes at 1.63 GiB, earlier packed Goblin at 2.10 GiB, standard Goblin at 3.46 GiB, and incumbents at 4.53–7.55 GiB.](rle-memory-growth-20260922.svg)
+
+The horizontal axis is **live unique page IDs**, measured with `ZCARD`; repeated
+increments update existing members. The vertical axis is **whole-server process
+RSS**, sampled approximately every five minutes and at completion. Lines connect
+the recorded observations, preserving allocation jumps and drops. They do not
+capture unsampled peaks. All curves finish with the same verified mapping of
+80,798,328 page IDs to edit counts.
+
+The RLE curve comes from **September 22**, and the earlier Goblin and incumbent
+curves come from **September 8**. Both used `naamah`, the identical frozen numeric
+command trace, ordinary reply-per-command Unix-socket clients, and final RSS
+before verification without forced compaction. They are **separate runs**:
+September 8 ran six engines concurrently; September 22 ran twelve typed-layout
+variants. The incumbents were not rerun on September 22. The packed curves use
+INT32 members and FLOAT32 scores; standard Goblin and incumbents retain their
+general member representations. The chart compares the recorded memory growth
+at similar cardinalities; it does not compare speed between the runs.
+
+| Representation | Measurement | Final RSS (GiB) | Less RSS with new RLE |
+|---|---|---:|---:|
+| Goblin packed + RLE | Sep 22 | 1.626 | — |
+| Goblin packed, RLE off | Sep 22, paired control | 2.089 | 22.19% |
+| Goblin packed, earlier result | Sep 8 | 2.102 | 22.64% |
+| Goblin standard | Sep 8 | 3.459 | 53.00% |
+| Dragonfly, one proactor | Sep 8 | 4.531 | 64.12% |
+| Valkey 9.1 | Sep 8 | 5.209 | 68.79% |
+| Redis 8.8 | Sep 8 | 5.465 | 70.25% |
+| Redis 7.2.4 | Sep 8 | 7.552 | 78.47% |
+
+The September 22 RLE-off control finishes within 0.6% of the earlier packed
+footprint. Its **22.19% paired reduction** provides the comparison that isolates
+the RLE selection in the current build. The chart uses the earlier packed
+curve to show the progression from the original six-engine study; the same-run
+control is included in the table and the six-layout comparison below.
+
+[Plot data and source hashes](artifacts/memory-growth-20260922/README.md) include
+every plotted sample and the separately recorded final RSS readings. The
+[original six-engine report](full-comparison-20260909.md) retains its full
+configuration and verification evidence.
+
 ## Using the improved options
 
 For this dataset, select INT32 members and FLOAT32 scores:
@@ -141,10 +189,11 @@ hashes, flags, statuses, and all twelve final digests.
 - [Full verification output](artifacts/rle-full-20260922T035401Z/run/verification.txt)
 - [Evidence bundle and provenance](artifacts/rle-full-20260922T035401Z/README.md)
 - [Launch configuration and hashes](rle-full-run-20260922T035401Z.md)
+- [Memory growth samples, final comparisons, and source hashes](artifacts/memory-growth-20260922/README.md)
 
-The charts are generated from the archived summary by
+The charts are generated from the archived summaries and sample series by
 `python3 benchmarks/wikimedia_history_2026_08/plot_rle_comparison.py`
-(requires Gnuplot). Both SVGs are standalone vector artifacts; all chart axes
+(requires Gnuplot). All three SVGs are standalone vector artifacts; all chart axes
 start at zero, and the tables preserve the more precise measurements.
 
 Remote project:

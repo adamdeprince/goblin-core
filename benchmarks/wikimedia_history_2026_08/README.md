@@ -94,7 +94,11 @@ representations, so compare RLE on/off within each layout. `SERVERS` can select
 a subset, using names such as `goblin-packed-int32-float32-rle-on`.
 
 `plot_rle_comparison.py` uses Gnuplot to regenerate the full report's standalone
-memory and timing SVGs from the archived twelve-variant result table.
+memory and timing SVGs from the archived twelve-variant result table. It also
+plots RSS against live entry count for the new RLE result, earlier packed and
+standard Goblin, and all four incumbents. That chart uses the saved September 8
+and September 22 sample series, labels the runs, and exports its data and source
+hashes under `artifacts/memory-growth-20260922/`.
 
 `run_rle_full.py PROJECT_DIR` is the detached controller for the complete
 matrix. It requires a frozen `bin/goblin-core`, `harness/` containing the

@@ -1,0 +1,65 @@
+{
+  "numeric_input_sha256": "234506a2217a83580d4b47a644818a9f41a51e342d2e0acadfb0ed2e6ced66b1",
+  "x_axis": "live unique members (ZCARD); chart units are millions",
+  "y_axis": "process RSS; chart units are GiB (2^30 bytes)",
+  "samples": "all recorded samples, plus each independently recorded final RSS",
+  "series": [
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "redis-7.2.4",
+      "label": "Redis 7.2.4"
+    },
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "redis-8.8",
+      "label": "Redis 8.8"
+    },
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "valkey-9.1",
+      "label": "Valkey 9.1"
+    },
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "dragonfly",
+      "label": "Dragonfly"
+    },
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "goblin-standard",
+      "label": "Goblin standard"
+    },
+    {
+      "source_run": "full-20260908T190700Z",
+      "engine": "goblin-packed-int32-float32",
+      "label": "Goblin packed (earlier)"
+    },
+    {
+      "source_run": "rle-full-20260922T035401Z",
+      "engine": "goblin-packed-int32-float32-rle-on",
+      "label": "Goblin packed + RLE"
+    }
+  ],
+  "source_sha256": {
+    "artifacts/full-20260908T190700Z/input-after.sha256": "8462b29c11b3003de473d50d3f92d141ccfcb9429d17ee00b67fa80cbdfb1195",
+    "artifacts/full-20260908T190700Z/run/digests/dragonfly.json": "1e03f7d081f883e60d26a963f113f8d16d248eecc9d07df1ffedede3b483de42",
+    "artifacts/full-20260908T190700Z/run/digests/goblin-packed-int32-float32.json": "5b7bdf3f5ccce963b2ce9dbb902be95ea82ff6dfb5eb2ab657160c4b8d1f7b07",
+    "artifacts/full-20260908T190700Z/run/digests/goblin-standard.json": "1e03f7d081f883e60d26a963f113f8d16d248eecc9d07df1ffedede3b483de42",
+    "artifacts/full-20260908T190700Z/run/digests/redis-7.2.4.json": "1e03f7d081f883e60d26a963f113f8d16d248eecc9d07df1ffedede3b483de42",
+    "artifacts/full-20260908T190700Z/run/digests/redis-8.8.json": "1e03f7d081f883e60d26a963f113f8d16d248eecc9d07df1ffedede3b483de42",
+    "artifacts/full-20260908T190700Z/run/digests/valkey-9.1.json": "1e03f7d081f883e60d26a963f113f8d16d248eecc9d07df1ffedede3b483de42",
+    "artifacts/full-20260908T190700Z/run/metadata.txt": "90c8141a46ceb624a155c64f3ce349c75ba324271a0fff31a18824c1f7b95b41",
+    "artifacts/full-20260908T190700Z/run/samples/dragonfly.tsv": "e1c5ec8256d7d688eb7f5f7f3d5dc26b51f48c1782ce34259a74d672c63d1077",
+    "artifacts/full-20260908T190700Z/run/samples/goblin-packed-int32-float32.tsv": "a63fa9234306b26b4319cb86c550e00471e1658c60710f40b1a953bec5c3f573",
+    "artifacts/full-20260908T190700Z/run/samples/goblin-standard.tsv": "013b8f562048dfeb72ad456b296bf3b3ad4e39050c82cc023b36ad2ad147372e",
+    "artifacts/full-20260908T190700Z/run/samples/redis-7.2.4.tsv": "aee5e085f0c6ab6c00520ed864aebb6021281db27a46139d5f9f40cf1ef2d3c4",
+    "artifacts/full-20260908T190700Z/run/samples/redis-8.8.tsv": "06014681c237bbdcf6b2036be4cec337865c9cde004e293178f2a3fba0415785",
+    "artifacts/full-20260908T190700Z/run/samples/valkey-9.1.tsv": "6c35f8f48ef33696c590a4940f01a9c55271e58232f37d507c8c7b5d953e87a2",
+    "artifacts/full-20260908T190700Z/run/summary.tsv": "33fe65ac27752f30f1fcd80954006e9d059071e6a77bf766d7d6fca733ce5554",
+    "artifacts/rle-full-20260922T035401Z/input-after.sha256": "19f43253cf59311e581c1e4acda27a712169b194a40cf31714870c54b3f2e16b",
+    "artifacts/rle-full-20260922T035401Z/run/digests/goblin-packed-int32-float32-rle-on.json": "ebfc92306d4c48f9480900bbf1dd4216793524b6075697f89454f9bc03ad942f",
+    "artifacts/rle-full-20260922T035401Z/run/metadata.txt": "47474159e99b316ed294be7a716e14c35918ee0e92f93c3edeb5b4281ce43457",
+    "artifacts/rle-full-20260922T035401Z/run/samples/goblin-packed-int32-float32-rle-on.tsv": "35efc9353bb2d42f4f957fb0efa232a692ed31f1f4f6e06a2b5de0ff608ff57b",
+    "artifacts/rle-full-20260922T035401Z/run/summary.tsv": "f1bdb823bf58a03e350ba1b3ab5b34673119cbcd29a732038b1ea840c8d34e6d"
+  }
+}

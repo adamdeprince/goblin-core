@@ -1,0 +1,9 @@
+source_run	engine	label	os_rss_kib	os_rss_gib	rss_saved_with_rle_percent
+full-20260908T190700Z	redis-7.2.4	Redis 7.2.4	7918940	7.552089691	78.472068
+full-20260908T190700Z	redis-8.8	Redis 8.8	5730948	5.465457916	70.253019
+full-20260908T190700Z	valkey-9.1	Valkey 9.1	5462416	5.209365845	68.790660
+full-20260908T190700Z	dragonfly	Dragonfly	4751300	4.531192780	64.119630
+full-20260908T190700Z	goblin-standard	Goblin standard	3627396	3.459354401	53.002540
+full-20260908T190700Z	goblin-packed-int32-float32	Goblin packed (earlier)	2203728	2.101638794	22.640907
+rle-full-20260922T035401Z	goblin-packed-int32-float32-rle-on	Goblin packed + RLE	1704784	1.625808716	0.000000
+rle-full-20260922T035401Z	goblin-packed-int32-float32-rle-off	Goblin packed, RLE off (same run)	2190904	2.089408875	22.188101
