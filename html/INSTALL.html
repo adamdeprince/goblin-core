@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installing Goblin Core — Goblin Core</title>
+  <link rel="icon" href="goblin.png" type="image/png" sizes="1254x1254">
+  <link rel="apple-touch-icon" href="goblin.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="site-header">
+<nav class="site-nav" aria-label="Primary navigation">
+<a class="brand" href="index.html" aria-label="Goblin Core home">
+<span class="brand-mark"><img src="goblin.png" alt=""></span>
+<span>goblin_core</span>
+</a>
+<div class="nav-links"><a href="docs/index.html">Docs</a><a href="BENCHMARKS.html">Benchmarks</a><a href="PERFORMANCE_BRIEF.html">Architecture</a><a href="LATENCY-SHOOTOUT.html">Ring latency</a><a class="nav-cta" href="https://github.com/adamdeprince/goblin-core">GitHub</a></div>
+</nav>
+</header>
+<main class="doc-shell" id="content">
+<article class="doc">
+<h1 id="installing-goblin-core">Installing Goblin Core</h1>
+<p>Install the server from <a href="https://brew.goblinreactor.com/goblin-core.html">Goblin Reactor&#x27;s Homebrew repository</a> or <a href="https://apt.goblinreactor.com/goblin-core.html">signed APT repository</a>. The server package is <code>goblin-core</code>; the C++ client SDK is the separate <code>goblin-core-cpp</code> package. Both use version 0.10.6. Python&#x27;s <code>goblin-core</code> distribution has the same upstream version and is released separately on PyPI. The initial Python release is prepared but has not been published.</p>
+<p>The packaged service listens on loopback TCP port <strong>6379</strong>, including IPv6, and creates a <strong>Unix domain socket</strong> when it starts. It enables ordinary RESP only. It does not configure SBE, shared-memory rings, RDMA, Aeron, ExaSock, XLIO, or libfabric. Redis clients can connect to the supported command subset; see the <a href="docs/commands/README.html">command reference</a>.</p>
+<h2 id="macos-homebrew">macOS: Homebrew</h2>
+<p>The tested bottle targets Apple Silicon on macOS 26 Tahoe. Other macOS targets can build from source but are not covered by this bottle&#x27;s validation.</p>
+<pre><code class="language-sh">brew tap goblinreactor/tap https://brew.goblinreactor.com/homebrew-tap.git
+brew install goblinreactor/tap/goblin-core
+brew services start goblinreactor/tap/goblin-core</code></pre>
+<p>If Redis already uses port 6379, stop that service before starting Goblin Core. Edit <code>$(brew --prefix)/etc/goblin-core/goblin-core.conf</code> to change the service port, socket path, state directory, or SIMD selection, then run <code>brew services restart goblinreactor/tap/goblin-core</code>. The default socket is <code>$(brew --prefix)/var/run/goblin-core/goblin-core.sock</code>. The service runs as the user who starts it. The socket has mode 0660, subject to the process umask, and its parent directory restricts access to that user and group.</p>
+<p>If <code>redis-cli</code> is installed, check both connections:</p>
+<pre><code class="language-sh">redis-cli -h 127.0.0.1 -p 6379 PING
+redis-cli -s &quot;$(brew --prefix)/var/run/goblin-core/goblin-core.sock&quot; PING</code></pre>
+<h2 id="linux-signed-apt-repository">Linux: signed APT repository</h2>
+<p>Use these steps on:</p>
+<ul>
+<li>Intel or AMD 64-bit (<code>amd64</code>): Ubuntu 22.04, 24.04, or 26.04, or Debian 12 or 13.</li>
+<li>ARM64 (<code>arm64</code>): Ubuntu 26.04, including AWS Graviton hosts.</li>
+</ul>
+<p>Run each step in order; the commands select your OS release and CPU architecture automatically. The C++ header package is architecture independent.</p>
+<p><strong>1. Install the setup tools</strong></p>
+<pre><code class="language-sh">sudo apt-get update
+sudo apt-get install ca-certificates curl gnupg</code></pre>
+<p><strong>2. Add the signing key</strong></p>
+<p>APT uses this key to check that packages come from Goblin Reactor.</p>
+<pre><code class="language-sh">sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://apt.goblinreactor.com/goblinreactor-archive-keyring.gpg \
+  -o /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+sudo chmod 0644 /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/goblinreactor-archive-keyring.gpg</code></pre>
+<p>Before continuing, check that the key fingerprint shown matches: <code>B7B6 1E8C B85A 9270 5303 64F2 3273 CB62 402F C793</code>. If it differs or a command fails, stop here.</p>
+<p><strong>3. Add the package repository</strong></p>
+<p>Copy this whole block. It reads your OS release and writes the APT settings:</p>
+<pre><code class="language-sh">. /etc/os-release
+sudo tee /etc/apt/sources.list.d/goblinreactor.sources &gt;/dev/null &lt;&lt;EOF
+Types: deb
+URIs: https://apt.goblinreactor.com/
+Suites: $VERSION_CODENAME
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+EOF</code></pre>
+<p><strong>4. Install and start Goblin Core</strong></p>
+<p>If Redis already uses port 6379, stop it before this step.</p>
+<pre><code class="language-sh">sudo apt-get update
+sudo apt-get install goblin-core
+sudo systemctl enable --now goblin-core</code></pre>
+<p>The package creates the <code>goblin-core</code> system account and installs a systemd service, which starts automatically where systemd is running. Configuration lives in <code>/etc/goblin-core/goblin-core.conf</code>. The socket is <code>/run/goblin-core/goblin-core.sock</code>, owned by <code>goblin-core:goblin-core</code>, mode 0660, inside a mode-0750 directory. Root and members of that group can use it. After changing configuration, run <code>sudo systemctl restart goblin-core</code>.</p>
+<p>For the connection checks below, install <code>redis-cli</code> if needed with <code>sudo apt-get install redis-tools</code>.</p>
+<pre><code class="language-sh">redis-cli -h 127.0.0.1 -p 6379 PING
+sudo -u goblin-core redis-cli -s /run/goblin-core/goblin-core.sock PING
+sudo journalctl -u goblin-core</code></pre>
+<h2 id="loongson-kylin-v10">Loongson: Kylin V10</h2>
+<p>The native packages target <code>loongarch64</code> on Kylin V10 SP1. They are built separately; see the <a href="packaging/README.html">packaging guide</a>. In the directory containing the Kylin packages, install the server and start it:</p>
+<p>If Redis already uses port 6379, stop it before installing.</p>
+<pre><code class="language-sh">sudo apt-get install ./goblin-core_0.10.6-2+kylin1_loongarch64.deb
+sudo systemctl enable --now goblin-core</code></pre>
+<p>The configuration, socket paths, and connection checks are the same as in the Linux section above.</p>
+<p>Install the C++ SDK separately if needed:</p>
+<pre><code class="language-sh">sudo apt-get install ./goblin-core-cpp_0.10.6-2+kylin1_all.deb</code></pre>
+<h2 id="separate-client-packages">Separate client packages</h2>
+<p>Install the C++ SDK independently:</p>
+<pre><code class="language-sh"># macOS
+brew install goblinreactor/tap/goblin-core-cpp
+# Debian or Ubuntu, after adding the repository above
+sudo apt-get install goblin-core-cpp</code></pre>
+<p>Use <code>find_package(goblin-core-cpp CONFIG REQUIRED)</code> and link your CMake target to <code>goblin::client</code>. Include <code>&lt;goblin/core/sbe_ring_client.hpp&gt;</code> for the typed SBE clients and generated codecs. These clients require an explicitly enabled SBE endpoint; installing the SDK does not enable it in the service.</p>
+<p>The Python distribution is named <code>goblin-core</code> and imports as <code>goblin_core</code>. It contains the existing SBE client bindings, rather than a server executable. For the default RESP service, use ordinary Redis clients such as <code>redis-py</code>. Once the matching release is published on PyPI, install it with <code>python -m pip install goblin-core==0.10.6</code>. Until then, build from this source:</p>
+<pre><code class="language-sh">python -m pip install ./python</code></pre>
+<h2 id="service-state-and-updates">Service state and updates</h2>
+<p>Linux stores state in <code>/var/lib/goblin-core</code>; Homebrew uses <code>$(brew --prefix)/var/lib/goblin-core</code>. The service loads <code>dump.gcsn</code> there if present. Issue <code>SAVE</code> to write a snapshot; the service does not configure automatic snapshots or save on shutdown. See the <a href="docs/commands/SAVE.html">snapshot command guide</a> before relying on persistent data. Upgrades preserve configuration and the state directory. Stop the service before uninstalling; removing the package does not remove database files.</p>
+<p>The service selects a compatible SIMD implementation at runtime. Set <code>GOBLIN_SIMD=scalar</code> in its configuration to force the portable fallback, or select a supported slower implementation such as <code>sse2</code> on an AVX2 machine. Unsupported selections fail at startup with an error.</p>
+<h2 id="building-from-source">Building from source</h2>
+<p>Compile a tagged source release on the machine where it will run or a compatible build host. The repository <code>Containerfile</code> also builds a local OCI image with Podman; see the <a href="docs/container.html">container guide</a>.</p>
+<p>Linux is the production platform. macOS is supported for development and the portable socket/shared-memory/Aeron test suite. RDMA, XLIO Ultra, HugeTLB, CPU isolation, and NUMA placement are Linux facilities; Aeron&#x27;s C client and Media Driver support both Linux and macOS.</p>
+<p>The complete Linux workflow below was verified on Ubuntu 22.04.1 with CMake 3.28.6, GCC 16.1, and Ninja 1.10.1. The default build detected Kafka, OpenSSL TLS, SBE, and InfiniBand/RDMA support; all 37 tests and the installed-program smoke test passed.</p>
+<h2 id="1-install-the-build-prerequisites">1. Install the build prerequisites</h2>
+<p>Every build needs:</p>
+<ul>
+<li>CMake 3.25 or newer.</li>
+<li>Ninja or another CMake-supported build tool.</li>
+<li>A compiler and standard library with C++23 support. The current tree is verified with GCC 16 and Apple Clang 21; Ubuntu 22.04&#x27;s GCC 11 and CMake 3.22 are too old.</li>
+<li>LZ4 development headers and library.</li>
+<li>libsodium development headers and library.</li>
+<li>Python 3 when tests or HTML documentation are enabled.</li>
+<li>OpenSSL development headers when <code>GOBLIN_CORE_ENABLE_TLS=ON</code>, which is the default.</li>
+</ul>
+<p>The scripting engines, SBE codecs, XXH3, fast_float, and the Kafka client are already vendored in the source tree. The normal build does not fetch source from the network and does not need a system <code>librdkafka</code> package.</p>
+<h3 id="ubuntu-or-debian">Ubuntu or Debian</h3>
+<p>On a distribution new enough to provide CMake 3.25 and a C++23 compiler:</p>
+<pre><code class="language-sh">sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake ninja-build python3 \
+  liblz4-dev libsodium-dev libssl-dev</code></pre>
+<p>For the optional RDMA transport, also install:</p>
+<pre><code class="language-sh">sudo apt-get install -y libibverbs-dev librdmacm-dev rdma-core</code></pre>
+<p>Ubuntu 22.04 needs a newer CMake and compiler than its base repository ships. Install a current toolchain separately, then select it with <code>-DCMAKE_C_COMPILER=/path/to/gcc</code> and <code>-DCMAKE_CXX_COMPILER=/path/to/g++</code> during configuration. Put the newer CMake ahead of <code>/usr/bin</code> in <code>PATH</code>, and confirm <code>cmake --version</code>, <code>gcc --version</code>, and <code>g++ --version</code> before configuring a fresh build directory. The verified Ubuntu 22.04 build used the versions listed above without replacing the system compiler.</p>
+<h3 id="fedora">Fedora</h3>
+<pre><code class="language-sh">sudo dnf install \
+  gcc gcc-c++ cmake ninja-build python3 \
+  lz4-devel libsodium-devel openssl-devel</code></pre>
+<p>Add <code>libibverbs-devel librdmacm-devel rdma-core</code> for RDMA.</p>
+<h3 id="macos-with-homebrew">macOS with Homebrew</h3>
+<pre><code class="language-sh">xcode-select --install
+brew install cmake ninja lz4 libsodium openssl@3</code></pre>
+<p>Homebrew keeps some libraries outside the compiler&#x27;s default search path. Pass <code>-DCMAKE_PREFIX_PATH=&quot;$(brew --prefix)&quot;</code> in the configure command below.</p>
+<h2 id="2-get-a-source-release">2. Get a source release</h2>
+<p>Clone the current development tree:</p>
+<pre><code class="language-sh">git clone https://github.com/adamdeprince/goblin-core.git
+cd goblin-core</code></pre>
+<p>The dependencies are committed under <code>third_party/</code>; there are no Git submodules to initialize. For a reproducible deployment, check out an intended source tag or commit before configuring; remain on <code>main</code> for changes made since the latest tag. The <code>INSTALL.md</code> in each checkout is authoritative for that revision&#x27;s available build options and installed programs.</p>
+<h2 id="3-configure-a-release-build">3. Configure a release build</h2>
+<p>This is the recommended first build on Linux. It builds the server, clients, tests, and HTML documentation, but skips benchmark executables:</p>
+<pre><code class="language-sh">cmake -S . -B build-release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF</code></pre>
+<p>On macOS, make the package prefix explicit and disable the Linux-only RDMA probe:</p>
+<pre><code class="language-sh">cmake -S . -B build-release -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=&quot;$(brew --prefix)&quot; \
+  -DCMAKE_C_COMPILER=&quot;$(xcrun --find clang)&quot; \
+  -DCMAKE_CXX_COMPILER=&quot;$(xcrun --find clang++)&quot; \
+  -DGOBLIN_CORE_ENABLE_RDMA=OFF \
+  -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF</code></pre>
+<p>CMake prints a summary of the enabled integrations. Read it before building. In particular, confirm the lines for Kafka, TLS, SBE, and RDMA match the binary you intend to deploy.</p>
+<h2 id="4-build-and-test">4. Build and test</h2>
+<pre><code class="language-sh">cmake --build build-release --parallel
+ctest --test-dir build-release --output-on-failure</code></pre>
+<p>The socket tests bind loopback ports. Run them in an environment that permits local listeners. Tests involving real Redis are deliberately separate; enable them with <code>GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS</code> only when a <code>redis-server</code> binary is installed.</p>
+<h2 id="5-install">5. Install</h2>
+<p>For a user-local installation:</p>
+<pre><code class="language-sh">cmake --install build-release --prefix &quot;$HOME/.local&quot;</code></pre>
+<p>Or install system-wide:</p>
+<pre><code class="language-sh">sudo cmake --install build-release --prefix /usr/local</code></pre>
+<p>The base installation provides:</p>
+<div class="table-scroll" role="region" aria-label="Scrollable data table" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>Program</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>goblin-core</code></td>
+<td>Server</td>
+</tr>
+<tr>
+<td><code>goblin-core-auth</code></td>
+<td>Offline libsodium password-file editor</td>
+</tr>
+<tr>
+<td><code>redis-cli-ring</code></td>
+<td>RESP/SBE shared-memory ring client; also the XLIO client in an XLIO build</td>
+</tr>
+<tr>
+<td><code>redis-cli-rdma</code></td>
+<td>RDMA client, installed only when RDMA was compiled</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Headers, the CMake package, licenses, and documentation are installed under the same prefix.</p>
+<h2 id="6-smoke-test-the-installed-programs">6. Smoke-test the installed programs</h2>
+<p>The server listens on plaintext <code>127.0.0.1:6379</code> by default. This example also creates a local ring so the installation can be checked without a separate Redis client:</p>
+<pre><code class="language-sh">&quot;$HOME/.local/bin/goblin-core&quot; \
+  --ring /tmp/goblin-install-test.ring 1mb</code></pre>
+<p>In another terminal:</p>
+<pre><code class="language-sh">&quot;$HOME/.local/bin/redis-cli-ring&quot; \
+  /tmp/goblin-install-test.ring PING</code></pre>
+<p>The reply must be <code>PONG</code>. Stop the server with <code>Ctrl-C</code>. An interrupted process can leave the ring backing file behind; a later server invocation reinitializes it, or it can be removed after confirming that no process is using it.</p>
+<p>Goblin Core attempts to lock its current and future memory. A development shell with a low <code>RLIMIT_MEMLOCK</code> may produce a warning but can still be used for a functional smoke test. A production service should grant an unlimited locked memory limit, for example <code>LimitMEMLOCK=infinity</code> in systemd.</p>
+<h2 id="cmake-option-reference">CMake option reference</h2>
+<p>Pass CMake booleans as <code>-DNAME=ON</code> or <code>-DNAME=OFF</code>. Changing an option in an existing build directory is supported, but a separate directory per build profile makes the resulting binary easier to audit.</p>
+<div class="table-scroll" role="region" aria-label="Scrollable data table" tabindex="0">
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CMAKE_BUILD_TYPE</code></td>
+<td>unset</td>
+<td>Use <code>Release</code> for deployment; single-config Ninja/Make builds otherwise lack release optimization.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_BUILD_TESTS</code></td>
+<td><code>ON</code></td>
+<td>Builds the C++ and socket integration tests and enables CTest. Requires Python 3 for script-driven tests.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_BUILD_BENCHMARKS</code></td>
+<td><code>ON</code></td>
+<td>Builds benchmark workers and probes. Turn it off for a smaller/faster installation build.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_BUILD_HTML_DOCS</code></td>
+<td><code>ON</code></td>
+<td>Converts the Markdown tree into the static site under <code>html/</code>. Requires Python 3.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_BUILD_BLUEFIELD</code></td>
+<td><code>OFF</code></td>
+<td>Builds and installs the optional NVIDIA BlueField RESP Pub/Sub edge and its integration test. The standalone <code>bluefield/</code> build is independent of this option.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_KAFKA</code></td>
+<td><code>ON</code></td>
+<td>Compiles vendored librdkafka and enables Kafka journaling/replay. No system librdkafka is needed.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_TLS</code></td>
+<td><code>ON</code></td>
+<td>Enables OpenSSL TLS for ordinary non-loopback TCP listeners and TLS replica connections. Requires OpenSSL development files.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_RDMA</code></td>
+<td><code>ON</code></td>
+<td>Enables polled RDMA rings on Linux when libibverbs and librdmacm are found. Missing libraries or a non-Linux host disable it with a CMake status message.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_LIBFABRIC</code></td>
+<td><code>OFF</code></td>
+<td>Enables provider-neutral <code>FI_EP_RDM</code> and AWS EFA on Linux. Build the vendored static library first and set <code>GOBLIN_CORE_LIBFABRIC_ROOT</code> to its install prefix.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_LIBFABRIC_ROOT</code></td>
+<td>empty</td>
+<td>Prefix produced by <code>scripts/build-libfabric.sh</code>; required when libfabric support is enabled.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_XLIO</code></td>
+<td><code>OFF</code></td>
+<td>Enables native NVIDIA XLIO Ultra TCP on Linux. The vendored headers compile with Goblin, but the pinned DPCP/XLIO runtime must also be built and preloaded.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ENABLE_AERON</code></td>
+<td><code>OFF</code></td>
+<td>Enables Aeron reliable UDP and IPC response-channel transports. Requires an installed Aeron 1.51+ C client and an external Media Driver at runtime.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_AERON_ROOT</code></td>
+<td>empty</td>
+<td>Optional Aeron CMake install prefix, such as the one produced by <code>scripts/build-aeron.sh</code>.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_STATIC_GNU_RUNTIME</code></td>
+<td><code>ON</code></td>
+<td>With GCC, links <code>libstdc++</code> and <code>libgcc</code> statically while leaving libc and device libraries dynamic. It has no effect with Clang/MSVC.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS</code></td>
+<td><code>OFF</code></td>
+<td>Adds sequential and pipelined compatibility tests against an installed <code>redis-server</code>. This is a test dependency, never a server runtime dependency.</td>
+</tr>
+<tr>
+<td><code>GOBLIN_CORE_ARCH</code></td>
+<td>empty</td>
+<td>Deprecated and ignored. SIMD implementations are compiled separately and selected at runtime. Use <code>--simd</code> to override.</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h3 id="architecture-selection">Architecture selection</h3>
+<p>Goblin compiles the available SIMD implementations separately and chooses the highest supported tier at startup, checking CPU features and operating-system support. The default is <code>--simd auto</code>. To select a compatible lower tier, use:</p>
+<pre><code class="language-sh">goblin-core --simd scalar    # portable fallback on every architecture
+goblin-core --simd sse2      # lower tier on x86-64
+goblin-core --simd avx2      # lower tier on an AVX-512-capable x86-64 CPU
+goblin-core --simd lsx       # lower tier on a LASX-capable LoongArch CPU</code></pre>
+<p>The accepted values are <code>auto</code>, <code>scalar</code>, <code>sse2</code>, <code>avx2</code>, <code>avx512</code>, <code>neon</code>, <code>lsx</code>, and <code>lasx</code>. x86-64 auto selection prefers AVX-512, then AVX2, then SSE2; AArch64 uses NEON; LoongArch prefers LASX, then LSX. Scalar is always available. An explicit model must be compiled into the binary and compatible with the current CPU/OS; otherwise startup reports an error and exits with status 2. Startup logs show the selected model and detected hardware features.</p>
+<p>The override covers hash probes, XXH3 hashing, fingerprint scans, string comparisons, RESP scans, and bitset OR operations. Snapshot CRC32C also uses runtime detection; <code>scalar</code> forces software CRC32C, with identical snapshot checksums. SIMD selection does not change storage or wire formats. Embedded users can call <code>goblin::core::simd::configure()</code> before starting workers; changing the selection while operations are in flight is unsupported.</p>
+<p>Old <code>GOBLIN_CORE_ARCH</code> settings produce a deprecation warning and no longer apply ISA flags globally. Avoid adding <code>-march=native</code> or optional ISA flags to global <code>CMAKE_CXX_FLAGS</code> when distributing a binary across CPUs of the same architecture.</p>
+<h3 id="minimal-portable-build">Minimal portable build</h3>
+<p>For a localhost/UDS/shared-memory development server without Kafka, TLS, RDMA, tests, benchmarks, or generated docs:</p>
+<pre><code class="language-sh">cmake -S . -B build-minimal -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGOBLIN_CORE_ENABLE_KAFKA=OFF \
+  -DGOBLIN_CORE_ENABLE_TLS=OFF \
+  -DGOBLIN_CORE_ENABLE_RDMA=OFF \
+  -DGOBLIN_CORE_BUILD_TESTS=OFF \
+  -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF \
+  -DGOBLIN_CORE_BUILD_HTML_DOCS=OFF
+cmake --build build-minimal --parallel</code></pre>
+<p>Retain the platform-specific compiler and <code>CMAKE_PREFIX_PATH</code> arguments from the recommended configure command when they apply to the host.</p>
+<p>LZ4 and libsodium remain required: compact values and credential-file support are core features even when network TLS and Kafka are disabled.</p>
+<h3 id="optimized-same-host-build">Optimized same-host build</h3>
+<p>To optimize for the machine doing the compile:</p>
+<pre><code class="language-sh">cmake -S . -B build-native -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGOBLIN_CORE_ARCH=native \
+  -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF
+cmake --build build-native --parallel</code></pre>
+<p>Do not copy that binary to an older or architecturally different CPU without rebuilding it.</p>
+<h2 id="optional-integrations">Optional integrations</h2>
+<h3 id="kafka-durability">Kafka durability</h3>
+<p>The default build includes Kafka support. Runtime configuration starts with <code>--kafka CONNECTION</code>; <code>--kafka-ack-mode queued|broker</code> chooses local producer queue acknowledgement or broker-confirmed writes. See <a href="docs/kafka.html">Kafka write log and recovery</a>. A complete lab deployment with Redpanda is preserved separately in the <a href="docs/thunder-redpanda-deployment.html">Thunder durability deployment record</a>.</p>
+<h3 id="tls-and-authentication">TLS and authentication</h3>
+<p>Non-loopback ordinary TCP listeners require TLS. Supply <code>--tls-cert-file</code> and <code>--tls-key-file</code>, and use <code>goblin-core-auth</code> plus <code>--auth-file</code> when RESP clients must authenticate. See <a href="docs/tls.html">TCP listeners and TLS</a> and <a href="docs/authentication.html">authentication</a>.</p>
+<h3 id="shared-memory-rings-and-sbe">Shared-memory rings and SBE</h3>
+<p>Rings require no optional build flag. Add repeatable <code>--ring PATH SIZE</code> runtime targets. SBE is compiled from the checked-in generated headers and is accepted only when the server starts with <code>--enable-sbe</code>. See <a href="docs/ring-buffers.html">shared-memory rings</a> and the <a href="docs/sbe-protocol.html">SBE protocol</a>.</p>
+<h3 id="rdma">RDMA</h3>
+<p>Install libibverbs/librdmacm, leave <code>GOBLIN_CORE_ENABLE_RDMA=ON</code>, and confirm CMake reports <code>GOBLIN_HAS_RDMA</code>. Runtime targets use <code>--rdma ADDRESS PORT SIZE</code>. See <a href="docs/rdma-rings.html">polled RDMA rings</a> and the <a href="docs/infiniband-setup.html">InfiniBand setup guide</a>.</p>
+<h3 id="libfabric-and-aws-efa">Libfabric and AWS EFA</h3>
+<p>Build the vendored AWS libfabric once with <code>scripts/build-libfabric.sh PREFIX</code>, then configure with <code>GOBLIN_CORE_ENABLE_LIBFABRIC=ON</code> and <code>GOBLIN_CORE_LIBFABRIC_ROOT=PREFIX</code>. Runtime EFA targets use <code>--efa ADDRESS PORT</code>; <code>--libfabric PROVIDER ADDRESS PORT</code> selects the same RDM implementation for provider-neutral qualification. <code>--libfabric-force-send</code> disables the small-frame <code>fi_inject()</code> shortcut so every frame uses <code>fi_send()</code> and a TX completion. See <a href="docs/efa.html">libfabric RDM and AWS EFA</a> for ordering, bootstrap, sequence, and heartbeat behavior.</p>
+<h3 id="xlio-ultra">XLIO Ultra</h3>
+<p>Set <code>GOBLIN_CORE_ENABLE_XLIO=ON</code> only after building the pinned DPCP and XLIO runtime. Goblin must run with <code>libxlio.so</code> preloaded; runtime listeners use <code>--xlio ADDRESS PORT</code>. See <a href="docs/xlio.html">native XLIO Ultra TCP</a> for the exact dependency build and launch environment.</p>
+<h3 id="aeron-udp-and-ipc">Aeron UDP and IPC</h3>
+<p>Build the pinned Aeron C client and Media Driver with <code>scripts/build-aeron.sh PREFIX</code>, then configure the server with <code>GOBLIN_CORE_ENABLE_AERON=ON</code> and <code>GOBLIN_CORE_AERON_ROOT=PREFIX</code>. Run <code>PREFIX/bin/aeronmd_s</code> before Goblin or its clients. Runtime targets use <code>--aeron-ipc REQUEST-STREAM RESPONSE-STREAM</code> or <code>--aeron-udp REQUEST-CHANNEL REQUEST-STREAM RESPONSE-CHANNEL RESPONSE-STREAM</code>. See <a href="docs/aeron.html">Aeron UDP and IPC</a> for driver directories, response-channel semantics, C++/Python clients, and qualification.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<ul>
+<li><strong>CMake rejects the project version:</strong> install CMake 3.25 or newer and make sure that executable comes first in <code>PATH</code>.</li>
+<li><strong>The compiler rejects C++23 syntax:</strong> select a newer compiler with <code>CMAKE_C_COMPILER</code> and <code>CMAKE_CXX_COMPILER</code>, then configure a fresh build directory.</li>
+<li><strong>CMake names a compiler that is not installed:</strong> clear stale <code>CC</code> and <code>CXX</code> environment variables, or override both compilers explicitly in a fresh build directory.</li>
+<li><strong>LZ4 or sodium is not found:</strong> install the development package, not only the runtime library. Use <code>CMAKE_PREFIX_PATH</code> for a nonstandard prefix.</li>
+<li><strong>OpenSSL is not found:</strong> install its development package, provide its prefix, or deliberately configure <code>GOBLIN_CORE_ENABLE_TLS=OFF</code> for a local-only build.</li>
+<li><strong>RDMA says disabled:</strong> CMake did not find both verbs and RDMA-CM on Linux. Install their development packages and reconfigure.</li>
+<li><strong><code>mlockall</code> warns at startup:</strong> raise the shell or service locked-memory limit. This is an operating-system limit, not a compile failure.</li>
+<li><strong>The process reports an illegal instruction:</strong> rebuild with an empty <code>GOBLIN_CORE_ARCH</code> or the correct explicit ISA.</li>
+</ul>
+<p>For runtime listener, memory, replication, and storage options, continue with the <a href="docs/index.html">documentation index</a>.</p>
+</article>
+<footer class="doc-footer">
+<span>GOBLIN CORE / APACHE-2.0</span>
+<span>Source and issues on <a href="https://github.com/adamdeprince/goblin-core">GitHub</a>.</span>
+<p class="trademark-notice">Redis® is a registered trademark of Redis Ltd. Any rights therein are reserved to Redis Ltd. Goblin Core is an independent project and is not affiliated with, sponsored, supported, certified, or endorsed by Redis Ltd. References to Redis® are solely to identify the Redis product and describe protocol and command compatibility.</p>
+</footer>
+</main>
+</body>
+</html>
