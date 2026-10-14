@@ -104,10 +104,35 @@ lives in
 0660, inside a mode-0750 directory. Root and members of that group can use it.
 After changing configuration, run `sudo systemctl restart goblin-core`.
 
+For the connection checks below, install `redis-cli` if needed with
+`sudo apt-get install redis-tools`.
+
 ```sh
 redis-cli -h 127.0.0.1 -p 6379 PING
 sudo -u goblin-core redis-cli -s /run/goblin-core/goblin-core.sock PING
 sudo journalctl -u goblin-core
+```
+
+## Loongson: Kylin V10
+
+The native packages target `loongarch64` on Kylin V10 SP1. They are built
+separately; see the [packaging guide](packaging/README.md). In the directory
+containing the Kylin packages, install the server and start it:
+
+If Redis already uses port 6379, stop it before installing.
+
+```sh
+sudo apt-get install ./goblin-core_0.10.6-2+kylin1_loongarch64.deb
+sudo systemctl enable --now goblin-core
+```
+
+The configuration, socket paths, and connection checks are the same as in the
+Linux section above.
+
+Install the C++ SDK separately if needed:
+
+```sh
+sudo apt-get install ./goblin-core-cpp_0.10.6-2+kylin1_all.deb
 ```
 
 ## Separate client packages
