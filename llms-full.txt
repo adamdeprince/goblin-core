@@ -1,6 +1,6 @@
 # Goblin Core — Operator Guide
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in about 51 bytes per member — roughly half of Redis 7.2.4, and about 35% under modern Redis 8.8 / Valkey 9.1, every engine measured on the same jemalloc 5.3.0 — and serves it faster; hashes get the same lean layout at about 45 bytes per field (roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1). This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
+> Goblin Core is alpha C++23 server software, published as a Homebrew bottle and signed Debian packages, that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in about 51 bytes per member — roughly half of Redis 7.2.4, and about 35% under modern Redis 8.8 / Valkey 9.1, every engine measured on the same jemalloc 5.3.0 — and serves it faster; hashes get the same lean layout at about 45 bytes per field (roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1). This document is a self-contained guide for installing, configuring, and running Goblin Core in production. It intentionally omits code internals; for those, see PERFORMANCE_BRIEF.md.
 
 This guide assumes you already run Redis-style sorted sets (and now hashes) and
 want to serve the same data on less RAM. Read it top to bottom to stand up a node;
@@ -57,12 +57,26 @@ Validate against your own workload before relying on it.
 
 ## Install
 
-Goblin Core is distributed as source. Build it on (or for) the host you will run
-it on.
+Install the published package for the host. On Apple Silicon macOS, use the
+Homebrew bottle:
+
+    brew tap goblinreactor/tap https://brew.goblinreactor.com/homebrew-tap.git
+    brew install goblinreactor/tap/goblin-core
+    brew services start goblinreactor/tap/goblin-core
+
+On Debian and Ubuntu, add the signed APT repository documented at
+https://apt.goblinreactor.com/goblin-core.html, then:
+
+    sudo apt-get update
+    sudo apt-get install goblin-core
+    sudo systemctl enable --now goblin-core
+
+Source builds remain available for development and for targets the packages do
+not cover. Build on (or for) the host you will run it on.
 
     git clone https://github.com/adamdeprince/goblin-core.git
     cd goblin-core
-    git checkout v0.2.0      # pin a release tag
+    git checkout v0.10.6      # pin a release tag
     cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
     cmake --build build-release
     ctest --test-dir build-release --output-on-failure   # optional: verify

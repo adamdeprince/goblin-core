@@ -10,7 +10,7 @@ runs over provider-neutral libfabric reliable datagrams, including AWS EFA.
 ## Start here
 
 - [Build, configure, and run Goblin Core](../README.md)
-- [Install Goblin Core from source](../INSTALL.md)
+- [Install Goblin Core](../INSTALL.md)
 - [Build and run the OCI image with Podman](container.md)
 - [Release history](../RELEASE-HISTORY.md)
 - [Performance architecture](../PERFORMANCE_BRIEF.md)

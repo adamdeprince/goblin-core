@@ -1,6 +1,6 @@
 # Goblin Core
 
-> Goblin Core is alpha, source-only C++23 server software that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in about 51 bytes per member — roughly half of Redis 7.2.4, and about 35% under modern Redis 8.8 / Valkey 9.1, every engine measured on the same jemalloc 5.3.0 — and serves it faster; hashes get the same lean layout at about 45 bytes per field — roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1. This file is written for an operator installing, configuring, and running Goblin Core in production; it deliberately omits code internals.
+> Goblin Core is alpha C++23 server software, published as a Homebrew bottle and signed Debian packages, that speaks the Redis RESP protocol and implements a focused subset centered on sorted sets (ZSETs) and hashes. It stores the same sorted-set data in about 51 bytes per member — roughly half of Redis 7.2.4, and about 35% under modern Redis 8.8 / Valkey 9.1, every engine measured on the same jemalloc 5.3.0 — and serves it faster; hashes get the same lean layout at about 45 bytes per field — roughly half of Redis 7.2.4, and 20–29% under modern Redis 8.8 / Valkey 9.1. This file is written for an operator installing, configuring, and running Goblin Core in production; it deliberately omits code internals.
 
 Goblin Core listens on a TCP port and speaks RESP, so existing Redis clients and `redis-cli` connect unchanged. It supports `PING`, the sorted-set commands `ZADD`, `ZCARD`, `ZSCORE`, `ZRANGE`, `ZREVRANGE`, `ZRANK`, `ZREVRANK`, `ZREM`, and the hash commands `HSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HSTRLEN`, `HINCRBY`, plus admin commands `GOBLIN.MEMORY` (per-key memory introspection), `GOBLIN.OPTIMIZE` (in-place compaction), `SAVE`/`BGSAVE` (point-in-time snapshots), and `GOBLIN.LOAD`. A key holds at most one type; a hash command on a zset key (or vice versa) returns the standard `WRONGTYPE` error. `GOBLIN.LOAD`/`--load` also import a Redis `dump.rdb` (Redis 2.6-7.2.x) to migrate sorted sets in (RDB hash import is not yet supported).
 
@@ -8,6 +8,8 @@ It is NOT a full Redis replacement. There is no automatic snapshot scheduler or 
 
 ## Install and run
 
+- macOS: `brew tap goblinreactor/tap https://brew.goblinreactor.com/homebrew-tap.git && brew install goblinreactor/tap/goblin-core && brew services start goblinreactor/tap/goblin-core`. The tested bottle is Apple Silicon on macOS 26 Tahoe.
+- Debian and Ubuntu: add the signed APT repository at `https://apt.goblinreactor.com/goblin-core.html`, then `sudo apt-get update && sudo apt-get install goblin-core && sudo systemctl enable --now goblin-core`. Packages cover amd64 on Ubuntu 22.04, 24.04, and 26.04 and Debian 12 and 13, plus arm64 on Ubuntu 26.04.
 - Build from source (needs CMake >= 3.25 and a C++23 compiler such as GCC 14+/Clang 18+): `cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && cmake --build build-release`. Optionally `cmake --install build-release --prefix /usr/local`.
 - Run: `goblin-core --bind 0.0.0.0 --port 6379`. Defaults are bind `127.0.0.1` (localhost only) and port `6379`.
 - Connect with any Redis client: `redis-cli -p 6379 ZADD leaders 42 alice`.

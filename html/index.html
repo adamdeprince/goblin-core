@@ -550,7 +550,7 @@
         </div>
         <div class="hero-actions">
           <a class="button primary" href="#start">
-            Build from source
+            Install a package
             <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
           <a class="button secondary" href="#proof">Read the numbers</a>
@@ -766,26 +766,30 @@
     <section class="start" id="start">
       <div class="section-inner start-layout">
         <div>
-          <p class="section-label">Source-only release</p>
-          <h2>Build it. Measure it.</h2>
-          <p>Goblin Core is Apache 2.0 licensed C++23. Choose authenticated RESP or trusted-fabric SBE over TCP or a Unix-domain socket, then opt into shared-memory rings wherever owning the core makes sense. The protocol choice stays independent of the transport.</p>
+          <p class="section-label">Packaged release</p>
+          <h2>Install it. Measure it.</h2>
+          <p>Goblin Core is Apache 2.0 licensed C++23, published as a Homebrew bottle and signed Debian packages. Choose authenticated RESP or trusted-fabric SBE over TCP or a Unix-domain socket, then opt into shared-memory rings wherever owning the core makes sense. The protocol choice stays independent of the transport.</p>
         </div>
         <div>
-          <div class="terminal" aria-label="Build commands">
-            <div class="terminal-head">~/goblin-core</div>
-            <pre><span class="prompt">$</span> git clone https://github.com/adamdeprince/goblin-core
-<span class="prompt">$</span> cd goblin-core
-<span class="prompt">$</span> cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
-<span class="prompt">$</span> cmake --build build-release
-<span class="prompt">$</span> ctest --test-dir build-release --output-on-failure
-<span class="prompt">$</span> ./build-release/goblin-core --port 6379</pre>
+          <div class="terminal" aria-label="Install commands">
+            <div class="terminal-head">install</div>
+            <pre><span class="comment"># macOS, Apple Silicon</span>
+<span class="prompt">$</span> brew tap goblinreactor/tap https://brew.goblinreactor.com/homebrew-tap.git
+<span class="prompt">$</span> brew install goblinreactor/tap/goblin-core
+<span class="prompt">$</span> brew services start goblinreactor/tap/goblin-core
+
+<span class="comment"># Debian and Ubuntu, after adding the signed APT repository</span>
+<span class="prompt">$</span> sudo apt-get update
+<span class="prompt">$</span> sudo apt-get install goblin-core
+<span class="prompt">$</span> sudo systemctl enable --now goblin-core</pre>
           </div>
           <div class="quick-links">
-            <a href="INSTALL.html">Install from source →</a>
+            <a href="INSTALL.html">Install packages →</a>
+            <a href="https://brew.goblinreactor.com/goblin-core.html">Homebrew →</a>
+            <a href="https://apt.goblinreactor.com/goblin-core.html">Linux packages →</a>
             <a href="docs/index.html">Documentation →</a>
             <a href="PERFORMANCE_BRIEF.html">Architecture →</a>
             <a href="RELEASE-HISTORY.html">Release history →</a>
-            <a href="https://github.com/adamdeprince/goblin-core/releases">Source releases →</a>
           </div>
         </div>
       </div>
