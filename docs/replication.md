@@ -54,6 +54,10 @@ list. The follower sends `AUTH` before requesting its firehose. An upstream can
 instead trust every RESP connection on its ring or RDMA listeners with
 `--no-auth-ring` or `--no-auth-rdma`.
 
+Authenticated connections allow at least five seconds for password verification
+and the initial firehose reply, so password hashing on slower CPUs does not
+prevent a follower from connecting.
+
 Non-loopback `--replica-tcp` connections use TLS even when `--replica-tls` is
 omitted. The follower verifies the certificate against the system trust store,
 or against `--replica-tls-ca-file` when supplied, and verifies the source

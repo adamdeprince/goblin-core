@@ -21,8 +21,10 @@ python3 scripts/package_deb.py --build build-package --output packages --suite n
 
 The Debian builder calculates runtime library dependencies in that environment.
 It installs a dedicated system user, a systemd unit, the default configuration
-and a service wrapper. The C++ SDK exports the header-only `goblin::client`
-CMake target. Homebrew recipes are in `packaging/homebrew/`; their source and
+and a service wrapper. The unit grants unlimited locked memory, as required
+for server allocations and password hashing. The C++ SDK exports the
+header-only `goblin::client` CMake target. Homebrew recipes are in
+`packaging/homebrew/`; their source and
 bottle hashes must match the immutable artifacts before publication.
 
 Validate installed packages, not just build outputs. Exercise PING and a

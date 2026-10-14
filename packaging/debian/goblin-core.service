@@ -11,6 +11,7 @@ RuntimeDirectoryMode=0750
 StateDirectory=goblin-core
 StateDirectoryMode=0750
 WorkingDirectory=/var/lib/goblin-core
+LimitMEMLOCK=infinity
 ExecStart=/usr/libexec/goblin-core-service
 Restart=on-failure
 RestartSec=2

@@ -32,7 +32,9 @@
 
 #if defined(__linux__)
 #include <fcntl.h>
+#if !defined(STATX_BTIME)
 #include <linux/stat.h>
+#endif
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif

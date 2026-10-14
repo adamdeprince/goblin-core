@@ -69,7 +69,7 @@ MP_NORETURN void nlr_jump(void *val) {
         "ld.d   $r21, $r4, 104 \n"
         "ld.d   $r3,  $r4, 112 \n" /* Retrieve SP. */
         "addi.d $r4,  $r0, 1   \n" /* Return 1 for a non-local return. */
-        "ret                   \n" /* Return. */
+        "jirl   $r0,  $r1, 0   \n" /* Return; also accepted by older assemblers. */
         :
         : "r" (top)
         : "memory"

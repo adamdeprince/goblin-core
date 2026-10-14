@@ -1059,6 +1059,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   add_test(NAME goblin_core_replication COMMAND goblin_core_replication_test)
 
+  add_executable(goblin_core_replication_follower_test
+    tests/replication_follower_test.cpp)
+  target_include_directories(goblin_core_replication_follower_test PRIVATE src)
+  target_link_libraries(goblin_core_replication_follower_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_replication_follower_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_replication_follower
+    COMMAND goblin_core_replication_follower_test)
+  set_tests_properties(goblin_core_replication_follower PROPERTIES TIMEOUT 15)
+
   add_executable(goblin_core_auth_test tests/auth_test.cpp)
   target_link_libraries(goblin_core_auth_test PRIVATE goblin_core)
   set_target_properties(goblin_core_auth_test PROPERTIES

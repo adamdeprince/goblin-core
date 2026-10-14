@@ -5,6 +5,7 @@
 #include "goblin/core/sbe_socket_transport.hpp"
 #include "pubsub.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <csignal>
@@ -486,10 +487,15 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
 #endif
   }
 
+  // Password hashing can exceed a short transport-connect deadline, especially
+  // when the upstream is also authenticating another client on a slower CPU.
+  const auto response_timeout = auth != nullptr
+      ? std::max(connect_timeout, std::chrono::milliseconds{5s})
+      : connect_timeout;
   if (auth != nullptr) {
     const std::string_view fields[]{"AUTH", auth->username, auth->password};
     impl_->send(ring::encode_command(fields));
-    const auto response = impl_->read(connect_timeout);
+    const auto response = impl_->read(response_timeout);
     if (response != "+OK\r\n") {
       throw std::runtime_error("upstream firehose authentication failed");
     }
@@ -497,7 +503,7 @@ ReplicationFollowerRuntime::ReplicationFollowerRuntime(
 
   const std::string_view command[]{"GOBLIN.FIREHOSE"};
   impl_->send(ring::encode_command(command));
-  const auto response = impl_->read(connect_timeout);
+  const auto response = impl_->read(response_timeout);
   std::string error;
   auto hello = decode_firehose_hello(response, error);
   if (!hello) {

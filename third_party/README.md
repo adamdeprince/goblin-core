@@ -124,8 +124,10 @@ engine deletes process- and host-touching commands (`exit`, `source`, `popen`,
 `micropython_embed/` package (`py/`, `shared/runtime/`, `port/`, and the
 generated `genhdr/`), plus the `mpconfigport.h` it was generated from. The config
 is MicroPython's minimal ROM level plus byte-strings (binary-safe keys/values),
-floats, big integers, and readable error messages. Only `port/mphalport.c` is
-modified from upstream, to route `print()` to the server log rather than stdout.
+floats, big integers, and readable error messages. `port/mphalport.c` is
+modified to route `print()` to the server log rather than stdout.
+`py/nlrloong64.c` uses the explicit `jirl` return instruction so it also builds
+with the older LoongArch assembler shipped by Kylin V10.
 It builds as its own C static library (`goblin_upy`); its `mp_`-prefixed symbols
 collide with nothing. To regenerate after a config change, run the embed port's
 makefile against `mpconfigport.h`.
@@ -179,5 +181,5 @@ byte-for-byte, with its original license header intact.
 
 ## Updating
 
-Re-download the upstream tarball/file, copy the same file set into place, and
-rebuild. No patches need to be re-applied.
+Re-download the upstream tarball/file, copy the same file set into place,
+preserve the local changes documented above, and rebuild.
