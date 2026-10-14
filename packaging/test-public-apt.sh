@@ -2,6 +2,8 @@
 # Run in a fresh disposable Debian/Ubuntu container after publishing metadata.
 set -eu
 suite=$1
+expected_version=${2:-0.10.6-2+${suite}1}
+architecture=$(dpkg --print-architecture)
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y ca-certificates curl gnupg python3-venv python3-pip build-essential
@@ -12,12 +14,12 @@ fingerprint=$(gpg --batch --show-keys --with-colons /etc/apt/keyrings/goblinreac
     awk -F: '$1 == "fpr" {print $10; exit}')
 test "$fingerprint" = B7B61E8CB85A9270530364F23273CB62402FC793
 printf '%s\n' 'Types: deb' 'URIs: https://apt.goblinreactor.com/' \
-    "Suites: $suite" 'Components: main' 'Architectures: amd64' \
+    "Suites: $suite" 'Components: main' "Architectures: $architecture" \
     'Signed-By: /etc/apt/keyrings/goblinreactor-archive-keyring.gpg' \
     > /etc/apt/sources.list.d/goblinreactor.sources
 apt-get update
 apt-get install -y goblin-core goblin-core-cpp
-test "$(dpkg-query -W -f='${Version}' goblin-core)" = "0.10.6-2+${suite}1"
+test "$(dpkg-query -W -f='${Version}' goblin-core)" = "$expected_version"
 python3 /release/work/"$suite"/goblin-core-0.10.6/packaging/service-smoke.py /usr/libexec/goblin-core-service
 python3 -m venv /tmp/test-tools
 /tmp/test-tools/bin/pip install 'cmake>=3.25,<5'

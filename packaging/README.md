@@ -33,6 +33,24 @@ permissions and compile a program using the installed SDK's CMake export.
 Run tests on disposable ports or inside isolated containers so a local Redis
 or Goblin Core instance is unaffected.
 
+The native ARM Linux target is Ubuntu 26.04 (`arm64`), built on `graviton5`.
+Use the same CMake options on that host and package it with
+`python3 scripts/package_deb.py --build build-package --output packages --suite resolute --revision 3`.
+The C++ SDK remains architecture independent. Give new builds an unused package
+revision so published files retain their original contents.
+
+For an additional tested target, `scripts/publish_apt_target.py` adds one suite
+and architecture under the existing APT publication lock. Its `packages` phase
+requires `installed-check.json`; its `indexes` phase also requires
+`public-check.json` with matching versions and package SHA256 checksums.
+Transfer the packages, versioned source archive, generated docs, and validation
+records to a new release directory under
+`hail::distribution/apt.goblinreactor.com` with rsync. Run the publisher on
+hail with that directory as `--stage`, `--suite resolute`, `--architecture arm64`,
+and `--version 0.10.6-3+resolute1`. Publish packages first, validate an install
+from the signed public repository, then publish the installation guide and
+catalog. Other targets and package records are preserved.
+
 Generate project HTML with `python3 scripts/build_html_docs.py --output html`.
 Publish with the repository locks on hail, preserve existing packages, sign
 APT metadata and catalogs with its existing archive key, and verify a clean

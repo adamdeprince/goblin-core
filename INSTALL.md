@@ -42,10 +42,13 @@ redis-cli -s "$(brew --prefix)/var/run/goblin-core/goblin-core.sock" PING
 
 ## Linux: signed APT repository
 
-Use these steps on an Intel or AMD 64-bit PC (`amd64`) running Ubuntu 22.04,
-24.04, or 26.04, or Debian 12 or 13. Run each step in order; the commands
-select your OS release automatically. The C++ header package is architecture
-independent.
+Use these steps on:
+
+- Intel or AMD 64-bit (`amd64`): Ubuntu 22.04, 24.04, or 26.04, or Debian 12 or 13.
+- ARM64 (`arm64`): Ubuntu 26.04, including AWS Graviton hosts.
+
+Run each step in order; the commands select your OS release and CPU architecture
+automatically. The C++ header package is architecture independent.
 
 **1. Install the setup tools**
 
@@ -81,7 +84,7 @@ Types: deb
 URIs: https://apt.goblinreactor.com/
 Suites: $VERSION_CODENAME
 Components: main
-Architectures: amd64
+Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
 EOF
 ```
