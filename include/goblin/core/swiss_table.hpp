@@ -494,8 +494,8 @@ class SwissTable {
     return static_cast<size_type>(std::countr_zero(mask));
   }
 
-  // Swiss-table group probe. Compile-time ISA dispatch via simd_ops (no runtime
-  // CPU feature checks); scalar loop when GroupWidth != 16.
+  // Swiss-table group probe through the selected runtime backend; scalar loop
+  // when GroupWidth != 16.
   [[nodiscard]] static std::uint64_t match_byte(const std::uint8_t* group,
                                                 std::uint8_t needle) noexcept {
     if constexpr (GroupWidth == 16) {

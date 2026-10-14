@@ -13,6 +13,13 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Source checkouts use the parent tree; PyPI sdists carry a bundled client tree.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/_vendor/include")
+  set(GOBLIN_CORE_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/_vendor")
+else()
+  set(GOBLIN_CORE_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+endif()
+
 # Find the active interpreter and its development module, then nanobind's CMake
 # package (installed in the same environment: pip install "nanobind>=2.12").
 find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
@@ -33,8 +40,8 @@ target_compile_features(_goblin_core PRIVATE cxx_std_23)
 # The header-only SBE ring client lives in the parent repo's include/ tree; the
 # generated SBE codecs it includes (goblin_sbe/*.h) live under sbe/generated/.
 target_include_directories(_goblin_core PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../include
-  ${CMAKE_CURRENT_SOURCE_DIR}/../sbe/generated)
+  ${GOBLIN_CORE_SOURCE_ROOT}/include
+  ${GOBLIN_CORE_SOURCE_ROOT}/sbe/generated)
 
 # Optional RDMA / ExaSock / Aeron (same flags as the parent tree; not vendored).
 option(GOBLIN_CORE_ENABLE_RDMA
@@ -65,10 +72,10 @@ if(GOBLIN_CORE_ENABLE_RDMA)
   target_compile_definitions(_goblin_core PRIVATE GOBLIN_HAS_RDMA=1)
   target_include_directories(_goblin_core PRIVATE
     ${IBVERBS_INCLUDE_DIR} ${RDMACM_INCLUDE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    ${GOBLIN_CORE_SOURCE_ROOT}/include)
   # ClientTransport lives in rdma_ring.cpp (not header-only).
   target_sources(_goblin_core PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/rdma_ring.cpp)
+    ${GOBLIN_CORE_SOURCE_ROOT}/src/rdma_ring.cpp)
   target_link_libraries(_goblin_core PRIVATE
     ${IBVERBS_LIBRARY} ${RDMACM_LIBRARY})
   message(STATUS "goblin_core Python: RDMA support enabled")
@@ -88,7 +95,7 @@ if(GOBLIN_CORE_ENABLE_AERON)
   endif()
   target_compile_definitions(_goblin_core PRIVATE GOBLIN_HAS_AERON=1)
   target_sources(_goblin_core PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/aeron_transport.cpp)
+    ${GOBLIN_CORE_SOURCE_ROOT}/src/aeron_transport.cpp)
   target_link_libraries(_goblin_core PRIVATE aeron::aeron_static)
   message(STATUS "goblin_core Python: Aeron UDP/IPC support enabled")
 endif()
@@ -110,8 +117,13 @@ if(GOBLIN_CORE_ENABLE_EXASOCK)
 endif()
 
 # Drop the extension into the package directory so it is importable in place.
+if(SKBUILD)
+  set(GOBLIN_CORE_PYTHON_DEFAULT_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/goblin_core")
+else()
+  set(GOBLIN_CORE_PYTHON_DEFAULT_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/goblin_core")
+endif()
 set(GOBLIN_CORE_PYTHON_OUTPUT_DIRECTORY
-  "${CMAKE_CURRENT_SOURCE_DIR}/goblin_core" CACHE PATH
+  "${GOBLIN_CORE_PYTHON_DEFAULT_OUTPUT}" CACHE PATH
   "Directory for an in-place _goblin_core extension build")
 set_target_properties(_goblin_core PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${GOBLIN_CORE_PYTHON_OUTPUT_DIRECTORY})

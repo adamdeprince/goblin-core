@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+GOBLIN_PORT=6379
+GOBLIN_SOCKET=@VAR@/run/goblin-core/goblin-core.sock
+GOBLIN_STATE=@VAR@/lib/goblin-core
+GOBLIN_SIMD=auto
+GOBLIN_CONFIG=${GOBLIN_CONFIG_FILE:-@ETC@/goblin-core.conf}
+if [ -f "$GOBLIN_CONFIG" ]; then . "$GOBLIN_CONFIG"; fi
+umask 027
+mkdir -p "$(dirname "$GOBLIN_SOCKET")" "$GOBLIN_STATE"
+umask 117
+cd "$GOBLIN_STATE"
+set -- --listen "127.0.0.1:$GOBLIN_PORT" --listen "[::1]:$GOBLIN_PORT" --port "$GOBLIN_PORT" \
+    --uds-listen "$GOBLIN_SOCKET" --simd "$GOBLIN_SIMD"
+if [ -f dump.gcsn ]; then set -- "$@" --load dump.gcsn; fi
+exec @BIN@/goblin-core "$@"

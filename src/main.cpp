@@ -630,6 +630,7 @@ void print_usage(std::string_view program) {
   std::cerr << "usage: " << program
             << " [--listen ADDRESS:PORT]... [--trusted-listen ADDRESS:PORT]...\n"
             << "       [--uds-listen PATH]...\n"
+            << "       [--simd auto|scalar|sse2|avx2|avx512|neon|lsx|lasx]\n"
             << "       [--tls-cert-file FILE --tls-key-file FILE]\n"
             << "       [--tcp-listen ADDRESS:PORT]... (compatibility alias)\n"
             << "       [--bind ADDRESS] [--port PORT] [--unixsocket PATH]...\n"
@@ -752,6 +753,7 @@ void print_usage(std::string_view program) {
 int main(int argc, char** argv) {
   goblin::core::ServerConfig config;
   goblin::core::StoreOptions store_options;
+  std::string_view simd_model = "auto";
   std::optional<std::string> load_path;
   std::optional<std::string> kafka_connection;
   std::uint64_t kafka_time_buffer_seconds = 0;
@@ -776,6 +778,15 @@ int main(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") {
       print_usage(argv[0]);
       return 0;
+    }
+
+    if (arg == "--simd") {
+      if (i + 1 >= argc) {
+        std::cerr << "goblin-core: --simd requires a model\n";
+        return 2;
+      }
+      simd_model = argv[++i];
+      continue;
     }
 
     if (arg == "--auth-file") {
@@ -2069,6 +2080,13 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  try {
+    goblin::core::simd::configure(simd_model);
+  } catch (const std::invalid_argument& error) {
+    std::cerr << "goblin-core: " << error.what() << '\n';
+    return 2;
+  }
+
   materialize_legacy_listener(config);
 
   if (tls_certificate_chain.has_value() != tls_private_key.has_value()) {
@@ -2252,12 +2270,17 @@ int main(int argc, char** argv) {
 
   const auto caps = goblin::core::simd::detect_capabilities();
   std::cout << "goblin-core SIMD caps:"
+            << " selected=" << goblin::core::simd::model_name(
+                   goblin::core::simd::selected_model())
+            << " sse2=" << caps.sse2
             << " neon=" << caps.neon
             << " avx2=" << caps.avx2
+            << " avx512f=" << caps.avx512f
             << " avx512bw=" << caps.avx512bw
             << " avx512vl=" << caps.avx512vl
             << " lsx=" << caps.lsx
-            << " lasx=" << caps.lasx << '\n';
+            << " lasx=" << caps.lasx
+            << " crc32=" << caps.crc32 << std::endl;
 
   // Resolve transport locality before the Store allocates. Explicit --numa/--cpu
   // wins; otherwise every configured hardware endpoint must agree on one slice.

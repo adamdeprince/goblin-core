@@ -6,19 +6,24 @@ Exercises the redis-py-compatible surface and asserts redis-py return convention
 """
 import os
 import subprocess
+import socket
 import sys
 import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-sys.path.insert(0, os.path.join(REPO, "python"))
+if not os.environ.get("GOBLIN_TEST_INSTALLED_WHEEL"):
+    sys.path.insert(0, os.path.join(REPO, "python"))
 
 from goblin_core import Redis, ResponseError  # noqa: E402
 
 
 def start_server(binary, ring_paths, sock_path):
-    cmd = [binary, "--unixsocket", sock_path]
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    cmd = [binary, "--port", str(port), "--enable-sbe", "--unixsocket", sock_path]
     for ring_path in ring_paths:
         cmd += ["--ring", ring_path, "64kb"]
     proc = subprocess.Popen(
@@ -91,6 +96,7 @@ def main():
         assert r.hdel("h", "f") == 1
 
         # sets
+        r.delete("s")  # the earlier SETNX checks used this name for a string
         assert r.sadd("s", "a", "b", "c") == 3
         assert r.sadd("s", "a") == 0
         assert r.scard("s") == 3

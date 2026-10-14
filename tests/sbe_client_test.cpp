@@ -162,7 +162,10 @@ int main(int argc, char** argv) {
     assert(all.size() == 2);
     auto mv = c->hmget("h", V{"f1", "no", "f2"});
     assert(mv[0] == "5" && !mv[1].has_value() && mv[2] == "2");
-    assert(c->hkeys("h").size() == 2 && c->hvals("h").size() == 2);
+    auto names = c->hkeys("h");
+    std::sort(names.begin(), names.end());
+    assert((names == std::vector<std::string>{"f1", "f2"}));
+    assert(c->hvals("h").size() == 2);
   }
   {
     std::uint64_t cursor = 0;

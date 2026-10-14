@@ -18,6 +18,12 @@ are reachable (no streams, not the full Redis surface).
 from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
+from importlib.metadata import version as _package_version, PackageNotFoundError
+
+try:
+    __version__ = _package_version("goblin-core")
+except PackageNotFoundError:
+    __version__ = "uninstalled"
 
 from . import _goblin_core
 from ._goblin_core import ResponseError, RingError

@@ -12,6 +12,7 @@ server drains the corpse's leftovers and re-arms, then acks.
 import os
 import signal
 import subprocess
+import socket
 import sys
 import tempfile
 import textwrap
@@ -20,7 +21,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 PYDIR = os.path.join(REPO, "python")
-sys.path.insert(0, PYDIR)
+if not os.environ.get("GOBLIN_TEST_INSTALLED_WHEEL"):
+    sys.path.insert(0, PYDIR)
 
 from goblin_core import Redis  # noqa: E402
 
@@ -34,8 +36,11 @@ def main():
     tmp = tempfile.mkdtemp(prefix="goblin-reconnect-")
     ring_path = os.path.join(tmp, "ring")
     sock_path = os.path.join(tmp, "sock")
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
     server = subprocess.Popen(
-        [binary, "--unixsocket", sock_path, "--ring", ring_path, "256kb"],
+        [binary, "--port", str(port), "--enable-sbe", "--unixsocket", sock_path, "--ring", ring_path, "256kb"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
@@ -60,7 +65,8 @@ def main():
             """
         )
         env = dict(os.environ)
-        env["PYTHONPATH"] = PYDIR + os.pathsep + env.get("PYTHONPATH", "")
+        if not os.environ.get("GOBLIN_TEST_INSTALLED_WHEEL"):
+            env["PYTHONPATH"] = PYDIR + os.pathsep + env.get("PYTHONPATH", "")
         child = subprocess.Popen(
             [sys.executable, "-c", child_src], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,

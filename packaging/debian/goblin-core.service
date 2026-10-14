@@ -1,0 +1,25 @@
+[Unit]
+Description=Goblin Core Redis-compatible server
+After=network.target
+
+[Service]
+Type=simple
+User=goblin-core
+Group=goblin-core
+RuntimeDirectory=goblin-core
+RuntimeDirectoryMode=0750
+StateDirectory=goblin-core
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/goblin-core
+ExecStart=/usr/libexec/goblin-core-service
+Restart=on-failure
+RestartSec=2
+UMask=0117
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/run/goblin-core /var/lib/goblin-core
+
+[Install]
+WantedBy=multi-user.target

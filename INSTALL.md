@@ -1,12 +1,161 @@
-# Installing Goblin Core from source
+# Installing Goblin Core
 
-Goblin Core is currently distributed as source. There are no official binary,
-registry-hosted container, operating-system package, or service-manager
-releases. A release is an annotated Git tag; compile the tag on the machine
-where it will run, on a compatible build host, or use the repository
-`Containerfile` to build a local OCI image with Podman. See the
-[container guide](docs/container.md) for the rootless build and deployment
-workflow.
+Install the server from [Goblin Reactor's Homebrew repository](https://brew.goblinreactor.com/goblin-core.html)
+or [signed APT repository](https://apt.goblinreactor.com/goblin-core.html).
+The server package is `goblin-core`; the C++ client SDK is the separate
+`goblin-core-cpp` package. Both use version 0.10.6. Python's `goblin-core`
+distribution has the same upstream version and is released separately on PyPI.
+The initial Python release is prepared but has not been published.
+
+The packaged service listens on loopback TCP port **6379**, including IPv6,
+and creates a **Unix domain socket** when it starts. It enables ordinary RESP
+only. It does not configure SBE, shared-memory rings, RDMA, Aeron, ExaSock,
+XLIO, or libfabric. Redis clients can connect to the supported command subset;
+see the [command reference](docs/commands/README.md).
+
+## macOS: Homebrew
+
+The tested bottle targets Apple Silicon on macOS 26 Tahoe. Other macOS targets
+can build from source but are not covered by this bottle's validation.
+
+```sh
+brew tap goblinreactor/tap https://brew.goblinreactor.com/homebrew-tap.git
+brew install goblinreactor/tap/goblin-core
+brew services start goblinreactor/tap/goblin-core
+```
+
+If Redis already uses port 6379, stop that service before starting Goblin Core.
+Edit `$(brew --prefix)/etc/goblin-core/goblin-core.conf` to change the service
+port, socket path, state directory, or SIMD selection, then run
+`brew services restart goblinreactor/tap/goblin-core`.
+The default socket is `$(brew --prefix)/var/run/goblin-core/goblin-core.sock`.
+The service runs as the user who starts it. The socket has mode 0660, subject
+to the process umask, and its parent directory restricts access to that user
+and group.
+
+If `redis-cli` is installed, check both connections:
+
+```sh
+redis-cli -h 127.0.0.1 -p 6379 PING
+redis-cli -s "$(brew --prefix)/var/run/goblin-core/goblin-core.sock" PING
+```
+
+## Linux: signed APT repository
+
+Use these steps on an Intel or AMD 64-bit PC (`amd64`) running Ubuntu 22.04,
+24.04, or 26.04, or Debian 12 or 13. Run each step in order; the commands
+select your OS release automatically. The C++ header package is architecture
+independent.
+
+**1. Install the setup tools**
+
+```sh
+sudo apt-get update
+sudo apt-get install ca-certificates curl gnupg
+```
+
+**2. Add the signing key**
+
+APT uses this key to check that packages come from Goblin Reactor.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://apt.goblinreactor.com/goblinreactor-archive-keyring.gpg \
+  -o /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+sudo chmod 0644 /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+```
+
+Before continuing, check that the key fingerprint shown matches:
+`B7B6 1E8C B85A 9270 5303 64F2 3273 CB62 402F C793`.
+If it differs or a command fails, stop here.
+
+**3. Add the package repository**
+
+Copy this whole block. It reads your OS release and writes the APT settings:
+
+```sh
+. /etc/os-release
+sudo tee /etc/apt/sources.list.d/goblinreactor.sources >/dev/null <<EOF
+Types: deb
+URIs: https://apt.goblinreactor.com/
+Suites: $VERSION_CODENAME
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/goblinreactor-archive-keyring.gpg
+EOF
+```
+
+**4. Install and start Goblin Core**
+
+If Redis already uses port 6379, stop it before this step.
+
+```sh
+sudo apt-get update
+sudo apt-get install goblin-core
+sudo systemctl enable --now goblin-core
+```
+
+The package creates the `goblin-core` system account and installs a systemd
+service, which starts automatically where systemd is running. Configuration
+lives in
+`/etc/goblin-core/goblin-core.conf`. The socket is
+`/run/goblin-core/goblin-core.sock`, owned by `goblin-core:goblin-core`, mode
+0660, inside a mode-0750 directory. Root and members of that group can use it.
+After changing configuration, run `sudo systemctl restart goblin-core`.
+
+```sh
+redis-cli -h 127.0.0.1 -p 6379 PING
+sudo -u goblin-core redis-cli -s /run/goblin-core/goblin-core.sock PING
+sudo journalctl -u goblin-core
+```
+
+## Separate client packages
+
+Install the C++ SDK independently:
+
+```sh
+# macOS
+brew install goblinreactor/tap/goblin-core-cpp
+# Debian or Ubuntu, after adding the repository above
+sudo apt-get install goblin-core-cpp
+```
+
+Use `find_package(goblin-core-cpp CONFIG REQUIRED)` and link your CMake target
+to `goblin::client`. Include `<goblin/core/sbe_ring_client.hpp>` for the
+typed SBE clients and generated codecs. These clients require an explicitly
+enabled SBE endpoint; installing the SDK does not enable it in the service.
+
+The Python distribution is named `goblin-core` and imports as `goblin_core`.
+It contains the existing SBE client bindings, rather than a server executable.
+For the default RESP service, use ordinary Redis clients such as `redis-py`.
+Once the matching release is published on PyPI, install it with
+`python -m pip install goblin-core==0.10.6`. Until then, build from this source:
+
+```sh
+python -m pip install ./python
+```
+
+## Service state and updates
+
+Linux stores state in `/var/lib/goblin-core`; Homebrew uses
+`$(brew --prefix)/var/lib/goblin-core`. The service loads `dump.gcsn` there if
+present. Issue `SAVE` to write a snapshot; the service does not configure
+automatic snapshots or save on shutdown. See the
+[snapshot command guide](docs/commands/SAVE.md) before relying on persistent data.
+Upgrades preserve configuration and the state directory. Stop the service
+before uninstalling; removing the package does not remove database files.
+
+The service selects a compatible SIMD implementation at runtime. Set
+`GOBLIN_SIMD=scalar` in its configuration to force the portable fallback, or
+select a supported slower implementation such as `sse2` on an AVX2 machine.
+Unsupported selections fail at startup with an error.
+
+## Building from source
+
+Compile a tagged source release on the machine where it will run or a
+compatible build host. The repository `Containerfile` also builds a local
+OCI image with Podman; see the [container guide](docs/container.md).
 
 Linux is the production platform. macOS is supported for development and the
 portable socket/shared-memory/Aeron test suite. RDMA, XLIO Ultra, HugeTLB, CPU
@@ -214,16 +363,38 @@ profile makes the resulting binary easier to audit.
 | `GOBLIN_CORE_AERON_ROOT` | empty | Optional Aeron CMake install prefix, such as the one produced by `scripts/build-aeron.sh`. |
 | `GOBLIN_CORE_STATIC_GNU_RUNTIME` | `ON` | With GCC, links `libstdc++` and `libgcc` statically while leaving libc and device libraries dynamic. It has no effect with Clang/MSVC. |
 | `GOBLIN_CORE_REDIS_DIFFERENTIAL_TESTS` | `OFF` | Adds sequential and pipelined compatibility tests against an installed `redis-server`. This is a test dependency, never a server runtime dependency. |
-| `GOBLIN_CORE_ARCH` | empty | Selects additional ISA tuning: `native`, `avx2`, `avx512`, `lsx`, or `lasx`. Empty is the distribution-friendly choice. |
+| `GOBLIN_CORE_ARCH` | empty | Deprecated and ignored. SIMD implementations are compiled separately and selected at runtime. Use `--simd` to override. |
 
 ### Architecture selection
 
-`GOBLIN_CORE_ARCH=native` lets GCC or Clang use every instruction available on
-the build host and is appropriate when compiling on the deployment machine.
-The explicit `avx2` and `avx512` profiles require matching x86 CPUs; `lsx` and
-`lasx` target LoongArch. A binary built for an unsupported ISA can terminate
-with an illegal-instruction fault. Leave the option empty when one binary must
-run on unlike machines.
+Goblin compiles the available SIMD implementations separately and chooses the
+highest supported tier at startup, checking CPU features and operating-system
+support. The default is `--simd auto`. To select a compatible lower tier, use:
+
+```sh
+goblin-core --simd scalar    # portable fallback on every architecture
+goblin-core --simd sse2      # lower tier on x86-64
+goblin-core --simd avx2      # lower tier on an AVX-512-capable x86-64 CPU
+goblin-core --simd lsx       # lower tier on a LASX-capable LoongArch CPU
+```
+
+The accepted values are `auto`, `scalar`, `sse2`, `avx2`, `avx512`, `neon`,
+`lsx`, and `lasx`. x86-64 auto selection prefers AVX-512, then AVX2, then SSE2;
+AArch64 uses NEON; LoongArch prefers LASX, then LSX. Scalar is always available.
+An explicit model must be compiled into the binary and compatible with the
+current CPU/OS; otherwise startup reports an error and exits with status 2.
+Startup logs show the selected model and detected hardware features.
+
+The override covers hash probes, XXH3 hashing, fingerprint scans, string comparisons, RESP
+scans, and bitset OR operations. Snapshot CRC32C also uses runtime detection;
+`scalar` forces software CRC32C, with identical snapshot checksums. SIMD selection
+does not change storage or wire formats. Embedded users can call
+`goblin::core::simd::configure()` before starting workers; changing the selection
+while operations are in flight is unsupported.
+
+Old `GOBLIN_CORE_ARCH` settings produce a deprecation warning and no longer apply
+ISA flags globally. Avoid adding `-march=native` or optional ISA flags to global
+`CMAKE_CXX_FLAGS` when distributing a binary across CPUs of the same architecture.
 
 ### Minimal portable build
 

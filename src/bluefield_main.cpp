@@ -3,6 +3,7 @@
 #include "goblin/core/command.hpp"
 #include "goblin/core/resp_parser.hpp"
 #include "goblin/core/resp_writer.hpp"
+#include "goblin/core/simd.hpp"
 #include "pubsub.hpp"
 
 #if defined(GOBLIN_HAS_XLIO)
@@ -1318,6 +1319,7 @@ void finish_upstream_reply(Client& client, std::string reply) {
 
 [[nodiscard]] Config parse_args(int argc, char** argv) {
   Config config;
+  std::string_view simd_model = "auto";
   std::optional<std::string> upstream_password_file;
   bool listener_configured = false;
   for (int index = 1; index < argc; ++index) {
@@ -1326,6 +1328,7 @@ void finish_upstream_reply(Client& client, std::string reply) {
       std::cout
           << "usage: goblin-core-bluefield --upstream HOST PORT [options]\n"
           << "  --listen ADDRESS PORT\n"
+          << "  --simd auto|scalar|sse2|avx2|avx512|neon|lsx|lasx\n"
 #if defined(GOBLIN_HAS_XLIO)
           << "  --xlio ADDRESS PORT\n"
 #endif
@@ -1338,6 +1341,13 @@ void finish_upstream_reply(Client& client, std::string reply) {
           << "  --cpu N\n"
           << "  --backlog N\n";
       std::exit(0);
+    }
+    if (arg == "--simd") {
+      if (index + 1 >= argc) {
+        throw std::invalid_argument("--simd requires a model");
+      }
+      simd_model = argv[++index];
+      continue;
     }
     if (arg == "--listen" && index + 2 < argc) {
       if (listener_configured) {
@@ -1448,6 +1458,7 @@ void finish_upstream_reply(Client& client, std::string reply) {
     throw std::runtime_error("unknown or incomplete option: " +
                              std::string(arg));
   }
+  simd::configure(simd_model);
   if (config.upstream_host.empty() || config.upstream_port == 0) {
     throw std::runtime_error("--upstream HOST PORT is required");
   }
@@ -1465,6 +1476,8 @@ void finish_upstream_reply(Client& client, std::string reply) {
 }
 
 int run(const Config& config) {
+  std::cout << "goblin-core-bluefield SIMD selected="
+            << simd::model_name(simd::selected_model()) << std::endl;
   apply_cpu_affinity(config.cpu);
   const auto upstream =
       resolve_tcp(config.upstream_host, config.upstream_port, false);
@@ -1701,6 +1714,9 @@ int main(int argc, char** argv) {
   try {
     return goblin::core::bluefield::run(
         goblin::core::bluefield::parse_args(argc, argv));
+  } catch (const std::invalid_argument& error) {
+    std::cerr << "goblin-core-bluefield: " << error.what() << '\n';
+    return 2;
   } catch (const std::exception& error) {
     std::cerr << "goblin-core-bluefield: " << error.what() << '\n';
     return 1;

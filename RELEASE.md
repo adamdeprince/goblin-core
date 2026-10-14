@@ -1,8 +1,7 @@
-# Goblin Core Source Release Checklist
+# Goblin Core Release Checklist
 
-The repeatable path for a source-only release. A release is a git tag and the
-hosting service's source archive; users build Goblin Core from the tagged
-source.
+Release the source, separate server and C++ client packages, and matching
+Python client artifacts. Use the canonical version in root `CMakeLists.txt`.
 
 ## Scope
 
@@ -42,10 +41,20 @@ Publish:
 - The signed or annotated git tag.
 - The hosting service's generated source archive for that tag.
 
-Do not publish:
+Publish tested Homebrew formulas/bottles at `brew.goblinreactor.com` and
+release-specific Debian packages at `apt.goblinreactor.com`. Their roots are
+`hail::distribution/brew.goblinreactor.com` and
+`hail::distribution/apt.goblinreactor.com`. Preserve existing repository
+entries, use its existing signing key, and update the catalog and index.
 
-- Compiled `.tar.gz` or `.zip` archives from `build-release/`.
-- Homebrew, `.deb`, `.rpm`, container, or service-manager packages.
+The `goblin-core` service uses loopback RESP port 6379 and a Unix socket.
+Do not enable SBE, rings or other high-performance transports in its default
+configuration. `goblin-core-cpp` installs the C++ SDK independently.
+See `packaging/README.md` for builds and installed-package validation.
+
+Build the Python sdist and wheels from `python/`; their version is read from
+root CMake rather than maintained separately. Check them with `twine check`.
+**Do not upload anything to PyPI without Adam's explicit permission.**
 
 The source tree should contain public headers, source files, CMake install
 rules, root Markdown docs, generated-doc inputs, `LICENSE`, and `NOTICE`.

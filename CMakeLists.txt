@@ -8,7 +8,7 @@ project(goblin-core
 include(GNUInstallDirs)
 
 set(GOBLIN_CORE_ARCH "" CACHE STRING
-    "ISA tuning for the build host: native, avx2, avx512, lsx, or lasx")
+    "Deprecated: SIMD selection now uses runtime dispatch and --simd")
 set_property(CACHE GOBLIN_CORE_ARCH PROPERTY STRINGS
     "" native avx2 avx512 lsx lasx)
 
@@ -545,32 +545,8 @@ set_source_files_properties(src/upython_script.cpp PROPERTIES
 set_source_files_properties(src/quickjs_script.cpp PROPERTIES
   INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quickjs)
 
-# Enable the CRC32C hardware instruction used by the snapshot checksum on x86
-# (SSE4.2). AArch64 uses its CRC extension where the platform enables it (default
-# on Apple; -march=native on Linux ARM), and LoongArch uses crcc unconditionally;
-# elsewhere the software table runs. PUBLIC so the header's inline checksum takes
-# the same path in the library, server, and tests.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-  include(CheckCXXCompilerFlag)
-  check_cxx_compiler_flag("-msse4.2" GOBLIN_HAS_SSE42)
-  if(GOBLIN_HAS_SSE42)
-    target_compile_options(goblin_core PUBLIC -msse4.2)
-  endif()
-endif()
-
-if(GOBLIN_CORE_ARCH STREQUAL "native")
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(goblin_core PUBLIC -march=native)
-  endif()
-elseif(GOBLIN_CORE_ARCH STREQUAL "avx2")
-  target_compile_options(goblin_core PUBLIC -mavx2)
-elseif(GOBLIN_CORE_ARCH STREQUAL "avx512")
-  target_compile_options(goblin_core PUBLIC -mavx512f -mavx512bw -mavx512vl)
-elseif(GOBLIN_CORE_ARCH STREQUAL "lsx")
-  target_compile_options(goblin_core PUBLIC -mlsx)
-elseif(GOBLIN_CORE_ARCH STREQUAL "lasx")
-  target_compile_options(goblin_core PUBLIC -mlasx)
-endif()
+include(cmake/Simd.cmake)
+goblin_add_simd_backends(goblin_core ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Optional maintainer target: regenerate the checked-in command-dispatch perfect
 # hash after editing src/command_hash.gperf. The checked-in src/command_hash.hpp is
@@ -666,7 +642,9 @@ if(GOBLIN_CORE_BUILD_BLUEFIELD AND TARGET goblin_sbe_headers)
     src/bluefield_sbe.cpp
     src/auth.cpp
     src/pubsub.cpp
+    src/simd.cpp
     src/resp_parser.cpp)
+  goblin_add_simd_backends(goblin_core_bluefield ${CMAKE_CURRENT_SOURCE_DIR})
   if(GOBLIN_HAS_XLIO_BUILD)
     target_sources(goblin_core_bluefield PRIVATE src/xlio_transport.cpp)
     target_compile_definitions(goblin_core_bluefield PRIVATE GOBLIN_HAS_XLIO=1)
@@ -994,6 +972,16 @@ if(GOBLIN_CORE_BUILD_TESTS)
     CXX_EXTENSIONS OFF)
 
   add_test(NAME goblin_core_tests COMMAND goblin_core_tests)
+  add_test(NAME goblin_core_tests_scalar COMMAND goblin_core_tests scalar)
+
+  add_executable(goblin_core_simd_test tests/simd_test.cpp)
+  target_link_libraries(goblin_core_simd_test PRIVATE goblin_core)
+  set_target_properties(goblin_core_simd_test PROPERTIES
+    CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+  add_test(NAME goblin_core_simd COMMAND goblin_core_simd_test)
+  add_test(NAME goblin_core_simd_cli
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/simd_cli_test.py
+            $<TARGET_FILE:goblin_core_server>)
 
   add_executable(goblin_core_zset_score_index_test tests/zset_score_index_test.cpp)
   target_link_libraries(goblin_core_zset_score_index_test PRIVATE goblin_core)

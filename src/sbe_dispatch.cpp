@@ -2362,10 +2362,12 @@ void handle(Store& store, std::uint16_t tid, char* buf, std::uint64_t buflen,
       sbe::HKeys h;
       h.wrapForDecode(buf, kBodyOffset, block_length, version, buflen);
       const std::string_view key = h.getKeyAsStringView();
-      static thread_local std::vector<std::string_view> keys;
+      // Listpack iteration decodes fields into temporary strings. Own the
+      // names until the complete reply has been encoded.
+      static thread_local std::vector<std::string> keys;
       keys.clear();
       store.hash_for_each(key, [&](std::string_view f, EncodedStringView) {
-        keys.push_back(f);
+        keys.emplace_back(f);
       });
       reply_array(out, keys);
       break;

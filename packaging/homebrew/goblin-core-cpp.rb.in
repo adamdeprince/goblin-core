@@ -1,0 +1,22 @@
+class GoblinCoreCpp < Formula
+  desc "Header-only Goblin Core C++ client SDK and SBE codecs"
+  homepage "https://github.com/adamdeprince/goblin-core"
+  url "https://brew.goblinreactor.com/sources/goblin-core-0.10.6.tar.gz"
+  sha256 "@SOURCE_SHA@"
+  license "Apache-2.0"
+
+  depends_on "cmake" => [:build, :test]
+
+  def install
+    system "cmake", "-S", "client", "-B", "build-client", *std_cmake_args
+    system "cmake", "--install", "build-client"
+    (share/"goblin-core-cpp").install "packaging/client-smoke"
+  end
+
+  test do
+    system "cmake", "-S", share/"goblin-core-cpp/client-smoke", "-B", testpath/"build",
+                    "-DCMAKE_PREFIX_PATH=#{prefix}"
+    system "cmake", "--build", testpath/"build"
+    system testpath/"build/client-smoke"
+  end
+end

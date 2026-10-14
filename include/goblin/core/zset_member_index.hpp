@@ -458,9 +458,8 @@ class MemberIndex {
   // Return a bitmask with bit i set for each of the kGroupWidth control bytes
   // equal to `needle`. This is the Swiss-table group probe; `pmovmskb` is the
   // canonical implementation and is not auto-generated from portable C++, so a
-  // byte-compare intrinsic is used with a scalar fallback. Each variant is
-  // baseline for its ISA (no runtime CPU dispatch): SSE2 on x86-64, NEON on
-  // AArch64, and a scalar loop everywhere else.
+  // byte-compare intrinsic is used through the selected runtime backend,
+  // with a scalar fallback.
   [[nodiscard]] static std::uint64_t match_byte(const std::uint8_t* group,
                                                 std::uint8_t needle) noexcept {
     static_assert(kGroupWidth == 16, "group probe expects a 16-byte group");

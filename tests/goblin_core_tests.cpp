@@ -52,9 +52,9 @@
 namespace {
 
 void test_fingerprint_simd_scan() {
-  constexpr auto width = goblin::core::simd::kFingerprintGroupWidth;
-  static_assert(width == 16 || width == 32 || width == 64);
-  alignas(64) std::array<std::uint8_t, width + 1> storage{};
+  const auto width = goblin::core::simd::fingerprint_group_width();
+  assert(width == 16 || width == 32 || width == 64);
+  alignas(64) std::array<std::uint8_t, 65> storage{};
   auto* group = storage.data() + 1;  // Exercise every ISA's unaligned load.
   std::fill_n(group, width, std::uint8_t{0x11});
 
@@ -71,7 +71,7 @@ void test_fingerprint_simd_scan() {
 
   std::fill_n(group, width, needle);
   std::uint64_t all = 0;
-  if constexpr (width == 64) {
+  if (width == 64) {
     all = std::numeric_limits<std::uint64_t>::max();
   } else {
     all = (std::uint64_t{1} << width) - 1;
@@ -7776,7 +7776,8 @@ void test_ring_reply_framing() {
   assert(ring::encode_command(args) == "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n");
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2) goblin::core::simd::configure(argv[1]);
   test_fingerprint_simd_scan();
   test_ring_size_parsing();
   test_ring_buffer_roundtrip();

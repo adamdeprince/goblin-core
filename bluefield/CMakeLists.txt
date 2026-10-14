@@ -28,7 +28,11 @@ add_executable(goblin_core_bluefield
   ${GOBLIN_SOURCE_ROOT}/src/bluefield_sbe.cpp
   ${GOBLIN_SOURCE_ROOT}/src/auth.cpp
   ${GOBLIN_SOURCE_ROOT}/src/pubsub.cpp
+  ${GOBLIN_SOURCE_ROOT}/src/simd.cpp
   ${GOBLIN_SOURCE_ROOT}/src/resp_parser.cpp)
+
+include(${GOBLIN_SOURCE_ROOT}/cmake/Simd.cmake)
+goblin_add_simd_backends(goblin_core_bluefield ${GOBLIN_SOURCE_ROOT})
 
 if(GOBLIN_BLUEFIELD_ENABLE_XLIO)
   if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")

@@ -16,3 +16,12 @@ compile_commands.json
 goblin-core
 goblin_core_tests
 benchmark-results/
+
+# Python package build inputs generated from the canonical source tree.
+python/_vendor/
+python/LICENSE
+python/NOTICE
+python/build/
+python/dist/
+python/goblin_core/*.so
+python/goblin_core/*.dylib

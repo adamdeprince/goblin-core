@@ -1,0 +1,5 @@
+# Ordinary RESP sockets only. Restart the service after changing these values.
+GOBLIN_PORT=6379
+GOBLIN_SOCKET=@VAR@/run/goblin-core/goblin-core.sock
+GOBLIN_STATE=@VAR@/lib/goblin-core
+GOBLIN_SIMD=auto

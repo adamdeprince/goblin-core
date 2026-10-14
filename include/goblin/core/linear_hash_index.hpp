@@ -13,9 +13,6 @@
 #include <string_view>
 #include <utility>
 
-#define XXH_INLINE_ALL
-#include "xxhash.h"
-
 #include "goblin/core/linear_hash_arena.hpp"
 #include "goblin/core/simd_ops.hpp"
 
@@ -402,7 +399,7 @@ class LinearHashIndex {
   }
 
   [[nodiscard]] hash_type hash_member(std::string_view member) const noexcept {
-    const auto wide = XXH3_64bits(member.data(), member.size());
+    const auto wide = simd::hash_bytes(member.data(), member.size());
     return static_cast<hash_type>(wide) ^
            static_cast<hash_type>(wide >> 32);
   }

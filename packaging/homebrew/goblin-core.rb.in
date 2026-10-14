@@ -1,0 +1,100 @@
+class GoblinCore < Formula
+  desc "Compact Redis-compatible server with runtime SIMD dispatch"
+  homepage "https://github.com/adamdeprince/goblin-core"
+  url "https://brew.goblinreactor.com/sources/goblin-core-0.10.6.tar.gz"
+  sha256 "@SOURCE_SHA@"
+  license "Apache-2.0"
+
+  depends_on "cmake" => :build
+  depends_on "lz4"
+  depends_on "libsodium"
+  depends_on "openssl@3"
+
+  def install
+    args = std_cmake_args + %w[
+      -DGOBLIN_CORE_BUILD_TESTS=OFF
+      -DGOBLIN_CORE_BUILD_BENCHMARKS=OFF
+      -DGOBLIN_CORE_BUILD_HTML_DOCS=OFF
+      -DGOBLIN_CORE_ENABLE_RDMA=OFF
+      -DGOBLIN_CORE_ENABLE_LIBFABRIC=OFF
+      -DGOBLIN_CORE_ENABLE_EXASOCK=OFF
+      -DGOBLIN_CORE_ENABLE_XLIO=OFF
+      -DGOBLIN_CORE_ENABLE_AERON=OFF
+      -DGOBLIN_CORE_ENABLE_KAFKA=OFF
+    ]
+    system "cmake", "-S", ".", "-B", "build-package", *args
+    system "cmake", "--build", "build-package", "--target", "goblin_core_server", "goblin_core_auth", "-j4"
+    bin.install "build-package/goblin-core", "build-package/goblin-core-auth"
+    replacements = { "@VAR@" => var.to_s, "@BIN@" => bin.to_s,
+                     "@ETC@" => (etc/"goblin-core").to_s }
+    wrapper = (buildpath/"packaging/goblin-core-service.in").read
+    config = (buildpath/"packaging/goblin-core.conf.in").read
+    replacements.each { |key, value| wrapper = wrapper.gsub(key, value); config = config.gsub(key, value) }
+    (libexec/"goblin-core-service").write wrapper
+    chmod 0755, libexec/"goblin-core-service"
+    (libexec/"goblin-core.conf.default").write config
+    doc.install "LICENSE", "NOTICE", "INSTALL.md"
+    doc.install "html"
+  end
+
+  post_install_steps do
+    unless_path_exists "goblin-core/goblin-core.conf", base: :etc do
+      copy "libexec/goblin-core.conf.default", "goblin-core/goblin-core.conf", target_base: :etc
+    end
+  end
+
+  service do
+    run [opt_libexec/"goblin-core-service"]
+    keep_alive true
+    log_path var/"log/goblin-core.log"
+    error_log_path var/"log/goblin-core.log"
+    working_dir var
+  end
+
+  def caveats
+    <<~EOS
+      The service listens on loopback port 6379 and creates:
+        #{var}/run/goblin-core/goblin-core.sock
+      Configuration: #{etc}/goblin-core/goblin-core.conf
+      Stop Redis first if it already occupies port 6379.
+      SBE and high-performance transports are not enabled by this service.
+      Use SAVE to persist a snapshot; automatic snapshots are not configured.
+    EOS
+  end
+
+  test do
+    require "socket"
+    port = free_port
+    socket_path = testpath/"run/goblin-core.sock"
+    (testpath/"service.conf").write <<~EOS
+      GOBLIN_PORT=#{port}
+      GOBLIN_SOCKET='#{socket_path}'
+      GOBLIN_STATE='#{testpath}/state'
+      GOBLIN_SIMD=scalar
+    EOS
+    pid = Process.spawn({ "GOBLIN_CONFIG_FILE" => (testpath/"service.conf").to_s },
+                        (libexec/"goblin-core-service").to_s,
+                        out: (testpath/"server.log").to_s, err: [:child, :out])
+    begin
+      100.times do
+        break if socket_path.socket?
+        sleep 0.05
+      end
+      assert_predicate socket_path, :socket?
+      assert_equal 0660, socket_path.stat.mode & 0777
+      [TCPSocket.new("127.0.0.1", port), UNIXSocket.new(socket_path.to_s)].each do |socket|
+        socket.write "*1\r\n$4\r\nPING\r\n"
+        assert_equal "+PONG\r\n", socket.gets
+        socket.write "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+        assert_equal "+OK\r\n", socket.gets
+        socket.write "*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n"
+        assert_equal "$5\r\n", socket.gets
+        assert_equal "value\r\n", socket.gets
+        socket.close
+      end
+    ensure
+      Process.kill "TERM", pid
+      Process.wait pid
+    end
+  end
+end

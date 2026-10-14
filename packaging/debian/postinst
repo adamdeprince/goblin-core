@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    if ! getent group goblin-core >/dev/null; then addgroup --system goblin-core; fi
+    if ! getent passwd goblin-core >/dev/null; then
+        adduser --system --ingroup goblin-core --home /var/lib/goblin-core \
+            --no-create-home --disabled-password goblin-core
+    fi
+    install -d -o goblin-core -g goblin-core -m 0750 /var/lib/goblin-core
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        deb-systemd-helper enable goblin-core.service >/dev/null
+        deb-systemd-invoke start goblin-core.service >/dev/null || true
+    fi
+fi

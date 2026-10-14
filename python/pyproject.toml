@@ -3,16 +3,17 @@
 #
 #   pip install ./python          # builds the extension and installs goblin_core
 [build-system]
-requires = ["scikit-build-core>=0.10", "nanobind>=2.12"]
-build-backend = "scikit_build_core.build"
+requires = ["scikit-build-core>=0.10,<1", "nanobind>=2.12"]
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "goblin-core"
-version = "0.10.6"
+dynamic = ["version"]
 description = "redis-py-compatible SBE clients for goblin-core rings, RDMA, ExaSock, and Aeron UDP/IPC"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Goblin Reactor" }]
 keywords = ["redis", "ring-buffer", "shared-memory", "nanobind", "aeron", "udp", "ipc", "rdma"]
 
@@ -23,3 +24,12 @@ wheel.packages = ["goblin_core"]
 
 [tool.scikit-build.cmake]
 version = ">=3.25"
+
+[tool.scikit-build.sdist]
+include = ["_vendor/**", "build_backend.py", "LICENSE", "NOTICE"]
+exclude = ["build/**", "dist/**", "goblin_core/*.so", "goblin_core/*.dylib"]
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "_vendor/CMakeLists.txt"
+regex = '(?s)project\(goblin-core\s+VERSION\s+(?P<value>\d+\.\d+\.\d+)'

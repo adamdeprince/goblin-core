@@ -591,7 +591,8 @@ class HashListpack {
                                       const Header& hdr,
                                       std::uint8_t needle) const noexcept {
     std::size_t base = 0;
-    while (base + simd::kFingerprintGroupWidth <= hdr.count) {
+    const auto width = simd::fingerprint_group_width();
+    while (base + width <= hdr.count) {
       auto matches =
           simd::match_fingerprint_group(hdr.fingerprints + base, needle);
       while (matches != 0) {
@@ -604,7 +605,7 @@ class HashListpack {
           return {.entry_offset = off, .index = index};
         }
       }
-      base += simd::kFingerprintGroupWidth;
+      base += width;
     }
     for (; base < hdr.count; ++base) {
       if (hdr.fingerprints[base] != needle) {

@@ -9,11 +9,7 @@
 #include <string>
 #include <string_view>
 
-#if defined(__SSE4_2__)
-#include <nmmintrin.h>
-#elif defined(__ARM_FEATURE_CRC32)
-#include <arm_acle.h>
-#endif
+#include "goblin/core/simd.hpp"
 
 // Goblin Core snapshot format.
 //
@@ -152,59 +148,9 @@ enum class ReplicationOpcode : std::uint8_t {
 // CRC32C, so it is identical across the hardware and software paths and across
 // architectures (a snapshot written on one machine verifies on another).
 //
-// No runtime CPU dispatch: the hardware instruction is used when the target ISA
-// provides it -- SSE4.2 on x86-64, the CRC extension on AArch64, and LoongArch
-// -- otherwise a table. On x86 that means building with `-msse4.2` (or
-// `-march=native`); an x86 old enough to lack SSE4.2 falls to the table, but
-// that is hardware Redis was built for, not this.
+// Runtime selection uses hardware CRC32C when supported, or the software table.
 [[nodiscard]] inline std::uint32_t checksum(std::string_view data) noexcept {
-  const auto* p = reinterpret_cast<const unsigned char*>(data.data());
-  std::size_t n = data.size();
-  std::uint32_t crc = 0xFFFFFFFFu;
-
-#if defined(__SSE4_2__)
-  std::uint64_t acc = crc;
-  for (; n >= 8; p += 8, n -= 8) {
-    std::uint64_t chunk;
-    std::memcpy(&chunk, p, 8);
-    acc = _mm_crc32_u64(acc, chunk);
-  }
-  crc = static_cast<std::uint32_t>(acc);
-  for (; n > 0; --n) crc = _mm_crc32_u8(crc, *p++);
-#elif defined(__ARM_FEATURE_CRC32)
-  for (; n >= 8; p += 8, n -= 8) {
-    std::uint64_t chunk;
-    std::memcpy(&chunk, p, 8);
-    crc = __crc32cd(crc, chunk);
-  }
-  for (; n > 0; --n) crc = __crc32cb(crc, *p++);
-#elif defined(__loongarch__)
-  // crcc.w.* computes CRC32C directly. Validated on a LoongArch 3A6000 against the
-  // published check value (checksum("123456789") == 0xe3069283) and the x86/ARM paths.
-  for (; n >= 8; p += 8, n -= 8) {
-    std::uint64_t chunk;
-    std::memcpy(&chunk, p, 8);
-    crc = static_cast<std::uint32_t>(__builtin_loongarch_crcc_w_d_w(
-        static_cast<long long>(chunk), static_cast<int>(crc)));
-  }
-  for (; n > 0; --n)
-    crc = static_cast<std::uint32_t>(
-        __builtin_loongarch_crcc_w_b_w(static_cast<char>(*p++), static_cast<int>(crc)));
-#else
-  static const std::array<std::uint32_t, 256> table = [] {
-    std::array<std::uint32_t, 256> t{};
-    constexpr std::uint32_t poly = 0x82F63B78u;  // reflected Castagnoli
-    for (std::uint32_t i = 0; i < 256; ++i) {
-      std::uint32_t c = i;
-      for (int k = 0; k < 8; ++k) c = (c & 1) ? (c >> 1) ^ poly : c >> 1;
-      t[i] = c;
-    }
-    return t;
-  }();
-  for (; n > 0; --n) crc = table[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
-#endif
-
-  return crc ^ 0xFFFFFFFFu;
+  return simd::checksum(data);
 }
 
 // Little-endian, length-prefixed writer over a growable byte buffer.

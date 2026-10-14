@@ -1014,7 +1014,15 @@ int main() {
            });
   // HKEYS / HVALS -> 3 elements each
   dispatch(store, key_frame<sbe::HKeys>("h"), [&](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
-    assert(count_items(hd, m, l) == 3);
+    auto reply = decode<sbe::ArrayReply>(hd, m, l);
+    std::vector<std::string> fields;
+    auto& items = reply.items();
+    while (items.hasNext()) {
+      items.next();
+      fields.emplace_back(items.getValueAsStringView());
+    }
+    std::sort(fields.begin(), fields.end());
+    assert((fields == std::vector<std::string>{"f1", "f2", "f3"}));
   });
   dispatch(store, key_frame<sbe::HVals>("h"), [&](sbe::MessageHeader& hd, char* m, std::uint32_t l) {
     assert(count_items(hd, m, l) == 3);

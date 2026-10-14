@@ -23,6 +23,11 @@ private, same-version DPU-to-host Pub/Sub links. Ordinary proxied commands stay
 RESP internally so their exact reply shape and connection state do not need a
 second typed translation layer.
 
+The edge selects its SIMD implementation at startup and accepts the same
+`--simd` option as the authoritative server. Use `--simd scalar` to force the
+portable fallback; the default `--simd auto` selects a compatible backend
+(NEON on BlueField). Unsupported explicit selections exit with status 2.
+
 ## Pub/Sub behavior
 
 - `SUBSCRIBE`, `PSUBSCRIBE`, and their unsubscribe forms update the DPU-local
